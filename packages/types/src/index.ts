@@ -3,3 +3,4 @@ export { generateKeyPair, getUserId } from './identity.js';
 export type { KeyPair, UserId } from './identity.js';
 export { signingHash, computePostId } from './post.js';
 export type { SlotToken, UnsignedPost, Post, Block } from './post.js';
+export { encodePost, decodePost, encodeSlotToken, decodeSlotToken } from './serialization.js';
