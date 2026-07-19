@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { generateKeyPair, getUserId } from '@dagsocial/types';
 import { insertIdentity, getIdentity } from '../store/identities.js';
 
-export const identityRouter = Router();
+export const identityRouter: Router = Router();
 
 identityRouter.post('/', (_req, res) => {
   const keyPair = generateKeyPair();

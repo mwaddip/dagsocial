@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { createSlotChallenge, claimSlot } from '../services/slots.js';
 import { config } from '../config.js';
 
-export const slotsRouter = Router();
+export const slotsRouter: Router = Router();
 
 slotsRouter.post('/request', (req, res) => {
   const { userId } = req.body as { userId: string };
