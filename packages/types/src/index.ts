@@ -1,2 +1,3 @@
-// @dagsocial/types — shared types, CBOR codecs, and validation
-export {};
+export { base58Encode, base58Decode } from './base58.js';
+export { generateKeyPair, getUserId } from './identity.js';
+export type { KeyPair, UserId } from './identity.js';
