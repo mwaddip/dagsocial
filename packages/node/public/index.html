@@ -21,14 +21,21 @@
   .post { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 12px; margin-bottom: 10px; }
   .post-author { font-size: 11px; color: #58a6ff; font-family: monospace; margin-bottom: 6px; }
   .post-content { font-size: 14px; line-height: 1.5; }
-  .post-meta { font-size: 11px; color: #484f58; margin-top: 8px; display: flex; gap: 12px; }
-  .post-pending { border-color: #d29922; }
+  .post-meta { font-size: 11px; color: #484f58; margin-top: 8px; display: flex; gap: 12px; align-items: center; }
   .status { font-size: 11px; padding: 4px 8px; border-radius: 10px; }
   .status-ok { background: #163b23; color: #3fb950; }
   .status-busy { background: #3b2816; color: #d29922; }
+  .status-error { background: #3b1616; color: #f85149; }
   .empty { color: #484f58; font-style: italic; padding: 20px; text-align: center; }
   .row { display: flex; gap: 8px; align-items: center; }
   .row label { font-size: 12px; color: #8b949e; min-width: 70px; }
+  .like-btn { background: none; border: 1px solid #30363d; border-radius: 4px; color: #8b949e; cursor: pointer; font-size: 12px; padding: 2px 8px; }
+  .like-btn:hover { border-color: #f85149; color: #f85149; background: #3b1616; }
+  .like-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .like-btn.liked { border-color: #f85149; color: #f85149; background: #2d1216; }
+  .status-bar { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 10px; font-size: 12px; line-height: 1.6; }
+  .status-bar span { color: #8b949e; }
+  .status-bar strong { color: #c9d1d9; }
 </style>
 </head>
 <body>
@@ -42,8 +49,11 @@
   <input id="parents" placeholder="Parent post IDs (comma-separated, optional)">
   <div class="row">
     <button id="postBtn" disabled>Post</button>
-    <span class="status" id="status"></span>
+    <span class="status" id="postStatus"></span>
   </div>
+
+  <h2>Node Status</h2>
+  <div class="status-bar" id="statusBar">Loading...</div>
 </div>
 
 <div class="panel right">
@@ -57,7 +67,10 @@ import { blake2b } from 'https://cdn.jsdelivr.net/npm/blakejs@1.2.1/+esm';
 const API = '';
 const encoder = new TextEncoder();
 
-// --- identity ---
+// ---------------------------------------------------------------------------
+// Identity
+// ---------------------------------------------------------------------------
+
 let userId, pubKeyRaw, privKey;
 
 async function initIdentity() {
@@ -66,7 +79,6 @@ async function initIdentity() {
   pubKeyRaw = new Uint8Array(await crypto.subtle.exportKey('raw', key.publicKey));
   userId = await computeUserId(pubKeyRaw);
 
-  // Register with server (idempotent) — use the server's userId for consistency
   const res = await fetch(API + '/identity/import', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -74,7 +86,7 @@ async function initIdentity() {
   });
   if (res.ok) {
     const data = await res.json();
-    userId = data.userId;  // use server-computed userId
+    userId = data.userId;
     document.getElementById('userId').textContent = userId;
     document.getElementById('postBtn').disabled = false;
   } else {
@@ -83,46 +95,47 @@ async function initIdentity() {
 }
 
 async function computeUserId(pub) {
-  const hash = blake2b(pub, null, 64);  // full 64 bytes — matches server's getUserId
+  const hash = blake2b(pub, null, 64);
   return base58Encode(hash);
 }
 
-// --- PoW ---
-function countLeadingZeroBits(buf) {
-  let bits = 0;
-  for (let i = 0; i < buf.length; i++) {
-    if (buf[i] === 0) { bits += 8; continue; }
-    let mask = 0x80;
-    while ((buf[i] & mask) === 0) { bits++; mask >>= 1; }
-    break;
+// ---------------------------------------------------------------------------
+// Hex / byte utilities
+// ---------------------------------------------------------------------------
+
+function buf2hex(buf) {
+  return [...buf].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function hex2buf(hex) {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2) {
+    bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
   }
-  return bits;
+  return bytes;
 }
 
-function solvePoW(challenge, targetBits) {
-  let nonce = 0;
-  while (true) {
-    const hash = blake2b(encoder.encode(challenge + String(nonce)), null, 64).slice(0, 32);
-    if (countLeadingZeroBits(hash) >= targetBits) return nonce;
-    nonce++;
+function concatUint8Arrays(arrays) {
+  const totalLength = arrays.reduce((s, a) => s + a.length, 0);
+  const result = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const a of arrays) {
+    result.set(a, offset);
+    offset += a.length;
   }
+  return result;
 }
 
-// --- signing ---
-function signingHash(content, author, parentRefs, slotHash, protocolVersion, timestamp) {
-  const h = blake2b(encoder.encode(
-    content + author + parentRefs.join('') + slotHash + String(protocolVersion) + String(timestamp)
-  ), null, 64).slice(0, 32);
-  return h;
+function encodeLE64(n) {
+  const buf = new ArrayBuffer(8);
+  new DataView(buf).setBigUint64(0, BigInt(n), true);
+  return new Uint8Array(buf);
 }
 
-async function signPost(content, author, parentRefs, slotHash, protocolVersion, timestamp) {
-  const hash = signingHash(content, author, parentRefs, slotHash, protocolVersion, timestamp);
-  const sig = await crypto.subtle.sign('Ed25519', privKey, hash);
-  return btoa(String.fromCharCode(...new Uint8Array(sig)));
-}
+// ---------------------------------------------------------------------------
+// Base58
+// ---------------------------------------------------------------------------
 
-// --- base58 ---
 const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 const B58MAP = {}; for (let i = 0; i < 58; i++) B58MAP[B58[i]] = i;
 
@@ -137,15 +150,126 @@ function base58Encode(buf) {
   return '1'.repeat(zeros) + digits.reverse().map(d => B58[d]).join('');
 }
 
-// --- helpers ---
-function buf2hex(buf) { return [...buf].map(b => b.toString(16).padStart(2, '0')).join(''); }
+// ---------------------------------------------------------------------------
+// PoW
+// ---------------------------------------------------------------------------
+
+function countLeadingZeroBits(buf) {
+  let bits = 0;
+  for (let i = 0; i < buf.length; i++) {
+    if (buf[i] === 0) { bits += 8; continue; }
+    let mask = 0x80;
+    while ((buf[i] & mask) === 0) { bits++; mask >>= 1; }
+    break;
+  }
+  return bits;
+}
+
+/**
+ * Build the PoW input exactly as the server does:
+ *   Buffer.concat([content, author, parentRefs, challenge, protocolVersion, timestamp])
+ * where challenge is the raw 32 bytes.
+ */
+function buildPowInput(content, author, parentRefs, challengeBytes, protocolVersion, timestamp) {
+  const parts = [
+    encoder.encode(content),
+    encoder.encode(author),
+    ...parentRefs.map(r => encoder.encode(r)),
+    challengeBytes,
+    encoder.encode(String(protocolVersion)),
+    encoder.encode(String(timestamp)),
+  ];
+  return concatUint8Arrays(parts);
+}
+
+/**
+ * Solve PoW: find nonce such that blake2b512(powInput || nonceLE64)[0:32]
+ * has at least targetBits leading zero bits.
+ *
+ * Shows periodic progress in the status badge.
+ */
+function solvePoW(powInput, targetBits, onProgress) {
+  let nonce = 0;
+  const start = performance.now();
+  while (true) {
+    const nonceBytes = encodeLE64(nonce);
+    const combined = concatUint8Arrays([powInput, nonceBytes]);
+    const hash = blake2b(combined, null, 64).slice(0, 32);
+    if (countLeadingZeroBits(hash) >= targetBits) return nonce;
+
+    nonce++;
+    if (nonce % 200000 === 0) {
+      const elapsed = ((performance.now() - start) / 1000).toFixed(1);
+      if (onProgress) onProgress(`${(nonce / 1e6).toFixed(1)}M hashes (${elapsed}s)...`);
+      // Yield to keep UI responsive
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Signing (Phase 2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the signing hash input.
+ * Server's signingHash() feeds each field sequentially through blake2b512.update().
+ * For blake2b this is equivalent to concatenating all parts and hashing once.
+ */
+function buildSignHashInput(content, author, parentRefs, challengeBytes, protocolVersion, timestamp) {
+  // signingHash input is identical to powInput (both exclude powNonce)
+  return buildPowInput(content, author, parentRefs, challengeBytes, protocolVersion, timestamp);
+}
+
+async function signPost(content, author, parentRefs, challengeBytes, protocolVersion, timestamp) {
+  const input = buildSignHashInput(content, author, parentRefs, challengeBytes, protocolVersion, timestamp);
+  const hash = blake2b(input, null, 64).slice(0, 32);
+  const sig = await crypto.subtle.sign('Ed25519', privKey, hash);
+  return buf2hex(new Uint8Array(sig));
+}
+
+/** Sign a like: hash = blake2b512(JSON.stringify({targetPostId, likerId}))[0:32] */
+async function signLike(targetPostId, likerId) {
+  const data = JSON.stringify({ targetPostId, likerId });
+  const hash = blake2b(encoder.encode(data), null, 64).slice(0, 32);
+  const sig = await crypto.subtle.sign('Ed25519', privKey, hash);
+  return buf2hex(new Uint8Array(sig));
+}
+
+// ---------------------------------------------------------------------------
+// Post ID computation (client-side, matches server's computePostId)
+// ---------------------------------------------------------------------------
+
+function computePostId(post) {
+  const cBytes = typeof post.challenge === 'string' ? hex2buf(post.challenge) : post.challenge;
+  const parts = [
+    encoder.encode(post.content),
+    encoder.encode(post.author),
+    ...post.parentRefs.map(r => encoder.encode(r)),
+    cBytes,
+    encoder.encode(String(post.protocolVersion)),
+    encoder.encode(String(post.powNonce)),
+    encoder.encode(String(post.timestamp)),
+  ];
+  const combined = concatUint8Arrays(parts);
+  const hash = blake2b(combined, null, 64).slice(0, 32);
+  return buf2hex(hash);
+}
+
+// ---------------------------------------------------------------------------
+// UI helpers
+// ---------------------------------------------------------------------------
 
 function setStatus(text, cls) {
-  const s = document.getElementById('status');
+  const s = document.getElementById('postStatus');
   s.textContent = text; s.className = 'status status-' + (cls || 'busy');
 }
 
-// --- post flow ---
+function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// ---------------------------------------------------------------------------
+// Post flow (Phase 2)
+// ---------------------------------------------------------------------------
+
 document.getElementById('postBtn').addEventListener('click', async () => {
   const btn = document.getElementById('postBtn');
   const content = document.getElementById('content').value.trim();
@@ -153,52 +277,54 @@ document.getElementById('postBtn').addEventListener('click', async () => {
 
   btn.disabled = true;
   try {
-    // 1. Request slot
-    setStatus('requesting slot...', 'busy');
-    const slotReq = await fetch(API + '/slots/request', {
+    // 1. Request challenge
+    setStatus('requesting challenge...', 'busy');
+    const chalRes = await fetch(API + '/challenge', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userId }),
     });
-    const { challenge, targetBits } = await slotReq.json();
+    if (!chalRes.ok) {
+      const err = await chalRes.json();
+      setStatus(err.error || 'challenge failed', 'error');
+      return;
+    }
+    const { challenge: challengeHex, targetBits, expiresAtBlock } = await chalRes.json();
+    const challengeBytes = hex2buf(challengeHex);
 
-    // 2. Solve slot PoW
+    // 2. Build powInput and solve PoW
     setStatus(`solving PoW (${targetBits} bits)...`, 'busy');
-    const nonce = solvePoW(challenge, targetBits);
-
-    // 3. Claim slot
-    setStatus('claiming slot...', 'busy');
-    const claimRes = await fetch(API + '/slots/claim', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId, challenge, nonce }),
-    });
-    if (!claimRes.ok) { setStatus('slot claim failed', 'busy'); return; }
-    const { token } = await claimRes.json();
-
-    // 4. Build and sign post
-    setStatus('signing...', 'busy');
     const parentRefs = document.getElementById('parents').value
       .split(',').map(s => s.trim()).filter(Boolean);
     const timestamp = Date.now();
     const protocolVersion = 1;
-    const signature = await signPost(content, userId, parentRefs, token.hash, protocolVersion, timestamp);
+    const powInput = buildPowInput(content, userId, parentRefs, challengeBytes, protocolVersion, timestamp);
 
-    // 5. Solve Phase 2 PoW (submit target = 8 bits)
-    setStatus('final PoW...', 'busy');
-    const submitInput = content + userId + parentRefs.join('') + token.hash + String(timestamp);
-    const powNonce = solvePoW(submitInput, 8);
+    const powNonce = solvePoW(powInput, targetBits, (msg) => {
+      setStatus(msg, 'busy');
+    });
 
-    // 6. Submit post
+    // 3. Sign the post
+    setStatus('signing...', 'busy');
+    const signature = await signPost(content, userId, parentRefs, challengeBytes, protocolVersion, timestamp);
+
+    // 4. Submit post
     setStatus('posting...', 'busy');
     const postRes = await fetch(API + '/posts', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        content, author: userId, parentRefs, slotHash: token.hash,
-        powNonce, protocolVersion, timestamp, signature,
+        content,
+        author: userId,
+        parentRefs,
+        challenge: challengeHex,
+        powNonce,
+        protocolVersion,
+        timestamp,
+        signature,
       }),
     });
     if (!postRes.ok) {
       const err = await postRes.json();
-      setStatus(err.error || 'post failed', 'busy');
+      setStatus(err.error || 'post failed', 'error');
       return;
     }
     const posted = await postRes.json();
@@ -207,41 +333,122 @@ document.getElementById('postBtn').addEventListener('click', async () => {
     document.getElementById('parents').value = '';
     loadFeed();
   } catch (e) {
-    setStatus('error: ' + e.message, 'busy');
+    setStatus('error: ' + e.message, 'error');
   } finally {
     btn.disabled = false;
   }
 });
 
-// --- feed ---
+// ---------------------------------------------------------------------------
+// Like flow
+// ---------------------------------------------------------------------------
+
+async function doLike(targetPostId) {
+  try {
+    const sigHex = await signLike(targetPostId, userId);
+    const res = await fetch(API + '/likes', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targetPostId, likerId: userId, signature: sigHex }),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      // 409 or specific errors: show briefly in status
+      setStatus(err.error || 'like failed', 'error');
+      return false;
+    }
+    return true;
+  } catch (e) {
+    setStatus('like error: ' + e.message, 'error');
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Feed
+// ---------------------------------------------------------------------------
+
+// Track which posts this user has liked in the current session
+const likedPosts = new Set();
+
 async function loadFeed() {
   const feed = document.getElementById('feed');
   try {
     const res = await fetch(API + '/posts?limit=30');
     const posts = await res.json();
     if (!posts.length) { feed.innerHTML = '<div class="empty">No posts yet. Write something!</div>'; return; }
-    feed.innerHTML = posts.map(p => `
-      <div class="post ${p.status === 'pending' ? 'post-pending' : ''}">
-        <div class="post-author">${p.author.slice(0, 20)}... ${p.status === 'pending' ? '(pending)' : '#' + (p.blockHeight || '?')}</div>
-        <div class="post-content">${esc(p.content)}</div>
-        <div class="post-meta">
-          <span>${new Date(p.timestamp).toLocaleTimeString()}</span>
-          <span>${p.parentRefs.length ? p.parentRefs.length + ' parents' : 'genesis'}</span>
-          <span style="font-family:monospace;font-size:10px">${p.id.slice(0, 16)}...</span>
+    feed.innerHTML = posts.map(p => {
+      const id = computePostId(p);
+      const shortId = id.slice(0, 16);
+      const liked = likedPosts.has(id);
+      return `
+        <div class="post" data-post-id="${id}">
+          <div class="post-author">${esc(p.author.slice(0, 20))}...</div>
+          <div class="post-content">${esc(p.content)}</div>
+          <div class="post-meta">
+            <span>${new Date(p.timestamp).toLocaleTimeString()}</span>
+            <span>${p.parentRefs.length ? p.parentRefs.length + ' parents' : 'genesis'}</span>
+            <span style="font-family:monospace;font-size:10px">${esc(shortId)}...</span>
+            <button class="like-btn${liked ? ' liked' : ''}" data-post-id="${id}"${liked ? ' disabled' : ''}>
+              ${liked ? '❤️ Liked' : '❤️ Like'}
+            </button>
+          </div>
         </div>
-      </div>
-    `).join('');
+      `;
+    }).join('');
+
+    // Attach like handlers
+    feed.querySelectorAll('.like-btn:not([disabled])').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const postId = btn.dataset.postId;
+        if (!postId) return;
+        btn.disabled = true;
+        btn.textContent = '...';
+        const ok = await doLike(postId);
+        if (ok) {
+          likedPosts.add(postId);
+          btn.classList.add('liked');
+          btn.textContent = '❤️ Liked';
+        } else {
+          btn.disabled = false;
+          btn.textContent = '❤️ Like';
+        }
+      });
+    });
   } catch (e) {
     feed.innerHTML = '<div class="empty">Failed to load feed</div>';
   }
 }
 
-function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+// ---------------------------------------------------------------------------
+// Status bar
+// ---------------------------------------------------------------------------
 
-// --- init ---
+async function loadStatus() {
+  const bar = document.getElementById('statusBar');
+  try {
+    const res = await fetch(API + '/status');
+    if (!res.ok) { bar.innerHTML = 'Status unavailable'; return; }
+    const s = await res.json();
+    bar.innerHTML = `
+      <div><span>Block height:</span> <strong>${s.blockHeight}</strong></div>
+      <div><span>Posts (confirmed / pending):</span> <strong>${s.postCount} / ${s.pendingPosts}</strong></div>
+      <div><span>Identities:</span> <strong>${s.identityCount}</strong></div>
+      <div><span>Total karma:</span> <strong>${s.totalKarma}</strong> &nbsp; <span>Total credits:</span> <strong>${s.totalCredits}</strong></div>
+    `;
+  } catch (e) {
+    bar.innerHTML = 'Status unavailable';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+
 await initIdentity();
 loadFeed();
+loadStatus();
 setInterval(loadFeed, 5000);
+setInterval(loadStatus, 15000);
 </script>
 </body>
 </html>
