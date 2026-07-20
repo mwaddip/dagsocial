@@ -44,3 +44,9 @@ export {
   getPendingSubBlocks,
   confirmSubBlock,
 } from './subblocks.js';
+
+export {
+  createOrderingBlock,
+  getOrderingBlock,
+  getCurrentHeight,
+} from './ordering.js';
