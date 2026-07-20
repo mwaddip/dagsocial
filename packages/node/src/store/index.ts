@@ -30,3 +30,11 @@ export {
   consumeBox,
   markLikeBoxesTallied,
 } from './utxo.js';
+
+export {
+  insertLike,
+  hasLiked,
+  getLikeCount,
+  getUnprocessedFreeLikes,
+  markFreeLikesProcessed,
+} from './likes.js';
