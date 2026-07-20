@@ -2,7 +2,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import express from 'express';
 import http from 'http';
 import { initDb, closeDb } from '../../src/store/db.js';
-import { identityRouter } from '../../src/routes/identity.js';
+import { insertIdentity, getIdentity } from '../../src/store/identities.js';
+import { createRouter } from '../../src/routes/identity.js';
 import { unlinkSync } from 'fs';
 
 const TEST_DB = '/tmp/dagsocial-test-identity.sqlite';
@@ -11,7 +12,7 @@ async function req(path: string, method: string, body?: unknown): Promise<{ stat
   return new Promise((resolve) => {
     const app = express();
     app.use(express.json());
-    app.use('/identity', identityRouter);
+    app.use('/identity', createRouter({ insertIdentity, getIdentity }));
     const server = app.listen(0, () => {
       const addr = server.address() as { port: number };
       const r = http.request({
