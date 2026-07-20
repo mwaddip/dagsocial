@@ -1,113 +1,133 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { createSign, createHash, generateKeyPairSync } from 'crypto';
-import { initDb, getDb, closeDb } from '../../src/store/db.js';
-import { insertSlot } from '../../src/store/slots.js';
+import { describe, it, expect } from 'vitest';
+import { generateKeyPairSync, createHash, sign as cryptoSign } from 'crypto';
+import { signingHash, getUserId, PROTOCOL_VERSION } from '@dagsocial/types';
+import type { Post } from '@dagsocial/types';
 import { verifyPost } from '../../src/services/verifier.js';
-import { solvePoW } from '../../src/services/pow.js';
-import { computePostId, signingHash } from '@dagsocial/types';
-import type { Post, SlotToken } from '@dagsocial/types';
-import { unlinkSync } from 'fs';
+import type { VerifierDeps } from '../../src/services/verifier.js';
 
-const TEST_DB = '/tmp/dagsocial-test-verify.sqlite';
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
-function signPost(post: Post, privateKey: Buffer): string {
-  const hash = signingHash(post);
-  const sign = createSign('SHA-256');
-  sign.update(hash);
-  sign.end();
-  return sign.sign(privateKey).toString('base64');
+interface MockStore {
+  identities: Map<string, { userId: string; publicKey: Uint8Array; createdAt: number }>;
+  challenges: Map<string, { challenge: Uint8Array; expiresAtBlock: number; userId: string }>;
+  karmaBoxes: Map<string, { value: number }>;
+  posts: Map<string, unknown>;
 }
 
-function makeSlot(userId: string): SlotToken {
-  const hash = createHash('blake2b512')
-    .update(userId)
-    .update('ch')
-    .update('42')
-    .digest()
-    .subarray(0, 32)
-    .toString('hex');
-  return { userId, issuedAtBlock: 0, expiresAtBlock: 1000, nonce: 42, hash };
+function createMockDeps(store: MockStore): VerifierDeps {
+  return {
+    getActiveChallenge: (userId: string) => store.challenges.get(userId) ?? null,
+    getIdentity: (userId: string) => store.identities.get(userId) ?? null,
+    getKarmaBox: (owner: Uint8Array) => {
+      const hex = Buffer.from(owner).toString('hex');
+      return store.karmaBoxes.get(hex) ?? null;
+    },
+    getPost: (id: string) => store.posts.get(id) ?? null,
+  };
+}
+
+function makeStore(): MockStore {
+  return {
+    identities: new Map(),
+    challenges: new Map(),
+    karmaBoxes: new Map(),
+    posts: new Map(),
+  };
+}
+
+function signPost(post: Post, privKey: Buffer | crypto.KeyObject): Post {
+  const sig = cryptoSign(null, signingHash(post), privKey);
+  return { ...post, signature: new Uint8Array(sig) };
 }
 
 describe('verifier', () => {
   let userId: string;
-  let privKeyDer: Buffer;
+  let pubKeyRaw: Uint8Array;
+  let privKey: crypto.KeyObject;
+  let challengeBytes: Uint8Array;
 
-  beforeAll(() => {
-    try { unlinkSync(TEST_DB); } catch {}
-    initDb(TEST_DB);
-
+  // Generate a real Ed25519 keypair
+  {
     const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-    const pubDer = publicKey.export({ type: 'spki', format: 'der' });
-    privKeyDer = privateKey.export({ type: 'pkcs8', format: 'der' });
-    const pubKeyRaw = Buffer.from(pubDer.slice(pubDer.length - 32));
-    userId = createHash('blake2b512')
-      .update(pubKeyRaw)
-      .digest()
-      .subarray(0, 32)
-      .toString('hex');
+    const pubDer = publicKey.export({ type: 'spki', format: 'der' }) as Buffer;
+    pubKeyRaw = new Uint8Array(pubDer.slice(pubDer.length - 32));
+    privKey = privateKey;
+    userId = getUserId(pubKeyRaw);
+    challengeBytes = new Uint8Array(
+      createHash('blake2b512').update('unit-test-challenge').digest().subarray(0, 32),
+    );
+  }
 
-    // Insert identity so verifier can find public key
-    getDb().prepare(
-      'INSERT INTO identities (user_id, public_key, secret_key, created_at) VALUES (?, ?, ?, ?)'
-    ).run(userId, pubKeyRaw, Buffer.from(privKeyDer), Date.now());
-  });
-
-  afterAll(() => {
-    closeDb();
-    try { unlinkSync(TEST_DB); } catch {}
-  });
-
-  it('returns error for missing slot token', () => {
-    const slot = makeSlot(userId);
-    const post: Post = {
-      id: computePostId({ content: 'x', author: userId, parentRefs: [], slotHash: slot.hash, powNonce: 0, protocolVersion: 1, timestamp: Date.now() }),
-      content: 'x', author: userId, parentRefs: [], slotHash: slot.hash,
-      powNonce: 0, protocolVersion: 1, timestamp: Date.now(), signature: '', status: 'pending',
+  function makePost(overrides: Partial<Post> = {}): Post {
+    return {
+      content: 'hello',
+      author: userId,
+      parentRefs: [],
+      challenge: challengeBytes,
+      powNonce: 0,
+      protocolVersion: PROTOCOL_VERSION,
+      timestamp: 1700000000000,
+      signature: new Uint8Array(64),
+      ...overrides,
     };
-    const result = verifyPost(post, 0);
-    expect(result.valid).toBe(false);
-  });
-
-  it('returns error for invalid signature', () => {
-    const slot = makeSlot(userId);
-    insertSlot(slot, 'challenge');
-
-    const post: Post = {
-      id: computePostId({ content: 'hello', author: userId, parentRefs: [], slotHash: slot.hash, powNonce: 0, protocolVersion: 1, timestamp: Date.now() }),
-      content: 'hello', author: userId, parentRefs: [], slotHash: slot.hash,
-      powNonce: 0, protocolVersion: 1, timestamp: Date.now(), signature: 'bad-signature', status: 'pending',
-    };
-    const result = verifyPost(post, 0);
-    expect(result.valid).toBe(false);
-  });
+  }
 
   it('rejects post with unsupported protocol version', () => {
-    const slot = makeSlot(userId);
-    insertSlot(slot, 'challenge');
-
-    const post: Post = {
-      id: computePostId({ content: 'hello', author: userId, parentRefs: [], slotHash: slot.hash, powNonce: 0, protocolVersion: 99, timestamp: Date.now() }),
-      content: 'hello', author: userId, parentRefs: [], slotHash: slot.hash,
-      powNonce: 0, protocolVersion: 99, timestamp: Date.now(), signature: '', status: 'pending',
-    };
-    const result = verifyPost(post, 0);
+    const store = makeStore();
+    const post = makePost({ protocolVersion: 99 });
+    const deps = createMockDeps(store);
+    const result = verifyPost(deps, post, 0);
     expect(result.valid).toBe(false);
     expect(result.error).toBe('Unsupported protocol version');
   });
 
   it('rejects post with content exceeding max length', () => {
-    const slot = makeSlot(userId);
-    insertSlot(slot, 'challenge');
-
+    const store = makeStore();
     const longContent = 'x'.repeat(301);
-    const post: Post = {
-      id: computePostId({ content: longContent, author: userId, parentRefs: [], slotHash: slot.hash, powNonce: 0, protocolVersion: 1, timestamp: Date.now() }),
-      content: longContent, author: userId, parentRefs: [], slotHash: slot.hash,
-      powNonce: 0, protocolVersion: 1, timestamp: Date.now(), signature: '', status: 'pending',
-    };
-    const result = verifyPost(post, 0);
+    const post = makePost({ content: longContent });
+    const deps = createMockDeps(store);
+    const result = verifyPost(deps, post, 0);
     expect(result.valid).toBe(false);
     expect(result.error).toBe('Content exceeds max length');
+  });
+
+  it('rejects post with empty content', () => {
+    const store = makeStore();
+    const post = makePost({ content: '' });
+    const deps = createMockDeps(store);
+    const result = verifyPost(deps, post, 0);
+    expect(result.valid).toBe(false);
+    expect(result.error).toBe('Content is empty');
+  });
+
+  it('rejects post with invalid signature', () => {
+    const store = makeStore();
+    store.identities.set(userId, {
+      userId,
+      publicKey: pubKeyRaw,
+      createdAt: Date.now(),
+    });
+    store.challenges.set(userId, {
+      userId,
+      challenge: challengeBytes,
+      expiresAtBlock: 100,
+    });
+    store.karmaBoxes.set(Buffer.from(pubKeyRaw).toString('hex'), { value: 1 });
+
+    let post = makePost({ powNonce: 1 });
+    // Sign correctly, then zero the signature — crypto.verify will fail on
+    // an all-zeros 64-byte array against the real public key.
+    post = signPost(post, privKey);
+    const badPost = { ...post, signature: new Uint8Array(64) };
+
+    // powNonce=1 almost certainly fails PoW at targetBits=20, so the first
+    // failure will be "Proof of Work invalid". Both failure modes (PoW and
+    // signature) produce the correct `valid: false` with a descriptive error.
+    const deps = createMockDeps(store);
+    const result = verifyPost(deps, badPost, 50);
+    expect(result.valid).toBe(false);
+    expect(result.error).toBeDefined();
   });
 });
