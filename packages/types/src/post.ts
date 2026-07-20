@@ -15,6 +15,7 @@ export interface UnsignedPost {
   parentRefs: string[];
   slotHash: string;
   powNonce: number;
+  protocolVersion: number;
   timestamp: number;
 }
 
@@ -30,12 +31,14 @@ export interface Block {
   hash: string;
   postIds: string[];
   postCount: number;
+  protocolVersion: number;
   createdAt: number;
 }
 
 /**
- * Hash that the author signs. Covers: content, author, parents, slotHash, timestamp.
- * Excludes powNonce (post-hoc work) and id/signature (not yet set).
+ * Hash that the author signs. Covers: content, author, parents, slotHash,
+ * protocolVersion, timestamp. Excludes powNonce (post-hoc work) and
+ * id/signature (not yet set).
  *
  * Uses blake2b512 truncated to 32 bytes (Node.js v22 lacks blake2b256).
  */
@@ -47,6 +50,7 @@ export function signingHash(post: UnsignedPost): Buffer {
     h.update(ref);
   }
   h.update(post.slotHash);
+  h.update(String(post.protocolVersion));
   h.update(String(post.timestamp));
   return h.digest().subarray(0, 32);
 }
@@ -64,6 +68,7 @@ export function computePostId(post: UnsignedPost): string {
     h.update(ref);
   }
   h.update(post.slotHash);
+  h.update(String(post.protocolVersion));
   h.update(String(post.powNonce));
   h.update(String(post.timestamp));
   return h.digest().subarray(0, 32).toString('hex');
