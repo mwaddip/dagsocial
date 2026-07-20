@@ -1,5 +1,7 @@
 # DAGsocial
 
+Read and apply `~/projects/OVERRIDES.md` before anything else.
+
 Decentralized social network. Phase 1: local HTTP node with identity, two-phase PoW, DAG post storage in SQLite. TypeScript monorepo, pnpm workspaces, Node.js ≥ 22.
 
 ## Quick commands
