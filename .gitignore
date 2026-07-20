@@ -3,3 +3,4 @@ dist/
 *.db
 *.db-wal
 *.db-shm
+SESSION_CONTEXT.md

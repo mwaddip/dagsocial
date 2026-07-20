@@ -1,4 +1,3 @@
-/clear
 Read ~/projects/OVERRIDES.md.
 Read ~/.claude/RTK.md.
 Read CLAUDE.md.

@@ -61,7 +61,6 @@ kitty @ send-text --match=id:$NEW_WIN $'\r'
 Every dispatch prompt must start with:
 
 ```
-/clear
 Read ~/projects/OVERRIDES.md.
 Read ~/.claude/RTK.md.
 Read CLAUDE.md.
