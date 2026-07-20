@@ -86,6 +86,24 @@ describe('post and block store', () => {
     }
   });
 
+  it('retrieves post with parent references', () => {
+    const parent1 = testPost({ id: 'parent-1', status: 'confirmed', blockHeight: 1 });
+    const parent2 = testPost({ id: 'parent-2', status: 'confirmed', blockHeight: 1 });
+    insertPendingPost(parent1, Buffer.from('raw'));
+    insertPendingPost(parent2, Buffer.from('raw'));
+    getDb().exec("UPDATE posts SET status = 'confirmed', block_height = 1 WHERE id IN ('parent-1','parent-2')");
+
+    const post = testPost({ id: 'child-with-parents', parentRefs: ['parent-1', 'parent-2'] });
+    insertPendingPost(post, Buffer.from('raw'));
+
+    const retrieved = getPost('child-with-parents');
+    expect(retrieved).not.toBeNull();
+    expect(retrieved!.parentRefs).toEqual(['parent-1', 'parent-2']);
+
+    // clean up: consume the pending post so the next test sees an empty pool
+    getDb().exec("UPDATE posts SET status = 'confirmed', block_height = 1 WHERE id = 'child-with-parents'");
+  });
+
   it('createBlock with no pending posts returns null', () => {
     expect(createBlock()).toBeNull();
   });

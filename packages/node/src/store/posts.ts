@@ -35,12 +35,19 @@ export function queryPosts(opts: { author?: string; limit: number; offset: numbe
   return rows.map(rowToPost);
 }
 
+function getParentRefs(postId: string): string[] {
+  const rows = getDb().prepare(
+    'SELECT parent_id FROM post_parents WHERE post_id = ? ORDER BY rowid'
+  ).all(postId) as { parent_id: string }[];
+  return rows.map(r => r.parent_id);
+}
+
 function rowToPost(row: Record<string, unknown>): Post {
   return {
     id: row['id'] as string,
     content: row['content'] as string,
     author: row['author'] as string,
-    parentRefs: [],
+    parentRefs: getParentRefs(row['id'] as string),
     slotHash: row['slot_hash'] as string,
     powNonce: row['pow_nonce'] as number,
     signature: row['signature'] as string,
