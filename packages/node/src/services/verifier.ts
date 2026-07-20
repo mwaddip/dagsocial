@@ -1,4 +1,4 @@
-import { verify as cryptoVerify } from 'crypto';
+import { createPublicKey, verify as cryptoVerify } from 'crypto';
 import { signingHash } from '@dagsocial/types';
 import type { Post } from '@dagsocial/types';
 import { verifyPoW } from './pow.js';
@@ -39,8 +39,9 @@ export function verifyPost(post: Post, currentBlockHeight: number): Verification
   }
 
   const pubKeyDer = wrapEd25519Spki(row.public_key);
+  const pubKeyObj = createPublicKey({ key: pubKeyDer, format: 'der', type: 'spki' });
   const sigBuf = Buffer.from(post.signature, 'base64');
-  if (!cryptoVerify(null, hash, pubKeyDer, sigBuf)) {
+  if (!cryptoVerify(null, hash, pubKeyObj, sigBuf)) {
     return { valid: false, error: 'Signature invalid' };
   }
 
