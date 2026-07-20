@@ -109,15 +109,15 @@ function solvePoW(challenge, targetBits) {
 }
 
 // --- signing ---
-function signingHash(content, author, parentRefs, slotHash, timestamp) {
+function signingHash(content, author, parentRefs, slotHash, protocolVersion, timestamp) {
   const h = blake2b(encoder.encode(
-    content + author + parentRefs.join('') + slotHash + String(timestamp)
+    content + author + parentRefs.join('') + slotHash + String(protocolVersion) + String(timestamp)
   ), null, 64).slice(0, 32);
   return h;
 }
 
-async function signPost(content, author, parentRefs, slotHash, timestamp) {
-  const hash = signingHash(content, author, parentRefs, slotHash, timestamp);
+async function signPost(content, author, parentRefs, slotHash, protocolVersion, timestamp) {
+  const hash = signingHash(content, author, parentRefs, slotHash, protocolVersion, timestamp);
   const sig = await crypto.subtle.sign('Ed25519', privKey, hash);
   return btoa(String.fromCharCode(...new Uint8Array(sig)));
 }
@@ -179,7 +179,8 @@ document.getElementById('postBtn').addEventListener('click', async () => {
     const parentRefs = document.getElementById('parents').value
       .split(',').map(s => s.trim()).filter(Boolean);
     const timestamp = Date.now();
-    const signature = await signPost(content, userId, parentRefs, token.hash, timestamp);
+    const protocolVersion = 1;
+    const signature = await signPost(content, userId, parentRefs, token.hash, protocolVersion, timestamp);
 
     // 5. Solve Phase 2 PoW (submit target = 8 bits)
     setStatus('final PoW...', 'busy');
@@ -192,7 +193,7 @@ document.getElementById('postBtn').addEventListener('click', async () => {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         content, author: userId, parentRefs, slotHash: token.hash,
-        powNonce, timestamp, signature,
+        powNonce, protocolVersion, timestamp, signature,
       }),
     });
     if (!postRes.ok) {

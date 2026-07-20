@@ -61,9 +61,9 @@ describe('verifier', () => {
   it('returns error for missing slot token', () => {
     const slot = makeSlot(userId);
     const post: Post = {
-      id: computePostId({ content: 'x', author: userId, parentRefs: [], slotHash: slot.hash, powNonce: 0, timestamp: Date.now() }),
+      id: computePostId({ content: 'x', author: userId, parentRefs: [], slotHash: slot.hash, powNonce: 0, protocolVersion: 1, timestamp: Date.now() }),
       content: 'x', author: userId, parentRefs: [], slotHash: slot.hash,
-      powNonce: 0, timestamp: Date.now(), signature: '', status: 'pending',
+      powNonce: 0, protocolVersion: 1, timestamp: Date.now(), signature: '', status: 'pending',
     };
     const result = verifyPost(post, 0);
     expect(result.valid).toBe(false);
@@ -74,11 +74,40 @@ describe('verifier', () => {
     insertSlot(slot, 'challenge');
 
     const post: Post = {
-      id: computePostId({ content: 'hello', author: userId, parentRefs: [], slotHash: slot.hash, powNonce: 0, timestamp: Date.now() }),
+      id: computePostId({ content: 'hello', author: userId, parentRefs: [], slotHash: slot.hash, powNonce: 0, protocolVersion: 1, timestamp: Date.now() }),
       content: 'hello', author: userId, parentRefs: [], slotHash: slot.hash,
-      powNonce: 0, timestamp: Date.now(), signature: 'bad-signature', status: 'pending',
+      powNonce: 0, protocolVersion: 1, timestamp: Date.now(), signature: 'bad-signature', status: 'pending',
     };
     const result = verifyPost(post, 0);
     expect(result.valid).toBe(false);
+  });
+
+  it('rejects post with unsupported protocol version', () => {
+    const slot = makeSlot(userId);
+    insertSlot(slot, 'challenge');
+
+    const post: Post = {
+      id: computePostId({ content: 'hello', author: userId, parentRefs: [], slotHash: slot.hash, powNonce: 0, protocolVersion: 99, timestamp: Date.now() }),
+      content: 'hello', author: userId, parentRefs: [], slotHash: slot.hash,
+      powNonce: 0, protocolVersion: 99, timestamp: Date.now(), signature: '', status: 'pending',
+    };
+    const result = verifyPost(post, 0);
+    expect(result.valid).toBe(false);
+    expect(result.error).toBe('Unsupported protocol version');
+  });
+
+  it('rejects post with content exceeding max length', () => {
+    const slot = makeSlot(userId);
+    insertSlot(slot, 'challenge');
+
+    const longContent = 'x'.repeat(301);
+    const post: Post = {
+      id: computePostId({ content: longContent, author: userId, parentRefs: [], slotHash: slot.hash, powNonce: 0, protocolVersion: 1, timestamp: Date.now() }),
+      content: longContent, author: userId, parentRefs: [], slotHash: slot.hash,
+      powNonce: 0, protocolVersion: 1, timestamp: Date.now(), signature: '', status: 'pending',
+    };
+    const result = verifyPost(post, 0);
+    expect(result.valid).toBe(false);
+    expect(result.error).toBe('Content exceeds max length');
   });
 });

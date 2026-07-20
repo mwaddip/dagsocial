@@ -14,6 +14,7 @@ const testPost = (overrides?: Partial<Post>): Post => ({
   parentRefs: [],
   slotHash: 'slot-1',
   powNonce: 0,
+  protocolVersion: 1,
   timestamp: Date.now(),
   signature: 'sig',
   status: 'pending',

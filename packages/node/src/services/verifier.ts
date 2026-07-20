@@ -1,5 +1,5 @@
 import { createPublicKey, verify as cryptoVerify } from 'crypto';
-import { signingHash } from '@dagsocial/types';
+import { signingHash, PROTOCOL_VERSION, MAX_CONTENT_BYTES } from '@dagsocial/types';
 import type { Post } from '@dagsocial/types';
 import { verifyPoW } from './pow.js';
 import { getValidSlot, consumeSlot } from '../store/slots.js';
@@ -20,6 +20,16 @@ export function verifyPost(post: Post, currentBlockHeight: number): Verification
   if (slot.expiresAtBlock < currentBlockHeight) {
     consumeSlot(post.author, post.slotHash);
     return { valid: false, error: 'Slot token expired' };
+  }
+
+  // Protocol version check
+  if (post.protocolVersion !== PROTOCOL_VERSION) {
+    return { valid: false, error: 'Unsupported protocol version' };
+  }
+
+  // Content limit check
+  if (post.content.length > MAX_CONTENT_BYTES) {
+    return { valid: false, error: 'Content exceeds max length' };
   }
 
   // 2. Verify Phase 2 PoW

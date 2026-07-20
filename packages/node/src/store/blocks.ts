@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import { PROTOCOL_VERSION } from '@dagsocial/types';
 import { getDb } from './db.js';
 import { getPendingPosts, confirmPost } from './posts.js';
 import { config } from '../config.js';
@@ -13,6 +14,7 @@ export function createBlock(): Block | null {
   // Node.js v22 lacks blake2b256; use blake2b512 truncated to 32 bytes
   const hash = createHash('blake2b512')
     .update(postIds.join(''))
+    .update(String(PROTOCOL_VERSION))
     .update(String(Date.now()))
     .digest()
     .subarray(0, 32)
@@ -20,8 +22,8 @@ export function createBlock(): Block | null {
 
   const now = Date.now();
   const result = db.prepare(
-    'INSERT INTO blocks (hash, post_count, created_at) VALUES (?, ?, ?)'
-  ).run(hash, posts.length, now);
+    'INSERT INTO blocks (hash, post_count, protocol_version, created_at) VALUES (?, ?, ?, ?)'
+  ).run(hash, posts.length, PROTOCOL_VERSION, now);
 
   const height = Number(result.lastInsertRowid);
 
@@ -33,13 +35,13 @@ export function createBlock(): Block | null {
     confirmPost(postId, height);
   }
 
-  return { height, hash, postIds, postCount: posts.length, createdAt: now };
+  return { height, hash, postIds, postCount: posts.length, protocolVersion: PROTOCOL_VERSION, createdAt: now };
 }
 
 export function getBlock(height: number): Block | null {
   const db = getDb();
   const blockRow = db.prepare(
-    'SELECT height, hash, post_count, created_at FROM blocks WHERE height = ?'
+    'SELECT height, hash, post_count, protocol_version, created_at FROM blocks WHERE height = ?'
   ).get(height) as Record<string, unknown> | undefined;
   if (!blockRow) return null;
 
@@ -51,6 +53,7 @@ export function getBlock(height: number): Block | null {
     height: blockRow['height'] as number,
     hash: blockRow['hash'] as string,
     postCount: blockRow['post_count'] as number,
+    protocolVersion: blockRow['protocol_version'] as number,
     postIds: postRows.map(r => r.post_id),
     createdAt: blockRow['created_at'] as number,
   };

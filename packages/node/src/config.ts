@@ -1,8 +1,10 @@
+import { DEFAULT_SLOT_TARGET_BITS, DEFAULT_SUBMIT_TARGET_BITS, DEFAULT_SLOT_WINDOW_BLOCKS } from '@dagsocial/types';
+
 export const config = {
   pow: {
-    slotTargetBits: parseInt(process.env['POW_SLOT_TARGET_BITS'] ?? '20', 10),
-    submitTargetBits: parseInt(process.env['POW_SUBMIT_TARGET_BITS'] ?? '8', 10),
-    slotWindowBlocks: parseInt(process.env['POW_SLOT_WINDOW_BLOCKS'] ?? '100', 10),
+    slotTargetBits: parseInt(process.env['POW_SLOT_TARGET_BITS'] ?? String(DEFAULT_SLOT_TARGET_BITS), 10),
+    submitTargetBits: parseInt(process.env['POW_SUBMIT_TARGET_BITS'] ?? String(DEFAULT_SUBMIT_TARGET_BITS), 10),
+    slotWindowBlocks: parseInt(process.env['POW_SLOT_WINDOW_BLOCKS'] ?? String(DEFAULT_SLOT_WINDOW_BLOCKS), 10),
   },
   block: {
     intervalMs: parseInt(process.env['BLOCK_INTERVAL_MS'] ?? '30000', 10),

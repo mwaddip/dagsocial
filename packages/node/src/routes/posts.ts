@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { computePostId, encodePost } from '@dagsocial/types';
+import { computePostId, encodePost, MAX_CONTENT_BYTES } from '@dagsocial/types';
 import { verifyPost } from '../services/verifier.js';
 import { insertPendingPost, getPost, queryPosts } from '../store/posts.js';
 import { consumeSlot } from '../store/slots.js';
@@ -13,6 +13,11 @@ postsRouter.post('/', (req, res) => {
   const submitted = req.body as Post;
   if (!submitted.content || !submitted.author) {
     res.status(400).json({ error: 'Missing required fields' });
+    return;
+  }
+
+  if (submitted.content.length < 1 || submitted.content.length > MAX_CONTENT_BYTES) {
+    res.status(400).json({ error: 'Content must be 1-300 bytes' });
     return;
   }
 

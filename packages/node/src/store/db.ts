@@ -40,6 +40,7 @@ const MIGRATIONS = [
     height       INTEGER PRIMARY KEY AUTOINCREMENT,
     hash         TEXT NOT NULL,
     post_count   INTEGER NOT NULL,
+    protocol_version INTEGER NOT NULL DEFAULT 1,
     created_at   INTEGER NOT NULL
   )`,
   `CREATE TABLE IF NOT EXISTS block_posts (
@@ -60,6 +61,10 @@ export function initDb(path: string): void {
   for (const sql of MIGRATIONS) {
     db.exec(sql);
   }
+  // Idempotent migration for protocol_version column
+  try {
+    db.exec("ALTER TABLE blocks ADD COLUMN protocol_version INTEGER NOT NULL DEFAULT 1");
+  } catch { /* column already exists */ }
 }
 
 export function getDb(): Database.Database {
