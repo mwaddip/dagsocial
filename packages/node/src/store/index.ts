@@ -5,3 +5,13 @@ export {
   getActiveChallenge,
   consumeChallenge,
 } from './challenges.js';
+export {
+  insertPost,
+  getPost,
+  queryPosts,
+  getPendingPosts,
+  confirmPost,
+  getParentRefs,
+  getSubtree,
+  pruneSubtree,
+} from './posts.js';

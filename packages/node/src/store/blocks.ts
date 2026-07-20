@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { PROTOCOL_VERSION } from '@dagsocial/types';
+import { PROTOCOL_VERSION, computePostId } from '@dagsocial/types';
 import { getDb } from './db.js';
 import { getPendingPosts, confirmPost } from './posts.js';
 import { config } from '../config.js';
@@ -10,7 +10,7 @@ export function createBlock(): Block | null {
   const posts = getPendingPosts(config.block.maxPostsPerBlock);
   if (posts.length === 0) return null;
 
-  const postIds = posts.map(p => p.id);
+  const postIds = posts.map(p => computePostId(p));
   // Node.js v22 lacks blake2b256; use blake2b512 truncated to 32 bytes
   const hash = createHash('blake2b512')
     .update(postIds.join(''))

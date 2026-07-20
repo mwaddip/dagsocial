@@ -1,111 +1,183 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { initDb, getDb, closeDb } from '../../src/store/db.js';
-import { insertPendingPost, getPost, queryPosts } from '../../src/store/posts.js';
-import { createBlock, getBlock } from '../../src/store/blocks.js';
-import type { Post } from '@dagsocial/types';
-import { unlinkSync } from 'fs';
+import { initDb, closeDb } from '../../src/store/db.js';
+import {
+  insertPost,
+  getPost,
+  queryPosts,
+  getPendingPosts,
+  confirmPost,
+  getParentRefs,
+  getSubtree,
+  pruneSubtree,
+} from '../../src/store/posts.js';
+import { computePostId } from '@dagsocial/types';
+import { randomBytes } from 'node:crypto';
+import { unlinkSync } from 'node:fs';
+import type { Post, Stump } from '@dagsocial/types';
 
-const TEST_DB = '/tmp/dagsocial-test-store.sqlite';
+const TEST_DB = '/tmp/dagsocial-test-posts-store.sqlite';
 
-const testPost = (overrides?: Partial<Post>): Post => ({
-  id: `post-${Math.random().toString(36).slice(2)}`,
-  content: 'test content',
-  author: 'author-1',
-  parentRefs: [],
-  slotHash: 'slot-1',
-  powNonce: 0,
-  protocolVersion: 1,
-  timestamp: Date.now(),
-  signature: 'sig',
-  status: 'pending',
-  ...overrides,
-});
+function bytes(n: number): Uint8Array {
+  return new Uint8Array(randomBytes(n));
+}
 
-describe('post and block store', () => {
+function makePost(overrides: Partial<Post> = {}): Post {
+  return {
+    content: 'integration test post',
+    author: 'author-integration',
+    parentRefs: [],
+    challenge: bytes(32),
+    powNonce: 42,
+    protocolVersion: 1,
+    timestamp: Date.now(),
+    signature: bytes(64),
+    ...overrides,
+  };
+}
+
+function makeStump(rootPostHash: string, overrides: Partial<Stump> = {}): Stump {
+  return {
+    rootPostHash,
+    subtreeMerkleRoot: bytes(32),
+    authorId: 'author-integration',
+    pruneSignature: bytes(64),
+    karmaDeltas: [],
+    replyCount: 0,
+    upvoteCount: 0,
+    trigger: 'author',
+    protocolVersion: 1,
+    compactedAtBlockHeight: 1,
+    ...overrides,
+  } as Stump;
+}
+
+describe('posts store (integration)', () => {
   beforeAll(() => {
-    try { unlinkSync(TEST_DB); } catch {}
+    try { unlinkSync(TEST_DB); } catch { /* ignore */ }
     initDb(TEST_DB);
   });
 
   afterAll(() => {
     closeDb();
-    try { unlinkSync(TEST_DB); } catch {}
+    try { unlinkSync(TEST_DB); } catch { /* ignore */ }
   });
 
-  it('inserts and retrieves a pending post', () => {
-    const post = testPost();
-    insertPendingPost(post, Buffer.from('raw'));
-    const retrieved = getPost(post.id);
+  it('inserts and retrieves a post via getPost', () => {
+    const post = makePost({ content: 'integration round-trip' });
+    insertPost(post, bytes(16));
+    const id = computePostId(post);
+    const retrieved = getPost(id);
     expect(retrieved).not.toBeNull();
-    expect(retrieved!.content).toBe('test content');
-    expect(retrieved!.status).toBe('pending');
+    const p = retrieved as Post;
+    expect(p.content).toBe('integration round-trip');
+    expect(p.author).toBe('author-integration');
+    expect(p.parentRefs).toEqual([]);
   });
 
-  it('queryPosts returns confirmed posts ordered newest first', () => {
-    const p1 = testPost({ id: 'qp1', status: 'confirmed', blockHeight: 1, timestamp: 1000 });
-    const p2 = testPost({ id: 'qp2', status: 'confirmed', blockHeight: 2, timestamp: 2000 });
-    insertPendingPost(p1, Buffer.from('raw'));
-    insertPendingPost(p2, Buffer.from('raw'));
-    getDb().exec("UPDATE posts SET status = 'confirmed', block_height = 1 WHERE id = 'qp1'");
-    getDb().exec("UPDATE posts SET status = 'confirmed', block_height = 2 WHERE id = 'qp2'");
-    const results = queryPosts({ limit: 10, offset: 0 });
-    const confirmed = results.filter(p => p.status === 'confirmed');
-    expect(confirmed.length).toBeGreaterThanOrEqual(2);
+  it('queryPosts returns live posts ordered newest first', () => {
+    const post1 = makePost({ content: 'older', timestamp: 1000 });
+    const post2 = makePost({ content: 'newer', timestamp: 2000 });
+    insertPost(post1, bytes(8));
+    insertPost(post2, bytes(8));
+
+    const results = queryPosts({});
+    const contents = results.map((p) => p.content);
+    const idxNewer = contents.indexOf('newer');
+    const idxOlder = contents.indexOf('older');
+    expect(idxNewer).toBeLessThan(idxOlder);
   });
 
   it('queryPosts filters by author', () => {
-    const post = testPost({ id: 'qa1', author: 'specific-author', status: 'confirmed', blockHeight: 1, timestamp: 1000 });
-    insertPendingPost(post, Buffer.from('raw'));
-    getDb().exec("UPDATE posts SET status = 'confirmed', block_height = 1 WHERE id = 'qa1'");
-    const results = queryPosts({ author: 'specific-author', limit: 10, offset: 0 });
-    expect(results.every(p => p.author === 'specific-author')).toBe(true);
+    const suffix = Date.now();
+    const alice = 'alice-int-' + suffix;
+    const bob = 'bob-int-' + suffix;
+
+    insertPost(makePost({ author: alice, content: 'alice post' }), bytes(8));
+    insertPost(makePost({ author: bob, content: 'bob post' }), bytes(8));
+
+    const aliceResults = queryPosts({ author: alice });
+    expect(aliceResults.every((p) => p.author === alice)).toBe(true);
+
+    const bobResults = queryPosts({ author: bob });
+    expect(bobResults.every((p) => p.author === bob)).toBe(true);
   });
 
-  it('creates block from pending posts and confirms them', () => {
-    const p1 = testPost({ id: 'bp1' });
-    const p2 = testPost({ id: 'bp2' });
-    insertPendingPost(p1, Buffer.from('raw'));
-    insertPendingPost(p2, Buffer.from('raw'));
+  it('post lifecycle: pending -> confirm -> not in pending', () => {
+    const post = makePost({ content: 'lifecycle-' + Date.now() });
+    insertPost(post, bytes(8));
+    const postId = computePostId(post);
 
-    const block = createBlock();
-    expect(block).not.toBeNull();
-    if (block) {
-      expect(block.postCount).toBeGreaterThanOrEqual(2);
-      expect(getPost('bp1')!.status).toBe('confirmed');
-      expect(getPost('bp2')!.status).toBe('confirmed');
-    }
+    // Should be pending
+    const pending = getPendingPosts(100);
+    const pendingIds = pending.map((p) => computePostId(p));
+    expect(pendingIds).toContain(postId);
+
+    // Confirm
+    confirmPost(postId, 5);
+
+    // No longer pending
+    const afterConfirm = getPendingPosts(100);
+    const afterIds = afterConfirm.map((p) => computePostId(p));
+    expect(afterIds).not.toContain(postId);
   });
 
-  it('getBlock returns block with posts', () => {
-    const p = testPost({ id: 'gb1' });
-    insertPendingPost(p, Buffer.from('raw'));
-    const block = createBlock();
-    if (block) {
-      const retrieved = getBlock(block.height);
-      expect(retrieved).not.toBeNull();
-      expect(retrieved!.height).toBe(block.height);
-    }
+  it('getParentRefs returns correct parent IDs', () => {
+    const suffix = Date.now();
+    const refs = ['ref-a-' + suffix, 'ref-b-' + suffix];
+
+    const post = makePost({ parentRefs: refs });
+    insertPost(post, bytes(8));
+    const postId = computePostId(post);
+
+    expect(getParentRefs(postId)).toEqual(refs);
   });
 
-  it('retrieves post with parent references', () => {
-    const parent1 = testPost({ id: 'parent-1', status: 'confirmed', blockHeight: 1 });
-    const parent2 = testPost({ id: 'parent-2', status: 'confirmed', blockHeight: 1 });
-    insertPendingPost(parent1, Buffer.from('raw'));
-    insertPendingPost(parent2, Buffer.from('raw'));
-    getDb().exec("UPDATE posts SET status = 'confirmed', block_height = 1 WHERE id IN ('parent-1','parent-2')");
+  it('getSubtree returns all descendants across levels', () => {
+    // Root
+    const root = makePost({ content: 'tree-root', parentRefs: [] });
+    insertPost(root, bytes(8));
+    const rootId = computePostId(root);
 
-    const post = testPost({ id: 'child-with-parents', parentRefs: ['parent-1', 'parent-2'] });
-    insertPendingPost(post, Buffer.from('raw'));
+    // Child
+    const child = makePost({ content: 'tree-child', parentRefs: [rootId] });
+    insertPost(child, bytes(8));
+    const childId = computePostId(child);
 
-    const retrieved = getPost('child-with-parents');
-    expect(retrieved).not.toBeNull();
-    expect(retrieved!.parentRefs).toEqual(['parent-1', 'parent-2']);
+    // Grandchild
+    const grandchild = makePost({ content: 'tree-grandchild', parentRefs: [childId] });
+    insertPost(grandchild, bytes(8));
 
-    // clean up: consume the pending post so the next test sees an empty pool
-    getDb().exec("UPDATE posts SET status = 'confirmed', block_height = 1 WHERE id = 'child-with-parents'");
+    const subtree = getSubtree(rootId);
+    const contents = subtree.map((p) => p.content).sort();
+    expect(contents).toEqual(['tree-child', 'tree-grandchild']);
   });
 
-  it('createBlock with no pending posts returns null', () => {
-    expect(createBlock()).toBeNull();
+  it('pruneSubtree marks posts as pruned and inserts stump', () => {
+    const root = makePost({ content: 'prune-root', parentRefs: [] });
+    insertPost(root, bytes(8));
+    const rootId = computePostId(root);
+
+    const child = makePost({ content: 'prune-child', parentRefs: [rootId] });
+    insertPost(child, bytes(8));
+
+    const stump = makeStump(rootId, {
+      replyCount: 1,
+      upvoteCount: 3,
+      compactedAtBlockHeight: 10,
+    });
+
+    pruneSubtree(rootId, stump);
+
+    // Root post should now return a Stump
+    const rootResult = getPost(rootId);
+    expect(rootResult).not.toBeNull();
+    const rootStump = rootResult as Stump;
+    expect(rootStump.rootPostHash).toBe(rootId);
+    expect(rootStump.replyCount).toBe(1);
+    expect(rootStump.upvoteCount).toBe(3);
+  });
+
+  it('getPost returns null for unknown id', () => {
+    expect(getPost('definitely-not-a-real-post-id-' + Date.now())).toBeNull();
   });
 });

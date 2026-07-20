@@ -47,3 +47,5 @@ export function loadConfig(): Readonly<Config> {
 
   return Object.freeze(cfg);
 }
+
+export const config = loadConfig();

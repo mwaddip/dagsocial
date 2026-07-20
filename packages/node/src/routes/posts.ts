@@ -1,8 +1,8 @@
 import { Router } from 'express';
 import { computePostId, encodePost, MAX_CONTENT_BYTES } from '@dagsocial/types';
 import { verifyPost } from '../services/verifier.js';
-import { insertPendingPost, getPost, queryPosts } from '../store/posts.js';
-import { consumeSlot } from '../store/slots.js';
+import { insertPost, getPost, queryPosts } from '../store/posts.js';
+import { consumeChallenge } from '../store/challenges.js';
 import { getCurrentHeight } from '../store/blocks.js';
 import { onPostReceived } from '../services/blockCreator.js';
 import type { Post } from '@dagsocial/types';
@@ -27,14 +27,13 @@ postsRouter.post('/', (req, res) => {
     return;
   }
 
-  submitted.id = computePostId(submitted);
-
+  const postId = computePostId(submitted);
   const rawCbor = Buffer.from(encodePost(submitted));
-  insertPendingPost(submitted, rawCbor);
-  consumeSlot(submitted.author, submitted.slotHash);
+  insertPost(submitted, new Uint8Array(rawCbor));
+  consumeChallenge(submitted.author, submitted.challenge);
   onPostReceived();
 
-  res.status(201).json({ id: submitted.id, status: 'pending' });
+  res.status(201).json({ id: postId, status: 'pending' });
 });
 
 postsRouter.get('/:id', (req, res) => {
