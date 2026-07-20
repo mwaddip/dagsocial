@@ -66,13 +66,15 @@ async function initIdentity() {
   pubKeyRaw = new Uint8Array(await crypto.subtle.exportKey('raw', key.publicKey));
   userId = await computeUserId(pubKeyRaw);
 
-  // Register with server (idempotent)
+  // Register with server (idempotent) — use the server's userId for consistency
   const res = await fetch(API + '/identity/import', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ publicKey: buf2hex(pubKeyRaw) }),
   });
   if (res.ok) {
+    const data = await res.json();
+    userId = data.userId;  // use server-computed userId
     document.getElementById('userId').textContent = userId;
     document.getElementById('postBtn').disabled = false;
   } else {
@@ -81,7 +83,7 @@ async function initIdentity() {
 }
 
 async function computeUserId(pub) {
-  const hash = blake2b(pub, null, 64).slice(0, 32);
+  const hash = blake2b(pub, null, 64);  // full 64 bytes — matches server's getUserId
   return base58Encode(hash);
 }
 

@@ -1,4 +1,4 @@
-import { createVerify } from 'crypto';
+import { verify as cryptoVerify } from 'crypto';
 import { signingHash } from '@dagsocial/types';
 import type { Post } from '@dagsocial/types';
 import { verifyPoW } from './pow.js';
@@ -28,11 +28,8 @@ export function verifyPost(post: Post, currentBlockHeight: number): Verification
     return { valid: false, error: 'Phase 2 PoW invalid' };
   }
 
-  // 3. Verify signature
+  // 3. Verify signature (raw Ed25519 — browsers produce raw, not DER)
   const hash = signingHash(post);
-  const verify = createVerify('SHA-256');
-  verify.update(hash);
-  verify.end();
 
   const row = getDb().prepare(
     'SELECT public_key FROM identities WHERE user_id = ?'
@@ -43,7 +40,7 @@ export function verifyPost(post: Post, currentBlockHeight: number): Verification
 
   const pubKeyDer = wrapEd25519Spki(row.public_key);
   const sigBuf = Buffer.from(post.signature, 'base64');
-  if (!verify.verify(pubKeyDer, sigBuf)) {
+  if (!cryptoVerify(null, hash, pubKeyDer, sigBuf)) {
     return { valid: false, error: 'Signature invalid' };
   }
 
