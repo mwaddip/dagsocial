@@ -38,3 +38,9 @@ export {
   getUnprocessedFreeLikes,
   markFreeLikesProcessed,
 } from './likes.js';
+
+export {
+  insertSubBlock,
+  getPendingSubBlocks,
+  confirmSubBlock,
+} from './subblocks.js';
