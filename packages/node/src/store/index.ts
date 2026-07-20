@@ -50,3 +50,8 @@ export {
   getOrderingBlock,
   getCurrentHeight,
 } from './ordering.js';
+
+export {
+  insertStump,
+  getStump,
+} from './stumps.js';
