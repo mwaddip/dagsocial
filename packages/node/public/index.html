@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DAGsocial Demo</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #0d1117; color: #c9d1d9; display: flex; height: 100vh; }
+  .panel { padding: 20px; overflow-y: auto; }
+  .left { width: 420px; min-width: 420px; border-right: 1px solid #30363d; display: flex; flex-direction: column; gap: 16px; }
+  .right { flex: 1; }
+  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: #8b949e; margin-bottom: 12px; }
+  textarea, input { width: 100%; background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 10px; color: #c9d1d9; font-size: 13px; font-family: inherit; }
+  textarea { height: 120px; resize: vertical; }
+  input { height: 36px; }
+  button { background: #238636; color: #fff; border: none; border-radius: 6px; padding: 8px 16px; font-size: 13px; cursor: pointer; font-weight: 500; }
+  button:hover { background: #2ea043; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .id-badge { font-size: 11px; color: #58a6ff; font-family: monospace; word-break: break-all; background: #161b22; padding: 8px; border-radius: 6px; border: 1px solid #30363d; }
+  .post { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 12px; margin-bottom: 10px; }
+  .post-author { font-size: 11px; color: #58a6ff; font-family: monospace; margin-bottom: 6px; }
+  .post-content { font-size: 14px; line-height: 1.5; }
+  .post-meta { font-size: 11px; color: #484f58; margin-top: 8px; display: flex; gap: 12px; }
+  .post-pending { border-color: #d29922; }
+  .status { font-size: 11px; padding: 4px 8px; border-radius: 10px; }
+  .status-ok { background: #163b23; color: #3fb950; }
+  .status-busy { background: #3b2816; color: #d29922; }
+  .empty { color: #484f58; font-style: italic; padding: 20px; text-align: center; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .row label { font-size: 12px; color: #8b949e; min-width: 70px; }
+</style>
+</head>
+<body>
+
+<div class="panel left">
+  <h2>Identity</h2>
+  <div class="id-badge" id="userId">generating keypair...</div>
+
+  <h2>Compose</h2>
+  <textarea id="content" placeholder="What's on your mind?"></textarea>
+  <input id="parents" placeholder="Parent post IDs (comma-separated, optional)">
+  <div class="row">
+    <button id="postBtn" disabled>Post</button>
+    <span class="status" id="status"></span>
+  </div>
+</div>
+
+<div class="panel right">
+  <h2>Feed</h2>
+  <div id="feed"><div class="empty">Loading...</div></div>
+</div>
+
+<script type="module">
+import { blake2b } from 'https://cdn.jsdelivr.net/npm/blakejs@1.2.1/+esm';
+
+const API = '';
+const encoder = new TextEncoder();
+
+// --- identity ---
+let userId, pubKeyRaw, privKey;
+
+async function initIdentity() {
+  const key = await crypto.subtle.generateKey('Ed25519', true, ['sign', 'verify']);
+  privKey = key.privateKey;
+  pubKeyRaw = new Uint8Array(await crypto.subtle.exportKey('raw', key.publicKey));
+  userId = await computeUserId(pubKeyRaw);
+
+  // Register with server (idempotent)
+  const res = await fetch(API + '/identity/import', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ publicKey: buf2hex(pubKeyRaw) }),
+  });
+  if (res.ok) {
+    document.getElementById('userId').textContent = userId;
+    document.getElementById('postBtn').disabled = false;
+  } else {
+    document.getElementById('userId').textContent = 'identity import failed';
+  }
+}
+
+async function computeUserId(pub) {
+  const hash = blake2b(pub, null, 64).slice(0, 32);
+  return base58Encode(hash);
+}
+
+// --- PoW ---
+function countLeadingZeroBits(buf) {
+  let bits = 0;
+  for (let i = 0; i < buf.length; i++) {
+    if (buf[i] === 0) { bits += 8; continue; }
+    let mask = 0x80;
+    while ((buf[i] & mask) === 0) { bits++; mask >>= 1; }
+    break;
+  }
+  return bits;
+}
+
+function solvePoW(challenge, targetBits) {
+  let nonce = 0;
+  while (true) {
+    const hash = blake2b(encoder.encode(challenge + String(nonce)), null, 64).slice(0, 32);
+    if (countLeadingZeroBits(hash) >= targetBits) return nonce;
+    nonce++;
+  }
+}
+
+// --- signing ---
+function signingHash(content, author, parentRefs, slotHash, timestamp) {
+  const h = blake2b(encoder.encode(
+    content + author + parentRefs.join('') + slotHash + String(timestamp)
+  ), null, 64).slice(0, 32);
+  return h;
+}
+
+async function signPost(content, author, parentRefs, slotHash, timestamp) {
+  const hash = signingHash(content, author, parentRefs, slotHash, timestamp);
+  const sig = await crypto.subtle.sign('Ed25519', privKey, hash);
+  return btoa(String.fromCharCode(...new Uint8Array(sig)));
+}
+
+// --- base58 ---
+const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+const B58MAP = {}; for (let i = 0; i < 58; i++) B58MAP[B58[i]] = i;
+
+function base58Encode(buf) {
+  let zeros = 0; for (const b of buf) { if (b !== 0) break; zeros++; }
+  const digits = [0];
+  for (const b of buf) {
+    let carry = b;
+    for (let i = 0; i < digits.length; i++) { carry += digits[i] * 256; digits[i] = carry % 58; carry = Math.floor(carry / 58); }
+    while (carry > 0) { digits.push(carry % 58); carry = Math.floor(carry / 58); }
+  }
+  return '1'.repeat(zeros) + digits.reverse().map(d => B58[d]).join('');
+}
+
+// --- helpers ---
+function buf2hex(buf) { return [...buf].map(b => b.toString(16).padStart(2, '0')).join(''); }
+
+function setStatus(text, cls) {
+  const s = document.getElementById('status');
+  s.textContent = text; s.className = 'status status-' + (cls || 'busy');
+}
+
+// --- post flow ---
+document.getElementById('postBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('postBtn');
+  const content = document.getElementById('content').value.trim();
+  if (!content) return;
+
+  btn.disabled = true;
+  try {
+    // 1. Request slot
+    setStatus('requesting slot...', 'busy');
+    const slotReq = await fetch(API + '/slots/request', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId }),
+    });
+    const { challenge, targetBits } = await slotReq.json();
+
+    // 2. Solve slot PoW
+    setStatus(`solving PoW (${targetBits} bits)...`, 'busy');
+    const nonce = solvePoW(challenge, targetBits);
+
+    // 3. Claim slot
+    setStatus('claiming slot...', 'busy');
+    const claimRes = await fetch(API + '/slots/claim', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, challenge, nonce }),
+    });
+    if (!claimRes.ok) { setStatus('slot claim failed', 'busy'); return; }
+    const { token } = await claimRes.json();
+
+    // 4. Build and sign post
+    setStatus('signing...', 'busy');
+    const parentRefs = document.getElementById('parents').value
+      .split(',').map(s => s.trim()).filter(Boolean);
+    const timestamp = Date.now();
+    const signature = await signPost(content, userId, parentRefs, token.hash, timestamp);
+
+    // 5. Solve Phase 2 PoW (submit target = 8 bits)
+    setStatus('final PoW...', 'busy');
+    const submitInput = content + userId + parentRefs.join('') + token.hash + String(timestamp);
+    const powNonce = solvePoW(submitInput, 8);
+
+    // 6. Submit post
+    setStatus('posting...', 'busy');
+    const postRes = await fetch(API + '/posts', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        content, author: userId, parentRefs, slotHash: token.hash,
+        powNonce, timestamp, signature,
+      }),
+    });
+    if (!postRes.ok) {
+      const err = await postRes.json();
+      setStatus(err.error || 'post failed', 'busy');
+      return;
+    }
+    const posted = await postRes.json();
+    setStatus('posted! ' + posted.id.slice(0, 12) + '...', 'ok');
+    document.getElementById('content').value = '';
+    document.getElementById('parents').value = '';
+    loadFeed();
+  } catch (e) {
+    setStatus('error: ' + e.message, 'busy');
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// --- feed ---
+async function loadFeed() {
+  const feed = document.getElementById('feed');
+  try {
+    const res = await fetch(API + '/posts?limit=30');
+    const posts = await res.json();
+    if (!posts.length) { feed.innerHTML = '<div class="empty">No posts yet. Write something!</div>'; return; }
+    feed.innerHTML = posts.map(p => `
+      <div class="post ${p.status === 'pending' ? 'post-pending' : ''}">
+        <div class="post-author">${p.author.slice(0, 20)}... ${p.status === 'pending' ? '(pending)' : '#' + (p.blockHeight || '?')}</div>
+        <div class="post-content">${esc(p.content)}</div>
+        <div class="post-meta">
+          <span>${new Date(p.timestamp).toLocaleTimeString()}</span>
+          <span>${p.parentRefs.length ? p.parentRefs.length + ' parents' : 'genesis'}</span>
+          <span style="font-family:monospace;font-size:10px">${p.id.slice(0, 16)}...</span>
+        </div>
+      </div>
+    `).join('');
+  } catch (e) {
+    feed.innerHTML = '<div class="empty">Failed to load feed</div>';
+  }
+}
+
+function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// --- init ---
+await initIdentity();
+loadFeed();
+setInterval(loadFeed, 5000);
+</script>
+</body>
+</html>
