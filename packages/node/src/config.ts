@@ -1,20 +1,49 @@
-import { DEFAULT_SLOT_TARGET_BITS, DEFAULT_SUBMIT_TARGET_BITS, DEFAULT_SLOT_WINDOW_BLOCKS } from '@dagsocial/types';
+import {
+  POST_POW_TARGET_BITS,
+  CHALLENGE_WINDOW_BLOCKS,
+  EPOCH_BLOCKS,
+} from '@dagsocial/types';
 
-export const config = {
-  pow: {
-    slotTargetBits: parseInt(process.env['POW_SLOT_TARGET_BITS'] ?? String(DEFAULT_SLOT_TARGET_BITS), 10),
-    submitTargetBits: parseInt(process.env['POW_SUBMIT_TARGET_BITS'] ?? String(DEFAULT_SUBMIT_TARGET_BITS), 10),
-    slotWindowBlocks: parseInt(process.env['POW_SLOT_WINDOW_BLOCKS'] ?? String(DEFAULT_SLOT_WINDOW_BLOCKS), 10),
-  },
-  block: {
-    intervalMs: parseInt(process.env['BLOCK_INTERVAL_MS'] ?? '30000', 10),
-    intervalPosts: parseInt(process.env['BLOCK_INTERVAL_POSTS'] ?? '1', 10),
-    maxPostsPerBlock: parseInt(process.env['MAX_POSTS_PER_BLOCK'] ?? '100', 10),
-  },
-  db: {
-    path: process.env['DB_PATH'] ?? 'dagsocial.db',
-  },
-  server: {
+export interface Config {
+  port: number;
+  dbPath: string;
+  postPowTargetBits: number;
+  challengeWindowBlocks: number;
+  orderingBlockIntervalMs: number;
+  orderingBlockMinSubBlocks: number;
+  maxSubBlocksPerBlock: number;
+  epochBlocks: number;
+}
+
+export function loadConfig(): Readonly<Config> {
+  const cfg: Config = {
     port: parseInt(process.env['PORT'] ?? '3000', 10),
-  },
-} as const;
+    dbPath: process.env['DB_PATH'] ?? 'dagsocial.db',
+    postPowTargetBits: parseInt(
+      process.env['POST_POW_TARGET_BITS'] ?? String(POST_POW_TARGET_BITS),
+      10,
+    ),
+    challengeWindowBlocks: parseInt(
+      process.env['CHALLENGE_WINDOW_BLOCKS'] ?? String(CHALLENGE_WINDOW_BLOCKS),
+      10,
+    ),
+    orderingBlockIntervalMs: parseInt(
+      process.env['ORDERING_BLOCK_INTERVAL_MS'] ?? '60000',
+      10,
+    ),
+    orderingBlockMinSubBlocks: parseInt(
+      process.env['ORDERING_BLOCK_MIN_SUB_BLOCKS'] ?? '1',
+      10,
+    ),
+    maxSubBlocksPerBlock: parseInt(
+      process.env['MAX_SUB_BLOCKS_PER_BLOCK'] ?? '1000',
+      10,
+    ),
+    epochBlocks: parseInt(
+      process.env['EPOCH_BLOCKS'] ?? String(EPOCH_BLOCKS),
+      10,
+    ),
+  };
+
+  return Object.freeze(cfg);
+}
