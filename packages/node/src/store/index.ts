@@ -15,3 +15,18 @@ export {
   getSubtree,
   pruneSubtree,
 } from './posts.js';
+
+export {
+  getBox,
+  getUnspentBoxes,
+  getKarmaBox,
+  getCreditBox,
+  getPendingInvites,
+  getPendingInviteCount,
+  getBondBoxes,
+  getLockedLikeBoxes,
+  getUnprocessedLockedLikeBoxes,
+  insertBox,
+  consumeBox,
+  markLikeBoxesTallied,
+} from './utxo.js';
