@@ -24,6 +24,7 @@ export {
   getPendingInvites,
   getPendingInviteCount,
   getBondBoxes,
+  getUnspentLikeForLiker,
   getLockedLikeBoxes,
   getUnprocessedLockedLikeBoxes,
   insertBox,
@@ -35,6 +36,8 @@ export {
   insertLike,
   hasLiked,
   getLikeCount,
+  getFreeLike,
+  deleteFreeLike,
   getUnprocessedFreeLikes,
   markFreeLikesProcessed,
 } from './likes.js';

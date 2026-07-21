@@ -6,8 +6,9 @@ import { initDb, closeDb } from '../../src/store/db.js';
 import { insertIdentity } from '../../src/store/identities.js';
 import { insertPost } from '../../src/store/posts.js';
 import { insertBox } from '../../src/store/utxo.js';
+import { insertLike } from '../../src/store/likes.js';
 import { getCurrentHeight } from '../../src/store/ordering.js';
-import { castLike } from '../../src/services/likes.js';
+import { castLike, removeLike } from '../../src/services/likes.js';
 import {
   generateKeyPair,
   getUserId,
@@ -37,6 +38,18 @@ function signLike(likerId: string, targetPostId: string, secretKey: Uint8Array):
   return Buffer.from(sig).toString('hex');
 }
 
+function signUnlike(likerId: string, targetPostId: string, secretKey: Uint8Array): string {
+  const keyObj = createPrivateKey({
+    key: Buffer.from(secretKey),
+    format: 'der',
+    type: 'pkcs8',
+  });
+  const signData = JSON.stringify({ targetPostId, likerId, action: 'unlike' });
+  const hash = createHash('blake2b512').update(signData).digest().subarray(0, 32);
+  const sig = cryptoSign(null, hash, keyObj);
+  return Buffer.from(sig).toString('hex');
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -47,7 +60,7 @@ async function request(
   body?: unknown,
 ): Promise<{ status: number; data: unknown }> {
   return new Promise((resolve) => {
-    const deps = { castLike, getCurrentHeight };
+    const deps = { castLike, removeLike, getCurrentHeight };
     const app = express();
     app.use(express.json());
     app.use('/likes', createRouter(deps));
@@ -88,6 +101,9 @@ describe('likes routes', () => {
   let postId: string;
   let likerId: string;
   let likerKp: ReturnType<typeof generateKeyPair>;
+  let postId2: string;
+  let freeLikerId: string;
+  let freeLikerKp: ReturnType<typeof generateKeyPair>;
 
   beforeAll(() => {
     try { unlinkSync(TEST_DB); } catch { /* ignore */ }
@@ -128,6 +144,42 @@ describe('likes routes', () => {
     };
     const karmaBoxId = computeBoxId(karmaBox);
     insertBox({ ...karmaBox, id: karmaBoxId });
+
+    // ---- Setup for free like removal test ----
+
+    // Second post
+    const post2: Post = {
+      content: 'test post for free unlike',
+      author: authorId,
+      parentRefs: [],
+      challenge: new Uint8Array(32),
+      powNonce: 0,
+      protocolVersion: PROTOCOL_VERSION,
+      timestamp: Date.now(),
+      signature: new Uint8Array(64),
+    };
+    postId2 = computePostId(post2);
+    insertPost(post2, new Uint8Array(16));
+
+    // Free liker with karma
+    freeLikerKp = generateKeyPair();
+    freeLikerId = getUserId(freeLikerKp.publicKey);
+    insertIdentity(freeLikerId, freeLikerKp.publicKey);
+
+    const freeKarmaBox: KarmaBox = {
+      boxType: 'karma',
+      value: 100,
+      createdAtBlock: 1,
+      owner: freeLikerKp.publicKey,
+      guard: 'owner_signature',
+      proofSource: 'test',
+      lastTouchBlock: 1,
+    };
+    const freeKarmaBoxId = computeBoxId(freeKarmaBox);
+    insertBox({ ...freeKarmaBox, id: freeKarmaBoxId });
+
+    // Insert a free like row directly (bypasses castLike's threshold check)
+    insertLike(postId2, freeLikerId);
   });
 
   afterAll(() => {
@@ -178,6 +230,83 @@ describe('likes routes', () => {
     const res = await request('/', 'POST', {
       targetPostId: postId,
       likerId,
+      signature: sig,
+    });
+    expect(res.status).toBe(400);
+  });
+
+  // ---------------------------------------------------------------------------
+  // POST /likes/remove
+  // ---------------------------------------------------------------------------
+
+  it('POST /likes/remove with missing fields returns 400', async () => {
+    const res = await request('/remove', 'POST', {});
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /likes/remove with invalid hex signature returns 400', async () => {
+    const res = await request('/remove', 'POST', {
+      targetPostId: postId,
+      likerId,
+      signature: 'zzz##nothex',
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /likes/remove on unknown post returns 400', async () => {
+    const sig = signUnlike(likerId, 'nonexistent-post', likerKp.secretKey);
+    const res = await request('/remove', 'POST', {
+      targetPostId: 'nonexistent-post',
+      likerId,
+      signature: sig,
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /likes/remove locked like returns 200 with netKarma=1', async () => {
+    // The like from the earlier test is already cast (locked). Remove it.
+    const sig = signUnlike(likerId, postId, likerKp.secretKey);
+    const res = await request('/remove', 'POST', {
+      targetPostId: postId,
+      likerId,
+      signature: sig,
+    });
+    expect(res.status).toBe(200);
+    const body = res.data as Record<string, unknown>;
+    expect(body.removed).toBe(true);
+    expect(body.netKarma).toBe(1);
+  });
+
+  it('POST /likes/remove like that is already removed returns 404', async () => {
+    // Already removed in the previous test
+    const sig = signUnlike(likerId, postId, likerKp.secretKey);
+    const res = await request('/remove', 'POST', {
+      targetPostId: postId,
+      likerId,
+      signature: sig,
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('POST /likes/remove free like returns 200 with netKarma=-1', async () => {
+    const sig = signUnlike(freeLikerId, postId2, freeLikerKp.secretKey);
+    const res = await request('/remove', 'POST', {
+      targetPostId: postId2,
+      likerId: freeLikerId,
+      signature: sig,
+    });
+    expect(res.status).toBe(200);
+    const body = res.data as Record<string, unknown>;
+    expect(body.removed).toBe(true);
+    expect(body.netKarma).toBe(-1);
+  });
+
+  it('POST /likes/remove with wrong signature returns 400', async () => {
+    // Sign for a different action — should fail verification
+    const sig = signLike(freeLikerId, postId2, freeLikerKp.secretKey);
+    const res = await request('/remove', 'POST', {
+      targetPostId: postId2,
+      likerId: freeLikerId,
       signature: sig,
     });
     expect(res.status).toBe(400);

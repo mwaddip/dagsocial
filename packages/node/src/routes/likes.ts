@@ -11,6 +11,12 @@ export interface LikesDeps {
     signature: Uint8Array,
     currentBlockHeight: number,
   ): { likeId: string; type: 'locked' | 'free' };
+  removeLike(
+    targetPostId: string,
+    likerId: string,
+    signature: Uint8Array,
+    currentBlockHeight: number,
+  ): { removed: true; netKarma: number };
   getCurrentHeight(): number;
 }
 
@@ -20,6 +26,54 @@ export interface LikesDeps {
 
 export function createRouter(deps: LikesDeps): Router {
   const router = Router();
+
+  // POST /likes/remove — remove a previously cast like
+  router.post('/remove', (req, res) => {
+    const body = req.body as {
+      targetPostId?: string;
+      likerId?: string;
+      signature?: string;
+    };
+
+    // Validate required fields
+    if (!body.targetPostId || !body.likerId || !body.signature) {
+      res.status(400).json({ error: 'targetPostId, likerId, and signature required' });
+      return;
+    }
+
+    // Decode signature from hex
+    let signature: Uint8Array;
+    try {
+      signature = new Uint8Array(Buffer.from(body.signature, 'hex'));
+    } catch {
+      res.status(400).json({ error: 'Invalid hex encoding in signature' });
+      return;
+    }
+
+    if (signature.length !== 64) {
+      res.status(400).json({ error: 'Signature must be 64 bytes (128 hex chars)' });
+      return;
+    }
+
+    // Call the service
+    try {
+      const currentHeight = deps.getCurrentHeight();
+      const result = deps.removeLike(
+        body.targetPostId,
+        body.likerId,
+        signature,
+        currentHeight,
+      );
+      res.status(200).json(result);
+    } catch (err) {
+      const message = (err as Error).message;
+      if (message === 'Like not found') {
+        res.status(404).json({ error: message });
+      } else {
+        res.status(400).json({ error: message });
+      }
+    }
+  });
 
   // POST /likes — cast a like on a post
   router.post('/', (req, res) => {

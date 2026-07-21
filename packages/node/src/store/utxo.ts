@@ -253,6 +253,28 @@ export function getBondBoxes(inviterId: string): BondBox[] {
 }
 
 /**
+ * Return the unspent locked like box for a specific liker on a specific post,
+ * or null if none exists.
+ */
+export function getUnspentLikeForLiker(
+  targetPostId: string,
+  likerId: string,
+): LikeBox | null {
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT * FROM utxo_boxes
+       WHERE box_type = 'like'
+         AND json_extract(extra_data, '$.targetPostId') = ?
+         AND json_extract(extra_data, '$.likerId') = ?
+         AND spent_at_block IS NULL
+       LIMIT 1`,
+    )
+    .get(targetPostId, likerId) as UtxoRow | undefined;
+  return row ? (rowToBox(row) as LikeBox) : null;
+}
+
+/**
  * Return all locked like boxes targeting the given post.
  */
 export function getLockedLikeBoxes(targetPostId: string): LikeBox[] {

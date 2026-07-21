@@ -13,6 +13,9 @@ import {
   insertLike,
   hasLiked,
   getLikeCount,
+  getFreeLike,
+  deleteFreeLike,
+  getUnspentLikeForLiker,
   insertBox,
   consumeBox,
   getDb,
@@ -160,4 +163,116 @@ export function castLike(
   txFn();
 
   return { likeId: likeBoxId, type: 'locked' };
+}
+
+/**
+ * Remove a previously cast like on a target post.
+ *
+ * - Locked like: consume the like box, refund LIKE_COST (2) karma to liker,
+ *   then deduct 1 karma.  netKarma = +1.
+ * - Free like: delete the dag_likes row, deduct 1 karma from liker.
+ *   netKarma = -1.
+ * - Neither: throw (404).
+ *
+ * The signature must cover JSON.stringify({ targetPostId, likerId, action: "unlike" }).
+ */
+export function removeLike(
+  targetPostId: string,
+  likerId: string,
+  signature: Uint8Array,
+  currentBlockHeight: number,
+): { removed: true; netKarma: number } {
+  // ---- 1. Verify target post exists and is live ----
+  const post = getPost(targetPostId);
+  if (!post) {
+    throw new Error(`Post not found: ${targetPostId}`);
+  }
+  if ('subtreeMerkleRoot' in post) {
+    throw new Error('Cannot unlike a pruned post');
+  }
+
+  // ---- 2. Get liker's identity ----
+  const identity = getIdentity(likerId);
+  if (!identity) {
+    throw new Error(`Liker identity not found: ${likerId}`);
+  }
+
+  // ---- 3. Verify signature over { targetPostId, likerId, action: "unlike" } ----
+  const signData = JSON.stringify({ targetPostId, likerId, action: 'unlike' });
+  if (!verifySignature(Buffer.from(signData), signature, identity.publicKey)) {
+    throw new Error('Invalid unlike signature');
+  }
+
+  // ---- 4. Check for locked like box ----
+  const lockedLike = getUnspentLikeForLiker(targetPostId, likerId);
+  if (lockedLike) {
+    // Refund LIKE_COST karma to liker, then deduct 1 (net +1)
+    const karmaBox = getKarmaBox(identity.publicKey);
+    const currentKarma = karmaBox?.value ?? 0;
+    const newKarma = currentKarma + LIKE_COST - 1; // +2 - 1 = +1 net
+
+    const newKarmaBox: KarmaBox = {
+      boxType: 'karma',
+      value: newKarma,
+      createdAtBlock: currentBlockHeight,
+      owner: identity.publicKey,
+      guard: 'owner_signature',
+      proofSource: `unlike:${targetPostId}`,
+      lastTouchBlock: currentBlockHeight,
+    };
+
+    const newKarmaId = computeBoxId(newKarmaBox);
+
+    const db = getDb();
+    const txFn = db.transaction(() => {
+      consumeBox(lockedLike.id!, currentBlockHeight);
+      if (karmaBox?.id) {
+        consumeBox(karmaBox.id, currentBlockHeight);
+      }
+      insertBox({ ...newKarmaBox, id: newKarmaId });
+    });
+    txFn();
+
+    return { removed: true, netKarma: 1 };
+  }
+
+  // ---- 5. Check for free like ----
+  const freeLike = getFreeLike(targetPostId, likerId);
+  if (freeLike) {
+    // Deduct 1 karma from liker (net -1)
+    const karmaBox = getKarmaBox(identity.publicKey);
+    const currentKarma = karmaBox?.value ?? 0;
+    const newKarma = currentKarma - 1;
+
+    if (newKarma < 0) {
+      throw new Error('Insufficient karma to undo free like');
+    }
+
+    const newKarmaBox: KarmaBox = {
+      boxType: 'karma',
+      value: newKarma,
+      createdAtBlock: currentBlockHeight,
+      owner: identity.publicKey,
+      guard: 'owner_signature',
+      proofSource: `unlike:${targetPostId}`,
+      lastTouchBlock: currentBlockHeight,
+    };
+
+    const newKarmaId = computeBoxId(newKarmaBox);
+
+    const db = getDb();
+    const txFn = db.transaction(() => {
+      deleteFreeLike(targetPostId, likerId);
+      if (karmaBox?.id) {
+        consumeBox(karmaBox.id, currentBlockHeight);
+      }
+      insertBox({ ...newKarmaBox, id: newKarmaId });
+    });
+    txFn();
+
+    return { removed: true, netKarma: -1 };
+  }
+
+  // ---- 6. Neither locked nor free ----
+  throw new Error('Like not found');
 }

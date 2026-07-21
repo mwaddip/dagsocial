@@ -12,7 +12,7 @@ import * as store from './store/index.js';
 import { generateChallenge } from './services/pow.js';
 import { verifyPost } from './services/verifier.js';
 import { onSubBlockReceived } from './services/block-creator.js';
-import { castLike } from './services/likes.js';
+import { castLike, removeLike } from './services/likes.js';
 import { createInvite, claimInvite, cancelInvite } from './services/invites.js';
 import { createPruneIntent, executePrune } from './services/stump-engine.js';
 import { computeStumpId, encodePost } from '@dagsocial/types';
@@ -83,6 +83,7 @@ export function createApp(config: Config): express.Express {
     '/likes',
     likeRoutes({
       castLike,
+      removeLike,
       getCurrentHeight: store.getCurrentHeight,
     }),
   );
