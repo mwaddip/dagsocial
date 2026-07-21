@@ -39,6 +39,8 @@ async function request(
       getIdentity,
       getKarmaBox,
       getCurrentHeight,
+      insertSubBlock: () => {},
+      onSubBlockReceived: () => {},
     };
     const app = express();
     app.use(express.json());

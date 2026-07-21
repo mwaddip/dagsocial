@@ -10,6 +10,7 @@ import { createRouter as blockRoutes } from './routes/blocks.js';
 import * as store from './store/index.js';
 import { generateChallenge } from './services/pow.js';
 import { verifyPost } from './services/verifier.js';
+import { onSubBlockReceived } from './services/block-creator.js';
 import { castLike } from './services/likes.js';
 import { createInvite, claimInvite, cancelInvite } from './services/invites.js';
 import { createPruneIntent, executePrune } from './services/stump-engine.js';
@@ -96,6 +97,8 @@ export function createApp(config: Config): express.Express {
       getIdentity: store.getIdentity,
       getKarmaBox: store.getKarmaBox,
       getCurrentHeight: store.getCurrentHeight,
+      insertSubBlock: store.insertSubBlock,
+      onSubBlockReceived,
     }),
   );
 

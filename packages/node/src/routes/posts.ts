@@ -23,6 +23,8 @@ export interface PostsDeps extends VerifierDeps {
     currentBlockHeight: number,
   ): VerificationResult;
   getCurrentHeight(): number;
+  insertSubBlock(subBlock: { subBlockId: string; post: Post; likeBoxes: unknown[]; producerId: string; protocolVersion: number }): void;
+  onSubBlockReceived(): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -119,6 +121,18 @@ export function createRouter(deps: PostsDeps): Router {
 
     // Consume the challenge
     deps.consumeChallenge(post.author, post.challenge);
+
+    // Assemble sub-block — the post rides its own sub-block
+    deps.insertSubBlock({
+      subBlockId: postId,
+      post,
+      likeBoxes: [],
+      producerId: post.author,
+      protocolVersion: post.protocolVersion,
+    });
+
+    // Signal the block creator to pick up this sub-block
+    deps.onSubBlockReceived();
 
     res.status(201).json({ id: postId, status: 'pending' });
   });
