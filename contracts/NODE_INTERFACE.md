@@ -46,8 +46,8 @@ previous is submitted or expired returns 409. Challenge expires at
 | Method | Path | Request | Response | Errors |
 |--------|------|---------|----------|--------|
 | `POST` | `/posts` | Post object (JSON) | `{ id, status: "pending" }` (201) | 400 on validation failure, 409 if no active challenge |
-| `GET` | `/posts/:id` | — | Post object or Stump object | 404 |
-| `GET` | `/posts` | `?author=&limit=50&offset=0` | Post[] (live only, no stumps) | — |
+| `GET` | `/posts/:id` | — | Post object (with `likeCount`) or Stump object | 404 |
+| `GET` | `/posts` | `?author=&limit=50&offset=0` | Post[] (with `likeCount`, live only, no stumps) | — |
 
 **Post submission flow:**
 1. Validate all required fields present (`content`, `author`, `parentRefs`,
@@ -69,24 +69,22 @@ traversal handles both transparently.
 | Method | Path | Request | Response | Errors |
 |--------|------|---------|----------|--------|
 | `POST` | `/likes` | `{ targetPostId, likerId, signature }` | `{ likeId, type: "locked" \| "free" }` (201) | 400 if post unknown or pruned, 400 if insufficient karma, 400 if already liked, 404 if liker unknown |
+| `POST` | `/likes/remove` | `{ targetPostId, likerId, signature }` | `{ removed: true, netKarma }` (200) | 400 if post unknown or pruned, 404 if like not found |
 
-**Like flow:**
-1. Verify target post exists and is live (not pruned)
-2. Verify one like per account per post (check dag_likes + utxo_boxes for existing like by this liker on this post)
-3. Count total existing likes on this post (locked + free)
-4. If `existingLikeCount >= LIKE_FREE_THRESHOLD * LIKE_THRESHOLD` (50):
-   - Free like: insert row into `dag_likes` table (value 0, no karma lock)
-   - Gate: liker has any karma (karma box value > 0)
-   - Return `{ likeId, type: "free" }`
-5. If `existingLikeCount < 50`:
-   - Locked like: verify liker has ≥ `LIKE_COST` karma
-   - Verify signature over `{ targetPostId, likerId, timestamp }`
-   - Construct UTXO transaction: consume liker's karma box, create new karma
-     box (balance - 2) + like box (value 2, `epoch_tally` guard)
-   - Commit transaction to UTXO ledger
-   - Like box enters pending queue — will ride next sub-block or go directly
-     to ordering block if no sub-block is pending
-   - Return `{ likeId, type: "locked" }`
+**Like flow:** (unchanged)
+
+**Unlike flow:**
+1. Verify post exists and is live (not pruned)
+2. Verify signature over `JSON.stringify({ targetPostId, likerId, action: "unlike" })`
+3. Check for locked like box (utxo_boxes, box_type='like', matching, unspent)
+   - If found: consume like box, refund 2 karma to liker, deduct 1 karma penalty. netKarma = +1.
+4. If no locked like: check `dag_likes` for free like row
+   - If found: delete row, deduct 1 karma penalty from liker. netKarma = −1.
+5. If neither: return 404
+
+Unlike costs 1 karma as a deterrent against gaming the like system.
+Locked karma (2) is refunded on unlike, so the net is +1 for the liker.
+Free likes have no locked karma, so the net is −1.
 
 **Like refund schedule** (computed at epoch boundary by ordering block processor):
 
@@ -164,11 +162,20 @@ They count toward the total for author rewards.
 | `GET` | `/blocks/:height` | OrderingBlock object | 400 if NaN, 404 |
 | `GET` | `/blocks/current` | `{ height, hash }` | — |
 
+### Faucet (testnet only)
+
+| Method | Path | Request | Response | Errors |
+|--------|------|---------|----------|--------|
+| `POST` | `/faucet` | `{ userId, amount }` | `{ userId, boxId, newBalance }` (201) | 400 if missing fields, 403 if not testnet, 404 if userId unknown |
+
+Grants karma to an identity. Mints from nothing — not a transfer. Creates a
+new karma box or tops up an existing one. Gated behind `networkMode === "testnet"`.
+
 ### Status
 
 | Method | Path | Response |
 |--------|------|----------|
-| `GET` | `/status` | `{ blockHeight, postCount, pendingPosts, identityCount, totalKarma, totalCredits }` |
+| `GET` | `/status` | `{ blockHeight, postCount, pendingPosts, identityCount, totalKarma, totalCredits, networkMode }` |
 
 ### Static
 
@@ -419,6 +426,7 @@ All config via environment variables with defaults:
 | `ORDERING_BLOCK_MIN_SUB_BLOCKS` | `1` | Sub-blocks to trigger immediate block |
 | `MAX_SUB_BLOCKS_PER_BLOCK` | `1000` | Max sub-blocks per ordering block |
 | `EPOCH_BLOCKS` | `60` | Like processing every N ordering blocks |
+| `NETWORK_MODE` | `testnet` | Network mode — `testnet` enables debug endpoints (faucet) |
 
 All protocol parameters from `@dagsocial/types` are also overridable via env
 vars for testing and governance simulation.
