@@ -7,6 +7,7 @@ import {
 export interface Config {
   port: number;
   dbPath: string;
+  networkMode: string;
   postPowTargetBits: number;
   challengeWindowBlocks: number;
   orderingBlockIntervalMs: number;
@@ -19,6 +20,7 @@ export function loadConfig(): Readonly<Config> {
   const cfg: Config = {
     port: parseInt(process.env['PORT'] ?? '3000', 10),
     dbPath: process.env['DB_PATH'] ?? 'dagsocial.db',
+    networkMode: process.env['NETWORK_MODE'] ?? 'testnet',
     postPowTargetBits: parseInt(
       process.env['POST_POW_TARGET_BITS'] ?? String(POST_POW_TARGET_BITS),
       10,

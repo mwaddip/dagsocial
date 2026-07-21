@@ -9,6 +9,7 @@ const TEST_KEYS = [
   'ORDERING_BLOCK_MIN_SUB_BLOCKS',
   'MAX_SUB_BLOCKS_PER_BLOCK',
   'EPOCH_BLOCKS',
+  'NETWORK_MODE',
 ];
 
 function clearTestEnv() {
@@ -36,6 +37,7 @@ describe('config', () => {
       expect(cfg.orderingBlockMinSubBlocks).toBe(1);
       expect(cfg.maxSubBlocksPerBlock).toBe(1000);
       expect(cfg.epochBlocks).toBe(60);
+      expect(cfg.networkMode).toBe('testnet');
     });
   });
 
@@ -49,6 +51,7 @@ describe('config', () => {
       process.env['ORDERING_BLOCK_MIN_SUB_BLOCKS'] = '3';
       process.env['MAX_SUB_BLOCKS_PER_BLOCK'] = '500';
       process.env['EPOCH_BLOCKS'] = '120';
+      process.env['NETWORK_MODE'] = 'mainnet';
 
       const { loadConfig } = await import('../src/config.js');
       const cfg = loadConfig();
@@ -61,6 +64,7 @@ describe('config', () => {
       expect(cfg.orderingBlockMinSubBlocks).toBe(3);
       expect(cfg.maxSubBlocksPerBlock).toBe(500);
       expect(cfg.epochBlocks).toBe(120);
+      expect(cfg.networkMode).toBe('mainnet');
     });
   });
 
