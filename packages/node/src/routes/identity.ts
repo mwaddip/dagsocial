@@ -66,7 +66,10 @@ export function createRouter(deps: IdentityStore): Router {
     }
 
     deps.insertIdentity(userId, pubBytes);
-    res.status(201).json({ userId, publicKey });
+    res.status(201).json({
+      userId,
+      publicKey: Buffer.from(pubBytes).toString('hex'),
+    });
   });
 
   // GET /identity/:userId — retrieve an identity
