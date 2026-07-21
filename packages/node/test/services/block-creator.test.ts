@@ -546,10 +546,10 @@ describe('block-creator', () => {
     // authorReward = min(floor(7/5), 10) = min(1, 10) = 1
     expect(rewards[postId].authorReward).toBe(1);
 
-    // Liker refunds: totalLikes=7, refund=1 (>=5 but <10), net=-1
+    // Liker refunds: totalLikes=7, below 2x threshold, likes stay locked — no refunds
     const refunds = rewards[postId].likerRefunds;
     for (const liker of likers) {
-      expect(refunds[liker.userId]).toBe(-1); // net: 1 refund - 2 cost
+      expect(refunds[liker.userId]).toBeUndefined(); // not unlocked yet
     }
     // Free liker should NOT have a refund entry
     expect(refunds[freeLiker.userId]).toBeUndefined();
@@ -559,7 +559,7 @@ describe('block-creator', () => {
   // 7. Liker refund tiers: 0 (<5 likes), 1 (5-9), 2 (>=10)
   // -----------------------------------------------------------------------
 
-  it('liker refund tiers: 0 (<5), -1 (5-9), 0 (>=10)', async () => {
+  it('liker refund: only unlocks at 2x threshold (>=10), rolls over below', async () => {
     const db = await importDb();
     db.initDb(':memory:');
 
@@ -655,23 +655,23 @@ describe('block-creator', () => {
 
     const rewards = epochBlock!.epochTallyResults!.rewards;
 
-    // Post A: 3 likes, refund = 0, net = -2
+    // Post A: 3 likes, below threshold — likes stay locked, no refund
     expect(rewards[postAId]).toBeDefined();
     expect(rewards[postAId].likeCount).toBe(3);
     expect(rewards[postAId].authorReward).toBe(0); // floor(3/5) = 0
     for (const liker of likersA) {
-      expect(rewards[postAId].likerRefunds[liker.userId]).toBe(-2);
+      expect(rewards[postAId].likerRefunds[liker.userId]).toBeUndefined(); // not unlocked
     }
 
-    // Post B: 7 likes, refund = 1, net = -1
+    // Post B: 7 likes, below threshold — likes stay locked, no refund
     expect(rewards[postBId]).toBeDefined();
     expect(rewards[postBId].likeCount).toBe(7);
     expect(rewards[postBId].authorReward).toBe(1); // floor(7/5) = 1
     for (const liker of likersB) {
-      expect(rewards[postBId].likerRefunds[liker.userId]).toBe(-1);
+      expect(rewards[postBId].likerRefunds[liker.userId]).toBeUndefined(); // not unlocked
     }
 
-    // Post C: 12 likes, refund = 2, net = 0
+    // Post C: 12 likes, threshold met — all locked likes unlocked, net 0
     expect(rewards[postCId]).toBeDefined();
     expect(rewards[postCId].likeCount).toBe(12);
     expect(rewards[postCId].authorReward).toBe(
@@ -703,16 +703,18 @@ describe('block-creator', () => {
     const posts = await importPosts();
     posts.insertPost(post, encodePost(post));
 
-    // 3 locked likes (refund tier 0 by themselves)
-    for (let i = 0; i < 3; i++) {
+    // 12 locked likes — enough to meet 2x threshold (10) on their own
+    const lockedLikers: TestIdentity[] = [];
+    for (let i = 0; i < 12; i++) {
       const liker = makeTestIdentity();
       ids.insertIdentity(liker.userId, liker.publicKey);
       utxo.insertBox(makeKarmaBox(10, liker.publicKey, 0));
       const likeBox = makeLikeBox(liker.userId, postId, 0);
       utxo.insertBox(likeBox);
+      lockedLikers.push(liker);
     }
 
-    // 5 free likes — push total to 8, tipping into refund tier 1
+    // 5 free likes — additional, push total to 17. Free likes never get refunds.
     const likesStore = await importLikes();
     for (let i = 0; i < 5; i++) {
       const freeLiker = makeTestIdentity();
@@ -755,17 +757,17 @@ describe('block-creator', () => {
     const rewards = epochBlock!.epochTallyResults!.rewards;
 
     expect(rewards[postId]).toBeDefined();
-    expect(rewards[postId].likeCount).toBe(8); // 3 locked + 5 free
+    expect(rewards[postId].likeCount).toBe(17); // 12 locked + 5 free
     expect(rewards[postId].authorReward).toBe(
-      Math.min(Math.floor(8 / LIKE_THRESHOLD), LIKE_MAX_AUTHOR_REWARD),
-    ); // floor(8/5)=1
+      Math.min(Math.floor(17 / LIKE_THRESHOLD), LIKE_MAX_AUTHOR_REWARD),
+    ); // floor(17/5)=3
 
-    // Only 3 locked likers should appear in refunds — free likers never do
+    // Only 12 locked likers should appear in refunds — free likers never do
     const refundKeys = Object.keys(rewards[postId].likerRefunds);
-    expect(refundKeys).toHaveLength(3);
-    // Each locked liker gets net = 1 (refund) - 2 (cost) = -1
+    expect(refundKeys).toHaveLength(12);
+    // Each locked liker gets full refund at 2x threshold: net 0
     for (const key of refundKeys) {
-      expect(rewards[postId].likerRefunds[key]).toBe(-1);
+      expect(rewards[postId].likerRefunds[key]).toBe(0);
     }
   });
 

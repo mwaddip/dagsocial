@@ -371,13 +371,13 @@ depending on how many likes a post has already accumulated.
 
 ### Refund schedule (for locked likes, computed at epoch)
 
-| Likes on post | Liker refund | Liker net |
-|---------------|-------------|-----------|
-| < 5 (1× threshold) | 0 | −2 (burned) |
-| 5–9 (1× to 2×) | 1 | −1 |
-| ≥ 10 (2× threshold) | 2 (full) | 0 |
+| Likes on post | Refund | Effect |
+|---------------|--------|--------|
+| < 10 (2× threshold) | 0 | Like stays locked, rolls over to next epoch |
+| ≥ 10 (2× threshold) | 2 (full) | Like box consumed, 2 karma returned to liker |
 
-Liker never earns more than was locked. Cap is always 2.
+Locked karma is never burned. It remains locked across epochs until the
+2× threshold is met. Free likes (51+) cost nothing and generate no refunds.
 
 ### Epoch tally (every EPOCH_BLOCKS ordering blocks)
 

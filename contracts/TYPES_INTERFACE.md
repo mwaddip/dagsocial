@@ -365,12 +365,12 @@ export const EPOCH_BLOCKS = 60;           // Like processing every N ordering bl
 
 **Like refund schedule** (per liker, computed at epoch):
 
-| Total likes on post | Refund | Liker net |
-|---------------------|--------|-----------|
-| < LIKE_THRESHOLD (5) | 0 | −2 (burned) |
-| ≥ 1×, < 2× (5–9) | 1 | −1 |
-| ≥ 2× (10–49) | 2 (full) | 0 |
-| ≥ 10× (50+) | 2 (full) | 0, no lock required |
+| Total likes on post | Refund | Effect |
+|---------------------|--------|--------|
+| < 2× LIKE_THRESHOLD (10) | 0 | Locked like stays locked, rolls over to next epoch |
+| ≥ 2× (10+ on locked, 50+ total) | 2 (full) | Like box consumed, 2 karma returned to liker |
+
+Locked karma is never burned. It stays locked until enough likes accumulate.
 
 - Likes 1–50 on a post: 2 karma locked in LikeBox (UTXO, `epoch_tally` guard).
   Refunded at epoch boundary per schedule above.

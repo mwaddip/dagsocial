@@ -90,14 +90,13 @@ traversal handles both transparently.
 
 **Like refund schedule** (computed at epoch boundary by ordering block processor):
 
-| Likes on post | Liker refund | Liker net |
-|---------------|-------------|-----------|
-| < 5 | 0 | −2 (burned) |
-| 5–9 | 1 | −1 |
-| ≥ 10 | 2 (full) | 0 |
+| Likes on post | Refund | Effect |
+|---------------|--------|--------|
+| < 10 | 0 | Like stays locked, rolls over to next epoch |
+| ≥ 10 | 2 (full) | Like box consumed, 2 karma returned to liker |
 
-Likes beyond 50 are free — no lock, so no refund. They do count toward the
-total for author rewards.
+Locked karma is never burned. Likes beyond 50 are free — no lock, no refund.
+They count toward the total for author rewards.
 
 ### Invites
 
@@ -296,19 +295,14 @@ unprocessed locked like boxes and free like rows.
 4. For each target post:
    - `totalLikes` = locked count + free count
    - Compute author reward: `min(floor(totalLikes / LIKE_THRESHOLD), LIKE_MAX_AUTHOR_REWARD)`
-   - For each **locked** like box, compute liker refund:
-     ```
-     refund = 0
-     if totalLikes >= LIKE_THRESHOLD:         refund += 1   // 1x threshold
-     if totalLikes >= 2 * LIKE_THRESHOLD:     refund += 1   // 2x threshold
-     // Max refund is 2 (full unlock). Liker never earns more than was locked.
-     ```
-   - Liker net: `-LIKE_COST + refund` (range: −2, −1, 0)
-   - If `netKarma < 0`: like box consumed, difference burned (no mint back for partial refund)
-   - If `netKarma == 0`: like box consumed, full 2 karma returned to liker's karma box
+   - For each **locked** like box:
+     - If `totalLikes >= 2 * LIKE_THRESHOLD` (10): refund 2 karma to liker's karma box, consume like box
+     - If `totalLikes < 2 * LIKE_THRESHOLD`: leave like box locked — rolls over to next epoch
+     - Locked karma is never burned
    - Author reward: mint karma to post author's karma box
 5. For each **free** like row: mark as processed (no karma movement)
-6. Mark all processed like boxes as consumed (spent_at_block set)
+6. Mark all **consumed** like boxes as spent (spent_at_block set). Like boxes that
+   didn't meet the threshold remain unspent and are processed in the next epoch.
 7. Record `EpochTally` in the ordering block
 
 Likes beyond `LIKE_FREE_THRESHOLD * LIKE_THRESHOLD` (50) are free — no lock,

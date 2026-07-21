@@ -297,26 +297,19 @@ function runEpochTally(blockHeight: number): EpochTally {
     );
 
     // 4b. Liker refunds (locked like boxes only)
+    // Only unlock when 2x threshold is met. Otherwise roll over to next epoch.
     const likerRefunds: Record<string, number> = {};
+    const thresholdMet = totalLikeCount >= 2 * LIKE_THRESHOLD;
 
     for (const lb of locked) {
-      // Compute refund
-      let refund = 0;
-      if (totalLikeCount >= LIKE_THRESHOLD) refund += 1;
-      if (totalLikeCount >= 2 * LIKE_THRESHOLD) refund += 1;
-
-      const netKarma = refund - LIKE_COST; // range: -2, -1, 0
-
-      if (lb.id) allLockedBoxIds.push(lb.id);
-
-      // Apply refund
-      if (netKarma === 0) {
-        // Full refund: return 2 karma to liker
+      if (thresholdMet) {
+        // Unlock: return full 2 karma to liker, consume the like box
+        if (lb.id) allLockedBoxIds.push(lb.id);
         mintKarma(lb.likerId, LIKE_COST, blockHeight);
+        likerRefunds[lb.likerId] = 0; // net zero: paid 2, refunded 2
       }
-      // netKarma < 0: like box is consumed, difference burned — no mint
-
-      likerRefunds[lb.likerId] = netKarma;
+      // Below threshold: leave locked — rolls over to next epoch.
+      // Like box is NOT consumed, NOT added to allLockedBoxIds.
     }
 
     // 4c. Mint author reward
