@@ -74,9 +74,27 @@ const encoder = new TextEncoder();
 let userId, pubKeyRaw, privKey;
 
 async function initIdentity() {
-  const key = await crypto.subtle.generateKey('Ed25519', true, ['sign', 'verify']);
-  privKey = key.privateKey;
-  pubKeyRaw = new Uint8Array(await crypto.subtle.exportKey('raw', key.publicKey));
+  // Persist keypair in sessionStorage so refreshes reuse the same identity
+  let stored = null;
+  try { stored = JSON.parse(sessionStorage.getItem('dagsocial-identity')); } catch {}
+
+  if (stored && stored.pubKeyHex && stored.privKeyBase64) {
+    pubKeyRaw = hex2buf(stored.pubKeyHex);
+    privKey = await crypto.subtle.importKey(
+      'pkcs8',
+      Uint8Array.from(atob(stored.privKeyBase64), c => c.charCodeAt(0)),
+      'Ed25519', true, ['sign']
+    );
+  } else {
+    const key = await crypto.subtle.generateKey('Ed25519', true, ['sign', 'verify']);
+    privKey = key.privateKey;
+    pubKeyRaw = new Uint8Array(await crypto.subtle.exportKey('raw', key.publicKey));
+    const pubKeyHex = buf2hex(pubKeyRaw);
+    const privBytes = new Uint8Array(await crypto.subtle.exportKey('pkcs8', key.privateKey));
+    const privBase64 = btoa(String.fromCharCode(...privBytes));
+    sessionStorage.setItem('dagsocial-identity', JSON.stringify({ pubKeyHex, privKeyBase64: privBase64 }));
+  }
+
   userId = await computeUserId(pubKeyRaw);
 
   const res = await fetch(API + '/identity/import', {
