@@ -7,6 +7,7 @@ import { insertPost, getPost, queryPosts } from '../../src/store/posts.js';
 import { consumeChallenge, getActiveChallenge } from '../../src/store/challenges.js';
 import { getCurrentHeight } from '../../src/store/ordering.js';
 import { getKarmaBox } from '../../src/store/utxo.js';
+import { getLikeCount } from '../../src/store/likes.js';
 import { verifyPost } from '../../src/services/verifier.js';
 import {
   encodePost,
@@ -38,6 +39,7 @@ async function request(
       getActiveChallenge,
       getIdentity,
       getKarmaBox,
+      getLikeCount,
       getCurrentHeight,
       insertSubBlock: () => {},
       onSubBlockReceived: () => {},

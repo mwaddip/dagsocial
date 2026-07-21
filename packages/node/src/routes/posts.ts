@@ -23,6 +23,7 @@ export interface PostsDeps extends VerifierDeps {
     currentBlockHeight: number,
   ): VerificationResult;
   getCurrentHeight(): number;
+  getLikeCount(postId: string): { locked: number; free: number };
   insertSubBlock(subBlock: { subBlockId: string; post: Post; likeBoxes: unknown[]; producerId: string; protocolVersion: number }): void;
   onSubBlockReceived(): void;
 }
@@ -66,8 +67,11 @@ export function createRouter(deps: PostsDeps): Router {
 
   /**
    * Convert a Post's Uint8Array fields to hex for JSON responses.
+   * Includes likeCount derived from the likes store.
    */
   function postToJson(post: Post): Record<string, unknown> {
+    const postId = computePostId(post);
+    const counts = deps.getLikeCount(postId);
     return {
       content: post.content,
       author: post.author,
@@ -77,6 +81,7 @@ export function createRouter(deps: PostsDeps): Router {
       protocolVersion: post.protocolVersion,
       timestamp: post.timestamp,
       signature: Buffer.from(post.signature).toString('hex'),
+      likeCount: counts.locked + counts.free,
     };
   }
 

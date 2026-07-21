@@ -73,6 +73,7 @@ export function createApp(config: Config): express.Express {
       getIdentity: store.getIdentity,
       getKarmaBox: store.getKarmaBox,
       getCurrentHeight: store.getCurrentHeight,
+      getLikeCount: store.getLikeCount,
       insertSubBlock: store.insertSubBlock,
       onSubBlockReceived,
     }),
