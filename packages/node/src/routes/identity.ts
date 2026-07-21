@@ -10,8 +10,6 @@ export interface IdentityStore {
   getIdentity(
     userId: string,
   ): { userId: string; publicKey: Uint8Array; createdAt: number } | null;
-  /** Grant bootstrap karma to a new account (no-op if already has karma). */
-  bootstrapKarma(userId: string, publicKey: Uint8Array): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -26,7 +24,6 @@ export function createRouter(deps: IdentityStore): Router {
     const keyPair = generateKeyPair();
     const userId = getUserId(keyPair.publicKey);
     deps.insertIdentity(userId, keyPair.publicKey);
-    deps.bootstrapKarma(userId, keyPair.publicKey);
     res.status(201).json({
       userId,
       publicKey: Buffer.from(keyPair.publicKey).toString('hex'),
@@ -69,7 +66,6 @@ export function createRouter(deps: IdentityStore): Router {
     }
 
     deps.insertIdentity(userId, pubBytes);
-    deps.bootstrapKarma(userId, pubBytes);
     res.status(201).json({
       userId,
       publicKey: Buffer.from(pubBytes).toString('hex'),

@@ -17,7 +17,7 @@ async function request(
   return new Promise((resolve) => {
     const app = express();
     app.use(express.json());
-    const router = createRouter({ insertIdentity, getIdentity, bootstrapKarma: () => {} });
+    const router = createRouter({ insertIdentity, getIdentity });
     app.use('/identity', router);
     const server = app.listen(0, () => {
       const addr = server.address() as { port: number };
