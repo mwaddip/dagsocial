@@ -13,7 +13,7 @@ import { verifyPost } from './services/verifier.js';
 import { castLike } from './services/likes.js';
 import { createInvite, claimInvite, cancelInvite } from './services/invites.js';
 import { createPruneIntent, executePrune } from './services/stump-engine.js';
-import { computeStumpId, encodePost } from '@dagsocial/types';
+import { computeStumpId, computeBoxId, encodePost } from '@dagsocial/types';
 import { getDb } from './store/db.js';
 import type { Config } from './config.js';
 
@@ -40,6 +40,31 @@ export function createApp(config: Config): express.Express {
     identityRoutes({
       insertIdentity: store.insertIdentity,
       getIdentity: store.getIdentity,
+      bootstrapKarma: (_userId: string, publicKey: Uint8Array) => {
+        // Grant 100 bootstrap karma on first identity creation (demo only)
+        const existing = store.getKarmaBox(publicKey);
+        if (!existing) {
+          const id = computeBoxId({
+            boxType: 'karma',
+            value: 100,
+            createdAtBlock: 0,
+            owner: publicKey,
+            guard: 'owner_signature',
+            proofSource: 'genesis',
+            lastTouchBlock: 0,
+          });
+          store.insertBox({
+            id,
+            boxType: 'karma',
+            value: 100,
+            createdAtBlock: 0,
+            owner: publicKey,
+            guard: 'owner_signature',
+            proofSource: 'genesis',
+            lastTouchBlock: 0,
+          });
+        }
+      },
     }),
   );
 

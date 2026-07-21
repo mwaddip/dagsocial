@@ -12,7 +12,7 @@ async function req(path: string, method: string, body?: unknown): Promise<{ stat
   return new Promise((resolve) => {
     const app = express();
     app.use(express.json());
-    app.use('/identity', createRouter({ insertIdentity, getIdentity }));
+    app.use('/identity', createRouter({ insertIdentity, getIdentity, bootstrapKarma: () => {} }));
     const server = app.listen(0, () => {
       const addr = server.address() as { port: number };
       const r = http.request({
