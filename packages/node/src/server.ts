@@ -1,53 +1,128 @@
 import express from 'express';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-import { createRouter as createIdentityRouter } from './routes/identity.js';
-import { createRouter as createPostsRouter } from './routes/posts.js';
-import { createRouter as createBlocksRouter } from './routes/blocks.js';
-import { slotsRouter } from './routes/slots.js';
-import { insertIdentity, getIdentity } from './store/identities.js';
-import { insertPost, getPost, queryPosts } from './store/posts.js';
-import { consumeChallenge, getActiveChallenge } from './store/challenges.js';
-import { getCurrentHeight, getOrderingBlock } from './store/ordering.js';
-import { getKarmaBox } from './store/utxo.js';
-import { getDb } from './store/db.js';
-import { encodePost } from '@dagsocial/types';
+import { createRouter as identityRoutes } from './routes/identity.js';
+import { createRouter as challengeRoutes } from './routes/challenges.js';
+import { createRouter as postRoutes } from './routes/posts.js';
+import { createRouter as likeRoutes } from './routes/likes.js';
+import { createRouter as inviteRoutes } from './routes/invites.js';
+import { createRouter as pruningRoutes } from './routes/pruning.js';
+import { createRouter as utxoRoutes } from './routes/utxo.js';
+import { createRouter as blockRoutes } from './routes/blocks.js';
+import * as store from './store/index.js';
+import { generateChallenge } from './services/pow.js';
 import { verifyPost } from './services/verifier.js';
+import { castLike } from './services/likes.js';
+import { createInvite, claimInvite, cancelInvite } from './services/invites.js';
+import { createPruneIntent, executePrune } from './services/stump-engine.js';
+import { computeStumpId, encodePost } from '@dagsocial/types';
+import { getDb } from './store/db.js';
+import type { Config } from './config.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+// ---------------------------------------------------------------------------
+// createApp
+// ---------------------------------------------------------------------------
 
-export function createApp(): express.Express {
+export function createApp(config: Config): express.Express {
   const app = express();
+
+  // ---- Middleware ----
+
   app.use(express.json({ limit: '1mb' }));
-  app.use(express.static(join(__dirname, '..', 'public')));
 
-  // Identity routes
-  app.use('/identity', createIdentityRouter({ insertIdentity, getIdentity }));
+  // Demo UI
+  const publicDir = new URL('../public', import.meta.url).pathname;
+  app.use(express.static(publicDir));
 
-  // Posts routes
+  // ---- Routes ----
+
+  // Identity — /identity
   app.use(
-    '/posts',
-    createPostsRouter({
-      insertPost,
-      consumeChallenge,
-      getPost,
-      queryPosts,
-      encodePost,
-      verifyPost,
-      getActiveChallenge,
-      getIdentity,
-      getKarmaBox,
-      getCurrentHeight,
+    '/identity',
+    identityRoutes({
+      insertIdentity: store.insertIdentity,
+      getIdentity: store.getIdentity,
     }),
   );
 
-  // Blocks + Status routes (mounted at root; paths include /blocks and /status prefixes)
+  // Challenges — /challenge
+  app.use(
+    '/challenge',
+    challengeRoutes({
+      generateChallenge,
+      createChallenge: store.createChallenge,
+      getActiveChallenge: store.getActiveChallenge,
+      getIdentity: store.getIdentity,
+      getCurrentHeight: store.getCurrentHeight,
+      challengeWindowBlocks: config.challengeWindowBlocks,
+      postPowTargetBits: config.postPowTargetBits,
+    }),
+  );
+
+  // Posts — /posts
+  app.use(
+    '/posts',
+    postRoutes({
+      verifyPost,
+      encodePost,
+      insertPost: store.insertPost,
+      consumeChallenge: store.consumeChallenge,
+      getPost: store.getPost,
+      queryPosts: store.queryPosts,
+      getActiveChallenge: store.getActiveChallenge,
+      getIdentity: store.getIdentity,
+      getKarmaBox: store.getKarmaBox,
+      getCurrentHeight: store.getCurrentHeight,
+    }),
+  );
+
+  // Likes — /likes
+  app.use(
+    '/likes',
+    likeRoutes({
+      castLike,
+      getCurrentHeight: store.getCurrentHeight,
+    }),
+  );
+
+  // Invites — /invites
+  app.use(
+    '/invites',
+    inviteRoutes({
+      createInvite,
+      claimInvite,
+      cancelInvite,
+      getIdentity: store.getIdentity,
+      getCurrentHeight: store.getCurrentHeight,
+    }),
+  );
+
+  // Pruning — mounts at /, routes include /posts/:id/prune
+  app.use(
+    '/',
+    pruningRoutes({
+      executePrune,
+      computeStumpId,
+    }),
+  );
+
+  // UTXO — mounts at /, routes include /karma/:userId, /credits/:userId, /invites/:userId
+  app.use(
+    '/',
+    utxoRoutes({
+      getIdentity: store.getIdentity,
+      getKarmaBox: store.getKarmaBox,
+      getCreditBox: store.getCreditBox,
+      getPendingInvites: store.getPendingInvites,
+      getBondBoxes: store.getBondBoxes,
+    }),
+  );
+
+  // Blocks + Status — mounts at /, routes include /blocks/current, /blocks/:height, /status
   const db = getDb();
   app.use(
     '/',
-    createBlocksRouter({
-      getOrderingBlock,
-      getCurrentHeight,
+    blockRoutes({
+      getOrderingBlock: store.getOrderingBlock,
+      getCurrentHeight: store.getCurrentHeight,
       getPostCount: () =>
         (
           db
@@ -89,6 +164,19 @@ export function createApp(): express.Express {
     }),
   );
 
-  app.use('/slots', slotsRouter);
+  // ---- Error handler ----
+
+  app.use(
+    (
+      err: unknown,
+      _req: express.Request,
+      res: express.Response,
+      _next: express.NextFunction,
+    ) => {
+      console.error('500 error:', err instanceof Error ? err.stack : err);
+      res.status(500).json({ error: 'internal' });
+    },
+  );
+
   return app;
 }

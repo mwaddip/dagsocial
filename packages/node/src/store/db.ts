@@ -3,7 +3,9 @@ import Database from 'better-sqlite3';
 let db: Database.Database | null = null;
 
 const MIGRATIONS = [
-  // Identity (carried forward)
+  // Drop Phase 1 identities table (had secret_key NOT NULL)
+  'DROP TABLE IF EXISTS identities',
+  // Identity (Phase 2 — no secret_key)
   `CREATE TABLE IF NOT EXISTS identities (
     user_id TEXT PRIMARY KEY,
     public_key BLOB NOT NULL,

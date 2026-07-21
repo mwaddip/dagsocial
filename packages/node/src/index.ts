@@ -1,16 +1,27 @@
-import { initDb } from './store/db.js';
-import { startBlockCreator, stopBlockCreator } from './services/blockCreator.js';
+import { loadConfig } from './config.js';
+import { initDb, closeDb } from './store/db.js';
+import { startBlockCreator, stopBlockCreator } from './services/block-creator.js';
 import { createApp } from './server.js';
-import { config } from './config.js';
 
-initDb(config.db.path);
+const config = loadConfig();
+initDb(config.dbPath);
+startBlockCreator(config);
 
-const app = createApp();
-startBlockCreator();
-
-const server = app.listen(config.server.port, () => {
-  console.log(`DAGsocial node running on http://localhost:${config.server.port}`);
+const app = createApp(config);
+const server = app.listen(config.port, () => {
+  console.log(`DAGsocial node listening on :${config.port}`);
 });
 
-process.on('SIGINT', () => { stopBlockCreator(); server.close(); process.exit(0); });
-process.on('SIGTERM', () => { stopBlockCreator(); server.close(); process.exit(0); });
+process.on('SIGINT', () => {
+  stopBlockCreator();
+  closeDb();
+  server.close();
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  stopBlockCreator();
+  closeDb();
+  server.close();
+  process.exit(0);
+});
