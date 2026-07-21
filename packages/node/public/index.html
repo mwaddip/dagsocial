@@ -10,25 +10,31 @@
   .panel { padding: 20px; overflow-y: auto; }
   .left { width: 420px; min-width: 420px; border-right: 1px solid #30363d; display: flex; flex-direction: column; gap: 16px; }
   .right { flex: 1; }
-  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: #8b949e; margin-bottom: 12px; }
-  textarea, input { width: 100%; background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 10px; color: #c9d1d9; font-size: 13px; font-family: inherit; }
+  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: #8b949e; margin-bottom: 8px; }
+  h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: #6e7681; margin: 8px 0 4px; }
+  h4 { font-size: 11px; color: #8b949e; margin: 6px 0 2px; }
+  textarea, input, select { width: 100%; background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 10px; color: #c9d1d9; font-size: 13px; font-family: inherit; }
   textarea { height: 120px; resize: vertical; }
-  input { height: 36px; }
+  input, select { height: 36px; }
+  select { cursor: pointer; }
   button { background: #238636; color: #fff; border: none; border-radius: 6px; padding: 8px 16px; font-size: 13px; cursor: pointer; font-weight: 500; }
   button:hover { background: #2ea043; }
   button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.small { padding: 4px 10px; font-size: 11px; }
+  button.danger { background: #da3633; }
+  button.danger:hover { background: #f85149; }
   .id-badge { font-size: 11px; color: #58a6ff; font-family: monospace; word-break: break-all; background: #161b22; padding: 8px; border-radius: 6px; border: 1px solid #30363d; }
   .post { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 12px; margin-bottom: 10px; }
   .post-author { font-size: 11px; color: #58a6ff; font-family: monospace; margin-bottom: 6px; }
   .post-content { font-size: 14px; line-height: 1.5; }
-  .post-meta { font-size: 11px; color: #484f58; margin-top: 8px; display: flex; gap: 12px; align-items: center; }
+  .post-meta { font-size: 11px; color: #484f58; margin-top: 8px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
   .status { font-size: 11px; padding: 4px 8px; border-radius: 10px; }
   .status-ok { background: #163b23; color: #3fb950; }
   .status-busy { background: #3b2816; color: #d29922; }
   .status-error { background: #3b1616; color: #f85149; }
   .empty { color: #484f58; font-style: italic; padding: 20px; text-align: center; }
   .row { display: flex; gap: 8px; align-items: center; }
-  .row label { font-size: 12px; color: #8b949e; min-width: 70px; }
+  .row label { font-size: 12px; color: #8b949e; min-width: 0; white-space: nowrap; }
   .like-btn { background: none; border: 1px solid #30363d; border-radius: 4px; color: #8b949e; cursor: pointer; font-size: 12px; padding: 2px 8px; }
   .like-btn:hover { border-color: #f85149; color: #f85149; background: #3b1616; }
   .like-btn:disabled { opacity: 0.4; cursor: not-allowed; }
@@ -36,13 +42,27 @@
   .status-bar { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 10px; font-size: 12px; line-height: 1.6; }
   .status-bar span { color: #8b949e; }
   .status-bar strong { color: #c9d1d9; }
+  pre { background: #0d1117; border: 1px solid #30363d; border-radius: 4px; padding: 8px; font-size: 11px; font-family: monospace; color: #7ee787; overflow-x: auto; white-space: pre-wrap; word-break: break-all; margin: 4px 0; }
+  .result-msg { font-size: 11px; padding: 4px 0; color: #8b949e; }
+  .result-msg.ok { color: #3fb950; }
+  .result-msg.err { color: #f85149; }
+  hr { border: none; border-top: 1px solid #21262d; margin: 8px 0; }
 </style>
 </head>
 <body>
 
 <div class="panel left">
   <h2>Identity</h2>
-  <div class="id-badge" id="userId">generating keypair...</div>
+  <div class="row">
+    <select id="identitySelect"></select>
+  </div>
+  <div class="row">
+    <button id="newIdentityBtn" class="small">+ New</button>
+    <button id="importIdentityBtn" class="small">Import</button>
+    <button id="exportIdentityBtn" class="small">Export</button>
+  </div>
+  <input type="file" id="importFileInput" accept=".json" style="display:none">
+  <div class="id-badge" id="currentUserId">loading...</div>
 
   <h2>Compose</h2>
   <textarea id="content" placeholder="What's on your mind?"></textarea>
@@ -54,6 +74,39 @@
 
   <h2>Node Status</h2>
   <div class="status-bar" id="statusBar">Loading...</div>
+
+  <div id="adminSection" style="display:none">
+    <hr>
+    <h2>Admin / Debug</h2>
+
+    <h3>Faucet</h3>
+    <div class="row">
+      <input id="faucetAmount" type="number" value="100" min="1" max="1000" style="width:100px">
+      <button id="faucetBtn" class="small">Grant</button>
+    </div>
+    <div id="faucetResult"></div>
+
+    <h3>Invites</h3>
+    <h4>Create</h4>
+    <div class="row">
+      <label>Karma:</label>
+      <input id="inviteKarma" type="number" value="10" min="1" style="width:70px">
+      <label>Bond:</label>
+      <input id="inviteBond" type="number" value="5" min="1" style="width:70px">
+      <button id="createInviteBtn" class="small">Create</button>
+    </div>
+    <div id="inviteResult"></div>
+
+    <h4>Redeem</h4>
+    <div class="row">
+      <input id="inviteBoxIdInput" placeholder="Invite Box ID" style="flex:1;font-size:11px">
+    </div>
+    <div class="row" style="margin-top:4px">
+      <input id="inviteSecretInput" placeholder="Secret (hex)" style="flex:1;font-size:11px">
+      <button id="redeemInviteBtn" class="small">Redeem</button>
+    </div>
+    <div id="redeemResult"></div>
+  </div>
 </div>
 
 <div class="panel right">
@@ -68,54 +121,15 @@ const API = '';
 const encoder = new TextEncoder();
 
 // ---------------------------------------------------------------------------
-// Identity
+// State
 // ---------------------------------------------------------------------------
 
+const STORAGE_KEY = 'dagsocial-identities';
+let identities = [];           // [{ pubKeyHex, privKeyBase64 }]
+let activeIndex = -1;
 let userId, pubKeyRaw, privKey;
-
-async function initIdentity() {
-  // Persist keypair in sessionStorage so refreshes reuse the same identity
-  let stored = null;
-  try { stored = JSON.parse(sessionStorage.getItem('dagsocial-identity')); } catch {}
-
-  if (stored && stored.pubKeyHex && stored.privKeyBase64) {
-    pubKeyRaw = hex2buf(stored.pubKeyHex);
-    privKey = await crypto.subtle.importKey(
-      'pkcs8',
-      Uint8Array.from(atob(stored.privKeyBase64), c => c.charCodeAt(0)),
-      'Ed25519', true, ['sign']
-    );
-  } else {
-    const key = await crypto.subtle.generateKey('Ed25519', true, ['sign', 'verify']);
-    privKey = key.privateKey;
-    pubKeyRaw = new Uint8Array(await crypto.subtle.exportKey('raw', key.publicKey));
-    const pubKeyHex = buf2hex(pubKeyRaw);
-    const privBytes = new Uint8Array(await crypto.subtle.exportKey('pkcs8', key.privateKey));
-    const privBase64 = btoa(String.fromCharCode(...privBytes));
-    sessionStorage.setItem('dagsocial-identity', JSON.stringify({ pubKeyHex, privKeyBase64: privBase64 }));
-  }
-
-  userId = await computeUserId(pubKeyRaw);
-
-  const res = await fetch(API + '/identity/import', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ publicKey: buf2hex(pubKeyRaw) }),
-  });
-  if (res.ok) {
-    const data = await res.json();
-    userId = data.userId;
-    document.getElementById('userId').textContent = userId;
-    document.getElementById('postBtn').disabled = false;
-  } else {
-    document.getElementById('userId').textContent = 'identity import failed';
-  }
-}
-
-async function computeUserId(pub) {
-  const hash = blake2b(pub, null, 64);
-  return base58Encode(hash);
-}
+let networkMode = 'mainnet';
+const likedPosts = new Set();
 
 // ---------------------------------------------------------------------------
 // Hex / byte utilities
@@ -183,11 +197,6 @@ function countLeadingZeroBits(buf) {
   return bits;
 }
 
-/**
- * Build the PoW input exactly as the server does:
- *   Buffer.concat([content, author, parentRefs, challenge, protocolVersion, timestamp])
- * where challenge is the raw 32 bytes.
- */
 function buildPowInput(content, author, parentRefs, challengeBytes, protocolVersion, timestamp) {
   const parts = [
     encoder.encode(content),
@@ -200,12 +209,6 @@ function buildPowInput(content, author, parentRefs, challengeBytes, protocolVers
   return concatUint8Arrays(parts);
 }
 
-/**
- * Solve PoW: find nonce such that blake2b512(powInput || nonceLE64)[0:32]
- * has at least targetBits leading zero bits.
- *
- * Shows periodic progress in the status badge.
- */
 function solvePoW(powInput, targetBits, onProgress) {
   let nonce = 0;
   const start = performance.now();
@@ -219,22 +222,23 @@ function solvePoW(powInput, targetBits, onProgress) {
     if (nonce % 200000 === 0) {
       const elapsed = ((performance.now() - start) / 1000).toFixed(1);
       if (onProgress) onProgress(`${(nonce / 1e6).toFixed(1)}M hashes (${elapsed}s)...`);
-      // Yield to keep UI responsive
     }
   }
 }
 
 // ---------------------------------------------------------------------------
-// Signing (Phase 2)
+// Signing helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Build the signing hash input.
- * Server's signingHash() feeds each field sequentially through blake2b512.update().
- * For blake2b this is equivalent to concatenating all parts and hashing once.
- */
+/** Sign an arbitrary message: blake2b512(message)[0:32] → Ed25519 sign → hex */
+async function signMessage(message) {
+  const hash = blake2b(encoder.encode(message), null, 64).slice(0, 32);
+  const sig = await crypto.subtle.sign('Ed25519', privKey, hash);
+  return buf2hex(new Uint8Array(sig));
+}
+
+/** Sign a post (same input as PoW) */
 function buildSignHashInput(content, author, parentRefs, challengeBytes, protocolVersion, timestamp) {
-  // signingHash input is identical to powInput (both exclude powNonce)
   return buildPowInput(content, author, parentRefs, challengeBytes, protocolVersion, timestamp);
 }
 
@@ -245,12 +249,16 @@ async function signPost(content, author, parentRefs, challengeBytes, protocolVer
   return buf2hex(new Uint8Array(sig));
 }
 
-/** Sign a like: hash = blake2b512(JSON.stringify({targetPostId, likerId}))[0:32] */
 async function signLike(targetPostId, likerId) {
-  const data = JSON.stringify({ targetPostId, likerId });
-  const hash = blake2b(encoder.encode(data), null, 64).slice(0, 32);
-  const sig = await crypto.subtle.sign('Ed25519', privKey, hash);
-  return buf2hex(new Uint8Array(sig));
+  return signMessage(JSON.stringify({ targetPostId, likerId }));
+}
+
+async function signUnlike(targetPostId, likerId) {
+  return signMessage(JSON.stringify({ targetPostId, likerId, action: 'unlike' }));
+}
+
+async function signInviteCreate(inviterId, karmaAmount, bondAmount) {
+  return signMessage(`create-invite:${inviterId}:${karmaAmount}:${bondAmount}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -273,6 +281,11 @@ function computePostId(post) {
   return buf2hex(hash);
 }
 
+async function computeUserId(pub) {
+  const hash = blake2b(pub, null, 64).slice(0, 32);
+  return base58Encode(hash);
+}
+
 // ---------------------------------------------------------------------------
 // UI helpers
 // ---------------------------------------------------------------------------
@@ -285,7 +298,201 @@ function setStatus(text, cls) {
 function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 // ---------------------------------------------------------------------------
-// Post flow (Phase 2)
+// Identity management
+// ---------------------------------------------------------------------------
+
+async function importIdentityToServer(pubKeyHex) {
+  try {
+    const res = await fetch(API + '/identity/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ publicKey: pubKeyHex }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      return data.userId;
+    }
+  } catch {
+    // Server might be down
+  }
+  return null;
+}
+
+function refreshIdentityDropdown() {
+  const sel = document.getElementById('identitySelect');
+  sel.innerHTML = identities.map((ident, i) => {
+    const shortPub = ident.pubKeyHex.slice(0, 12) + '...';
+    return `<option value="${i}">Identity ${i + 1} (${shortPub})</option>`;
+  }).join('');
+  if (activeIndex >= 0 && activeIndex < identities.length) {
+    sel.value = activeIndex;
+  }
+}
+
+async function activateIdentity(index) {
+  if (index < 0 || index >= identities.length) return;
+
+  activeIndex = index;
+  const ident = identities[index];
+  pubKeyRaw = hex2buf(ident.pubKeyHex);
+
+  // Decode PKCS8 private key from base64
+  const privBytes = Uint8Array.from(atob(ident.privKeyBase64), c => c.charCodeAt(0));
+  privKey = await crypto.subtle.importKey('pkcs8', privBytes, 'Ed25519', true, ['sign']);
+
+  // Compute userId
+  userId = await computeUserId(pubKeyRaw);
+
+  // Update UI
+  document.getElementById('identitySelect').value = index;
+  document.getElementById('currentUserId').textContent = userId;
+  document.getElementById('postBtn').disabled = false;
+
+  // Import to server (idempotent)
+  const serverUserId = await importIdentityToServer(ident.pubKeyHex);
+  if (serverUserId) userId = serverUserId;
+
+  // Clear per-session liked tracking for this identity
+  likedPosts.clear();
+
+  // Reload feed
+  loadFeed();
+}
+
+async function createIdentity() {
+  // Generate keypair
+  const key = await crypto.subtle.generateKey('Ed25519', true, ['sign', 'verify']);
+  const pubKeyHex = buf2hex(new Uint8Array(await crypto.subtle.exportKey('raw', key.publicKey)));
+  const privBytes = new Uint8Array(await crypto.subtle.exportKey('pkcs8', key.privateKey));
+  const privKeyBase64 = btoa(String.fromCharCode(...privBytes));
+
+  // Import to server
+  await importIdentityToServer(pubKeyHex);
+
+  // Save to localStorage
+  identities.push({ pubKeyHex, privKeyBase64 });
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(identities));
+
+  // Refresh dropdown and switch to new identity
+  refreshIdentityDropdown();
+  await activateIdentity(identities.length - 1);
+}
+
+function exportIdentity() {
+  if (activeIndex < 0 || activeIndex >= identities.length) return;
+  const ident = identities[activeIndex];
+  const json = JSON.stringify({ pubKeyHex: ident.pubKeyHex, privKeyBase64: ident.privKeyBase64 });
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'dagsocial-identity.json';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function importIdentityFile(file) {
+  const reader = new FileReader();
+  reader.onload = async () => {
+    try {
+      const data = JSON.parse(reader.result);
+      if (!data.pubKeyHex || !data.privKeyBase64) {
+        alert('Invalid identity file: missing pubKeyHex or privKeyBase64');
+        return;
+      }
+      if (!/^[0-9a-f]{64}$/i.test(data.pubKeyHex)) {
+        alert('Invalid identity file: pubKeyHex must be 64 hex chars');
+        return;
+      }
+
+      // Check for duplicates
+      if (identities.some(i => i.pubKeyHex === data.pubKeyHex)) {
+        alert('This identity is already in your list');
+        return;
+      }
+
+      // Import to server
+      await importIdentityToServer(data.pubKeyHex);
+
+      // Save to localStorage
+      identities.push({ pubKeyHex: data.pubKeyHex, privKeyBase64: data.privKeyBase64 });
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(identities));
+
+      // Refresh dropdown
+      refreshIdentityDropdown();
+    } catch (e) {
+      alert('Failed to parse identity file: ' + e.message);
+    }
+  };
+  reader.readAsText(file);
+}
+
+async function loadIdentities() {
+  // Read from localStorage
+  const stored = localStorage.getItem(STORAGE_KEY);
+  if (stored) {
+    try {
+      identities = JSON.parse(stored);
+      if (!Array.isArray(identities)) identities = [];
+    } catch {
+      identities = [];
+    }
+  }
+
+  // If empty, auto-generate one
+  if (identities.length === 0) {
+    const key = await crypto.subtle.generateKey('Ed25519', true, ['sign', 'verify']);
+    const pubKeyHex = buf2hex(new Uint8Array(await crypto.subtle.exportKey('raw', key.publicKey)));
+    const privBytes = new Uint8Array(await crypto.subtle.exportKey('pkcs8', key.privateKey));
+    const privKeyBase64 = btoa(String.fromCharCode(...privBytes));
+    identities = [{ pubKeyHex, privKeyBase64 }];
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(identities));
+  }
+
+  // Re-import each to server (idempotent)
+  for (const ident of identities) {
+    await importIdentityToServer(ident.pubKeyHex);
+  }
+
+  // Populate dropdown
+  refreshIdentityDropdown();
+
+  // Activate first identity
+  await activateIdentity(0);
+}
+
+// Identity UI event handlers
+document.getElementById('identitySelect').addEventListener('change', async () => {
+  const index = parseInt(document.getElementById('identitySelect').value);
+  if (index !== activeIndex) {
+    await activateIdentity(index);
+  }
+});
+
+document.getElementById('newIdentityBtn').addEventListener('click', async () => {
+  await createIdentity();
+});
+
+document.getElementById('exportIdentityBtn').addEventListener('click', () => {
+  exportIdentity();
+});
+
+document.getElementById('importIdentityBtn').addEventListener('click', () => {
+  document.getElementById('importFileInput').click();
+});
+
+document.getElementById('importFileInput').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (file) {
+    importIdentityFile(file);
+    e.target.value = '';
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Post flow
 // ---------------------------------------------------------------------------
 
 document.getElementById('postBtn').addEventListener('click', async () => {
@@ -306,7 +513,7 @@ document.getElementById('postBtn').addEventListener('click', async () => {
       setStatus(err.error || 'challenge failed', 'error');
       return;
     }
-    const { challenge: challengeHex, targetBits, expiresAtBlock } = await chalRes.json();
+    const { challenge: challengeHex, targetBits } = await chalRes.json();
     const challengeBytes = hex2buf(challengeHex);
 
     // 2. Build powInput and solve PoW
@@ -370,7 +577,6 @@ async function doLike(targetPostId) {
     });
     if (!res.ok) {
       const err = await res.json();
-      // 409 or specific errors: show briefly in status
       setStatus(err.error || 'like failed', 'error');
       return false;
     }
@@ -381,12 +587,28 @@ async function doLike(targetPostId) {
   }
 }
 
+async function doUnlike(targetPostId) {
+  try {
+    const sigHex = await signUnlike(targetPostId, userId);
+    const res = await fetch(API + '/likes/remove', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targetPostId, likerId: userId, signature: sigHex }),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      setStatus(err.error || 'unlike failed', 'error');
+      return false;
+    }
+    return true;
+  } catch (e) {
+    setStatus('unlike error: ' + e.message, 'error');
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Feed
 // ---------------------------------------------------------------------------
-
-// Track which posts this user has liked in the current session
-const likedPosts = new Set();
 
 async function loadFeed() {
   const feed = document.getElementById('feed');
@@ -398,6 +620,7 @@ async function loadFeed() {
       const id = computePostId(p);
       const shortId = id.slice(0, 16);
       const liked = likedPosts.has(id);
+      const likeCount = typeof p.likeCount === 'number' ? p.likeCount : 0;
       return `
         <div class="post" data-post-id="${id}">
           <div class="post-author">${esc(p.author.slice(0, 20))}...</div>
@@ -406,29 +629,44 @@ async function loadFeed() {
             <span>${new Date(p.timestamp).toLocaleTimeString()}</span>
             <span>${p.parentRefs.length ? p.parentRefs.length + ' parents' : 'genesis'}</span>
             <span style="font-family:monospace;font-size:10px">${esc(shortId)}...</span>
-            <button class="like-btn${liked ? ' liked' : ''}" data-post-id="${id}"${liked ? ' disabled' : ''}>
-              ${liked ? '❤️ Liked' : '❤️ Like'}
+            <button class="like-btn${liked ? ' liked' : ''}" data-post-id="${id}" data-liked="${liked ? '1' : '0'}">
+              ${liked ? '&#10084;&#65039; Liked' : '&#10084;&#65039; Like'} (${likeCount})
             </button>
           </div>
         </div>
       `;
     }).join('');
 
-    // Attach like handlers
-    feed.querySelectorAll('.like-btn:not([disabled])').forEach(btn => {
+    // Attach like/unlike handlers
+    feed.querySelectorAll('.like-btn').forEach(btn => {
       btn.addEventListener('click', async () => {
         const postId = btn.dataset.postId;
+        const isLiked = btn.dataset.liked === '1';
         if (!postId) return;
+
         btn.disabled = true;
         btn.textContent = '...';
-        const ok = await doLike(postId);
-        if (ok) {
-          likedPosts.add(postId);
-          btn.classList.add('liked');
-          btn.textContent = '❤️ Liked';
-        } else {
+
+        if (isLiked) {
+          // Unlike
+          const ok = await doUnlike(postId);
+          if (ok) {
+            likedPosts.delete(postId);
+          }
           btn.disabled = false;
-          btn.textContent = '❤️ Like';
+          // Reload feed to get updated counts
+          loadFeed();
+        } else {
+          // Like
+          const ok = await doLike(postId);
+          if (ok) {
+            likedPosts.add(postId);
+            btn.classList.add('liked');
+            btn.dataset.liked = '1';
+          }
+          btn.disabled = false;
+          // Reload feed to get updated counts
+          loadFeed();
         }
       });
     });
@@ -447,22 +685,149 @@ async function loadStatus() {
     const res = await fetch(API + '/status');
     if (!res.ok) { bar.innerHTML = 'Status unavailable'; return; }
     const s = await res.json();
+    networkMode = s.networkMode || 'mainnet';
+
     bar.innerHTML = `
+      <div><span>Network:</span> <strong style="color:${networkMode === 'testnet' ? '#d29922' : '#3fb950'}">${esc(networkMode)}</strong></div>
       <div><span>Block height:</span> <strong>${s.blockHeight}</strong></div>
       <div><span>Posts (confirmed / pending):</span> <strong>${s.postCount} / ${s.pendingPosts}</strong></div>
       <div><span>Identities:</span> <strong>${s.identityCount}</strong></div>
       <div><span>Total karma:</span> <strong>${s.totalKarma}</strong> &nbsp; <span>Total credits:</span> <strong>${s.totalCredits}</strong></div>
     `;
+
+    // Show/hide admin section based on network mode
+    const admin = document.getElementById('adminSection');
+    admin.style.display = networkMode === 'testnet' ? '' : 'none';
   } catch (e) {
     bar.innerHTML = 'Status unavailable';
   }
 }
 
 // ---------------------------------------------------------------------------
+// Admin / Debug - Faucet
+// ---------------------------------------------------------------------------
+
+document.getElementById('faucetBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('faucetBtn');
+  const result = document.getElementById('faucetResult');
+  const amount = parseInt(document.getElementById('faucetAmount').value) || 100;
+
+  btn.disabled = true;
+  result.innerHTML = '<span class="result-msg">Requesting...</span>';
+
+  try {
+    const res = await fetch(API + '/faucet', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, amount }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      result.innerHTML = `<span class="result-msg ok">Granted ${amount} karma. New balance: ${data.newBalance}. Box: ${data.boxId.slice(0, 16)}...</span>`;
+      loadStatus();
+    } else {
+      result.innerHTML = `<span class="result-msg err">${esc(data.error || 'faucet failed')}</span>`;
+    }
+  } catch (e) {
+    result.innerHTML = `<span class="result-msg err">${esc(e.message)}</span>`;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Admin / Debug - Invites
+// ---------------------------------------------------------------------------
+
+document.getElementById('createInviteBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('createInviteBtn');
+  const result = document.getElementById('inviteResult');
+  const karmaAmount = parseInt(document.getElementById('inviteKarma').value) || 10;
+  const bondAmount = parseInt(document.getElementById('inviteBond').value) || 5;
+
+  btn.disabled = true;
+  result.innerHTML = '<span class="result-msg">Creating invite...</span>';
+
+  try {
+    const signature = await signInviteCreate(userId, karmaAmount, bondAmount);
+    const res = await fetch(API + '/invites', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inviterId: userId, karmaAmount, bondAmount, signature }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      result.innerHTML = `
+        <span class="result-msg ok">Invite created!</span>
+        <div style="font-size:11px;color:#8b949e;margin:4px 0">Invite Box ID:</div>
+        <pre>${esc(data.inviteBoxId)}</pre>
+        <div style="font-size:11px;color:#8b949e;margin:4px 0">Secret (share with invitee):</div>
+        <pre>${esc(data.secret)}</pre>
+        <div style="font-size:11px;color:#8b949e;margin:4px 0">Secret Hash:</div>
+        <pre>${esc(data.secretHash)}</pre>
+        <div style="font-size:11px;color:#8b949e;margin:4px 0">Bond Box ID:</div>
+        <pre>${esc(data.bondBoxId)}</pre>
+      `;
+      loadStatus();
+    } else {
+      result.innerHTML = `<span class="result-msg err">${esc(data.error || 'invite creation failed')}</span>`;
+    }
+  } catch (e) {
+    result.innerHTML = `<span class="result-msg err">${esc(e.message)}</span>`;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById('redeemInviteBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('redeemInviteBtn');
+  const result = document.getElementById('redeemResult');
+  const inviteBoxId = document.getElementById('inviteBoxIdInput').value.trim();
+  const secret = document.getElementById('inviteSecretInput').value.trim();
+
+  if (!inviteBoxId || !secret) {
+    result.innerHTML = '<span class="result-msg err">Both Invite Box ID and Secret are required</span>';
+    return;
+  }
+
+  btn.disabled = true;
+  result.innerHTML = '<span class="result-msg">Redeeming...</span>';
+
+  try {
+    const res = await fetch(API + '/invites/claim', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        inviteBoxId,
+        secret,
+        publicKey: buf2hex(pubKeyRaw),
+      }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      result.innerHTML = `
+        <span class="result-msg ok">Invite claimed!</span>
+        <div style="font-size:11px;color:#8b949e;margin:4px 0">User ID:</div>
+        <pre>${esc(data.userId)}</pre>
+        <div style="font-size:11px;color:#8b949e;margin:4px 0">Karma Box ID:</div>
+        <pre>${esc(data.karmaBoxId)}</pre>
+      `;
+      loadStatus();
+    } else {
+      result.innerHTML = `<span class="result-msg err">${esc(data.error || 'redeem failed')}</span>`;
+    }
+  } catch (e) {
+    result.innerHTML = `<span class="result-msg err">${esc(e.message)}</span>`;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
 
-await initIdentity();
+await loadIdentities();
 loadFeed();
 loadStatus();
 setInterval(loadFeed, 5000);

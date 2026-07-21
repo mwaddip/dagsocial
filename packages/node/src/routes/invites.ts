@@ -93,6 +93,7 @@ export function createRouter(deps: InvitesDeps): Router {
       res.status(201).json({
         inviteBoxId: result.inviteBox.id,
         bondBoxId: result.bondBox.id,
+        secret: Buffer.from(result.secret).toString('hex'),
         secretHash: Buffer.from(result.secretHash).toString('hex'),
       });
     } catch (err) {
