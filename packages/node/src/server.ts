@@ -189,6 +189,7 @@ export function createApp(config: Config): express.Express {
           .get() as { s: number };
         return row.s;
       },
+      networkMode: config.networkMode,
     }),
   );
 

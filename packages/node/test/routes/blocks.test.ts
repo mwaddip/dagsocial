@@ -83,6 +83,7 @@ async function request(
           .get() as { s: number };
         return row.s;
       },
+      networkMode: 'testnet',
     };
 
     const app = express();
@@ -177,6 +178,7 @@ describe('blocks routes', () => {
     expect(typeof body.identityCount).toBe('number');
     expect(typeof body.totalKarma).toBe('number');
     expect(typeof body.totalCredits).toBe('number');
+    expect(body.networkMode).toBe('testnet');
     expect(body.identityCount).toBeGreaterThanOrEqual(1);
   });
 });

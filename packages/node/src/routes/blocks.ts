@@ -13,6 +13,7 @@ export interface BlocksDeps {
   getIdentityCount(): number;
   getTotalKarma(): number;
   getTotalCredits(): number;
+  networkMode: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -84,6 +85,7 @@ export function createRouter(deps: BlocksDeps): Router {
   // GET /status — aggregated node status
   router.get('/status', (_req, res) => {
     res.json({
+      networkMode: deps.networkMode,
       blockHeight: deps.getCurrentHeight(),
       postCount: deps.getPostCount(),
       pendingPosts: deps.getPendingPostCount(),
