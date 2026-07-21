@@ -4,6 +4,7 @@ import { createRouter as challengeRoutes } from './routes/challenges.js';
 import { createRouter as postRoutes } from './routes/posts.js';
 import { createRouter as likeRoutes } from './routes/likes.js';
 import { createRouter as inviteRoutes } from './routes/invites.js';
+import { createRouter as faucetRoutes } from './routes/faucet.js';
 import { createRouter as pruningRoutes } from './routes/pruning.js';
 import { createRouter as utxoRoutes } from './routes/utxo.js';
 import { createRouter as blockRoutes } from './routes/blocks.js';
@@ -97,6 +98,24 @@ export function createApp(config: Config): express.Express {
       getCurrentHeight: store.getCurrentHeight,
     }),
   );
+
+  // Faucet — /faucet (testnet only)
+  if (config.networkMode === 'testnet') {
+    app.use(
+      '/faucet',
+      faucetRoutes({
+        getIdentity: store.getIdentity,
+        getKarmaBox: store.getKarmaBox,
+        insertBox: store.insertBox,
+        consumeBox: store.consumeBox,
+        getCurrentHeight: store.getCurrentHeight,
+      }),
+    );
+  } else {
+    app.use('/faucet', (_req, res) => {
+      res.status(403).json({ error: 'faucet disabled in production mode' });
+    });
+  }
 
   // Pruning — mounts at /, routes include /posts/:id/prune
   app.use(
