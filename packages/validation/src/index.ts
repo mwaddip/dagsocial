@@ -1,2 +1,11 @@
-// Validation functions will be added in Task 2
-export {};
+export {
+  verifyPoW,
+  verifyPostSignature,
+  verifyProtocolVersion,
+  verifyContentLimits,
+  verifyParentRefsCount,
+  verifySubBlockStructure,
+  verifyTxStructure,
+  verifyOrderingBlockStructure,
+  verifyBlockChainLink,
+} from './verify.js';

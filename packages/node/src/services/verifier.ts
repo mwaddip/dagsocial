@@ -1,14 +1,13 @@
-import { createPublicKey, verify as cryptoVerify } from 'crypto';
 import {
-  signingHash,
   PROTOCOL_VERSION,
   MAX_CONTENT_BYTES,
   MAX_PARENT_REFS,
   POST_POW_TARGET_BITS,
-  KARMA_POSTING_MINIMUM,
+  POST_LOCK_THREAD_COST,
+  POST_LOCK_REPLY_COST,
 } from '@dagsocial/types';
 import type { Post } from '@dagsocial/types';
-import { verifyPoW } from './pow.js';
+import { verifyPoW, verifyPostSignature } from '@dagsocial/validation';
 
 // ---------------------------------------------------------------------------
 // Dependency interface
@@ -21,7 +20,7 @@ export interface VerifierDeps {
   getIdentity: (
     userId: string,
   ) => { userId: string; publicKey: Uint8Array; createdAt: number } | null;
-  getKarmaBox: (owner: Uint8Array) => { value: number } | null;
+  getKarmaBox: (owner: Uint8Array) => { value: number; id?: string } | null;
   getPost: (id: string) => unknown | null;
 }
 
@@ -32,21 +31,6 @@ export interface VerifierDeps {
 export interface VerificationResult {
   valid: boolean;
   error?: string;
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** SPKI DER prefix for Ed25519 — 12 bytes of ASN.1 header before the 32 raw bytes. */
-const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
-
-/**
- * Wrap 32 raw Ed25519 public key bytes in an SPKI DER envelope so it can be
- * passed to `crypto.createPublicKey`.
- */
-function wrapSpki(raw: Uint8Array): Buffer {
-  return Buffer.concat([ED25519_SPKI_PREFIX, Buffer.from(raw)]);
 }
 
 // ---------------------------------------------------------------------------
@@ -117,14 +101,7 @@ export function verifyPost(
     return { valid: false, error: 'Author identity not found' };
   }
 
-  const pubDer = wrapSpki(identity.publicKey);
-  const pubKeyObj = createPublicKey({
-    key: pubDer,
-    format: 'der',
-    type: 'spki',
-  });
-  const sigBuf = Buffer.from(post.signature);
-  if (!cryptoVerify(null, signingHash(post), pubKeyObj, sigBuf)) {
+  if (!verifyPostSignature(post, identity.publicKey)) {
     return { valid: false, error: 'Signature invalid' };
   }
 
@@ -133,8 +110,13 @@ export function verifyPost(
   if (!karmaBox) {
     return { valid: false, error: 'No karma box found' };
   }
-  if (karmaBox.value < KARMA_POSTING_MINIMUM) {
-    return { valid: false, error: 'Insufficient karma' };
+  const requiredKarma =
+    post.parentRefs.length === 0 ? POST_LOCK_THREAD_COST : POST_LOCK_REPLY_COST;
+  if (karmaBox.value < requiredKarma) {
+    return {
+      valid: false,
+      error: `Insufficient karma: need ${requiredKarma} (have ${karmaBox.value})`,
+    };
   }
 
   // 8. Parent refs: every referenced post must exist.
