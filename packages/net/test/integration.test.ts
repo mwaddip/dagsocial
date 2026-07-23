@@ -11,6 +11,7 @@ import {
   verifyTxStructure,
   verifyOrderingBlockStructure,
 } from '@dagsocial/validation';
+import { createHash } from 'crypto';
 import { NetNode } from '../src/node.js';
 import type { NetConfig, NetValidators } from '../src/types.js';
 
@@ -40,6 +41,33 @@ const validators: NetValidators = {
 
 // Generous timeout — libp2p needs time for peer discovery and connection negotiation
 const TIMEOUT = 25000;
+
+/**
+ * Brute-force a PoW nonce. 20 bits target (~1M iterations worst case,
+ * typically a few hundred ms in Node.js).
+ */
+function solvePoW(input: Uint8Array, targetBits: number): number {
+  for (let nonce = 0; nonce < 100_000_000; nonce++) {
+    const nonceBuf = Buffer.alloc(8);
+    nonceBuf.writeBigUInt64LE(BigInt(nonce));
+    const hash = createHash('blake2b512')
+      .update(Buffer.concat([Buffer.from(input), nonceBuf]))
+      .digest()
+      .subarray(0, 32);
+
+    let valid = true;
+    for (let i = 0; i < targetBits; i++) {
+      const byteIdx = Math.floor(i / 8);
+      const bitIdx = 7 - (i % 8);
+      if ((hash[byteIdx]! & (1 << bitIdx)) !== 0) {
+        valid = false;
+        break;
+      }
+    }
+    if (valid) return nonce;
+  }
+  throw new Error('PoW solution not found within nonce limit');
+}
 
 describe('Two-node integration', () => {
   let nodeA: NetNode;
@@ -102,16 +130,33 @@ describe('Two-node integration', () => {
 
     // Create a valid sub-block and broadcast from A
     const kp = generateKeyPair();
-    const post: Post = {
+    const postBase: Omit<Post, 'powNonce'> = {
       content: 'hello from integration test',
       author: getUserId(kp.publicKey),
       parentRefs: [],
       challenge: new Uint8Array(32),
-      powNonce: 0,
       protocolVersion: 1,
       timestamp: Date.now(),
       signature: new Uint8Array(64),
     };
+    // Compute valid PoW nonce (20-bit target, Stage 1 validates it)
+    const encoder = new TextEncoder();
+    const powParts: Uint8Array[] = [
+      encoder.encode(postBase.content),
+      encoder.encode(postBase.author),
+      postBase.challenge,
+      encoder.encode(String(postBase.protocolVersion)),
+      encoder.encode(String(postBase.timestamp)),
+    ];
+    const powTotal = powParts.reduce((s, p) => s + p.length, 0);
+    const powInput = new Uint8Array(powTotal);
+    let powOff = 0;
+    for (const p of powParts) {
+      powInput.set(p, powOff);
+      powOff += p.length;
+    }
+    const nonce = solvePoW(powInput, 20);
+    const post: Post = { ...postBase, powNonce: nonce };
     const sb: SubBlock = {
       subBlockId: computePostId(post),
       post,
