@@ -1,15 +1,15 @@
 # NET Interface Contract
 
 **Component:** `@dagsocial/net`
-**Protocol version:** 1 (Phase 2 design — will be 2 when implemented)
-**Last updated:** 2026-07-20
+**Protocol version:** 2
+**Last updated:** 2026-07-23
 
 ## Scope
 
 libp2p-based peer-to-peer networking for DAGsocial. Owns: peer discovery,
 sub-block gossip, ordering block gossip, UTXO transaction relay, and
-DAG synchronization. Depends on `@dagsocial/node` for validation and
-`@dagsocial/types` for wire types.
+DAG synchronization. Depends on `@dagsocial/validation` for Stage 1
+(stateless) validation and `@dagsocial/types` for wire types.
 
 Phase 2 scope is deliberately minimal: get sub-blocks and ordering blocks
 flowing between nodes. Advanced features (DAG sync, peer scoring, validator
@@ -154,6 +154,74 @@ direct request-response, not gossip.
 
 ---
 
+## Validation Architecture
+
+Two-stage validation, modeled after Ergo's modifier processing:
+
+### Stage 1 (net package, stateless)
+
+Runs on inbound gossip messages before forwarding to mesh peers. Uses
+`@dagsocial/validation`:
+
+- CBOR structural validity
+- Protocol version check
+- Content limits (1–300 UTF-8 bytes)
+- PoW verification (blake2b512 meets target difficulty)
+- Signature verification (Ed25519)
+- Sub-block, ordering block, and UTXO transaction structural checks
+
+### Stage 2 (node package, stateful)
+
+Runs after Stage 1 passes, via registered `on*` callbacks:
+
+- Parent refs exist (live post or stump)
+- Author has sufficient karma
+- UTXO inputs unspent, guard scripts satisfied
+- Challenge check skipped for relayed posts (challenge was local to origin node)
+
+### Forwarding rule
+
+Forward to mesh peers after Stage 1 passes. If Stage 2 fails later, penalize
+the source peer. This keeps propagation fast while gatekeeping on structure
+and PoW.
+
+---
+
+## Missing Sub-Block Sync
+
+Custom libp2p protocol: `/dagsocial/sync/1`. Simple request-response over a
+libp2p stream:
+
+```
+Request:  subBlockId (32 bytes, hex-encoded)
+Response: CBOR-encoded SubBlock, or 0x00 (not found)
+```
+
+Triggered when a node receives an ordering block referencing unknown sub-block
+IDs. Requested from the peer that sent the ordering block. Timeout: 10s.
+
+---
+
+## Peer Penalty System
+
+| Penalty type | Trigger | Score |
+|-------------|---------|-------|
+| MisbehaviorPenalty | Invalid message (fails Stage 1) | 100 |
+| SpamPenalty | Duplicate sub-block within window | 50 |
+| NonDeliveryPenalty | Missing sub-block request timeout | 75 |
+| PermanentPenalty | Wrong magic bytes, incompatible version | 500 (instant ban) |
+
+Accumulated score ≥ threshold → temporal ban for `temporalBanDuration`.
+Safe interval cooldown between penalties for the same peer.
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `PENALTY_SCORE_THRESHOLD` | `500` | Score to trigger ban |
+| `TEMPORAL_BAN_DURATION_MS` | `3600000` | Ban duration (60 min) |
+| `PENALTY_SAFE_INTERVAL_MS` | `120000` | Cooldown between penalties (2 min) |
+
+---
+
 ## libp2p Stack
 
 | Layer | Choice |
@@ -206,9 +274,11 @@ node operator may choose to link them (same keypair) or keep them separate.
 
 ## Preconditions
 - Node.js ≥ 22
-- `@dagsocial/types` and `@dagsocial/node` packages built and importable
+- `@dagsocial/types`, `@dagsocial/validation`, and `@dagsocial/node` packages
+  built and importable
 - libp2p dependencies installed (`@libp2p/tcp`, `@chainsafe/libp2p-noise`,
-  `@chainsafe/libp2p-yamux`, `@chainsafe/libp2p-gossipsub`)
+  `@chainsafe/libp2p-yamux`, `@chainsafe/libp2p-gossipsub`, `@libp2p/identify`,
+  `@libp2p/ping`)
 - Bootstrap peer(s) reachable
 - Port available for libp2p listen address
 
