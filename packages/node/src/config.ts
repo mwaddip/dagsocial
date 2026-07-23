@@ -14,6 +14,10 @@ export interface Config {
   orderingBlockMinSubBlocks: number;
   maxSubBlocksPerBlock: number;
   epochBlocks: number;
+  // Net settings
+  bootstrapPeers: string[];
+  listenAddrs: string;
+  maxPeers: number;
 }
 
 export function loadConfig(): Readonly<Config> {
@@ -45,9 +49,18 @@ export function loadConfig(): Readonly<Config> {
       process.env['EPOCH_BLOCKS'] ?? String(EPOCH_BLOCKS),
       10,
     ),
+    // Net settings
+    bootstrapPeers: parseBootstrapPeers(process.env['BOOTSTRAP_PEERS'] ?? ''),
+    listenAddrs: process.env['LISTEN_ADDRS'] ?? '/ip4/0.0.0.0/tcp/0',
+    maxPeers: parseInt(process.env['MAX_PEERS'] ?? '50', 10),
   };
 
   return Object.freeze(cfg);
+}
+
+function parseBootstrapPeers(raw: string): string[] {
+  if (!raw.trim()) return [];
+  return raw.split(',').map((s) => s.trim()).filter(Boolean);
 }
 
 export const config = loadConfig();
