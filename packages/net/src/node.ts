@@ -184,6 +184,16 @@ export class NetNode {
     return requestSubBlock(this.libp2p, id, peerId, this.config);
   }
 
+  /**
+   * Register a storage-backed sync handler. Must be called after start() by the
+   * node layer, which owns storage. Replaces the null placeholder registered
+   * during start().
+   */
+  setSyncHandler(handler: (id: string) => SubBlock | null): void {
+    if (!this.libp2p) throw new Error('NetNode not started');
+    registerSyncHandler(this.libp2p, handler);
+  }
+
   // Expose for node to register storage-backed handler
   get libp2pNode(): Libp2p | null {
     return this.libp2p;

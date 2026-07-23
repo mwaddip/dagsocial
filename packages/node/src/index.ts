@@ -13,6 +13,7 @@ import {
   getPost,
   insertPost,
   insertSubBlock,
+  getSubBlock,
   insertBox,
   getBox,
   consumeBox,
@@ -95,6 +96,13 @@ net.onTx((tx) => {
 try {
   await net.start();
   console.log(`Net node started, peer ID: ${net.peerId()}`);
+
+  // Register storage-backed sync handler (replaces the null placeholder
+  // registered during NetNode.start())
+  net.setSyncHandler((subBlockId: string) => {
+    const sb = getSubBlock(subBlockId);
+    return sb ?? null;
+  });
 } catch (err) {
   console.warn(`Net startup failed (continuing without networking): ${String(err)}`);
 }

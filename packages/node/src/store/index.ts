@@ -27,6 +27,8 @@ export {
   getUnspentLikeForLiker,
   getLockedLikeBoxes,
   getUnprocessedLockedLikeBoxes,
+  getUnspentPostLockBoxes,
+  getPostTotalLikes,
   insertBox,
   consumeBox,
   markLikeBoxesTallied,
@@ -45,6 +47,7 @@ export {
 export {
   insertSubBlock,
   getPendingSubBlocks,
+  getSubBlock,
   confirmSubBlock,
 } from './subblocks.js';
 

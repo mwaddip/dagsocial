@@ -79,6 +79,18 @@ export function getPendingSubBlocks(limit: number): SubBlock[] {
 }
 
 /**
+ * Retrieve a sub-block by ID regardless of status (pending or confirmed).
+ */
+export function getSubBlock(subBlockId: string): SubBlock | null {
+  const db = getDb();
+  const row = db
+    .prepare('SELECT * FROM sub_blocks WHERE sub_block_id = ?')
+    .get(subBlockId) as SubBlockRow | undefined;
+  if (!row) return null;
+  return rowToSubBlock(row);
+}
+
+/**
  * Confirm a sub-block at a given block height.
  */
 export function confirmSubBlock(subBlockId: string, blockHeight: number): void {
