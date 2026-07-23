@@ -5,6 +5,7 @@ import {
   verifyParentRefsCount,
 } from '@dagsocial/validation';
 import type { SubBlock, OrderingBlock, UtxoTransaction } from '@dagsocial/types';
+import { TopicValidatorResult } from '@libp2p/interface';
 import type { PubSub } from '@libp2p/interface';
 import type { GossipsubEvents } from '@chainsafe/libp2p-gossipsub';
 import type { NetValidators } from './types.js';
@@ -56,52 +57,91 @@ export function subscribeTopics(
 ): void {
   const gs = libp2p.services.pubsub;
 
+  // -------------------------------------------------------------------------
+  // Topic validators — run BEFORE forwarding to mesh peers.  Invalid
+  // messages are rejected at this layer and never propagated further.
+  // -------------------------------------------------------------------------
+
+  gs.topicValidators.set(TOPICS.subblock, (_peer, msg) => {
+    try {
+      const raw = Buffer.from(msg.data);
+      const sb = decodeSubBlock(raw);
+      const vr = runStage1SubBlock(sb, validators);
+      if (!vr.valid) {
+        peerMgr.recordPenalty('misbehavior', _peer.toString(), 100, vr.error ?? 'invalid sub-block');
+        return TopicValidatorResult.Reject;
+      }
+      return TopicValidatorResult.Accept;
+    } catch (err) {
+      peerMgr.recordPenalty('misbehavior', _peer.toString(), 100, `decode error: ${String(err)}`);
+      return TopicValidatorResult.Reject;
+    }
+  });
+
+  gs.topicValidators.set(TOPICS.orderingBlock, (_peer, msg) => {
+    try {
+      const raw = Buffer.from(msg.data);
+      const block = decodeOrderingBlock(raw);
+      const vr = validators.verifyOrderingBlockStructure(block);
+      if (!vr.valid) {
+        peerMgr.recordPenalty('misbehavior', _peer.toString(), 100, vr.error ?? 'invalid ordering block');
+        return TopicValidatorResult.Reject;
+      }
+      if (!validators.verifyProtocolVersion(block.protocolVersion)) {
+        peerMgr.recordPenalty('misbehavior', _peer.toString(), 100, 'unsupported protocol version');
+        return TopicValidatorResult.Reject;
+      }
+      return TopicValidatorResult.Accept;
+    } catch (err) {
+      peerMgr.recordPenalty('misbehavior', _peer.toString(), 100, `decode error: ${String(err)}`);
+      return TopicValidatorResult.Reject;
+    }
+  });
+
+  gs.topicValidators.set(TOPICS.tx, (_peer, msg) => {
+    try {
+      const raw = Buffer.from(msg.data);
+      const tx = decodeTx(raw);
+      const vr = validators.verifyTxStructure(tx);
+      if (!vr.valid) {
+        peerMgr.recordPenalty('misbehavior', _peer.toString(), 100, vr.error ?? 'invalid tx');
+        return TopicValidatorResult.Reject;
+      }
+      if (!validators.verifyProtocolVersion(tx.protocolVersion)) {
+        peerMgr.recordPenalty('misbehavior', _peer.toString(), 100, 'unsupported protocol version');
+        return TopicValidatorResult.Reject;
+      }
+      return TopicValidatorResult.Accept;
+    } catch (err) {
+      peerMgr.recordPenalty('misbehavior', _peer.toString(), 100, `decode error: ${String(err)}`);
+      return TopicValidatorResult.Reject;
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Event listener — dispatches accepted messages to app-layer handlers.
+  // Topic validators (above) guarantee only structurally-valid, PoW-verified
+  // messages reach this point.
+  // -------------------------------------------------------------------------
+
   gs.addEventListener('gossipsub:message', (evt) => {
     const { detail } = evt;
     if (!detail?.msg) return;
 
-    const { topic, data } = detail.msg;
-    const peerId = 'from' in detail.msg ? detail.msg.from.toString() : 'unknown';
-    const raw = new Uint8Array(data);
+    const { topic } = detail.msg;
+    const raw = Buffer.from(detail.msg.data);
 
     try {
       if (topic === TOPICS.subblock) {
-        const sb = decodeSubBlock(raw);
-        const vr = runStage1SubBlock(sb, validators);
-        if (!vr.valid) {
-          peerMgr.recordPenalty('misbehavior', peerId, 100, vr.error ?? 'invalid sub-block');
-          return;
-        }
-        // Forward to mesh (gossipsub handles this automatically via mesh)
-        handlers.onSubBlock(sb);
+        handlers.onSubBlock(decodeSubBlock(raw));
       } else if (topic === TOPICS.orderingBlock) {
-        const block = decodeOrderingBlock(raw);
-        const vr = validators.verifyOrderingBlockStructure(block);
-        if (!vr.valid) {
-          peerMgr.recordPenalty('misbehavior', peerId, 100, vr.error ?? 'invalid ordering block');
-          return;
-        }
-        if (!validators.verifyProtocolVersion(block.protocolVersion)) {
-          peerMgr.recordPenalty('misbehavior', peerId, 100, 'unsupported protocol version');
-          return;
-        }
-        handlers.onOrderingBlock(block);
+        handlers.onOrderingBlock(decodeOrderingBlock(raw));
       } else if (topic === TOPICS.tx) {
-        const tx = decodeTx(raw);
-        const vr = validators.verifyTxStructure(tx);
-        if (!vr.valid) {
-          peerMgr.recordPenalty('misbehavior', peerId, 100, vr.error ?? 'invalid tx');
-          return;
-        }
-        if (!validators.verifyProtocolVersion(tx.protocolVersion)) {
-          peerMgr.recordPenalty('misbehavior', peerId, 100, 'unsupported protocol version');
-          return;
-        }
-        handlers.onTx(tx);
+        handlers.onTx(decodeTx(raw));
       }
-    } catch (err) {
-      // CBOR decode failure — structural invalidity
-      peerMgr.recordPenalty('misbehavior', peerId, 100, `decode error: ${String(err)}`);
+    } catch {
+      // Decode failure here would indicate a validator bug — the message
+      // already passed the topic validator.  Log and move on.
     }
   });
 
