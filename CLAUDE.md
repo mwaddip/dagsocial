@@ -27,8 +27,9 @@ This project uses Design by Contract for multi-session workflow. The `contracts/
 
 - `contracts/ARCHITECTURE.md` — system overview, invariants, protocol versioning
 - `contracts/TYPES_INTERFACE.md` — types package contract
+- `contracts/VALIDATION_INTERFACE.md` — validation package contract (pure stateless checks)
 - `contracts/NODE_INTERFACE.md` — node package contract (API, verifier, store interface)
-- `contracts/NET_INTERFACE.md` — networking contract (Phase 2)
+- `contracts/NET_INTERFACE.md` — networking contract (libp2p, gossip, sync)
 - `contracts/WEB_INTERFACE.md` — web client contract (Phase 2)
 
 ### Workflow

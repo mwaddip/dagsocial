@@ -1,7 +1,7 @@
 # DAGsocial Architecture
 
 **Protocol version:** 2 (Phase 2 redesign)
-**Last updated:** 2026-07-20
+**Last updated:** 2026-07-23
 
 ## Overview
 
@@ -408,6 +408,62 @@ every block. It processes both locked like boxes and free like rows:
 
 All are protocol parameters, absolute (not proportional to author karma).
 
+### Post karma locking
+
+Posting requires karma to be locked — skin in the game against spam. The locked
+karma is held in a `PostLockBox` (guard: `epoch_tally`) and gradually unlocked
+as the post accumulates likes.
+
+**Lock amounts:**
+
+| Post type | Karma locked |
+|-----------|-------------|
+| New thread (no parentRefs) | `POST_LOCK_THREAD_COST` (5) |
+| Reply (has parentRefs) | `POST_LOCK_REPLY_COST` (3) |
+
+**Unlock schedule:**
+
+At each epoch boundary, for every post with a `PostLockBox`:
+
+```
+totalLikes       = locked likes + free likes (lifetime, cumulative)
+alreadyUnlocked  = originalValue - currentValue
+shouldUnlock     = floor(totalLikes / POST_LOCK_UNLOCK_PER_LIKES)
+toUnlock         = min(currentValue, shouldUnlock - alreadyUnlocked)
+```
+
+For every 10 lifetime likes, 1 karma is unlocked and returned to the author.
+A thread post (5 locked) needs 50 likes to fully unlock; a reply (3 locked)
+needs 30 likes. If `toUnlock` is zero, the box rolls over to the next epoch.
+
+**Locking at post time:**
+
+When a post is submitted:
+1. The verifier checks the author has >= required karma
+2. The route handler performs a UTXO transaction:
+   - Consume author's existing KarmaBox (value V)
+   - Create new KarmaBox (value V - lockAmount)
+   - Create PostLockBox (value = lockAmount, originalValue = lockAmount, guard = epoch_tally)
+
+**Epoch processing:**
+
+During `runEpochTally()`, after processing LikeBoxes:
+- Collect all unspent PostLockBoxes
+- For each, compute unlockable karma based on lifetime likes
+- Consume old PostLockBox, create reduced one with remaining locked value
+- Mint unlocked karma back to the author
+- Record `postLockKarmaUnlocked` in the epoch tally's LikeReward entry
+
+**Post lock parameters:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `POST_LOCK_THREAD_COST` | 5 | Karma locked for new threads |
+| `POST_LOCK_REPLY_COST` | 3 | Karma locked for replies |
+| `POST_LOCK_UNLOCK_PER_LIKES` | 10 | Every N likes unlocks 1 karma |
+
+All are protocol parameters, governable in the future.
+
 ---
 
 ## Invite System
@@ -552,10 +608,10 @@ Bootstrap uses a **two-phase genesis committee** model:
 ## Data Flow
 
 ```
-┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
-│   web    │────►│   node   │────►│   net    │     │  types   │
-│ (client) │     │ (server) │     │ (gossip) │     │ (shared) │
-└──────────┘     └────┬─────┘     └──────────┘     └──────────┘
+┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────────┐
+│   web    │────►│   node   │────►│   net    │     │  types   │◄────│  validation  │
+│ (client) │     │ (server) │     │ (gossip) │     │ (shared) │     │  (pure fns)  │
+└──────────┘     └────┬─────┘     └──────────┘     └──────────┘     └──────────────┘
                       │
           ┌───────────┼───────────┐
           ▼           ▼           ▼
@@ -582,7 +638,9 @@ Bootstrap uses a **two-phase genesis committee** model:
    deduplicates likes, triggers epoch tally, distributes credit rewards
 7. **Pruning:** Author signs prune intent → stump constructed with deterministic
    karma deltas → committed in ordering block → DAG compacted
-8. **Net:** libp2p gossips sub-blocks and ordering blocks between nodes
+8. **Net:** libp2p gossips sub-blocks and ordering blocks between nodes.
+   Stage 1 (stateless) validation via `@dagsocial/validation` runs before
+   forwarding. Stage 2 (stateful) validation runs in the node after receipt.
 
 ---
 
@@ -595,7 +653,8 @@ Every post, stump, ordering block, sub-block, and UTXO transaction carries a
   UTXO, single-node HTTP server.
 - **Version 2:** Phase 2 (this contract) — dual-ledger architecture, sovereign
   subtrees, stumps, UTXO karma/credits, likes, invite system, sub-blocks +
-  ordering blocks, PoW validators, libp2p networking.
+  ordering blocks, PoW validators, libp2p networking, two-stage validation
+  (`@dagsocial/validation` + `@dagsocial/net`).
 
 An object with an old version is validated against that version's rules
 forever. A node rejects objects with an unsupported protocol version.

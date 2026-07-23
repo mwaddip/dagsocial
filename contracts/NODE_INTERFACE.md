@@ -1,15 +1,21 @@
 # NODE Interface Contract
 
 **Component:** `@dagsocial/node`
-**Protocol version:** 1 (Phase 2 design — will be 2 when implemented)
-**Last updated:** 2026-07-20
+**Protocol version:** 2
+**Last updated:** 2026-07-23
 
 ## Scope
 
 HTTP server exposing the DAGsocial API. Owns: PoW challenge service, post
-verifier, sub-block assembly, UTXO engine, like processing, invite lifecycle,
-ordering block creator, stump engine, and persistent storage. Depends on
-`@dagsocial/types` for all shared structures and constants.
+verifier (Stage 2 stateful validation), sub-block assembly, UTXO engine,
+like processing, invite lifecycle, ordering block creator, stump engine,
+and persistent storage (SQLite). Depends on:
+
+- `@dagsocial/types` — shared data structures and constants
+- `@dagsocial/validation` — Stage 1 stateless checks (PoW, signatures,
+  structural validity)
+- `@dagsocial/net` — libp2p networking for sub-block, ordering block,
+  and UTXO transaction gossip
 
 ---
 
@@ -53,13 +59,19 @@ previous is submitted or expired returns 409. Challenge expires at
 1. Validate all required fields present (`content`, `author`, `parentRefs`,
    `challenge`, `powNonce`, `protocolVersion`, `timestamp`, `signature`)
 2. Verify challenge is active for this author (issued, not expired, matches value)
-3. `verifyPost(post, currentBlockHeight)` — see Verifier contract
+3. `verifyPost(post, currentBlockHeight)` — see Verifier contract.
+   Checks karma: threads require `POST_LOCK_THREAD_COST` (5), replies require
+   `POST_LOCK_REPLY_COST` (3).
 4. Compute `id = computePostId(post)` — server-authoritative
-5. Assemble sub-block: `{ post, likeBoxes: dequeuePendingLikes() }`
-6. Store sub-block via store interface
-7. Consume challenge (mark as used)
-8. Signal ordering block creator
-9. Return `{ id, status: "pending" }`
+5. Lock karma via UTXO transaction:
+   - Consume author's existing KarmaBox
+   - Create new KarmaBox with `value - lockAmount`
+   - Create PostLockBox (`boxType: 'post_lock'`, `guard: 'epoch_tally'`)
+6. Assemble sub-block: `{ post, likeBoxes: dequeuePendingLikes() }`
+7. Store sub-block via store interface
+8. Consume challenge (mark as used)
+9. Signal ordering block creator
+10. Return `{ id, status: "pending" }`
 
 Parent refs may point to live posts or stumps. Both are valid — the DAG
 traversal handles both transparently.
@@ -202,8 +214,24 @@ Verification order (fail-fast):
 5. **Content limit** — reject if `content.length > MAX_CONTENT_BYTES` (300) or
    empty
 6. **Protocol version** — reject if unsupported
-7. **Karma** — author must have ≥ `KARMA_POSTING_MINIMUM` karma on the UTXO
-   ledger (prevents posting from nonexistent or zero-karma accounts)
+7. **Karma** — author must have a karma box with sufficient value:
+   - Threads (no parentRefs): ≥ `POST_LOCK_THREAD_COST` (5)
+   - Replies (has parentRefs): ≥ `POST_LOCK_REPLY_COST` (3)
+   (prevents posting from nonexistent or zero-karma accounts)
+
+### verifyPostForRelay
+
+`verifyPostForRelay(deps, post: Post, currentBlockHeight: number): { valid: boolean; error?: string }`
+
+Stage 2 validation for gossiped posts (received via libp2p). Same checks as
+`verifyPost` except the challenge check — the challenge was node-local to the
+origin node. Re-verifies: content limits, parent refs count, protocol version,
+PoW (stateless, re-verified), signature (stateless, re-verified), karma
+sufficiency, and parent ref existence.
+
+The Stage 1 stateless checks (structure, PoW, signature) are run by the net
+package via `@dagsocial/validation` before this function is called. Stage 2
+adds the stateful DB-dependent checks.
 
 ---
 
@@ -427,23 +455,57 @@ All config via environment variables with defaults:
 | `MAX_SUB_BLOCKS_PER_BLOCK` | `1000` | Max sub-blocks per ordering block |
 | `EPOCH_BLOCKS` | `60` | Like processing every N ordering blocks |
 | `NETWORK_MODE` | `testnet` | Network mode — `testnet` enables debug endpoints (faucet) |
+| `BOOTSTRAP_PEERS` | `[]` | Comma-separated libp2p multiaddrs |
+| `LISTEN_ADDRS` | `/ip4/0.0.0.0/tcp/0` | libp2p listen addresses |
+| `MAX_PEERS` | `50` | Max connected libp2p peers |
 
 All protocol parameters from `@dagsocial/types` are also overridable via env
 vars for testing and governance simulation.
 
 ---
 
+## Net Integration
+
+The node creates a `NetNode` from `@dagsocial/net` during startup and registers
+Stage 2 handlers for inbound gossip messages. Startup order:
+
+```
+1. initDb()
+2. Create NetNode with config + validators
+3. Register Stage 2 handlers (onSubBlock, onOrderingBlock, onTx)
+4. await net.start()          // connect to bootstrap, subscribe to topics
+5. startHttpServer()          // begin accepting API requests
+6. startBlockCreator()        // begin producing ordering blocks
+```
+
+Net starts before HTTP — the network layer is ready before the API accepts
+requests. If bootstrap peers are unreachable, the node still starts (gossip
+will connect as peers become available).
+
+Route handlers call `net.broadcastSubBlock()`, `net.broadcastTx()`, and
+`net.broadcastOrderingBlock()` after local processing to propagate new objects
+to peers. Broadcast calls are fire-and-forget — failures are logged but do
+not fail the API request.
+
+---
+
 ## Preconditions
 - Node.js ≥ 22
-- `@dagsocial/types` package built and importable
+- `@dagsocial/types` and `@dagsocial/validation` packages built and importable
+- `@dagsocial/net` package built and importable
 - `better-sqlite3` native bindings built
 - Write access to `DB_PATH` directory
-- Port available at `PORT`
+- Port available at `PORT` and libp2p listen address available
 
 ## Postconditions
 - HTTP server listening on `:PORT`
 - Fresh SQLite database created at `DB_PATH` with full Phase 2 schema
+- libp2p NetNode running with configured transports and subscribed to gossip
+  topics
+- Connected to bootstrap peers and meshed on all subscribed topics
 - Ordering block creator running (timer + sub-block-count trigger)
+- Sub-blocks, ordering blocks, and UTXO transactions broadcast to peers
+  after local creation
 - UTXO engine initialized
 - Demo UI served at `/`
 
