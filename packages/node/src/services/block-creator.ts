@@ -105,6 +105,8 @@ export function stopBlockCreator(): void {
  * creation the counter is reset to 0 inside createOrderingBlock().
  */
 export function onSubBlockReceived(): void {
+  // No-op if block creator is not running (server mode)
+  if (!config) return;
   pendingSubBlockCounter++;
   if (pendingSubBlockCounter >= config.orderingBlockMinSubBlocks) {
     createOrderingBlock();

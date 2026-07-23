@@ -64,7 +64,9 @@ export class NetNode {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       streamMuxers: [yamux() as any],
       services: {
-        pubsub: gossipsub(),
+        pubsub: gossipsub({
+          allowPublishToZeroTopicPeers: true,
+        }),
         identify: identify(),
         ping: ping(),
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -79,16 +81,19 @@ export class NetNode {
     // Track peers on connect/disconnect
     this.libp2p.addEventListener('peer:connect', (evt: any) => {
       const peerId = evt.detail?.toString() ?? 'unknown';
+      console.log(`[net] peer connected: ${peerId}`);
       this.peerMgr.addPeer({
         id: peerId,
         multiaddrs: [],
         protocols: [],
         connectedAt: Date.now(),
       });
+      console.log(`[net] peer count: ${this.peerMgr.getPeerCount()}`);
     });
 
     this.libp2p.addEventListener('peer:disconnect', (evt: any) => {
       const peerId = evt.detail?.toString() ?? 'unknown';
+      console.log(`[net] peer disconnected: ${peerId}`);
       this.peerMgr.removePeer(peerId);
     });
 
@@ -101,11 +106,7 @@ export class NetNode {
 
     await subscribeTopics(asGossip(this.libp2p), this.validators, this.peerMgr, handlers);
 
-    // Register sync handler (serves sub-blocks to requesting peers)
-    registerSyncHandler(this.libp2p, (_id: string) => {
-      // This will be overridden by node — net doesn't own storage
-      return null;
-    });
+    // Sync handler registered later via setSyncHandler() — node provides storage
 
     // Connect to bootstrap peers
     for (const addr of this.config.bootstrapPeers) {
@@ -189,9 +190,13 @@ export class NetNode {
    * node layer, which owns storage. Replaces the null placeholder registered
    * during start().
    */
+  private syncHandlerRegistered = false;
+
   setSyncHandler(handler: (id: string) => SubBlock | null): void {
     if (!this.libp2p) throw new Error('NetNode not started');
+    if (this.syncHandlerRegistered) return; // libp2p rejects duplicate protocol handlers
     registerSyncHandler(this.libp2p, handler);
+    this.syncHandlerRegistered = true;
   }
 
   // Expose for node to register storage-backed handler
