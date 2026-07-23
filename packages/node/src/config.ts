@@ -8,6 +8,7 @@ export interface Config {
   port: number;
   dbPath: string;
   networkMode: string;
+  nodeRole: 'server' | 'miner';
   postPowTargetBits: number;
   challengeWindowBlocks: number;
   orderingBlockIntervalMs: number;
@@ -25,6 +26,7 @@ export function loadConfig(): Readonly<Config> {
     port: parseInt(process.env['PORT'] ?? '3000', 10),
     dbPath: process.env['DB_PATH'] ?? 'dagsocial.db',
     networkMode: process.env['NETWORK_MODE'] ?? 'testnet',
+    nodeRole: parseNodeRole(process.env['NODE_ROLE'] ?? 'server'),
     postPowTargetBits: parseInt(
       process.env['POST_POW_TARGET_BITS'] ?? String(POST_POW_TARGET_BITS),
       10,
@@ -61,6 +63,11 @@ export function loadConfig(): Readonly<Config> {
 function parseBootstrapPeers(raw: string): string[] {
   if (!raw.trim()) return [];
   return raw.split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+function parseNodeRole(raw: string): 'server' | 'miner' {
+  if (raw === 'server' || raw === 'miner') return raw;
+  throw new Error(`Invalid NODE_ROLE "${raw}" — must be "server" or "miner"`);
 }
 
 export const config = loadConfig();

@@ -25,6 +25,7 @@ import type {
 } from '@dagsocial/types';
 import type { Config } from '../config.js';
 import { getNet } from './net-instance.js';
+import { mintKarma } from './karma.js';
 import {
   getPendingSubBlocks,
   createOrderingBlock as storeCreateOrderingBlock,
@@ -405,62 +406,6 @@ function runEpochTally(blockHeight: number): EpochTally {
   }
 
   return { rewards };
-}
-
-// ---------------------------------------------------------------------------
-// Karma minting helper
-// ---------------------------------------------------------------------------
-
-/**
- * Mint (or increase) karma for a given user.
- *
- * Looks up the user's identity to obtain their public key, then either creates
- * a new karma box or increases the value of their existing one.
- */
-function mintKarma(
-  userId: string,
-  amount: number,
-  blockHeight: number,
-): void {
-  if (amount <= 0) return;
-
-  const identity = getIdentity(userId);
-  if (!identity) return; // identity might not exist yet (shouldn't happen)
-
-  const existingBox = getKarmaBox(identity.publicKey);
-
-  let newValue: number;
-  let proofSource: string;
-  let oldBoxId: string | undefined;
-
-  if (existingBox && existingBox.id) {
-    newValue = existingBox.value + amount;
-    proofSource = existingBox.proofSource ?? `epoch-${blockHeight}`;
-    oldBoxId = existingBox.id;
-  } else {
-    newValue = amount;
-    proofSource = `epoch-${blockHeight}`;
-  }
-
-  const newBox: KarmaBox = {
-    boxType: 'karma',
-    value: newValue,
-    createdAtBlock: blockHeight,
-    owner: identity.publicKey,
-    guard: 'owner_signature',
-    proofSource,
-    lastTouchBlock: blockHeight,
-  };
-  const boxId = computeBoxId(newBox);
-  newBox.id = boxId;
-
-  // Consume old box if exists
-  if (oldBoxId) {
-    consumeBox(oldBoxId, blockHeight);
-  }
-
-  // Insert new box
-  insertBox(newBox);
 }
 
 // ---------------------------------------------------------------------------

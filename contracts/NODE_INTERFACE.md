@@ -448,6 +448,7 @@ All config via environment variables with defaults:
 |----------|---------|-------------|
 | `PORT` | `3000` | HTTP listen port |
 | `DB_PATH` | `dagsocial.db` | SQLite database path |
+| `NODE_ROLE` | `server` | Role: `server` (applies peer blocks) or `miner` (produces blocks) |
 | `POST_POW_TARGET_BITS` | `20` | Post PoW difficulty |
 | `CHALLENGE_WINDOW_BLOCKS` | `10` | Challenge expiry in blocks |
 | `ORDERING_BLOCK_INTERVAL_MS` | `60000` | Max time between ordering blocks |
@@ -486,6 +487,13 @@ Route handlers call `net.broadcastSubBlock()`, `net.broadcastTx()`, and
 `net.broadcastOrderingBlock()` after local processing to propagate new objects
 to peers. Broadcast calls are fire-and-forget — failures are logged but do
 not fail the API request.
+
+### Node roles
+
+| Role | Block creator | Applies peer blocks | Description |
+|------|--------------|-------------------|-------------|
+| `server` (default) | Off | Yes | Serves API, validates and applies inbound ordering blocks from gossip |
+| `miner` | On (timer + trigger) | No | Produces ordering blocks, ignores peer blocks |
 
 ---
 
