@@ -6,6 +6,17 @@ import type { NetConfig } from './types.js';
 
 export const SYNC_PROTOCOL = '/dagsocial/sync/1';
 
+function mergeUint8Arrays(chunks: Uint8Array[]): Uint8Array {
+  const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
+  const result = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return result;
+}
+
 /**
  * Request a specific sub-block from a peer via a direct stream.
  *
@@ -46,7 +57,7 @@ export async function requestSubBlock(
       throw new Error('Empty response from peer');
     }
 
-    const response = Buffer.concat(chunks.map((c) => Buffer.from(c)));
+    const response = mergeUint8Arrays(chunks);
 
     // Check for not-found marker
     if (response.length === 1 && response[0] === 0x00) {
@@ -80,7 +91,7 @@ export function registerSyncHandler(
         return;
       }
 
-      const request = new TextDecoder().decode(Buffer.concat(chunks.map((c) => Buffer.from(c))));
+      const request = new TextDecoder().decode(mergeUint8Arrays(chunks));
       const subBlock = getSubBlock(request);
 
       if (!subBlock) {

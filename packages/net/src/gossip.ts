@@ -62,7 +62,7 @@ export function subscribeTopics(
 
     const { topic, data } = detail.msg;
     const peerId = 'from' in detail.msg ? detail.msg.from.toString() : 'unknown';
-    const raw = Buffer.from(data);
+    const raw = new Uint8Array(data);
 
     try {
       if (topic === TOPICS.subblock) {
