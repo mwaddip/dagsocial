@@ -11,6 +11,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@dagsocial/net": "workspace:*",
     "@dagsocial/types": "workspace:*",
     "@dagsocial/validation": "workspace:*",
     "better-sqlite3": "^11.0.0",
