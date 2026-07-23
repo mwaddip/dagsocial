@@ -160,7 +160,8 @@ export function createRouter(deps: InvitesDeps): Router {
         });
       }
 
-      res.status(201).json(result);
+      const { tx, ...response } = result;
+      res.status(201).json(response);
     } catch (err) {
       res.status(400).json({ error: (err as Error).message });
     }
