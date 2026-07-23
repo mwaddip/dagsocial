@@ -5,6 +5,7 @@ import { yamux } from '@chainsafe/libp2p-yamux';
 import { identify } from '@libp2p/identify';
 import { ping } from '@libp2p/ping';
 import { gossipsub } from '@chainsafe/libp2p-gossipsub';
+import { multiaddr } from '@multiformats/multiaddr';
 
 import type { Libp2p } from 'libp2p';
 import type { SubBlock, OrderingBlock, UtxoTransaction } from '@dagsocial/types';
@@ -59,7 +60,7 @@ export class NetNode {
         listen: [this.config.listenAddrs],
       },
       transports: [tcp()],
-      connectionEncrypters: [noise()],
+      connectionEncryption: [noise()],
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       streamMuxers: [yamux() as any],
       services: {
@@ -70,6 +71,7 @@ export class NetNode {
       } as any,
       connectionManager: {
         maxConnections: this.config.maxPeers,
+        minConnections: 0,
       },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
@@ -108,10 +110,7 @@ export class NetNode {
     // Connect to bootstrap peers
     for (const addr of this.config.bootstrapPeers) {
       try {
-        // libp2p.dial accepts Multiaddr objects; bootstrapPeers are Multiaddr
-        // strings at the config layer — cast through `any` to bridge the gap.
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await this.libp2p.dial(addr as any);
+        await this.libp2p.dial(multiaddr(addr));
       } catch {
         // Bootstrap peer unreachable — not fatal
         console.warn(`Bootstrap peer unreachable: ${addr}`);

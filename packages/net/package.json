@@ -26,6 +26,7 @@
     "@libp2p/identify": "^2.0.0",
     "@libp2p/ping": "^2.0.0",
     "@libp2p/tcp": "^9.0.0",
+    "@multiformats/multiaddr": "^12.0.0",
     "cbor-x": "^1.6.0",
     "libp2p": "^1.0.0"
   },
