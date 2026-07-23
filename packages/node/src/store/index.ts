@@ -61,3 +61,13 @@ export {
   insertStump,
   getStump,
 } from './stumps.js';
+
+export {
+  insertSubBlock as insertMempoolSubBlock,
+  insertUtxoTx,
+  getPendingEntries,
+  purgeExpired,
+  removeEntry,
+  removeBatch,
+} from './mempool.js';
+export type { PoolEntry } from './mempool.js';
