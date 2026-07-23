@@ -1,8 +1,7 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
   verifyContentLimits,
   verifyParentRefsCount,
-  verifyProtocolVersion,
 } from '@dagsocial/validation';
 import type { NetValidators } from '../src/types.js';
 
@@ -19,7 +18,7 @@ function runStage1SubBlock(
   if (!content.valid) return content;
   const refs = verifyParentRefsCount(post.parentRefs || []);
   if (!refs.valid) return refs;
-  if (!v.verifyProtocolVersion(post.protocolVersion || 1)) {
+  if (!v.verifyProtocolVersion(post.protocolVersion ?? 1)) {
     return { valid: false, error: 'Unsupported protocol version' };
   }
   return { valid: true };
@@ -27,19 +26,21 @@ function runStage1SubBlock(
 
 function makeMockValidators(): NetValidators {
   return {
-    verifyPoW: vi.fn().mockReturnValue(true),
-    verifyPostSignature: vi.fn().mockReturnValue(true),
+    verifyPoW: () => true,
+    verifyPostSignature: () => true,
     verifyProtocolVersion: (v: number) => v === 1,
     verifyContentLimits,
     verifyParentRefsCount,
     verifySubBlockStructure: (sb: any) => {
       if (!sb.post) return { valid: false, error: 'Sub-block missing post' };
-      if (!Array.isArray(sb.likeBoxes)) return { valid: false, error: 'likeBoxes must be array' };
-      if (typeof sb.protocolVersion !== 'number') return { valid: false, error: 'missing protocolVersion' };
+      if (!sb.subBlockId) return { valid: false, error: 'Sub-block missing subBlockId' };
+      if (!Array.isArray(sb.likeBoxes)) return { valid: false, error: 'Sub-block likeBoxes must be an array' };
+      if (typeof sb.protocolVersion !== 'number') return { valid: false, error: 'Sub-block missing protocolVersion' };
+      if (!sb.producerId) return { valid: false, error: 'Sub-block missing producerId' };
       return { valid: true };
     },
-    verifyTxStructure: vi.fn().mockReturnValue({ valid: true }),
-    verifyOrderingBlockStructure: vi.fn().mockReturnValue({ valid: true }),
+    verifyTxStructure: () => ({ valid: true } as const),
+    verifyOrderingBlockStructure: () => ({ valid: true } as const),
   };
 }
 
