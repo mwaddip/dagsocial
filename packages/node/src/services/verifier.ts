@@ -128,3 +128,87 @@ export function verifyPost(
 
   return { valid: true };
 }
+
+// ---------------------------------------------------------------------------
+// verifyPostForRelay
+// ---------------------------------------------------------------------------
+
+/**
+ * Verify a relayed post (received via gossip). Same as verifyPost but skips
+ * the challenge check — the challenge was local to the origin node.
+ *
+ * Stage 2 validation: runs after Stage 1 (stateless checks in net package)
+ * has already passed. Adds stateful checks: parent refs exist, karma
+ * sufficient.
+ */
+export function verifyPostForRelay(
+  deps: VerifierDeps,
+  post: Post,
+  currentBlockHeight: number,
+): VerificationResult {
+  // 1. Content: already checked by Stage 1, but re-verify
+  const contentBytes = Buffer.byteLength(post.content, 'utf8');
+  if (contentBytes === 0) {
+    return { valid: false, error: 'Content is empty' };
+  }
+  if (contentBytes > MAX_CONTENT_BYTES) {
+    return { valid: false, error: 'Content exceeds max length' };
+  }
+
+  // 2. Parent refs count
+  if (post.parentRefs.length > MAX_PARENT_REFS) {
+    return { valid: false, error: `Too many parent refs (max ${MAX_PARENT_REFS})` };
+  }
+
+  // 3. Protocol version
+  if (post.protocolVersion !== PROTOCOL_VERSION) {
+    return { valid: false, error: 'Unsupported protocol version' };
+  }
+
+  // 4. Challenge is NOT checked — challenge was node-local to origin
+
+  // 5. PoW: re-verify (stateless, cheap)
+  const powInput = Buffer.concat([
+    Buffer.from(post.content),
+    Buffer.from(post.author),
+    ...post.parentRefs.map((r) => Buffer.from(r)),
+    Buffer.from(post.challenge),
+    Buffer.from(String(post.protocolVersion)),
+    Buffer.from(String(post.timestamp)),
+  ]);
+  if (!verifyPoW(powInput, post.powNonce, POST_POW_TARGET_BITS)) {
+    return { valid: false, error: 'Proof of Work invalid' };
+  }
+
+  // 6. Signature
+  const identity = deps.getIdentity(post.author);
+  if (!identity) {
+    return { valid: false, error: 'Author identity not found on this node' };
+  }
+  if (!verifyPostSignature(post, identity.publicKey)) {
+    return { valid: false, error: 'Signature invalid' };
+  }
+
+  // 7. Karma
+  const karmaBox = deps.getKarmaBox(identity.publicKey);
+  if (!karmaBox) {
+    return { valid: false, error: 'No karma box found' };
+  }
+  const requiredKarma =
+    post.parentRefs.length === 0 ? POST_LOCK_THREAD_COST : POST_LOCK_REPLY_COST;
+  if (karmaBox.value < requiredKarma) {
+    return {
+      valid: false,
+      error: `Insufficient karma: need ${requiredKarma} (have ${karmaBox.value})`,
+    };
+  }
+
+  // 8. Parent refs exist
+  for (const parentId of post.parentRefs) {
+    if (!deps.getPost(parentId)) {
+      return { valid: false, error: `Parent post not found: ${parentId}` };
+    }
+  }
+
+  return { valid: true };
+}
