@@ -1,4 +1,4 @@
-import { decodeSubBlock, decodeOrderingBlock, decodeTx } from '@dagsocial/types';
+import { decodeSubBlock, decodeOrderingBlock, decodeTx, POST_POW_TARGET_BITS } from '@dagsocial/types';
 import { encodeSubBlock, encodeOrderingBlock, encodeTx } from '@dagsocial/types';
 import {
   verifyContentLimits,
@@ -132,6 +132,18 @@ function runStage1SubBlock(
 
   if (!v.verifyProtocolVersion(post.protocolVersion)) {
     return { valid: false, error: 'Unsupported protocol version' };
+  }
+
+  const powInput = Buffer.concat([
+    Buffer.from(post.content),
+    Buffer.from(post.author),
+    ...post.parentRefs.map((r) => Buffer.from(r)),
+    Buffer.from(post.challenge),
+    Buffer.from(String(post.protocolVersion)),
+    Buffer.from(String(post.timestamp)),
+  ]);
+  if (!v.verifyPoW(powInput, post.powNonce, POST_POW_TARGET_BITS)) {
+    return { valid: false, error: 'Proof of Work invalid' };
   }
 
   return { valid: true };
