@@ -23,6 +23,7 @@ const EXPECTED_TABLES = [
   'utxo_boxes',
   'dag_likes',
   'sub_blocks',
+  'mempool',
   'ordering_blocks',
 ];
 

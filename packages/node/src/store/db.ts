@@ -5,16 +5,26 @@ let db: Database.Database | null = null;
 const MIGRATIONS = [
   // Drop Phase 1 identities table (had secret_key NOT NULL)
   'DROP TABLE IF EXISTS identities',
-  // Identity (Phase 2 — no secret_key)
+  // Drop tables with TEXT id columns — rebuilt as BLOB below
+  'DROP TABLE IF EXISTS challenges',
+  'DROP TABLE IF EXISTS dag_posts',
+  'DROP TABLE IF EXISTS dag_parent_refs',
+  'DROP TABLE IF EXISTS dag_stumps',
+  'DROP TABLE IF EXISTS dag_likes',
+  'DROP TABLE IF EXISTS sub_blocks',
+  'DROP TABLE IF EXISTS ordering_blocks',
+  'DROP TABLE IF EXISTS utxo_boxes',
+  // Identity (Phase 2 — no secret_key).
+  // user_id IS the 32-byte Ed25519 public key (BLOB).
   `CREATE TABLE IF NOT EXISTS identities (
-    user_id TEXT PRIMARY KEY,
+    user_id BLOB PRIMARY KEY,
     public_key BLOB NOT NULL,
     created_at INTEGER NOT NULL DEFAULT (unixepoch())
   )`,
 
   // Challenges
   `CREATE TABLE IF NOT EXISTS challenges (
-    user_id TEXT PRIMARY KEY,
+    user_id BLOB PRIMARY KEY,
     challenge BLOB NOT NULL,
     expires_at_block INTEGER NOT NULL
   )`,
@@ -23,7 +33,7 @@ const MIGRATIONS = [
   `CREATE TABLE IF NOT EXISTS dag_posts (
     id TEXT PRIMARY KEY,
     content TEXT NOT NULL,
-    author TEXT NOT NULL,
+    author BLOB NOT NULL,             -- 32-byte Ed25519 public key
     parent_refs TEXT NOT NULL,       -- JSON array of PostId strings
     challenge BLOB NOT NULL,
     pow_nonce INTEGER NOT NULL,
@@ -46,7 +56,7 @@ const MIGRATIONS = [
     id TEXT PRIMARY KEY,
     root_post_hash TEXT NOT NULL,
     subtree_merkle_root BLOB NOT NULL,
-    author_id TEXT NOT NULL,
+    author_id BLOB NOT NULL,          -- 32-byte Ed25519 public key
     prune_signature BLOB NOT NULL,
     karma_deltas TEXT NOT NULL,      -- JSON array of KarmaDelta
     reply_count INTEGER NOT NULL,
@@ -60,7 +70,7 @@ const MIGRATIONS = [
   // UTXO boxes
   `CREATE TABLE IF NOT EXISTS utxo_boxes (
     id TEXT PRIMARY KEY,
-    box_type TEXT NOT NULL,           -- 'karma' | 'credit' | 'like' | 'invite' | 'bond'
+    box_type TEXT NOT NULL,           -- 'karma' | 'credit' | 'like' | 'invite' | 'bond' | 'post_lock'
     value INTEGER NOT NULL,
     created_at_block INTEGER NOT NULL,
     spent_at_block INTEGER,           -- NULL = unspent
@@ -75,7 +85,7 @@ const MIGRATIONS = [
   `CREATE TABLE IF NOT EXISTS dag_likes (
     id TEXT PRIMARY KEY,
     target_post_id TEXT NOT NULL,
-    liker_id TEXT NOT NULL,
+    liker_id BLOB NOT NULL,            -- 32-byte Ed25519 public key
     created_at INTEGER NOT NULL DEFAULT (unixepoch()),
     processed INTEGER NOT NULL DEFAULT 0,  -- 0 = pending, 1 = processed at epoch
     UNIQUE(target_post_id, liker_id)
@@ -87,10 +97,21 @@ const MIGRATIONS = [
     post_id TEXT NOT NULL,
     post_cbor BLOB NOT NULL,
     like_box_ids TEXT NOT NULL,       -- JSON array of BoxId
-    producer_id TEXT NOT NULL,
+    producer_id BLOB NOT NULL,        -- 32-byte Ed25519 public key
     protocol_version INTEGER NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'confirmed'
     block_height INTEGER
+  )`,
+
+  // Mempool (unified sub-block + UTXO transaction pool)
+  `CREATE TABLE IF NOT EXISTS mempool (
+    rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+    entry_type TEXT NOT NULL CHECK(entry_type IN ('subblock', 'utxo_tx')),
+    subblock_cbor BLOB,
+    utxo_tx_cbor BLOB,
+    batch_id TEXT,
+    expires_at_height INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`,
 
   // Ordering blocks
@@ -102,8 +123,11 @@ const MIGRATIONS = [
     like_box_ids TEXT NOT NULL,       -- JSON array
     utxo_tx_ids TEXT NOT NULL,        -- JSON array
     stump_ids TEXT NOT NULL,          -- JSON array
-    validator_id TEXT NOT NULL,
+    validator_id BLOB NOT NULL,       -- 32-byte Ed25519 public key
     validator_signature BLOB NOT NULL,
+    pow_nonce INTEGER NOT NULL DEFAULT 0,
+    pow_target_bits INTEGER NOT NULL DEFAULT 12,
+    coinbase_outputs TEXT NOT NULL DEFAULT '[]',  -- JSON array of CoinbaseOutput
     epoch_tally_results TEXT,         -- JSON, nullable
     protocol_version INTEGER NOT NULL,
     created_at INTEGER NOT NULL
