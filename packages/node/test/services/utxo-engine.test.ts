@@ -1,3 +1,4 @@
+import { uid } from '../helpers.js';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   generateKeyPairSync,
@@ -8,7 +9,6 @@ import {
 import {
   computeBoxId,
   serializeTx,
-  getUserId,
   KARMA_DECAY_RATE,
   KARMA_DECAY_GRACE_BLOCKS,
   KARMA_FLOOR,
@@ -28,7 +28,7 @@ import {
   insertIdentity,
   getIdentity as storeGetIdentity,
 } from '../../src/store/index.js';
-import { validateAndApplyTx } from '../../src/services/utxo-engine.js';
+import { validateAndApplyTx, validateTx } from '../../src/services/utxo-engine.js';
 import type { UtxoEngineDeps } from '../../src/services/utxo-engine.js';
 
 // ---------------------------------------------------------------------------
@@ -83,7 +83,7 @@ describe('validateAndApplyTx', () => {
       insertBox: (box: AnyBox) => storeInsertBox(box),
       consumeBox: (id: string, atBlock: number) => storeConsumeBox(id, atBlock),
       getKarmaBox: (owner: Uint8Array) => getKarmaBox(owner),
-      getIdentity: (userId: string) => storeGetIdentity(userId),
+      getIdentity: (userId: Uint8Array) => storeGetIdentity(userId),
       runInTransaction: (fn: () => void) => {
         (db.transaction(fn) as () => void)();
       },
@@ -101,7 +101,7 @@ describe('validateAndApplyTx', () => {
     const { publicKey, privateKey } = generateKeyPairSync('ed25519');
     ownerPubKey = rawPublicKey(publicKey);
     ownerPrivKey = privateKey;
-    ownerUserId = getUserId(ownerPubKey);
+    ownerUserId = ownerPubKey;
 
     // Register identity so getIdentity works
     insertIdentity(ownerUserId, ownerPubKey);
@@ -555,5 +555,39 @@ describe('validateAndApplyTx', () => {
       expect(box).not.toBeNull();
       expect(box!.id).toBe(expectedId);
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // 13. validateTx checks guards and transitions but does not mutate state
+  // -------------------------------------------------------------------------
+  it('validateTx checks guards and transitions but does not mutate state', () => {
+    const karma = createAndInsertKarma(ownerPubKey, 100, 1);
+
+    const newKarma: KarmaBox = {
+      boxType: 'karma',
+      value: 60,
+      createdAtBlock: 10,
+      owner: ownerPubKey,
+      guard: 'owner_signature',
+      proofSource: 'test',
+      lastTouchBlock: 10,
+    };
+
+    const tx = buildSignedTx([karma.id!], [newKarma], ownerPrivKey, ownerPubKey);
+    const result = validateTx(deps, tx, 10);
+
+    expect(result.valid).toBe(true);
+    expect(result.computedOutputs).toBeDefined();
+    expect(result.computedOutputs!.length).toBe(1);
+    expect(result.computedOutputs![0]!.id).toBe(computeBoxId(newKarma));
+    expect(result.txId).toBeDefined();
+
+    // Box should still exist and be unspent (getBox returns null for spent boxes)
+    const box = deps.getBox(karma.id!);
+    expect(box).not.toBeNull();
+
+    // No new boxes created — only the original karma box exists
+    const bobBox = deps.getKarmaBox(ownerPubKey);
+    expect(bobBox).not.toBeNull(); // the original box is still there, unchanged
   });
 });

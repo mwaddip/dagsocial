@@ -1,12 +1,13 @@
 import { createHash, createPublicKey, verify as cryptoVerify } from 'crypto';
 import {
   computeBoxId,
+  computeTxId,
   serializeTx,
   KARMA_DECAY_RATE,
   KARMA_DECAY_GRACE_BLOCKS,
   KARMA_FLOOR,
 } from '@dagsocial/types';
-import type { UtxoTransaction, AnyBox, KarmaBox } from '@dagsocial/types';
+import type { UtxoTransaction, AnyBox, KarmaBox, BondBox } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
 // Ed25519 SPKI prefix for raw 32-byte public keys
@@ -47,7 +48,7 @@ export interface UtxoEngineDeps {
   consumeBox: (id: string, atBlock: number) => void;
   getKarmaBox: (owner: Uint8Array) => KarmaBox | null;
   /** Return identity info containing at least the publicKey. */
-  getIdentity: (userId: string) => { publicKey: Uint8Array } | null;
+  getIdentity: (userId: Uint8Array) => { publicKey: Uint8Array } | null;
   /** Wrap fn in a better-sqlite3 transaction. */
   runInTransaction: (fn: () => void) => void;
 }
@@ -59,6 +60,8 @@ export interface UtxoEngineDeps {
 export interface UtxoResult {
   valid: boolean;
   error?: string;
+  computedOutputs?: AnyBox[];
+  txId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -234,53 +237,25 @@ function checkTransitions(
 }
 
 // ---------------------------------------------------------------------------
-// Main validation + apply function
+// Internal validation helpers (extracted from validateAndApplyTx)
 // ---------------------------------------------------------------------------
 
-export function validateAndApplyTx(
-  deps: UtxoEngineDeps,
-  tx: UtxoTransaction,
-  currentBlockHeight: number,
+/**
+ * Check face-value conservation for non-karma box types.
+ * Karma is decay-aware (checked in checkKarmaDecay). Bond burns skip conservation.
+ */
+function checkValueConservation(
+  inputBoxes: AnyBox[],
+  outputs: AnyBox[],
 ): UtxoResult {
-  // ---- 1. No duplicate input box IDs ----
-  const inputSet = new Set(tx.inputs);
-  if (inputSet.size !== tx.inputs.length) {
-    return { valid: false, error: 'Duplicate input box IDs' };
-  }
+  const inputType = inputBoxes[0]!.boxType;
+  const totalInputValue = inputBoxes.reduce((sum, b) => sum + b.value, 0);
+  const totalOutputValue = outputs.reduce((sum, b) => sum + b.value, 0);
 
-  if (tx.inputs.length === 0) {
-    return { valid: false, error: 'Transaction must have at least one input' };
-  }
-
-  // ---- 2. Every input box exists and is unspent ----
-  const consumedBoxes: AnyBox[] = [];
-  for (const inputId of tx.inputs) {
-    const box = deps.getBox(inputId);
-    if (!box) {
-      return { valid: false, error: `Input box not found or already spent: ${inputId}` };
-    }
-    consumedBoxes.push(box);
-  }
-
-  // ---- 3. All inputs must be same box_type ----
-  const inputType = consumedBoxes[0]!.boxType;
-  for (const box of consumedBoxes) {
-    if (box.boxType !== inputType) {
-      return {
-        valid: false,
-        error: `Mixed input types not allowed: ${inputType} vs ${box.boxType}`,
-      };
-    }
-  }
-
-  // ---- 4. Value conservation ----
-  const totalInputValue = consumedBoxes.reduce((sum, b) => sum + b.value, 0);
-  const totalOutputValue = tx.outputs.reduce((sum, b) => sum + b.value, 0);
-
-  if (inputType === 'bond' && tx.outputs.length === 0) {
+  if (inputType === 'bond' && outputs.length === 0) {
     // BondBox burn — no outputs, value deliberately destroyed. Skip conservation.
   } else if (inputType === 'karma') {
-    // Karma conservation is checked in step 7 via effective values (decay-aware).
+    // Karma conservation is checked in checkKarmaDecay via effective values (decay-aware).
     // Face values differ legitimately — decay destroys karma, and like/invite
     // creation splits value across multiple output boxes.
   } else {
@@ -293,10 +268,20 @@ export function validateAndApplyTx(
     }
   }
 
-  // ---- 5. Guard satisfaction ----
+  return { valid: true };
+}
+
+/**
+ * Check guard satisfaction (signatures, hash preimages, epoch tally) for all inputs.
+ */
+function checkGuards(
+  deps: UtxoEngineDeps,
+  tx: UtxoTransaction,
+  inputBoxes: AnyBox[],
+): UtxoResult {
   const txHash = computeTxHash(tx);
 
-  for (const box of consumedBoxes) {
+  for (const box of inputBoxes) {
     switch (box.guard) {
       case 'owner_signature': {
         const ownerBox = box as { owner: Uint8Array };
@@ -322,7 +307,7 @@ export function validateAndApplyTx(
         };
 
       case 'inviter_signature': {
-        const bondBox = box as import('@dagsocial/types').BondBox;
+        const bondBox = box as BondBox;
         const identity = deps.getIdentity(bondBox.inviterId);
         if (!identity) {
           return {
@@ -344,59 +329,206 @@ export function validateAndApplyTx(
     }
   }
 
-  // ---- 6. Legal box transitions ----
-  const transitionResult = checkTransitions(consumedBoxes, tx.outputs);
-  if (!transitionResult.valid) {
-    return transitionResult;
+  return { valid: true };
+}
+
+/**
+ * Check karma decay: effective value at current height must cover output values.
+ * Shared between validateTx and revalidateTxInContext.
+ */
+function checkKarmaDecay(
+  inputBoxes: AnyBox[],
+  outputs: AnyBox[],
+  currentBlockHeight: number,
+): UtxoResult {
+  if (inputBoxes.length === 0) return { valid: true };
+  if (inputBoxes[0]!.boxType !== 'karma') return { valid: true };
+
+  // Compute effective karma from consumed boxes (after decay)
+  let totalEffective = 0;
+  for (const box of inputBoxes) {
+    totalEffective += effectiveKarmaValue(box as KarmaBox, currentBlockHeight);
   }
 
-  // ---- 7. Stateful validation: karma decay ----
-  if (inputType === 'karma') {
-    // Compute effective karma from consumed boxes (after decay)
-    let totalEffective = 0;
-    for (const box of consumedBoxes) {
-      totalEffective += effectiveKarmaValue(box as KarmaBox, currentBlockHeight);
+  // Sum up outputs by type
+  const karmaOutputValue = outputs
+    .filter((o) => o.boxType === 'karma')
+    .reduce((sum, o) => sum + o.value, 0);
+  const inviteOutputValue = outputs
+    .filter((o) => o.boxType === 'invite')
+    .reduce((sum, o) => sum + o.value, 0);
+  const bondOutputValue = outputs
+    .filter((o) => o.boxType === 'bond')
+    .reduce((sum, o) => sum + o.value, 0);
+  const likeOutputValue = outputs
+    .filter((o) => o.boxType === 'like')
+    .reduce((sum, o) => sum + o.value, 0);
+
+  const totalSplit =
+    karmaOutputValue + inviteOutputValue + bondOutputValue + likeOutputValue;
+
+  if (totalSplit > totalEffective) {
+    return {
+      valid: false,
+      error: `Insufficient effective karma: need ${totalSplit}, have ${totalEffective} (after decay)`,
+    };
+  }
+
+  return { valid: true };
+}
+
+// ---------------------------------------------------------------------------
+// Public API: validateTx, revalidateTxInContext, applyTx, validateAndApplyTx
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate a transaction without applying it (read-only).
+ *
+ * Performs steps 1-7 of the original validateAndApplyTx:
+ * 1. No duplicate input IDs
+ * 2. All inputs exist and are unspent
+ * 3. All inputs have the same boxType
+ * 4. Face-value conservation (non-karma types)
+ * 5. Guard satisfaction (signatures)
+ * 6. Legal box transitions
+ * 7. Karma decay check
+ *
+ * Does NOT call runInTransaction, consumeBox, or insertBox.
+ * Returns computedOutputs and txId on success for use by applyTx.
+ */
+export function validateTx(
+  deps: UtxoEngineDeps,
+  tx: UtxoTransaction,
+  currentBlockHeight: number,
+): UtxoResult {
+  // ---- 1. No duplicate input box IDs ----
+  const inputSet = new Set(tx.inputs);
+  if (inputSet.size !== tx.inputs.length) {
+    return { valid: false, error: 'Duplicate input box IDs' };
+  }
+
+  if (tx.inputs.length === 0) {
+    return { valid: false, error: 'Transaction must have at least one input' };
+  }
+
+  // ---- 2. Every input box exists and is unspent ----
+  const inputBoxes: AnyBox[] = [];
+  for (const inputId of tx.inputs) {
+    const box = deps.getBox(inputId);
+    if (!box) {
+      return { valid: false, error: `Input box not found or already spent: ${inputId}` };
     }
+    inputBoxes.push(box);
+  }
 
-    // Sum up outputs by type
-    const karmaOutputValue = tx.outputs
-      .filter((o) => o.boxType === 'karma')
-      .reduce((sum, o) => sum + o.value, 0);
-    const inviteOutputValue = tx.outputs
-      .filter((o) => o.boxType === 'invite')
-      .reduce((sum, o) => sum + o.value, 0);
-    const bondOutputValue = tx.outputs
-      .filter((o) => o.boxType === 'bond')
-      .reduce((sum, o) => sum + o.value, 0);
-    const likeOutputValue = tx.outputs
-      .filter((o) => o.boxType === 'like')
-      .reduce((sum, o) => sum + o.value, 0);
-
-    const totalSplit =
-      karmaOutputValue + inviteOutputValue + bondOutputValue + likeOutputValue;
-
-    if (totalSplit > totalEffective) {
+  // ---- 3. All inputs must be same box_type ----
+  const inputType = inputBoxes[0]!.boxType;
+  for (const box of inputBoxes) {
+    if (box.boxType !== inputType) {
       return {
         valid: false,
-        error: `Insufficient effective karma: need ${totalSplit}, have ${totalEffective} (after decay)`,
+        error: `Mixed input types not allowed: ${inputType} vs ${box.boxType}`,
       };
     }
   }
 
-  // ---- 8. Apply ----
-  deps.runInTransaction(() => {
-    // Consume all input boxes
-    for (const inputId of tx.inputs) {
-      deps.consumeBox(inputId, currentBlockHeight);
-    }
+  // ---- 4. Value conservation ----
+  const valueCheck = checkValueConservation(inputBoxes, tx.outputs);
+  if (!valueCheck.valid) return valueCheck;
 
-    // Compute IDs and insert all output boxes
-    for (const output of tx.outputs) {
-      const id = computeBoxId(output);
-      const boxWithId = { ...output, id } as AnyBox;
-      deps.insertBox(boxWithId);
+  // ---- 5. Guard satisfaction ----
+  const guardCheck = checkGuards(deps, tx, inputBoxes);
+  if (!guardCheck.valid) return guardCheck;
+
+  // ---- 6. Legal box transitions ----
+  const transitionCheck = checkTransitions(inputBoxes, tx.outputs);
+  if (!transitionCheck.valid) return transitionCheck;
+
+  // ---- 7. Karma decay ----
+  const decayCheck = checkKarmaDecay(inputBoxes, tx.outputs, currentBlockHeight);
+  if (!decayCheck.valid) return decayCheck;
+
+  // Compute output IDs for the caller (so applyTx doesn't re-compute)
+  const computedOutputs = tx.outputs.map((box) => ({
+    ...box,
+    id: computeBoxId(box),
+  })) as AnyBox[];
+
+  return {
+    valid: true,
+    computedOutputs,
+    txId: computeTxId(tx),
+  };
+}
+
+/**
+ * Revalidate a previously-validated transaction at a later height.
+ *
+ * Skips expensive checks (signatures, transitions) and only verifies:
+ * - Inputs are still unspent (liveness)
+ * - Karma decay hasn't expired at the new height
+ *
+ * Used by the mempool to detect stale transactions.
+ */
+export function revalidateTxInContext(
+  deps: UtxoEngineDeps,
+  tx: UtxoTransaction,
+  currentBlockHeight: number,
+): UtxoResult {
+  // Only check liveness — are inputs still unspent?
+  for (const id of tx.inputs) {
+    const box = deps.getBox(id);
+    if (!box) {
+      return { valid: false, error: `Input box not found or already spent: ${id}` };
     }
-  });
+  }
+
+  // Check karma decay hasn't expired (height-dependent)
+  const inputBoxes = tx.inputs
+    .map((id) => deps.getBox(id)!)
+    .filter(Boolean);
+  const decayCheck = checkKarmaDecay(inputBoxes, tx.outputs, currentBlockHeight);
+  if (!decayCheck.valid) return decayCheck;
 
   return { valid: true };
+}
+
+/**
+ * Apply a previously-validated transaction (write).
+ *
+ * Consumes all input boxes and inserts all output boxes inside a transaction.
+ * Call validateTx first — applyTx performs no validation.
+ */
+export function applyTx(
+  deps: UtxoEngineDeps,
+  tx: UtxoTransaction,
+  outputsWithIds: AnyBox[],
+  currentBlockHeight: number,
+): void {
+  deps.runInTransaction(() => {
+    for (const id of tx.inputs) {
+      deps.consumeBox(id, currentBlockHeight);
+    }
+    for (const box of outputsWithIds) {
+      deps.insertBox(box);
+    }
+  });
+}
+
+/**
+ * Validate AND apply a transaction in one call (convenience wrapper).
+ *
+ * Preserved for backward compatibility during the mempool migration.
+ * Delegates to validateTx + applyTx. For new code, prefer the split functions.
+ */
+export function validateAndApplyTx(
+  deps: UtxoEngineDeps,
+  tx: UtxoTransaction,
+  currentBlockHeight: number,
+): UtxoResult {
+  const result = validateTx(deps, tx, currentBlockHeight);
+  if (!result.valid) return result;
+
+  applyTx(deps, tx, result.computedOutputs!, currentBlockHeight);
+  return result;
 }
