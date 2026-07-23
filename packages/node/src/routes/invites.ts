@@ -1,4 +1,6 @@
 import { Router } from 'express';
+import type { UtxoTransaction } from '@dagsocial/types';
+import { getNet } from '../services/net-instance.js';
 
 // ---------------------------------------------------------------------------
 // Dependency types
@@ -13,23 +15,24 @@ export interface InvitesDeps {
     signature: Uint8Array,
     currentBlockHeight: number,
   ): {
-    inviteBox: { id: string };
-    bondBox: { id: string };
+    inviteBox: { id?: string };
+    bondBox: { id?: string };
     secret: Uint8Array;
     secretHash: Uint8Array;
+    tx: UtxoTransaction;
   };
   claimInvite(
     inviteBoxId: string,
     secret: Uint8Array,
     publicKey: Uint8Array,
     currentBlockHeight: number,
-  ): { userId: string; karmaBoxId: string };
+  ): { userId: string; karmaBoxId: string; tx: UtxoTransaction };
   cancelInvite(
     inviteBoxId: string,
     inviterId: string,
     signature: Uint8Array,
     currentBlockHeight: number,
-  ): void;
+  ): { tx: UtxoTransaction };
   getIdentity(
     userId: string,
   ): { userId: string; publicKey: Uint8Array; createdAt: number } | null;
@@ -90,6 +93,15 @@ export function createRouter(deps: InvitesDeps): Router {
         signature,
         currentHeight,
       );
+
+      // Broadcast invite create tx to peers (fire-and-forget)
+      const net = getNet();
+      if (net) {
+        net.broadcastTx(result.tx).catch((err: Error) => {
+          console.warn(`Failed to broadcast invite create tx: ${err.message}`);
+        });
+      }
+
       res.status(201).json({
         inviteBoxId: result.inviteBox.id,
         bondBoxId: result.bondBox.id,
@@ -139,6 +151,15 @@ export function createRouter(deps: InvitesDeps): Router {
         publicKey,
         currentHeight,
       );
+
+      // Broadcast invite claim tx to peers (fire-and-forget)
+      const net = getNet();
+      if (net) {
+        net.broadcastTx(result.tx).catch((err: Error) => {
+          console.warn(`Failed to broadcast invite claim tx: ${err.message}`);
+        });
+      }
+
       res.status(201).json(result);
     } catch (err) {
       res.status(400).json({ error: (err as Error).message });
@@ -170,13 +191,21 @@ export function createRouter(deps: InvitesDeps): Router {
 
     try {
       const currentHeight = deps.getCurrentHeight();
-      deps.cancelInvite(
+      const cancelResult = deps.cancelInvite(
         body.inviteBoxId,
         body.inviterId,
         signature,
         currentHeight,
       );
-      // cancelInvite returns void; we need the new karma box ID for the response
+
+      // Broadcast invite cancel tx to peers (fire-and-forget)
+      const net = getNet();
+      if (net) {
+        net.broadcastTx(cancelResult.tx).catch((err: Error) => {
+          console.warn(`Failed to broadcast invite cancel tx: ${err.message}`);
+        });
+      }
+
       res.status(200).json({ success: true });
     } catch (err) {
       const msg = (err as Error).message;

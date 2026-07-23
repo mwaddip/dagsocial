@@ -1,7 +1,15 @@
 import { Router } from 'express';
-import { computePostId, encodePost, MAX_CONTENT_BYTES } from '@dagsocial/types';
-import type { Post } from '@dagsocial/types';
+import {
+  computePostId,
+  encodePost,
+  MAX_CONTENT_BYTES,
+  POST_LOCK_THREAD_COST,
+  POST_LOCK_REPLY_COST,
+  computeBoxId,
+} from '@dagsocial/types';
+import type { Post, KarmaBox, PostLockBox } from '@dagsocial/types';
 import type { VerifierDeps, VerificationResult } from '../services/verifier.js';
+import { getNet } from '../services/net-instance.js';
 
 // ---------------------------------------------------------------------------
 // Dependency types
@@ -26,6 +34,9 @@ export interface PostsDeps extends VerifierDeps {
   getLikeCount(postId: string): { locked: number; free: number };
   insertSubBlock(subBlock: { subBlockId: string; post: Post; likeBoxes: unknown[]; producerId: string; protocolVersion: number }): void;
   onSubBlockReceived(): void;
+  // UTXO mutations for post karma locking
+  insertBox(box: Record<string, unknown>): void;
+  consumeBox(boxId: string, consumedAtBlock: number): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -113,6 +124,9 @@ export function createRouter(deps: PostsDeps): Router {
     const currentHeight = deps.getCurrentHeight();
     const result = deps.verifyPost(deps, post, currentHeight);
     if (!result.valid) {
+      // Consume challenge on failure so the user can request a fresh one.
+      // Swallow errors: the challenge may be malformed or already consumed.
+      try { deps.consumeChallenge(post.author, post.challenge); } catch { /* ok */ }
       res.status(400).json({ error: result.error });
       return;
     }
@@ -124,17 +138,62 @@ export function createRouter(deps: PostsDeps): Router {
     const rawCbor = deps.encodePost(post);
     deps.insertPost(post, rawCbor);
 
+    // Lock karma via UTXO transaction.
+    // Verification already confirmed the karma box exists with sufficient value.
+    const identity = deps.getIdentity(post.author)!;
+    const karmaBox = deps.getKarmaBox(identity.publicKey)!;
+    const lockAmount = post.parentRefs.length === 0
+      ? POST_LOCK_THREAD_COST
+      : POST_LOCK_REPLY_COST;
+    const remainingKarma = karmaBox.value - lockAmount;
+
+    // Create reduced karma box
+    const newKarmaBox: KarmaBox = {
+      boxType: 'karma',
+      value: remainingKarma,
+      createdAtBlock: currentHeight,
+      owner: identity.publicKey,
+      guard: 'owner_signature',
+      proofSource: `post-lock:${postId}`,
+      lastTouchBlock: currentHeight,
+    };
+
+    // Create post lock box (epoch_tally guarded)
+    const postLockBox: PostLockBox = {
+      boxType: 'post_lock',
+      value: lockAmount,
+      originalValue: lockAmount,
+      createdAtBlock: currentHeight,
+      owner: identity.publicKey,
+      targetPostId: postId,
+      guard: 'epoch_tally',
+    };
+
+    // Apply UTXO changes
+    deps.consumeBox(karmaBox.id!, currentHeight);
+    deps.insertBox({ ...newKarmaBox, id: computeBoxId(newKarmaBox) } as Record<string, unknown>);
+    deps.insertBox({ ...postLockBox, id: computeBoxId(postLockBox) } as Record<string, unknown>);
+
     // Consume the challenge
     deps.consumeChallenge(post.author, post.challenge);
 
     // Assemble sub-block — the post rides its own sub-block
-    deps.insertSubBlock({
+    const subBlock = {
       subBlockId: postId,
       post,
       likeBoxes: [],
       producerId: post.author,
       protocolVersion: post.protocolVersion,
-    });
+    };
+    deps.insertSubBlock(subBlock);
+
+    // Broadcast sub-block to peers (fire-and-forget)
+    const net = getNet();
+    if (net) {
+      net.broadcastSubBlock(subBlock).catch((err: Error) => {
+        console.warn(`Failed to broadcast sub-block: ${err.message}`);
+      });
+    }
 
     // Signal the block creator to pick up this sub-block
     deps.onSubBlockReceived();

@@ -4,8 +4,9 @@ import {
   getUserId,
   MAX_PENDING_INVITES,
   INVITE_PROBATION_BLOCKS,
+  PROTOCOL_VERSION,
 } from '@dagsocial/types';
-import type { InviteBox, BondBox, KarmaBox } from '@dagsocial/types';
+import type { InviteBox, BondBox, KarmaBox, UtxoTransaction } from '@dagsocial/types';
 import {
   getBox,
   insertBox,
@@ -112,6 +113,7 @@ export function createInvite(
   bondBox: BondBox;
   secret: Uint8Array;
   secretHash: Uint8Array;
+  tx: UtxoTransaction;
 } {
   const db = getDb();
 
@@ -197,11 +199,23 @@ export function createInvite(
   });
   txFn();
 
+  const tx: UtxoTransaction = {
+    inputs: [karmaBox.id!],
+    outputs: [
+      { ...newKarmaBox, id: newKarmaBoxId },
+      { ...inviteBox, id: inviteBoxId },
+      { ...bondBox, id: bondBoxId },
+    ],
+    signatures: {},
+    protocolVersion: PROTOCOL_VERSION,
+  };
+
   return {
     inviteBox: { ...inviteBox, id: inviteBoxId },
     bondBox: { ...bondBox, id: bondBoxId },
     secret,
     secretHash,
+    tx,
   };
 }
 
@@ -216,7 +230,7 @@ export function claimInvite(
   secret: Uint8Array,
   publicKey: Uint8Array,
   currentBlockHeight: number,
-): { userId: string; karmaBoxId: string } {
+): { userId: string; karmaBoxId: string; tx: UtxoTransaction } {
   const db = getDb();
 
   // ---- 1. Get invite box, verify it exists and is unspent ----
@@ -293,7 +307,17 @@ export function claimInvite(
   });
   txFn();
 
-  return { userId, karmaBoxId };
+  const tx: UtxoTransaction = {
+    inputs: [inviteBoxId, bondBox.id!],
+    outputs: [
+      { ...newKarmaBox, id: karmaBoxId },
+      { ...updatedBondBox, id: updatedBondBoxId },
+    ],
+    signatures: {},
+    protocolVersion: PROTOCOL_VERSION,
+  };
+
+  return { userId, karmaBoxId, tx };
 }
 
 /**
@@ -307,7 +331,7 @@ export function cancelInvite(
   inviterId: string,
   signature: Uint8Array,
   currentBlockHeight: number,
-): void {
+): { tx: UtxoTransaction } {
   const db = getDb();
 
   // ---- 1. Get invite box, verify unclaimed ----
@@ -374,4 +398,13 @@ export function cancelInvite(
     insertBox({ ...newKarmaBox, id: newKarmaBoxId });
   });
   txFn();
+
+  const tx: UtxoTransaction = {
+    inputs: [karmaBox.id!, inviteBoxId, bondBox.id!],
+    outputs: [{ ...newKarmaBox, id: newKarmaBoxId }],
+    signatures: {},
+    protocolVersion: PROTOCOL_VERSION,
+  };
+
+  return { tx };
 }

@@ -4,8 +4,9 @@ import {
   LIKE_COST,
   LIKE_THRESHOLD,
   LIKE_FREE_THRESHOLD,
+  PROTOCOL_VERSION,
 } from '@dagsocial/types';
-import type { KarmaBox, LikeBox } from '@dagsocial/types';
+import type { KarmaBox, LikeBox, UtxoTransaction } from '@dagsocial/types';
 import {
   getPost,
   getKarmaBox,
@@ -76,7 +77,7 @@ export function castLike(
   likerId: string,
   signature: Uint8Array,
   currentBlockHeight: number,
-): { likeId: string; type: 'locked' | 'free' } {
+): { likeId: string; type: 'locked' | 'free'; tx?: UtxoTransaction } {
   // ---- 1. Verify target post exists and is live ----
   const post = getPost(targetPostId);
   if (!post) {
@@ -162,7 +163,17 @@ export function castLike(
   });
   txFn();
 
-  return { likeId: likeBoxId, type: 'locked' };
+  const tx: UtxoTransaction = {
+    inputs: [karmaBox.id!],
+    outputs: [
+      { ...newKarmaBox, id: newKarmaId },
+      { ...likeBox, id: likeBoxId },
+    ],
+    signatures: {},
+    protocolVersion: PROTOCOL_VERSION,
+  };
+
+  return { likeId: likeBoxId, type: 'locked', tx };
 }
 
 /**

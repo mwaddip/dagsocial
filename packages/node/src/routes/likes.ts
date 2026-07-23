@@ -1,4 +1,6 @@
 import { Router } from 'express';
+import type { UtxoTransaction } from '@dagsocial/types';
+import { getNet } from '../services/net-instance.js';
 
 // ---------------------------------------------------------------------------
 // Dependency types
@@ -10,7 +12,7 @@ export interface LikesDeps {
     likerId: string,
     signature: Uint8Array,
     currentBlockHeight: number,
-  ): { likeId: string; type: 'locked' | 'free' };
+  ): { likeId: string; type: 'locked' | 'free'; tx?: UtxoTransaction };
   removeLike(
     targetPostId: string,
     likerId: string,
@@ -113,6 +115,17 @@ export function createRouter(deps: LikesDeps): Router {
         signature,
         currentHeight,
       );
+
+      // Broadcast locked like transaction to peers (fire-and-forget)
+      if (result.type === 'locked' && result.tx) {
+        const net = getNet();
+        if (net) {
+          net.broadcastTx(result.tx).catch((err: Error) => {
+            console.warn(`Failed to broadcast like tx: ${err.message}`);
+          });
+        }
+      }
+
       res.status(201).json(result);
     } catch (err) {
       res.status(400).json({ error: (err as Error).message });

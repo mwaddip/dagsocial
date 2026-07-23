@@ -14,14 +14,17 @@ import {
   LIKE_MAX_AUTHOR_REWARD,
   LIKE_COST,
   ORDERING_BLOCK_REWARD_CREDITS,
+  POST_LOCK_UNLOCK_PER_LIKES,
 } from '@dagsocial/types';
 import type {
   OrderingBlock,
   EpochTally,
   LikeReward,
   KarmaBox,
+  PostLockBox,
 } from '@dagsocial/types';
 import type { Config } from '../config.js';
+import { getNet } from './net-instance.js';
 import {
   getPendingSubBlocks,
   createOrderingBlock as storeCreateOrderingBlock,
@@ -38,6 +41,8 @@ import {
   getKarmaBox,
   getPost,
   getIdentity,
+  getUnspentPostLockBoxes,
+  getPostTotalLikes,
 } from '../store/index.js';
 
 // ---------------------------------------------------------------------------
@@ -225,6 +230,14 @@ export function createOrderingBlock(): OrderingBlock | null {
   // 12. Store block
   storeCreateOrderingBlock(block);
 
+  // Broadcast ordering block to peers (fire-and-forget)
+  const net = getNet();
+  if (net) {
+    net.broadcastOrderingBlock(block).catch((err: Error) => {
+      console.warn(`Failed to broadcast ordering block: ${err.message}`);
+    });
+  }
+
   // 13. Confirm sub-blocks and their posts
   for (const sb of subBlocks) {
     confirmSubBlock(sb.subBlockId, newHeight);
@@ -338,6 +351,58 @@ function runEpochTally(blockHeight: number): EpochTally {
 
   // 6. Mark free likes as processed
   markFreeLikesProcessed(allFreeLikeIds);
+
+  // 7. Process post lock boxes — unlock karma based on cumulative likes
+  const postLockBoxes = getUnspentPostLockBoxes();
+  for (const plb of postLockBoxes) {
+    if (!plb.id) continue;
+
+    const totalLikes = getPostTotalLikes(plb.targetPostId);
+    const alreadyUnlocked = plb.originalValue - plb.value;
+    const shouldUnlock = Math.floor(totalLikes / POST_LOCK_UNLOCK_PER_LIKES);
+    const toUnlock = Math.min(plb.value, shouldUnlock - alreadyUnlocked);
+
+    if (toUnlock <= 0) continue;
+
+    const remainingLocked = plb.value - toUnlock;
+
+    // Consume old post lock box
+    consumeBox(plb.id, blockHeight);
+
+    if (remainingLocked > 0) {
+      // Create reduced post lock box
+      const newPlb: PostLockBox = {
+        boxType: 'post_lock',
+        value: remainingLocked,
+        originalValue: plb.originalValue,
+        createdAtBlock: blockHeight,
+        owner: plb.owner,
+        targetPostId: plb.targetPostId,
+        guard: 'epoch_tally',
+      };
+      newPlb.id = computeBoxId(newPlb);
+      insertBox(newPlb);
+    }
+
+    // Refund unlocked karma to the post author
+    const post = getPost(plb.targetPostId);
+    if (post && !('subtreeMerkleRoot' in post)) {
+      const authorId = post.author;
+      mintKarma(authorId, toUnlock, blockHeight);
+    }
+
+    // Record unlock in epoch tally
+    if (!rewards[plb.targetPostId]) {
+      rewards[plb.targetPostId] = {
+        targetPostId: plb.targetPostId,
+        likeCount: 0,
+        authorReward: 0,
+        likerRefunds: {},
+      };
+    }
+    rewards[plb.targetPostId]!.postLockKarmaUnlocked =
+      (rewards[plb.targetPostId]!.postLockKarmaUnlocked ?? 0) + toUnlock;
+  }
 
   return { rewards };
 }
