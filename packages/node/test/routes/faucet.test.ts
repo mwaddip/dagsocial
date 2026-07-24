@@ -5,13 +5,14 @@ import { initDb, closeDb } from '../../src/store/db.js';
 import { insertIdentity, getIdentity } from '../../src/store/identities.js';
 import { getCurrentHeight } from '../../src/store/ordering.js';
 import {
-  getBox,
   getKarmaBox,
   insertBox,
-  consumeBox,
+  getBox,
 } from '../../src/store/utxo.js';
-import { generateKeyPair, getUserId, computeBoxId } from '@dagsocial/types';
+import { getPendingEntries } from '../../src/store/mempool.js';
+import { generateKeyPair, computeBoxId, computeTxId } from '@dagsocial/types';
 import type { KarmaBox } from '@dagsocial/types';
+import { decodeTx } from '@dagsocial/types';
 import { createRouter } from '../../src/routes/faucet.js';
 import type { FaucetDeps } from '../../src/routes/faucet.js';
 import { unlinkSync } from 'fs';
@@ -22,12 +23,14 @@ const TEST_DB = '/tmp/dagsocial-test-routes-faucet.sqlite';
 // Helpers
 // ---------------------------------------------------------------------------
 
+function hex(u: Uint8Array): string {
+  return Buffer.from(u).toString('hex');
+}
+
 function buildDeps(): FaucetDeps {
   return {
     getIdentity,
     getKarmaBox,
-    insertBox,
-    consumeBox,
     getCurrentHeight,
   };
 }
@@ -85,7 +88,7 @@ async function request(
           });
         },
       );
-      if (body !== undefined) r.write(JSON.stringify(body));
+      if (body !== undefined) r.write(JSON.stringify(body, (_k, v) => v instanceof Uint8Array ? Buffer.from(v).toString('hex') : v));
       r.end();
     });
   });
@@ -97,7 +100,7 @@ async function request(
 
 describe('faucet route', () => {
   let deps: FaucetDeps;
-  let userId: string;
+  let userId: Uint8Array;
   let publicKey: Uint8Array;
 
   beforeAll(() => {
@@ -110,7 +113,7 @@ describe('faucet route', () => {
 
     const kp = generateKeyPair();
     publicKey = kp.publicKey;
-    userId = getUserId(publicKey);
+    userId = publicKey;  // userId IS the public key
     insertIdentity(userId, publicKey);
 
     deps = buildDeps();
@@ -129,68 +132,102 @@ describe('faucet route', () => {
   // Test 1: Grants karma to identity with no existing box
   // -----------------------------------------------------------------------
 
-  it('grants karma to identity with no existing box (201, newBalance = amount)', async () => {
-    // Use a fresh identity for this test to avoid state from test setup
+  it('grants karma to identity with no existing box (201, pending)', async () => {
     const kp = generateKeyPair();
     const pk = kp.publicKey;
-    const uid = getUserId(pk);
-    insertIdentity(uid, pk);
+    const pkHex = hex(pk);
+    insertIdentity(pk, pk);
 
     const app = buildApp(deps);
     const res = await request(app, '/faucet', 'POST', {
-      userId: uid,
+      userId: pkHex,
       amount: 250,
     });
 
     expect(res.status).toBe(201);
     const body = res.data as Record<string, unknown>;
-    expect(body.userId).toBe(uid);
-    expect(typeof body.boxId).toBe('string');
-    expect(body.newBalance).toBe(250);
+    expect(body.status).toBe('pending');
+    expect(typeof body.txId).toBe('string');
+    expect(typeof body.expiresAtHeight).toBe('number');
+    expect((body.expiresAtHeight as number) > 0).toBe(true);
 
-    // Verify box exists in the store
-    const box = getBox(body.boxId as string);
-    expect(box).not.toBeNull();
-    expect(box!.boxType).toBe('karma');
-    expect(box!.value).toBe(250);
+    // Verify the transaction is in the mempool
+    const entries = getPendingEntries(10);
+    const utxoEntry = entries.find((e) => e.entryType === 'utxo_tx' && e.utxoTxCbor);
+    expect(utxoEntry).toBeDefined();
+
+    // Decode the transaction and verify the output
+    const tx = decodeTx(utxoEntry!.utxoTxCbor!);
+    expect(tx.inputs).toEqual([]); // no existing box to consume
+    expect(tx.outputs.length).toBe(1);
+    const output = tx.outputs[0];
+    expect(output.boxType).toBe('karma');
+    expect(output.value).toBe(250);
+
+    // The box should NOT be in the UTXO store yet (only in mempool)
+    const box = getBox(body.txId as string);
+    expect(box).toBeNull();
   });
 
   // -----------------------------------------------------------------------
-  // Test 2: Tops up existing karma box
+  // Test 2: Tops up existing (confirmed) karma box
   // -----------------------------------------------------------------------
 
-  it('tops up existing karma box (201, newBalance = old + amount)', async () => {
-    // Create an identity with an existing karma box
+  it('tops up existing karma box via mempool (201, pending)', async () => {
     const kp = generateKeyPair();
     const pk = kp.publicKey;
-    const uid = getUserId(pk);
-    insertIdentity(uid, pk);
+    const pkHex = hex(pk);
+    insertIdentity(pk, pk);
+
+    // Insert a confirmed karma box directly into UTXO (simulating a previous
+    // faucet grant that has been confirmed by a block)
+    const existingBox: KarmaBox = {
+      boxType: 'karma',
+      value: 100,
+      createdAtBlock: 1,
+      owner: pk,
+      guard: 'owner_signature',
+      proofSource: 'faucet',
+      lastTouchBlock: 1,
+    };
+    const existingBoxId = computeBoxId(existingBox);
+    insertBox({ ...existingBox, id: existingBoxId });
+
+    // Verify it exists in UTXO store
+    const stored = getKarmaBox(pk);
+    expect(stored).not.toBeNull();
+    expect(stored!.value).toBe(100);
 
     const app = buildApp(deps);
 
-    // First grant some karma
-    const res1 = await request(app, '/faucet', 'POST', {
-      userId: uid,
-      amount: 100,
-    });
-    expect(res1.status).toBe(201);
-    const body1 = res1.data as Record<string, unknown>;
-    expect(body1.newBalance).toBe(100);
-
-    // Now top up
-    const res2 = await request(app, '/faucet', 'POST', {
-      userId: uid,
+    // Now call faucet to top-up
+    const res = await request(app, '/faucet', 'POST', {
+      userId: pkHex,
       amount: 50,
     });
-    expect(res2.status).toBe(201);
-    const body2 = res2.data as Record<string, unknown>;
-    expect(body2.newBalance).toBe(150);
-    expect(body2.userId).toBe(uid);
+    expect(res.status).toBe(201);
+    const body = res.data as Record<string, unknown>;
+    expect(body.status).toBe('pending');
+    expect(typeof body.txId).toBe('string');
+    expect(typeof body.expiresAtHeight).toBe('number');
+    expect((body.expiresAtHeight as number) > 0).toBe(true);
 
-    // Verify the new box exists and has the right value
-    const newBox = getBox(body2.boxId as string);
-    expect(newBox).not.toBeNull();
-    expect(newBox!.value).toBe(150);
+    // Verify the transaction is in the mempool by txId
+    const txId = body.txId as string;
+    const entries = getPendingEntries(10);
+    const txEntry = entries.find((e) => {
+      if (e.entryType !== 'utxo_tx' || !e.utxoTxCbor) return false;
+      const decoded = decodeTx(e.utxoTxCbor);
+      return computeTxId(decoded) === txId;
+    });
+    expect(txEntry).toBeDefined();
+
+    // Decode the transaction — should consume old box and output new with 150
+    const tx = decodeTx(txEntry!.utxoTxCbor!);
+    expect(tx.inputs).toEqual([existingBoxId]);
+    expect(tx.outputs.length).toBe(1);
+    expect(tx.outputs[0].boxType).toBe('karma');
+    expect(tx.outputs[0].value).toBe(150);
   });
 
   // -----------------------------------------------------------------------
@@ -200,7 +237,7 @@ describe('faucet route', () => {
   it('returns 404 for unknown userId', async () => {
     const app = buildApp(deps);
     const res = await request(app, '/faucet', 'POST', {
-      userId: 'nonexistent-user-id',
+      userId: '00'.repeat(32),  // 32 bytes of zeros as hex = 64 hex chars
       amount: 100,
     });
     expect(res.status).toBe(404);
@@ -215,7 +252,7 @@ describe('faucet route', () => {
   it('returns 403 when network mode is not testnet', async () => {
     const app = buildAppWithNetworkMode(deps, 'production');
     const res = await request(app, '/faucet', 'POST', {
-      userId,
+      userId: hex(userId),
       amount: 100,
     });
     expect(res.status).toBe(403);
