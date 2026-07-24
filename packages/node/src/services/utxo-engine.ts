@@ -95,6 +95,23 @@ function checkTransitions(
   inputs: AnyBox[],
   outputs: AnyBox[],
 ): { valid: boolean; error?: string } {
+  // Handle invite cancel: KarmaBox + InviteBox + BondBox → KarmaBox
+  if (inputs.length === 3) {
+    const hasKarma = inputs.some((b) => b.boxType === 'karma');
+    const hasInvite = inputs.some((b) => b.boxType === 'invite');
+    const hasBond = inputs.some((b) => b.boxType === 'bond');
+    if (hasKarma && hasInvite && hasBond) {
+      const karmaOuts = outputs.filter((o) => o.boxType === 'karma');
+      if (karmaOuts.length === 1 && outputs.length === 1) {
+        return { valid: true };
+      }
+      return {
+        valid: false,
+        error: 'Invite cancel must produce exactly 1 KarmaBox output',
+      };
+    }
+  }
+
   // Handle invite claim: InviteBox + BondBox → KarmaBox + BondBox (claimed)
   if (inputs.length === 2) {
     const hasInvite = inputs.some((b) => b.boxType === 'invite');
@@ -415,10 +432,17 @@ function checkKarmaDecay(
   if (inputBoxes.length === 0) return { valid: true };
   if (inputBoxes[0]!.boxType !== 'karma') return { valid: true };
 
-  // Compute effective karma from consumed boxes (after decay)
+  // Compute effective karma from consumed boxes (after decay).
+  // Non-karma inputs (invite, bond, like) contribute their face value, which
+  // handles transitions like invite cancel where invite/bond boxes are consumed
+  // alongside a karma box.
   let totalEffective = 0;
   for (const box of inputBoxes) {
-    totalEffective += effectiveKarmaValue(box as KarmaBox, currentBlockHeight);
+    if (box.boxType === 'karma') {
+      totalEffective += effectiveKarmaValue(box as KarmaBox, currentBlockHeight);
+    } else {
+      totalEffective += box.value;
+    }
   }
 
   // Sum up outputs by type
@@ -495,12 +519,17 @@ export function validateTx(
     inputBoxes.push(box);
   }
 
-  // ---- 3. All inputs must be same box_type (except invite+bond claim) ----
+  // ---- 3. All inputs must be same box_type (except invite+bond claim and invite cancel) ----
   const isInviteBondClaim =
     inputBoxes.length === 2 &&
     inputBoxes.some((b) => b.boxType === 'invite') &&
     inputBoxes.some((b) => b.boxType === 'bond');
-  if (!isInviteBondClaim) {
+  const isInviteCancel =
+    inputBoxes.length === 3 &&
+    inputBoxes.some((b) => b.boxType === 'karma') &&
+    inputBoxes.some((b) => b.boxType === 'invite') &&
+    inputBoxes.some((b) => b.boxType === 'bond');
+  if (!isInviteBondClaim && !isInviteCancel) {
     const inputType = inputBoxes[0]!.boxType;
     for (const box of inputBoxes) {
       if (box.boxType !== inputType) {

@@ -1,92 +1,23 @@
-import { randomBytes, createHash, createPublicKey, verify as cryptoVerify } from 'crypto';
 import {
   computeBoxId,
   computeTxId,
   MAX_PENDING_INVITES,
-  INVITE_PROBATION_BLOCKS,
-  PROTOCOL_VERSION,
+  INVITE_KARMA_AMOUNT,
+  INVITE_BOND_KARMA,
   decodeTx,
 } from '@dagsocial/types';
 import type { InviteBox, BondBox, KarmaBox, UtxoTransaction } from '@dagsocial/types';
 import {
-  getBox,
-  insertBox,
-  consumeBox,
-  getKarmaBox,
   getPendingInviteCount,
-  getBondBoxes,
-  getIdentity,
-  getDb,
   insertUtxoTx,
   getPendingEntries,
 } from '../store/index.js';
+import { validateTx } from './utxo-engine.js';
+import type { UtxoEngineDeps } from './utxo-engine.js';
 
 // ---------------------------------------------------------------------------
-// Ed25519 SPKI prefix for raw 32-byte public keys
+// MemPool helpers
 // ---------------------------------------------------------------------------
-
-const ED25519_SPKI_PREFIX = Buffer.from(
-  '302a300506032b6570032100',
-  'hex',
-);
-
-function publicKeyToKeyObject(pubKey: Uint8Array): ReturnType<typeof createPublicKey> {
-  return createPublicKey({
-    key: Buffer.concat([ED25519_SPKI_PREFIX, Buffer.from(pubKey)]),
-    format: 'der',
-    type: 'spki',
-  });
-}
-
-/**
- * Verify an Ed25519 signature over a pre-hashed message.
- * The signer signs: blake2b512(message).subarray(0, 32)
- */
-function verifySignature(
-  message: Uint8Array,
-  signature: Uint8Array,
-  pubKey: Uint8Array,
-): boolean {
-  try {
-    const keyObj = publicKeyToKeyObject(pubKey);
-    const hash = createHash('blake2b512')
-      .update(Buffer.from(message))
-      .digest()
-      .subarray(0, 32);
-    return Boolean(cryptoVerify(null, hash, keyObj, Buffer.from(signature)));
-  } catch {
-    return false;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Find the unclaimed bond box matching a given invite box.
- * Matches by inviter ID, unclaimed status (empty inviteePublicKey), and
- * createdAtBlock (created in the same logical operation).
- */
-function findMatchingBondBox(
-  inviterId: string,
-  createdAtBlock: number,
-): BondBox | null {
-  const db = getDb();
-  const bondBoxes = getBondBoxes(inviterId);
-  for (const bond of bondBoxes) {
-    if (!bond.id) continue;
-    const row = db
-      .prepare('SELECT spent_at_block FROM utxo_boxes WHERE id = ?')
-      .get(bond.id) as { spent_at_block: number | null } | undefined;
-    if (row && row.spent_at_block !== null) continue;
-
-    if (bond.inviteePublicKey.length === 0 && bond.createdAtBlock === createdAtBlock) {
-      return bond;
-    }
-  }
-  return null;
-}
 
 /**
  * Count pending invite creates in the mempool for a given inviter.
@@ -117,26 +48,17 @@ function countPendingInvitesInMempool(inviterId: Uint8Array): number {
 // ---------------------------------------------------------------------------
 
 /**
- * Create an invite. Locks karmaAmount in an InviteBox (hash-locked) and
- * bondAmount in a BondBox (inviter-controlled).
+ * Create an invite. The client builds a signed UtxoTransaction that consumes
+ * a KarmaBox and produces karma + invite + bond outputs.
  *
- * The signature covers a deterministic message (not the UTXO tx hash, since the
- * secret is generated internally and the caller cannot pre-sign the tx):
+ * Fixed amounts: INVITE_KARMA_AMOUNT = 25, INVITE_BOND_KARMA = 25.
  *
- *   signMessage = blake2b512("create-invite:" + inviterId + ":" + karmaAmount +
- *                            ":" + bondAmount).subarray(0, 32)
- *
- * The UTXO transaction is inserted into the mempool and applied when the next
- * ordering block is confirmed — the invite is **pending** until then.
- *
- * Returns the secret for out-of-band communication to the invitee.
+ * The service validates the transaction and inserts it into the mempool.
+ * The invite is **pending** until the next ordering block is confirmed.
  */
 export function createInvite(
-  inviterId: Uint8Array,
-  karmaAmount: number,
-  bondAmount: number,
-  inviterPubKey: Uint8Array,
-  signature: Uint8Array,
+  deps: UtxoEngineDeps,
+  tx: UtxoTransaction,
   currentBlockHeight: number,
 ): {
   status: 'pending';
@@ -144,13 +66,18 @@ export function createInvite(
   expiresAtHeight: number;
   inviteBox: InviteBox;
   bondBox: BondBox;
-  secret: Uint8Array;
-  secretHash: Uint8Array;
   tx: UtxoTransaction;
 } {
-  const inviterIdHex = Buffer.from(inviterId).toString('hex');
+  // ---- 1. Extract inviter from the consumed KarmaBox input ----
+  const karmaInput = tx.inputs
+    .map((id) => deps.getBox(id))
+    .find((box): box is KarmaBox => box?.boxType === 'karma');
+  if (!karmaInput) {
+    throw new Error('No karma box input found in transaction');
+  }
+  const inviterId = karmaInput.owner;
 
-  // ---- 1. Verify pending invite count limit (UTXO + mempool) ----
+  // ---- 2. Verify invite count limit (UTXO + mempool) ----
   const utxoCount = getPendingInviteCount(inviterId);
   const mempoolCount = countPendingInvitesInMempool(inviterId);
   const totalPending = utxoCount + mempoolCount;
@@ -160,113 +87,68 @@ export function createInvite(
     );
   }
 
-  // ---- 2. Verify karma balance ----
-  const karmaBox = getKarmaBox(inviterPubKey);
-  if (!karmaBox) {
-    throw new Error(`No karma box found for inviter ${inviterIdHex}`);
-  }
+  // ---- 3. Verify outputs: exactly 1 karma + 1 invite + 1 bond ----
+  const karmaOutputs = tx.outputs.filter((o) => o.boxType === 'karma');
+  const inviteOutputs = tx.outputs.filter((o) => o.boxType === 'invite');
+  const bondOutputs = tx.outputs.filter((o) => o.boxType === 'bond');
 
-  const totalRequired = karmaAmount + bondAmount;
-  if (karmaBox.value < totalRequired) {
+  if (tx.outputs.length !== 3 || karmaOutputs.length !== 1 || inviteOutputs.length !== 1 || bondOutputs.length !== 1) {
     throw new Error(
-      `Insufficient karma: need ${totalRequired}, have ${karmaBox.value}`,
+      'Invite creation requires exactly 3 outputs: 1 karma + 1 invite + 1 bond',
     );
   }
 
-  // ---- 3. Verify signature over deterministic message ----
-  const signMessage = `create-invite:${inviterIdHex}:${karmaAmount}:${bondAmount}`;
-  if (!verifySignature(Buffer.from(signMessage), signature, inviterPubKey)) {
-    throw new Error('Invalid inviter signature');
+  // ---- 4. Verify fixed amounts ----
+  const inviteOut = inviteOutputs[0] as InviteBox;
+  const bondOut = bondOutputs[0] as BondBox;
+
+  if (inviteOut.value !== INVITE_KARMA_AMOUNT) {
+    throw new Error(
+      `InviteBox value must be ${INVITE_KARMA_AMOUNT}, got ${inviteOut.value}`,
+    );
+  }
+  if (bondOut.value !== INVITE_BOND_KARMA) {
+    throw new Error(
+      `BondBox value must be ${INVITE_BOND_KARMA}, got ${bondOut.value}`,
+    );
   }
 
-  // ---- 4. Generate random secret ----
-  const secret = new Uint8Array(randomBytes(32));
+  // ---- 5. Validate transaction (guards, transitions, decay) ----
+  const result = validateTx(deps, tx, currentBlockHeight);
+  if (!result.valid) {
+    throw new Error(`Invalid invite create transaction: ${result.error}`);
+  }
 
-  // ---- 5. Compute secret hash ----
-  const secretHash = createHash('blake2b512')
-    .update(Buffer.from(secret))
-    .digest()
-    .subarray(0, 32);
-
-  // ---- 6. Build output boxes ----
-  const remainingKarma = karmaBox.value - totalRequired;
-
-  const newKarmaBox: KarmaBox = {
-    boxType: 'karma',
-    value: remainingKarma,
-    createdAtBlock: currentBlockHeight,
-    owner: inviterPubKey,
-    guard: 'owner_signature',
-    proofSource: 'invite-create',
-    lastTouchBlock: currentBlockHeight,
-  };
-
-  const inviteBox: InviteBox = {
-    boxType: 'invite',
-    value: karmaAmount,
-    createdAtBlock: currentBlockHeight,
-    secretHash,
-    inviterId,
-    guard: 'hash_preimage',
-  };
-
-  const bondBox: BondBox = {
-    boxType: 'bond',
-    value: bondAmount,
-    createdAtBlock: currentBlockHeight,
-    inviterId,
-    inviteePublicKey: new Uint8Array(0),
-    probationStartBlock: 0,
-    probationEndBlock: 0,
-    guard: 'inviter_signature',
-  };
-
-  const inviteBoxId = computeBoxId(inviteBox);
-  const bondBoxId = computeBoxId(bondBox);
-  const newKarmaBoxId = computeBoxId(newKarmaBox);
-
-  // ---- 7. Build and insert UTXO transaction into mempool ----
-  const tx: UtxoTransaction = {
-    inputs: [karmaBox.id!],
-    outputs: [
-      { ...newKarmaBox, id: newKarmaBoxId },
-      { ...inviteBox, id: inviteBoxId },
-      { ...bondBox, id: bondBoxId },
-    ],
-    signatures: {},
-    protocolVersion: PROTOCOL_VERSION,
-  };
-
+  // ---- 6. Insert into mempool ----
   const expiresAtHeight = currentBlockHeight + 720;
   insertUtxoTx(tx, null, expiresAtHeight);
 
+  // ---- 7. Return result ----
   const txId = computeTxId(tx);
 
   return {
     status: 'pending',
     txId,
     expiresAtHeight,
-    inviteBox: { ...inviteBox, id: inviteBoxId },
-    bondBox: { ...bondBox, id: bondBoxId },
-    secret,
-    secretHash,
+    inviteBox: { ...inviteOut, id: inviteOut.id ?? computeBoxId(inviteOut) },
+    bondBox: { ...bondOut, id: bondOut.id ?? computeBoxId(bondOut) },
     tx,
   };
 }
 
 /**
- * Claim an invite using the preimage secret.
+ * Claim an invite using a signed UtxoTransaction that includes the preimage
+ * secret in `tx.preimages`.
  *
- * Consumes the InviteBox and creates a new KarmaBox for the invitee.
- * Updates the matching BondBox with the invitee's public key and probation window.
+ * The client builds a tx consuming the InviteBox and BondBox, producing a
+ * new KarmaBox for the invitee and an updated (claimed) BondBox.
  *
- * The UTXO transaction is inserted into the mempool and applied when the next
- * ordering block is confirmed — the claim is **pending** until then.
+ * validateTx verifies the hash_preimage guard via the preimages map.
+ * The claim is **pending** until the next ordering block is confirmed.
  */
 export function claimInvite(
-  inviteBoxId: string,
-  secret: Uint8Array,
-  publicKey: Uint8Array,
+  deps: UtxoEngineDeps,
+  tx: UtxoTransaction,
   currentBlockHeight: number,
 ): {
   status: 'pending';
@@ -276,105 +158,79 @@ export function claimInvite(
   karmaBoxId: string;
   tx: UtxoTransaction;
 } {
-  const db = getDb();
+  // ---- 1. Extract invite box ID and bond box ID from tx.inputs ----
+  let inviteBoxId: string | undefined;
+  let bondBoxId: string | undefined;
 
-  // ---- 1. Get invite box, verify it exists and is unspent ----
-  const box = getBox(inviteBoxId);
-  if (!box || box.boxType !== 'invite') {
+  for (const inputId of tx.inputs) {
+    const box = deps.getBox(inputId);
+    if (box?.boxType === 'invite') inviteBoxId = inputId;
+    if (box?.boxType === 'bond') bondBoxId = inputId;
+  }
+
+  if (!inviteBoxId) {
+    throw new Error('Transaction does not consume an InviteBox');
+  }
+  if (!bondBoxId) {
+    throw new Error('Transaction does not consume a BondBox');
+  }
+
+  // ---- 2. Verify invite box exists, is unspent, is type invite ----
+  const inviteBox = deps.getBox(inviteBoxId);
+  if (!inviteBox || inviteBox.boxType !== 'invite') {
     throw new Error(`Invite box not found: ${inviteBoxId}`);
   }
 
-  const inviteSpentRow = db
-    .prepare('SELECT spent_at_block FROM utxo_boxes WHERE id = ?')
-    .get(inviteBoxId) as { spent_at_block: number | null } | undefined;
-  if (!inviteSpentRow || inviteSpentRow.spent_at_block !== null) {
-    throw new Error(`Invite box already spent: ${inviteBoxId}`);
+  // ---- 3. Verify invitee public key is not already an account ----
+  const karmaOutput = tx.outputs.find((o): o is KarmaBox => o.boxType === 'karma');
+  if (!karmaOutput) {
+    throw new Error('Transaction must produce a KarmaBox for the invitee');
   }
+  const inviteePubKey = karmaOutput.owner;
 
-  const inv = box as InviteBox;
-
-  // ---- 2. Verify secret hash ----
-  const computedHash = createHash('blake2b512')
-    .update(Buffer.from(secret))
-    .digest()
-    .subarray(0, 32);
-
-  if (Buffer.from(computedHash).toString('hex') !== Buffer.from(inv.secretHash).toString('hex')) {
-    throw new Error('Secret hash mismatch');
-  }
-
-  // ---- 3. Verify publicKey not already an account ----
-  const existingKarma = getKarmaBox(publicKey);
+  const existingKarma = deps.getKarmaBox(inviteePubKey);
   if (existingKarma) {
     throw new Error('Public key already associated with an account');
   }
 
-  // ---- 4. userId IS the public key ----
-  const userId = publicKey;
-
-  // ---- 5. Find matching bond box ----
-  const bondBox = findMatchingBondBox(inv.inviterId, inv.createdAtBlock);
-  if (!bondBox || !bondBox.id) {
-    throw new Error(`No unclaimed bond box found for inviter ${inv.inviterId}`);
+  // ---- 4. Validate transaction (guards, transitions, decay) ----
+  // This verifies the hash_preimage via checkGuards, the bond claim
+  // transition, and value conservation.
+  const result = validateTx(deps, tx, currentBlockHeight);
+  if (!result.valid) {
+    throw new Error(`Invalid invite claim transaction: ${result.error}`);
   }
 
-  // ---- 6. Build output boxes ----
-  const newKarmaBox: KarmaBox = {
-    boxType: 'karma',
-    value: inv.value,
-    createdAtBlock: currentBlockHeight,
-    owner: publicKey,
-    guard: 'owner_signature',
-    proofSource: `invite-claim:${inviteBoxId}`,
-    lastTouchBlock: currentBlockHeight,
-  };
-  const karmaBoxId = computeBoxId(newKarmaBox);
-
-  const probationEndBlock = currentBlockHeight + INVITE_PROBATION_BLOCKS;
-  const updatedBondBox: BondBox = {
-    boxType: 'bond',
-    value: bondBox.value,
-    createdAtBlock: currentBlockHeight,
-    inviterId: bondBox.inviterId,
-    inviteePublicKey: publicKey,
-    probationStartBlock: currentBlockHeight,
-    probationEndBlock,
-    guard: 'inviter_signature',
-  };
-  const updatedBondBoxId = computeBoxId(updatedBondBox);
-
-  // ---- 7. Build and insert UTXO transaction into mempool ----
-  const tx: UtxoTransaction = {
-    inputs: [inviteBoxId, bondBox.id!],
-    outputs: [
-      { ...newKarmaBox, id: karmaBoxId },
-      { ...updatedBondBox, id: updatedBondBoxId },
-    ],
-    signatures: {},
-    protocolVersion: PROTOCOL_VERSION,
-  };
-
+  // ---- 5. Insert into mempool ----
   const expiresAtHeight = currentBlockHeight + 720;
   insertUtxoTx(tx, null, expiresAtHeight);
 
+  // ---- 6. Return result ----
   const txId = computeTxId(tx);
+  const karmaBoxId = karmaOutput.id ?? computeBoxId(karmaOutput);
 
-  return { status: 'pending', txId, expiresAtHeight, userId, karmaBoxId, tx };
+  return {
+    status: 'pending',
+    txId,
+    expiresAtHeight,
+    userId: inviteePubKey,
+    karmaBoxId,
+    tx,
+  };
 }
 
 /**
- * Cancel an unclaimed invite. Consumes the InviteBox and BondBox, returning
- * both values to the inviter's karma box.
+ * Cancel an unclaimed invite. The client builds a signed UtxoTransaction that
+ * consumes the KarmaBox, InviteBox, and BondBox, returning all value to a new
+ * KarmaBox for the inviter.
  *
- * The signature covers: blake2b512("cancel-invite:" + inviteBoxId).subarray(0, 32)
- *
- * The UTXO transaction is inserted into the mempool and applied when the next
- * ordering block is confirmed — the cancellation is **pending** until then.
+ * validateTx checks the inviter_signature guard on the bond box and the
+ * owner_signature on the karma box.
+ * The cancellation is **pending** until the next ordering block is confirmed.
  */
 export function cancelInvite(
-  inviteBoxId: string,
-  inviterId: Uint8Array,
-  signature: Uint8Array,
+  deps: UtxoEngineDeps,
+  tx: UtxoTransaction,
   currentBlockHeight: number,
 ): {
   status: 'pending';
@@ -382,77 +238,58 @@ export function cancelInvite(
   expiresAtHeight: number;
   tx: UtxoTransaction;
 } {
-  const inviterIdHex = Buffer.from(inviterId).toString('hex');
-  const db = getDb();
+  // ---- 1. Extract invite box ID from tx.inputs ----
+  let inviteBoxId: string | undefined;
 
-  // ---- 1. Get invite box, verify unclaimed ----
-  const box = getBox(inviteBoxId);
-  if (!box || box.boxType !== 'invite') {
+  for (const inputId of tx.inputs) {
+    const box = deps.getBox(inputId);
+    if (box?.boxType === 'invite') {
+      inviteBoxId = inputId;
+      break;
+    }
+  }
+
+  if (!inviteBoxId) {
+    throw new Error('Transaction does not consume an InviteBox');
+  }
+
+  // ---- 2. Verify invite box exists, is unspent, is type invite ----
+  const inviteBox = deps.getBox(inviteBoxId);
+  if (!inviteBox || inviteBox.boxType !== 'invite') {
     throw new Error(`Invite box not found: ${inviteBoxId}`);
   }
 
-  const inviteSpentRow = db
-    .prepare('SELECT spent_at_block FROM utxo_boxes WHERE id = ?')
-    .get(inviteBoxId) as { spent_at_block: number | null } | undefined;
-  if (!inviteSpentRow || inviteSpentRow.spent_at_block !== null) {
-    throw new Error('Invite already claimed or spent');
+  // ---- 3. Verify inviter matches the invite box's inviterId ----
+  const inv = inviteBox as InviteBox;
+  const karmaInput = tx.inputs
+    .map((id) => deps.getBox(id))
+    .find((box): box is KarmaBox => box?.boxType === 'karma');
+  if (!karmaInput) {
+    throw new Error('Transaction does not consume a KarmaBox');
+  }
+  if (!Buffer.from(karmaInput.owner).equals(Buffer.from(inv.inviterId))) {
+    throw new Error('Inviter mismatch: karma box owner does not match invite box inviterId');
   }
 
-  const inv = box as InviteBox;
-  if (!Buffer.from(inv.inviterId).equals(Buffer.from(inviterId))) {
-    throw new Error('Inviter mismatch');
+  // ---- 4. Validate transaction (guards, transitions, decay) ----
+  // This checks owner_signature on the karma box, inviter_signature on the
+  // bond box, and the cancel transition.
+  const result = validateTx(deps, tx, currentBlockHeight);
+  if (!result.valid) {
+    throw new Error(`Invalid invite cancel transaction: ${result.error}`);
   }
 
-  // ---- 2. Verify inviter signature ----
-  const identity = getIdentity(inviterId);
-  if (!identity) {
-    throw new Error(`Inviter identity not found: ${inviterIdHex}`);
-  }
-
-  const signMessage = `cancel-invite:${inviteBoxId}`;
-  if (!verifySignature(Buffer.from(signMessage), signature, identity.publicKey)) {
-    throw new Error('Invalid inviter signature');
-  }
-
-  // ---- 3. Find matching bond box ----
-  const bondBox = findMatchingBondBox(inv.inviterId, inv.createdAtBlock);
-  if (!bondBox || !bondBox.id) {
-    throw new Error(`No unclaimed bond box found for inviter ${inv.inviterId}`);
-  }
-
-  // ---- 4. Get current karma box for inviter ----
-  const karmaBox = getKarmaBox(identity.publicKey);
-  if (!karmaBox) {
-    throw new Error(`No karma box found for inviter ${inviterIdHex}`);
-  }
-
-  // ---- 5. Build output: return both values to inviter ----
-  const returnValue = inv.value + bondBox.value;
-  const newKarmaValue = karmaBox.value + returnValue;
-
-  const newKarmaBox: KarmaBox = {
-    boxType: 'karma',
-    value: newKarmaValue,
-    createdAtBlock: currentBlockHeight,
-    owner: identity.publicKey,
-    guard: 'owner_signature',
-    proofSource: `invite-cancel:${inviteBoxId}`,
-    lastTouchBlock: currentBlockHeight,
-  };
-  const newKarmaBoxId = computeBoxId(newKarmaBox);
-
-  // ---- 6. Build and insert UTXO transaction into mempool ----
-  const tx: UtxoTransaction = {
-    inputs: [karmaBox.id!, inviteBoxId, bondBox.id!],
-    outputs: [{ ...newKarmaBox, id: newKarmaBoxId }],
-    signatures: {},
-    protocolVersion: PROTOCOL_VERSION,
-  };
-
+  // ---- 5. Insert into mempool ----
   const expiresAtHeight = currentBlockHeight + 720;
   insertUtxoTx(tx, null, expiresAtHeight);
 
+  // ---- 6. Return result ----
   const txId = computeTxId(tx);
 
-  return { status: 'pending', txId, expiresAtHeight, tx };
+  return {
+    status: 'pending',
+    txId,
+    expiresAtHeight,
+    tx,
+  };
 }
