@@ -34,6 +34,9 @@ importers:
       '@libp2p/tcp':
         specifier: ^9.0.0
         version: 9.1.6
+      '@multiformats/multiaddr':
+        specifier: ^12.0.0
+        version: 12.5.1
       cbor-x:
         specifier: ^1.6.0
         version: 1.6.4
@@ -56,6 +59,9 @@ importers:
 
   packages/node:
     dependencies:
+      '@dagsocial/net':
+        specifier: workspace:*
+        version: link:../net
       '@dagsocial/types':
         specifier: workspace:*
         version: link:../types
