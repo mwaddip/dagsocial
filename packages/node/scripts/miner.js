@@ -9,6 +9,8 @@
  * Env vars:
  *   NODE_URL     — node HTTP URL (default http://localhost:3000)
  *   THROTTLE_MS  — sleep between hashing batches (default 0 = full speed)
+ *   COOLDOWN_MS  — sleep after solving a block before fetching next template
+ *                  (default 45000 = 45s, set 0 to disable)
  *   LOG_EVERY    — log progress every N hashes (default 100000)
  */
 
@@ -16,6 +18,7 @@ import { createHash } from 'crypto';
 
 const NODE_URL = process.env.NODE_URL ?? 'http://localhost:3000';
 const THROTTLE_MS = parseInt(process.env.THROTTLE_MS ?? '0', 10);
+const COOLDOWN_MS = parseInt(process.env.COOLDOWN_MS ?? '45000', 10);
 const LOG_EVERY = parseInt(process.env.LOG_EVERY ?? '100000', 10);
 
 // ---------------------------------------------------------------------------
@@ -112,6 +115,10 @@ while (true) {
       const result = await submitRes.json();
       console.log(`  ✓ Block ${result.height} mined: ${result.blockHash.slice(0, 16)}...`);
       lastHeight = result.height;
+      if (COOLDOWN_MS > 0) {
+        console.log(`  Cooling down ${(COOLDOWN_MS / 1000).toFixed(0)}s...`);
+        await sleep(COOLDOWN_MS);
+      }
     } else {
       const err = await submitRes.json().catch(() => ({}));
       console.log(`  ✗ Submit failed: ${err.error || submitRes.status}`);
