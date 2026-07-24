@@ -1,3 +1,4 @@
+import { uid } from '../helpers.js';
 import {
   describe,
   it,
@@ -14,7 +15,6 @@ import {
 import {
   computeBoxId,
   computePostId,
-  getUserId,
   PROTOCOL_VERSION,
   LIKE_COST,
   LIKE_THRESHOLD,
@@ -26,6 +26,7 @@ import type {
   LikeBox,
   KarmaBox,
   OrderingBlock,
+  UtxoTransaction,
 } from '@dagsocial/types';
 import type Database from 'better-sqlite3';
 
@@ -36,12 +37,24 @@ import type Database from 'better-sqlite3';
 const testConfig = {
   port: 3000,
   dbPath: ':memory:',
+  networkMode: 'testnet' as const,
+  nodeRole: 'miner' as const,
   postPowTargetBits: 20,
   challengeWindowBlocks: 10,
   orderingBlockIntervalMs: 60000,
   orderingBlockMinSubBlocks: 1,
   maxSubBlocksPerBlock: 1000,
   epochBlocks: 2, // Trigger epoch every 2 blocks for easy testing
+  // Mining
+  miningMode: 'internal' as const,
+  orderingBlockPowTargetBits: 12,
+  creditInitialReward: 100,
+  creditTreasuryPct: 10,
+  treasuryPubKey: '',
+  // Net settings
+  bootstrapPeers: [] as string[],
+  listenAddrs: '/ip4/127.0.0.1/tcp/0',
+  maxPeers: 50,
 };
 
 // ---------------------------------------------------------------------------
@@ -73,10 +86,10 @@ async function importBlockCreator(): Promise<BlockCreatorModule> {
 
 async function importIdentities() {
   return (await import('../../src/store/identities.js')) as {
-    insertIdentity: (userId: string, publicKey: Uint8Array) => void;
+    insertIdentity: (userId: Uint8Array, publicKey: Uint8Array) => void;
     getIdentity: (
-      userId: string,
-    ) => { userId: string; publicKey: Uint8Array; createdAt: number } | null;
+      userId: Uint8Array,
+    ) => { userId: Uint8Array; publicKey: Uint8Array; createdAt: number } | null;
   };
 }
 
@@ -96,6 +109,34 @@ async function importSubblocks() {
   };
 }
 
+async function importMempoolFresh() {
+  const mod = await import('../../src/store/mempool.js');
+  return mod as {
+    insertSubBlock: (
+      subBlock: SubBlock,
+      expiresAtHeight: number,
+      batchId?: string | null,
+    ) => number;
+    insertUtxoTx: (
+      tx: UtxoTransaction,
+      batchId: string | null,
+      expiresAtHeight: number,
+    ) => number;
+    getPendingEntries: (limit: number) => Array<{
+      rowid: number;
+      entryType: string;
+      subblockCbor: Uint8Array | null;
+      utxoTxCbor: Uint8Array | null;
+      batchId: string | null;
+      expiresAtHeight: number;
+      createdAt: string;
+    }>;
+    purgeExpired: (currentHeight: number) => number;
+    removeEntry: (rowid: number) => void;
+    removeBatch: (batchId: string) => void;
+  };
+}
+
 async function importUtxo() {
   return (await import('../../src/store/utxo.js')) as {
     insertBox: (box: unknown) => void;
@@ -107,11 +148,11 @@ async function importUtxo() {
 
 async function importLikes() {
   return (await import('../../src/store/likes.js')) as {
-    insertLike: (targetPostId: string, likerId: string) => string;
+    insertLike: (targetPostId: string, likerId: Uint8Array) => string;
     getUnprocessedFreeLikes: () => Array<{
       id: string;
       targetPostId: string;
-      likerId: string;
+      likerId: Uint8Array;
     }>;
   };
 }
@@ -152,7 +193,7 @@ function rawToKeyObject(pubKey: Uint8Array): KeyObject {
 // ---------------------------------------------------------------------------
 
 interface TestIdentity {
-  userId: string;
+  userId: Uint8Array;
   publicKey: Uint8Array;
   privateKey: KeyObject;
 }
@@ -160,11 +201,11 @@ interface TestIdentity {
 function makeTestIdentity(): TestIdentity {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
   const pubKey = rawPublicKey(publicKey);
-  const userId = getUserId(pubKey);
+  const userId = pubKey;
   return { userId, publicKey: pubKey, privateKey };
 }
 
-function makePost(authorId: string, content = 'test post'): Post {
+function makePost(authorId: Uint8Array, content = 'test post'): Post {
   return {
     content,
     author: authorId,
@@ -178,7 +219,7 @@ function makePost(authorId: string, content = 'test post'): Post {
 }
 
 function makeLikeBox(
-  likerId: string,
+  likerId: Uint8Array,
   targetPostId: string,
   createdAtBlock: number,
 ): LikeBox {
@@ -212,6 +253,27 @@ function makeKarmaBox(
   const id = computeBoxId(box);
   box.id = id;
   return box;
+}
+
+function makeLikeTx(
+  karmaBox: KarmaBox,
+  targetPostId: string,
+): UtxoTransaction {
+  return {
+    inputs: [karmaBox.id!],
+    outputs: [
+      {
+        boxType: 'like',
+        value: LIKE_COST,
+        createdAtBlock: 0,
+        likerId: karmaBox.owner,
+        targetPostId,
+        guard: 'epoch_tally',
+      } as LikeBox,
+    ],
+    signatures: {},
+    protocolVersion: PROTOCOL_VERSION,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -278,8 +340,8 @@ describe('block-creator', () => {
       producerId: author.userId,
       protocolVersion: PROTOCOL_VERSION,
     };
-    const subblocks = await importSubblocks();
-    subblocks.insertSubBlock(subBlock);
+    const mempool = await importMempoolFresh();
+    mempool.insertSubBlock(subBlock, 1000);
 
     // Start block creator and create block
     const bc = await importBlockCreator();
@@ -317,8 +379,8 @@ describe('block-creator', () => {
       producerId: author.userId,
       protocolVersion: PROTOCOL_VERSION,
     };
-    const subblocks = await importSubblocks();
-    subblocks.insertSubBlock(subBlock);
+    const mempool = await importMempoolFresh();
+    mempool.insertSubBlock(subBlock, 1000);
 
     const bc = await importBlockCreator();
     bc.startBlockCreator(testConfig);
@@ -358,8 +420,8 @@ describe('block-creator', () => {
       producerId: author.userId,
       protocolVersion: PROTOCOL_VERSION,
     };
-    const subblocks = await importSubblocks();
-    subblocks.insertSubBlock(subBlock);
+    const mempool = await importMempoolFresh();
+    mempool.insertSubBlock(subBlock, 1000);
 
     const bc = await importBlockCreator();
     bc.startBlockCreator(testConfig);
@@ -367,8 +429,8 @@ describe('block-creator', () => {
     const block = bc.createOrderingBlock();
     expect(block).not.toBeNull();
 
-    // Verify sub-block is now confirmed (no longer pending)
-    const pendingAfter = subblocks.getPendingSubBlocks(10);
+    // Verify mempool is now empty (confirmed entries removed)
+    const pendingAfter = mempool.getPendingEntries(10);
     expect(pendingAfter).toHaveLength(0);
 
     // Verify post is confirmed
@@ -390,7 +452,7 @@ describe('block-creator', () => {
 
     const { encodePost } = await import('@dagsocial/types');
     const posts = await importPosts();
-    const subblocks = await importSubblocks();
+    const mempool = await importMempoolFresh();
 
     const bc = await importBlockCreator();
     bc.startBlockCreator(testConfig); // epochBlocks = 2
@@ -399,13 +461,13 @@ describe('block-creator', () => {
     const post1 = makePost(author.userId, 'block 1');
     const postId1 = computePostId(post1);
     posts.insertPost(post1, encodePost(post1));
-    subblocks.insertSubBlock({
+    mempool.insertSubBlock({
       subBlockId: postId1,
       post: post1,
       likeBoxes: [],
       producerId: author.userId,
       protocolVersion: PROTOCOL_VERSION,
-    });
+    }, 1000);
 
     const block1 = bc.createOrderingBlock();
     expect(block1).not.toBeNull();
@@ -416,13 +478,13 @@ describe('block-creator', () => {
     const post2 = makePost(author.userId, 'block 2');
     const postId2 = computePostId(post2);
     posts.insertPost(post2, encodePost(post2));
-    subblocks.insertSubBlock({
+    mempool.insertSubBlock({
       subBlockId: postId2,
       post: post2,
       likeBoxes: [],
       producerId: author.userId,
       protocolVersion: PROTOCOL_VERSION,
-    });
+    }, 1000);
 
     const block2 = bc.createOrderingBlock();
     expect(block2).not.toBeNull();
@@ -433,13 +495,13 @@ describe('block-creator', () => {
     const post3 = makePost(author.userId, 'block 3');
     const postId3 = computePostId(post3);
     posts.insertPost(post3, encodePost(post3));
-    subblocks.insertSubBlock({
+    mempool.insertSubBlock({
       subBlockId: postId3,
       post: post3,
       likeBoxes: [],
       producerId: author.userId,
       protocolVersion: PROTOCOL_VERSION,
-    });
+    }, 1000);
 
     const block3 = bc.createOrderingBlock();
     expect(block3).not.toBeNull();
@@ -498,26 +560,26 @@ describe('block-creator', () => {
     const dummyPost1 = makePost(author.userId, 'dummy 1');
     const d1Id = computePostId(dummyPost1);
     posts.insertPost(dummyPost1, encodePost(dummyPost1));
-    const subblocks = await importSubblocks();
-    subblocks.insertSubBlock({
+    const mempool = await importMempoolFresh();
+    mempool.insertSubBlock({
       subBlockId: d1Id,
       post: dummyPost1,
       likeBoxes: [],
       producerId: author.userId,
       protocolVersion: PROTOCOL_VERSION,
-    });
+    }, 1000);
 
     // Block 2
     const dummyPost2 = makePost(author.userId, 'dummy 2');
     const d2Id = computePostId(dummyPost2);
     posts.insertPost(dummyPost2, encodePost(dummyPost2));
-    subblocks.insertSubBlock({
+    mempool.insertSubBlock({
       subBlockId: d2Id,
       post: dummyPost2,
       likeBoxes: [],
       producerId: author.userId,
       protocolVersion: PROTOCOL_VERSION,
-    });
+    }, 1000);
 
     const bc = await importBlockCreator();
     bc.startBlockCreator(testConfig);
@@ -528,13 +590,13 @@ describe('block-creator', () => {
     const dummyPost3 = makePost(author.userId, 'dummy 3');
     const d3Id = computePostId(dummyPost3);
     posts.insertPost(dummyPost3, encodePost(dummyPost3));
-    subblocks.insertSubBlock({
+    mempool.insertSubBlock({
       subBlockId: d3Id,
       post: dummyPost3,
       likeBoxes: [],
       producerId: author.userId,
       protocolVersion: PROTOCOL_VERSION,
-    });
+    }, 1000);
 
     const block3 = bc.createOrderingBlock();
     expect(block3).not.toBeNull();
@@ -619,7 +681,7 @@ describe('block-creator', () => {
     }
 
     // Fast-forward 2 blocks to trigger epoch on block 3
-    const subblocks = await importSubblocks();
+    const mempool = await importMempoolFresh();
     const bc = await importBlockCreator();
     bc.startBlockCreator(testConfig);
 
@@ -627,13 +689,13 @@ describe('block-creator', () => {
       const dp = makePost(author.userId, `dummy fast-forward ${i}`);
       const dpId = computePostId(dp);
       posts.insertPost(dp, encodePost(dp));
-      subblocks.insertSubBlock({
+      mempool.insertSubBlock({
         subBlockId: dpId,
         post: dp,
         likeBoxes: [],
         producerId: author.userId,
         protocolVersion: PROTOCOL_VERSION,
-      });
+      }, 1000);
       bc.createOrderingBlock();
     }
 
@@ -641,13 +703,13 @@ describe('block-creator', () => {
     const dp = makePost(author.userId, 'dummy epoch trigger');
     const dpId = computePostId(dp);
     posts.insertPost(dp, encodePost(dp));
-    subblocks.insertSubBlock({
+    mempool.insertSubBlock({
       subBlockId: dpId,
       post: dp,
       likeBoxes: [],
       producerId: author.userId,
       protocolVersion: PROTOCOL_VERSION,
-    });
+    }, 1000);
 
     const epochBlock = bc.createOrderingBlock();
     expect(epochBlock).not.toBeNull();
@@ -724,20 +786,20 @@ describe('block-creator', () => {
     }
 
     // Fast-forward 2 blocks
-    const subblocks = await importSubblocks();
+    const mempool = await importMempoolFresh();
     const bc = await importBlockCreator();
     bc.startBlockCreator(testConfig);
     for (let i = 0; i < 2; i++) {
       const dp = makePost(author.userId, `ff ${i}`);
       const dpId = computePostId(dp);
       posts.insertPost(dp, encodePost(dp));
-      subblocks.insertSubBlock({
+      mempool.insertSubBlock({
         subBlockId: dpId,
         post: dp,
         likeBoxes: [],
         producerId: author.userId,
         protocolVersion: PROTOCOL_VERSION,
-      });
+      }, 1000);
       bc.createOrderingBlock();
     }
 
@@ -745,13 +807,13 @@ describe('block-creator', () => {
     const dp = makePost(author.userId, 'epoch');
     const dpId = computePostId(dp);
     posts.insertPost(dp, encodePost(dp));
-    subblocks.insertSubBlock({
+    mempool.insertSubBlock({
       subBlockId: dpId,
       post: dp,
       likeBoxes: [],
       producerId: author.userId,
       protocolVersion: PROTOCOL_VERSION,
-    });
+    }, 1000);
 
     const epochBlock = bc.createOrderingBlock();
     const rewards = epochBlock!.epochTallyResults!.rewards;
@@ -813,8 +875,8 @@ describe('block-creator', () => {
       producerId: author.userId,
       protocolVersion: PROTOCOL_VERSION,
     };
-    const subblocks = await importSubblocks();
-    subblocks.insertSubBlock(subBlock);
+    const mempool = await importMempoolFresh();
+    mempool.insertSubBlock(subBlock, 1000);
 
     // Both are unprocessed in UTXO (standalone pool has both)
     // likeBox1 should be deduped from standalone pool
@@ -848,14 +910,14 @@ describe('block-creator', () => {
     const posts = await importPosts();
     posts.insertPost(post, encodePost(post));
 
-    const subblocks = await importSubblocks();
-    subblocks.insertSubBlock({
+    const mempool = await importMempoolFresh();
+    mempool.insertSubBlock({
       subBlockId: postId,
       post,
       likeBoxes: [],
       producerId: author.userId,
       protocolVersion: PROTOCOL_VERSION,
-    });
+    }, 1000);
 
     const bc = await importBlockCreator();
     bc.startBlockCreator(testConfig);
@@ -871,15 +933,127 @@ describe('block-creator', () => {
     const post2 = makePost(author.userId, 'height test 2');
     const postId2 = computePostId(post2);
     posts.insertPost(post2, encodePost(post2));
-    subblocks.insertSubBlock({
+    mempool.insertSubBlock({
       subBlockId: postId2,
       post: post2,
       likeBoxes: [],
       producerId: author.userId,
       protocolVersion: PROTOCOL_VERSION,
-    });
+    }, 1000);
 
     bc.createOrderingBlock();
     expect(ordering.getCurrentHeight()).toBe(2);
+  });
+
+  // -----------------------------------------------------------------------
+  // 11. utxoTxIds populated from mempool standalone UTXO entries
+  // -----------------------------------------------------------------------
+
+  it('populates utxoTxIds from mempool standalone UTXO entries', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+    const ids = await importIdentities();
+    const posts = await importPosts();
+    const utxo = await importUtxo();
+    const mempool = await importMempoolFresh();
+    const bc = await importBlockCreator();
+
+    // Set up identity
+    const author = makeTestIdentity();
+    ids.insertIdentity(author.userId, author.publicKey);
+
+    // Create and insert a post
+    const post = makePost(author.userId, 'utxoTxIds test');
+    const postId = computePostId(post);
+    const { encodePost, computeTxId } = await import('@dagsocial/types');
+    posts.insertPost(post, encodePost(post));
+
+    // Insert sub-block into mempool
+    const sb: SubBlock = {
+      subBlockId: postId,
+      post,
+      likeBoxes: [],
+      producerId: author.userId,
+      protocolVersion: PROTOCOL_VERSION,
+    };
+    mempool.insertSubBlock(sb, 1000);
+
+    // Set up: standalone UTXO transaction in mempool (like targeting an
+    // unrelated post, so it won't be attached to any sub-block)
+    const karmaBox = makeKarmaBox(100, author.userId, 0);
+    utxo.insertBox(karmaBox);
+    const likeTx = makeLikeTx(karmaBox, 'some_post_id_not_matching');
+    mempool.insertUtxoTx(likeTx, null, 1000);
+
+    bc.startBlockCreator(testConfig);
+    const block = bc.createOrderingBlock();
+
+    expect(block).not.toBeNull();
+    expect(block!.utxoTxIds.length).toBeGreaterThan(0);
+    // The standalone like should be in utxoTxIds
+    expect(block!.utxoTxIds).toContain(computeTxId(likeTx));
+    // Confirmed entries removed from mempool
+    const remaining = mempool.getPendingEntries(100);
+    expect(remaining).toHaveLength(0);
+  });
+
+  // -----------------------------------------------------------------------
+  // 12. standalone likes with matching post get attached to sub-block
+  // -----------------------------------------------------------------------
+
+  it('attaches standalone like UTXO transactions to matching sub-blocks', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+    const ids = await importIdentities();
+    const posts = await importPosts();
+    const utxo = await importUtxo();
+    const mempool = await importMempoolFresh();
+    const bc = await importBlockCreator();
+
+    // Set up identity
+    const author = makeTestIdentity();
+    ids.insertIdentity(author.userId, author.publicKey);
+
+    // Create and insert a post
+    const post = makePost(author.userId, 'like attachment test');
+    const postId = computePostId(post);
+    const { encodePost, computeTxId } = await import('@dagsocial/types');
+    posts.insertPost(post, encodePost(post));
+
+    // Insert sub-block into mempool (no likes yet)
+    const sb: SubBlock = {
+      subBlockId: postId,
+      post,
+      likeBoxes: [],
+      producerId: author.userId,
+      protocolVersion: PROTOCOL_VERSION,
+    };
+    mempool.insertSubBlock(sb, 1000);
+
+    // Create a like tx that targets THIS post (matching)
+    const karmaBox = makeKarmaBox(100, author.userId, 0);
+    utxo.insertBox(karmaBox);
+    const matchingLikeTx = makeLikeTx(karmaBox, postId);
+    mempool.insertUtxoTx(matchingLikeTx, null, 1000);
+
+    // Create another like tx targeting an unrelated post (standalone → utxoTxIds)
+    const karmaBox2 = makeKarmaBox(50, author.userId, 0);
+    utxo.insertBox(karmaBox2);
+    const standaloneLikeTx = makeLikeTx(karmaBox2, 'unrelated_post');
+    mempool.insertUtxoTx(standaloneLikeTx, null, 1000);
+
+    bc.startBlockCreator(testConfig);
+    const block = bc.createOrderingBlock();
+
+    expect(block).not.toBeNull();
+    // The matching like should NOT be in utxoTxIds (it was attached to the sub-block)
+    expect(block!.utxoTxIds).not.toContain(computeTxId(matchingLikeTx));
+    // The standalone like SHOULD be in utxoTxIds
+    expect(block!.utxoTxIds).toContain(computeTxId(standaloneLikeTx));
+    // The sub-block now has the attached like box
+    expect(block!.subBlockRefs).toContain(postId);
+    // Mempool should be empty
+    const remaining = mempool.getPendingEntries(100);
+    expect(remaining).toHaveLength(0);
   });
 });

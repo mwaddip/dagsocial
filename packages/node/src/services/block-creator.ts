@@ -6,28 +6,46 @@ import {
 } from 'crypto';
 import {
   PROTOCOL_VERSION,
-  getUserId,
   computeBoxId,
+  computeTxId,
   encodeOrderingBlock,
+  decodeSubBlock,
+  decodeTx,
   EPOCH_BLOCKS,
   LIKE_THRESHOLD,
   LIKE_MAX_AUTHOR_REWARD,
   LIKE_COST,
-  ORDERING_BLOCK_REWARD_CREDITS,
+  CREDIT_FIXED_RATE_BLOCKS,
+  CREDIT_INITIAL_REWARD,
+  CREDIT_EPOCH_BLOCKS,
+  CREDIT_REWARD_REDUCTION,
+  CREDIT_TAIL_REWARD,
+  CREDIT_MINER_REWARD_DELAY,
   POST_LOCK_UNLOCK_PER_LIKES,
 } from '@dagsocial/types';
 import type {
   OrderingBlock,
+  CoinbaseOutput,
   EpochTally,
   LikeReward,
   KarmaBox,
   PostLockBox,
+  UtxoTransaction,
+  LikeBox,
 } from '@dagsocial/types';
+import { verifyOrderingBlockPoW, computeBlockBodyHash } from '@dagsocial/validation';
 import type { Config } from '../config.js';
 import { getNet } from './net-instance.js';
 import { mintKarma } from './karma.js';
+import { mintCredits } from './credits.js';
 import {
-  getPendingSubBlocks,
+  getPendingEntries,
+  purgeExpired,
+  removeEntry,
+  removeBatch,
+  type PoolEntry,
+} from '../store/mempool.js';
+import {
   createOrderingBlock as storeCreateOrderingBlock,
   getOrderingBlock,
   getCurrentHeight,
@@ -53,21 +71,18 @@ import {
 let config: Config;
 let validatorPubKey: Uint8Array;
 let validatorPrivKey: KeyObject;
-let validatorId: string;
+let validatorId: Uint8Array;
 let intervalId: ReturnType<typeof setInterval> | null = null;
 let pendingSubBlockCounter = 0;
+let currentTemplate: OrderingBlock | null = null;   // For external mining mode
+let confirmedRowids: Set<number> = new Set();       // Mempool rowids included in current block
+let difficultyWindowStartMs: number | null = null;   // Timestamp of first block in current epoch
+let difficultyWindowStartTarget: number | null = null; // Target bits of first block in current epoch
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-/**
- * Start the ordering block creator.
- *
- * Generates an Ed25519 validator keypair (stored in module scope) and starts an
- * interval timer that fires at ORDERING_BLOCK_INTERVAL_MS.  The timer and
- * onSubBlockReceived() both call createOrderingBlock() to produce the next block.
- */
 export function startBlockCreator(cfg: Config): void {
   config = cfg;
 
@@ -76,7 +91,10 @@ export function startBlockCreator(cfg: Config): void {
   const pubDer = publicKey.export({ type: 'spki', format: 'der' }) as Buffer;
   validatorPubKey = new Uint8Array(pubDer.subarray(pubDer.length - 32));
   validatorPrivKey = privateKey;
-  validatorId = getUserId(validatorPubKey);
+  validatorId = validatorPubKey;
+
+  // Initialize difficulty tracking from last epoch boundary
+  initDifficultyWindow();
 
   // Start interval timer
   intervalId = setInterval(() => {
@@ -84,12 +102,6 @@ export function startBlockCreator(cfg: Config): void {
   }, config.orderingBlockIntervalMs);
 }
 
-/**
- * Stop the ordering block creator.
- *
- * Clears the interval timer. Does not destroy the validator keypair, so
- * startBlockCreator() can be called again later (generating a new keypair).
- */
 export function stopBlockCreator(): void {
   if (intervalId !== null) {
     clearInterval(intervalId);
@@ -97,15 +109,7 @@ export function stopBlockCreator(): void {
   }
 }
 
-/**
- * Signal that a sub-block was received from a user.
- *
- * Increments an internal counter and triggers immediate block creation if the
- * counter reaches ORDERING_BLOCK_MIN_SUB_BLOCKS.  After a successful block
- * creation the counter is reset to 0 inside createOrderingBlock().
- */
 export function onSubBlockReceived(): void {
-  // No-op if block creator is not running (server mode)
   if (!config) return;
   pendingSubBlockCounter++;
   if (pendingSubBlockCounter >= config.orderingBlockMinSubBlocks) {
@@ -113,62 +117,291 @@ export function onSubBlockReceived(): void {
   }
 }
 
+/**
+ * Return the current block template for external miners.
+ * Returns null if no template has been built yet or the block creator
+ * is in internal mode.
+ */
+export function getCurrentTemplate(): OrderingBlock | null {
+  return currentTemplate;
+}
+
+/**
+ * Clear the current template. Called when a relayed block arrives so the
+ * block creator builds a fresh template for the next height.
+ */
+export function clearTemplate(): void {
+  currentTemplate = null;
+  pendingSubBlockCounter = 0;
+}
+
+/**
+ * Submit a mined nonce from an external miner.
+ * Verifies PoW, finalizes the block, stores it, and broadcasts.
+ * Returns the finalized block hash on success, null on failure.
+ */
+export function submitMinedBlock(powNonce: number, submittedHeight: number): string | null {
+  const tpl = currentTemplate;
+  // Reject if no template, wrong height, or height already mined
+  if (!tpl || tpl.height !== submittedHeight || getCurrentHeight() >= submittedHeight) {
+    return null;
+  }
+
+  // Build block with the submitted nonce
+  const block: OrderingBlock = {
+    ...tpl,
+    powNonce,
+  };
+
+  // Verify PoW
+  if (!verifyOrderingBlockPoW(block)) {
+    return null;
+  }
+
+  // Sign the body hash (covers everything except the signature itself)
+  const bodyHash = computeBlockBodyHash(block);
+  const sig = cryptoSign(null, bodyHash, validatorPrivKey);
+  block.validatorSignature = new Uint8Array(sig);
+
+  // Compute final block hash
+  block.hash = createHash('blake2b512')
+    .update(Buffer.from(encodeOrderingBlock(block)))
+    .digest()
+    .subarray(0, 32)
+    .toString('hex');
+
+  // Finalize and broadcast
+  finalizeBlock(block);
+
+  return block.hash;
+}
+
+// ---------------------------------------------------------------------------
+// Emission
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute the block reward at a given height using Ergo-style linear decay.
+ */
+export function computeBlockReward(height: number): number {
+  if (height <= 0) return 0;
+  if (height <= CREDIT_FIXED_RATE_BLOCKS) {
+    return CREDIT_INITIAL_REWARD;
+  }
+  const epochs = Math.floor(
+    (height - CREDIT_FIXED_RATE_BLOCKS - 1) / CREDIT_EPOCH_BLOCKS,
+  ) + 1;
+  const reward = CREDIT_INITIAL_REWARD - epochs * CREDIT_REWARD_REDUCTION;
+  return Math.max(reward, CREDIT_TAIL_REWARD);
+}
+
+// ---------------------------------------------------------------------------
+// Difficulty adjustment
+// ---------------------------------------------------------------------------
+
+function initDifficultyWindow(): void {
+  // Start tracking from the current tip
+  const currentHeight = getCurrentHeight();
+  if (currentHeight > 0) {
+    const lastBlock = getOrderingBlock(currentHeight);
+    if (lastBlock) {
+      difficultyWindowStartTarget = lastBlock.powTargetBits;
+      difficultyWindowStartMs = lastBlock.createdAt;
+    }
+  }
+  if (difficultyWindowStartTarget === null) {
+    difficultyWindowStartTarget = config.orderingBlockPowTargetBits;
+  }
+}
+
+function adjustDifficulty(currentHeight: number): number {
+  if (!difficultyWindowStartMs || !difficultyWindowStartTarget) {
+    return config.orderingBlockPowTargetBits;
+  }
+
+  // Only adjust at epoch boundaries
+  if (currentHeight % CREDIT_EPOCH_BLOCKS !== 0) {
+    return difficultyWindowStartTarget;
+  }
+
+  const now = Date.now();
+  const actualDuration = now - difficultyWindowStartMs;
+  const expectedDuration = CREDIT_EPOCH_BLOCKS * 60_000; // 60s blocks
+
+  const ratio = actualDuration / expectedDuration;
+  const newTarget = Math.round(difficultyWindowStartTarget * ratio);
+
+  // Clamp to ±50%
+  const clamped = Math.max(
+    Math.min(newTarget, Math.ceil(difficultyWindowStartTarget * 1.5)),
+    Math.floor(difficultyWindowStartTarget * 0.5),
+  );
+
+  // Floor at 4
+  const final = Math.max(clamped, 4);
+
+  // Reset window
+  difficultyWindowStartMs = now;
+  difficultyWindowStartTarget = final;
+
+  return final;
+}
+
+// ---------------------------------------------------------------------------
+// PoW mining (internal mode)
+// ---------------------------------------------------------------------------
+
+function encodeLE64(n: number): Buffer {
+  const buf = Buffer.alloc(8);
+  buf.writeBigUInt64LE(BigInt(n));
+  return buf;
+}
+
+function solvePoW(bodyHash: Buffer, targetBits: number): number {
+  let nonce = 0;
+  while (true) {
+    const nonceBuf = encodeLE64(nonce);
+    const hash = createHash('blake2b512')
+      .update(bodyHash)
+      .update(nonceBuf)
+      .digest()
+      .subarray(0, 32);
+    let bits = 0;
+    for (let i = 0; i < 32 && bits < targetBits; i++) {
+      if (hash[i] === 0) { bits += 8; continue; }
+      let mask = 0x80;
+      while ((hash[i]! & mask) === 0 && bits < targetBits) { bits++; mask >>= 1; }
+      break;
+    }
+    if (bits >= targetBits) return nonce;
+    nonce++;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Core block creation
 // ---------------------------------------------------------------------------
 
-/**
- * Produce the next ordering block.
- *
- * Returns the newly created OrderingBlock, or null if there is nothing to
- * confirm (no pending sub-blocks, no standalone like boxes, and not an epoch
- * boundary).
- */
 export function createOrderingBlock(): OrderingBlock | null {
   const currentHeight = getCurrentHeight();
   const newHeight = currentHeight + 1;
 
-  // 1. Collect pending sub-blocks (oldest first, up to limit)
-  const subBlocks = getPendingSubBlocks(config.maxSubBlocksPerBlock);
+  // 1. Purge expired mempool entries
+  purgeExpired(currentHeight);
 
-  // 2. Collect standalone unprocessed locked like boxes
+  // 2. Get pending entries from mempool
+  const entries = getPendingEntries(config.maxSubBlocksPerBlock);
+
+  // 3. Separate sub-blocks and standalone UTXO transactions
+  const subBlockEntries = entries.filter((e) => e.entryType === 'subblock');
+  const standaloneUtxoTxs = entries.filter(
+    (e) => e.entryType === 'utxo_tx' && e.batchId === null,
+  );
+
+  // 4. Decode sub-blocks from CBOR
+  const subBlocks = subBlockEntries.map((e) => decodeSubBlock(e.subblockCbor!));
+
+  // 5. Resolve batch entries — collect linked UTXO payloads per batch
+  const batchMap = new Map<string, PoolEntry[]>();
+  for (const e of entries) {
+    if (e.batchId) {
+      if (!batchMap.has(e.batchId)) batchMap.set(e.batchId, []);
+      batchMap.get(e.batchId)!.push(e);
+    }
+  }
+
+  // 6. Attach standalone likes to matching sub-blocks by targetPostId
+  const matchedUtxoRowids = new Set<number>();
+  for (const entry of standaloneUtxoTxs) {
+    const tx = decodeTx(entry.utxoTxCbor!);
+    const targetPostId = extractLikeTarget(tx);
+    if (targetPostId) {
+      const matchingSb = subBlocks.find((sb) => sb.subBlockId === targetPostId);
+      if (matchingSb) {
+        // Attach like boxes from this tx to the sub-block
+        for (const output of tx.outputs) {
+          if (output.boxType === 'like') {
+            matchingSb.likeBoxes.push(output as LikeBox);
+          }
+        }
+        matchedUtxoRowids.add(entry.rowid);
+      }
+    }
+  }
+
+  // 7. Remaining standalone UTXO entries → utxoTxIds
+  const remainingUtxoTxs = standaloneUtxoTxs.filter(
+    (e) => !matchedUtxoRowids.has(e.rowid),
+  );
+  const utxoTxIds = remainingUtxoTxs.map((e) => {
+    const tx = decodeTx(e.utxoTxCbor!);
+    return computeTxId(tx);
+  });
+
+  // 8. Collect standalone unprocessed locked like boxes
   const standaloneLikes = getUnprocessedLockedLikeBoxes();
 
-  // 3. Deduplicate: remove like box IDs that already ride inside a sub-block
-  const subBlockLikeIds = new Set<string>();
-  for (const sb of subBlocks) {
-    for (const lb of sb.likeBoxes) {
-      if (lb.id) subBlockLikeIds.add(lb.id);
-    }
-  }
-  const dedupedStandaloneLikeIds: string[] = [];
-  for (const lb of standaloneLikes) {
-    if (lb.id && !subBlockLikeIds.has(lb.id)) {
-      dedupedStandaloneLikeIds.push(lb.id);
-    }
-  }
+  // 9. Deduplicate like boxes (a like box in both sub-block and standalone pool)
+  const sbLikeIds = new Set(
+    subBlocks.flatMap((sb) => sb.likeBoxes.map((lb) => lb.id!)),
+  );
+  const filteredStandaloneLikes = standaloneLikes.filter(
+    (lb) => !sbLikeIds.has(lb.id!),
+  );
 
-  // 4. Determine if this is an epoch boundary
-  //    Epoch tally runs when currentHeight > 0 and currentHeight % EPOCH_BLOCKS === 0
+  const allLikeBoxIds = filteredStandaloneLikes.map((lb) => lb.id!);
+
+  // 10. Epoch boundary?
   const isEpochBoundary =
     currentHeight > 0 && currentHeight % config.epochBlocks === 0;
 
-  // 5. Guard: nothing to confirm
+  // 11. Guard: nothing to confirm.
+  //     In external mode, always allow empty blocks so miners have a template.
+  //     In internal mode, only produce blocks when there's work or it's genesis.
   if (
     subBlocks.length === 0 &&
-    dedupedStandaloneLikeIds.length === 0 &&
-    !isEpochBoundary
+    filteredStandaloneLikes.length === 0 &&
+    utxoTxIds.length === 0 &&
+    !isEpochBoundary &&
+    config.miningMode !== 'external' &&
+    currentHeight > 0
   ) {
     return null;
   }
 
-  // 6. Run epoch tally (consumes all unprocessed locked likes + free likes)
+  // 12. Track confirmed rowids for finalizeBlock cleanup
+  confirmedRowids = new Set<number>();
+  for (const e of subBlockEntries) {
+    confirmedRowids.add(e.rowid);
+  }
+  for (const e of standaloneUtxoTxs) {
+    if (matchedUtxoRowids.has(e.rowid)) {
+      confirmedRowids.add(e.rowid);
+    }
+  }
+  for (const e of remainingUtxoTxs) {
+    confirmedRowids.add(e.rowid);
+  }
+  // Also track batch entries
+  for (const [, batchEntries] of batchMap) {
+    for (const e of batchEntries) {
+      confirmedRowids.add(e.rowid);
+    }
+  }
+
+  // 13. Compute coinbase
+  const coinbaseOutputs = buildCoinbaseOutputs(newHeight);
+
+  // 14. Difficulty adjustment
+  const powTargetBits = adjustDifficulty(currentHeight);
+
+  // 15. Epoch tally
   let epochTallyResults: EpochTally | undefined;
   if (isEpochBoundary) {
     epochTallyResults = runEpochTally(newHeight);
   }
 
-  // 7. Previous block hash
+  // 16. Previous block hash
   const prevBlock = currentHeight > 0 ? getOrderingBlock(currentHeight) : null;
   const prevBlockHash = prevBlock
     ? prevBlock.hash
@@ -176,64 +409,75 @@ export function createOrderingBlock(): OrderingBlock | null {
 
   const subBlockRefs = subBlocks.map((sb) => sb.subBlockId);
 
-  // 8. Build block template (with placeholder hash and signature for hashing)
-  const blockForHash: OrderingBlock = {
+  // 17. Build block template (powNonce=0, empty signature)
+  const template: OrderingBlock = {
     height: newHeight,
     hash: '',
     prevBlockHash,
     subBlockRefs,
-    likeBoxIds: dedupedStandaloneLikeIds,
-    utxoTxIds: [],
+    likeBoxIds: allLikeBoxIds,
+    utxoTxIds,
     stumpIds: [],
     validatorId,
     validatorSignature: new Uint8Array(64),
+    powNonce: 0,
+    powTargetBits,
+    coinbaseOutputs,
     protocolVersion: PROTOCOL_VERSION,
     createdAt: Date.now(),
   };
 
   if (epochTallyResults) {
-    (blockForHash as unknown as Record<string, unknown>).epochTallyResults =
-      epochTallyResults;
+    template.epochTallyResults = epochTallyResults;
   }
 
-  // 9. Compute block hash over CBOR-serialized block
-  const serialized = encodeOrderingBlock(blockForHash);
-  const blockHash = createHash('blake2b512')
-    .update(Buffer.from(serialized))
+  // 18. Internal vs external mining
+  if (config.miningMode === 'external') {
+    // Store template for external miners, don't mine
+    currentTemplate = template;
+    return null; // Block not finalized yet
+  }
+
+  // 19. Internal: mine PoW
+  const bodyHash = computeBlockBodyHash(template);
+  const powNonce = solvePoW(bodyHash, powTargetBits);
+
+  const block: OrderingBlock = {
+    ...template,
+    powNonce,
+  };
+
+  // 20. Sign the body hash
+  const sig = cryptoSign(null, bodyHash, validatorPrivKey);
+  block.validatorSignature = new Uint8Array(sig);
+
+  // 21. Compute final hash
+  block.hash = createHash('blake2b512')
+    .update(Buffer.from(encodeOrderingBlock(block)))
     .digest()
     .subarray(0, 32)
     .toString('hex');
 
-  // 10. Sign with validator key
-  const sig = cryptoSign(
-    null,
-    Buffer.from(blockHash, 'hex'),
-    validatorPrivKey,
-  );
+  // 22. Finalize
+  finalizeBlock(block);
 
-  // 11. Finalize block
-  const block: OrderingBlock = {
-    height: newHeight,
-    hash: blockHash,
-    prevBlockHash,
-    subBlockRefs,
-    likeBoxIds: dedupedStandaloneLikeIds,
-    utxoTxIds: [],
-    stumpIds: [],
-    validatorId,
-    validatorSignature: new Uint8Array(sig),
-    protocolVersion: PROTOCOL_VERSION,
-    createdAt: blockForHash.createdAt,
-  };
+  return block;
+}
 
-  if (epochTallyResults) {
-    block.epochTallyResults = epochTallyResults;
-  }
+// ---------------------------------------------------------------------------
+// Block finalization (shared between internal and external mining)
+// ---------------------------------------------------------------------------
 
-  // 12. Store block
+function finalizeBlock(block: OrderingBlock): void {
+  // 1. Store block
   storeCreateOrderingBlock(block);
 
-  // Broadcast ordering block to peers (fire-and-forget)
+  // 2. Apply coinbase — mint credits for each output
+  for (const out of block.coinbaseOutputs) {
+    mintCredits(out.owner, out.value, block.height, out.lockedUntilBlock);
+  }
+
+  // 3. Broadcast
   const net = getNet();
   if (net) {
     net.broadcastOrderingBlock(block).catch((err: Error) => {
@@ -241,38 +485,72 @@ export function createOrderingBlock(): OrderingBlock | null {
     });
   }
 
-  // 13. Confirm sub-blocks and their posts
-  for (const sb of subBlocks) {
-    confirmSubBlock(sb.subBlockId, newHeight);
-    confirmPost(sb.subBlockId, newHeight);
+  // 4. Confirm sub-blocks and their posts
+  for (const sbId of block.subBlockRefs) {
+    confirmSubBlock(sbId, block.height);
+    confirmPost(sbId, block.height);
   }
 
-  // 14. Reset sub-block counter
-  pendingSubBlockCounter = 0;
+  // 5. Remove confirmed entries from mempool
+  for (const rowid of confirmedRowids) {
+    removeEntry(rowid);
+  }
 
-  return block;
+  // 6. Reset state
+  pendingSubBlockCounter = 0;
+  currentTemplate = null;
+  confirmedRowids = new Set();
+}
+
+// ---------------------------------------------------------------------------
+// Coinbase
+// ---------------------------------------------------------------------------
+
+function buildCoinbaseOutputs(height: number): CoinbaseOutput[] {
+  const reward = computeBlockReward(height);
+  const outputs: CoinbaseOutput[] = [];
+
+  const treasuryPct = config.creditTreasuryPct;
+  let treasuryAmount = 0;
+  let minerAmount = reward;
+
+  if (treasuryPct > 0 && config.treasuryPubKey.length === 64) {
+    treasuryAmount = Math.floor((reward * treasuryPct) / 100);
+    minerAmount = reward - treasuryAmount;
+  }
+
+  const lockedUntilBlock = height + CREDIT_MINER_REWARD_DELAY;
+
+  // Miner output
+  outputs.push({
+    owner: validatorId,
+    value: minerAmount,
+    lockedUntilBlock,
+    isTreasury: false,
+  });
+
+  // Treasury output (if configured)
+  if (treasuryAmount > 0) {
+    const treasuryKey = new Uint8Array(Buffer.from(config.treasuryPubKey, 'hex'));
+    outputs.push({
+      owner: treasuryKey,
+      value: treasuryAmount,
+      lockedUntilBlock,
+      isTreasury: true,
+    });
+  }
+
+  return outputs;
 }
 
 // ---------------------------------------------------------------------------
 // Epoch tally
 // ---------------------------------------------------------------------------
 
-/**
- * Process all unprocessed locked like boxes and free likes at an epoch
- * boundary, compute author rewards and liker refunds, and update the UTXO
- * ledger.
- *
- * Called by createOrderingBlock() when currentHeight % EPOCH_BLOCKS === 0.
- * Returns the EpochTally structure to be recorded in the ordering block.
- */
 function runEpochTally(blockHeight: number): EpochTally {
-  // 1. Collect all unprocessed locked like boxes
   const lockedLikes = getUnprocessedLockedLikeBoxes();
-
-  // 2. Collect all unprocessed free likes
   const freeLikes = getUnprocessedFreeLikes();
 
-  // 3. Group by targetPostId
   type LockedLikeBox = ReturnType<typeof getUnprocessedLockedLikeBoxes>[number];
   type FreeLike = ReturnType<typeof getUnprocessedFreeLikes>[number];
 
@@ -306,29 +584,22 @@ function runEpochTally(blockHeight: number): EpochTally {
   for (const [targetPostId, { locked, free }] of groups) {
     const totalLikeCount = locked.length + free.length;
 
-    // 4a. Author reward
     const authorReward = Math.min(
       Math.floor(totalLikeCount / LIKE_THRESHOLD),
       LIKE_MAX_AUTHOR_REWARD,
     );
 
-    // 4b. Liker refunds (locked like boxes only)
-    // Only unlock when 2x threshold is met. Otherwise roll over to next epoch.
     const likerRefunds: Record<string, number> = {};
     const thresholdMet = totalLikeCount >= 2 * LIKE_THRESHOLD;
 
     for (const lb of locked) {
       if (thresholdMet) {
-        // Unlock: return full 2 karma to liker, consume the like box
         if (lb.id) allLockedBoxIds.push(lb.id);
         mintKarma(lb.likerId, LIKE_COST, blockHeight);
-        likerRefunds[lb.likerId] = 0; // net zero: paid 2, refunded 2
+        likerRefunds[lb.likerId] = 0;
       }
-      // Below threshold: leave locked — rolls over to next epoch.
-      // Like box is NOT consumed, NOT added to allLockedBoxIds.
     }
 
-    // 4c. Mint author reward
     if (authorReward > 0) {
       const authorId = getPostAuthorId(targetPostId);
       if (authorId) {
@@ -336,7 +607,6 @@ function runEpochTally(blockHeight: number): EpochTally {
       }
     }
 
-    // 4d. Free likes — mark for processing
     for (const fl of free) {
       allFreeLikeIds.push(fl.id);
     }
@@ -349,13 +619,10 @@ function runEpochTally(blockHeight: number): EpochTally {
     };
   }
 
-  // 5. Mark locked like boxes as tallied (spent)
   markLikeBoxesTallied(allLockedBoxIds);
-
-  // 6. Mark free likes as processed
   markFreeLikesProcessed(allFreeLikeIds);
 
-  // 7. Process post lock boxes — unlock karma based on cumulative likes
+  // Process post lock boxes
   const postLockBoxes = getUnspentPostLockBoxes();
   for (const plb of postLockBoxes) {
     if (!plb.id) continue;
@@ -369,11 +636,9 @@ function runEpochTally(blockHeight: number): EpochTally {
 
     const remainingLocked = plb.value - toUnlock;
 
-    // Consume old post lock box
     consumeBox(plb.id, blockHeight);
 
     if (remainingLocked > 0) {
-      // Create reduced post lock box
       const newPlb: PostLockBox = {
         boxType: 'post_lock',
         value: remainingLocked,
@@ -387,14 +652,12 @@ function runEpochTally(blockHeight: number): EpochTally {
       insertBox(newPlb);
     }
 
-    // Refund unlocked karma to the post author
     const post = getPost(plb.targetPostId);
     if (post && !('subtreeMerkleRoot' in post)) {
       const authorId = post.author;
       mintKarma(authorId, toUnlock, blockHeight);
     }
 
-    // Record unlock in epoch tally
     if (!rewards[plb.targetPostId]) {
       rewards[plb.targetPostId] = {
         targetPostId: plb.targetPostId,
@@ -414,18 +677,24 @@ function runEpochTally(blockHeight: number): EpochTally {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Return the author userId of a post.
- *
- * Returns null if the post does not exist in the store.
- */
 function getPostAuthorId(postId: string): string | null {
   const post = getPost(postId);
   if (!post) return null;
-
-  // Post has an `author` field; Stump has `authorId`
   if ('author' in post) {
     return post.author;
+  }
+  return null;
+}
+
+/**
+ * Extract the targetPostId from a UTXO transaction if it contains a LikeBox
+ * output. Returns null if no like box is found in the outputs.
+ */
+function extractLikeTarget(tx: UtxoTransaction): string | null {
+  for (const output of tx.outputs) {
+    if (output.boxType === 'like') {
+      return output.targetPostId || null;
+    }
   }
   return null;
 }
