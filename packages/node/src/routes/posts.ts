@@ -84,10 +84,11 @@ export function createRouter(deps: PostsDeps): Router {
    * Convert a Post's Uint8Array fields to hex for JSON responses.
    * Includes likeCount derived from the likes store.
    */
-  function postToJson(post: Post): Record<string, unknown> {
+  function postToJson(post: Post & { status?: string }): Record<string, unknown> {
     const postId = computePostId(post);
     const counts = deps.getLikeCount(postId);
     return {
+      id: postId,
       content: post.content,
       author: Buffer.from(post.author).toString('hex'),
       parentRefs: post.parentRefs,
@@ -96,6 +97,7 @@ export function createRouter(deps: PostsDeps): Router {
       protocolVersion: post.protocolVersion,
       timestamp: post.timestamp,
       signature: Buffer.from(post.signature).toString('hex'),
+      status: (post as any).status ?? 'unknown',
       likeCount: counts.locked + counts.free,
     };
   }
