@@ -1,16 +1,17 @@
 # NODE Interface Contract
 
 **Component:** `@dagsocial/node`
-**Protocol version:** 2
-**Last updated:** 2026-07-23
+**Protocol version:** 1
+**Last updated:** 2026-07-24
 
 ## Scope
 
 HTTP server exposing the DAGsocial API. Owns: PoW challenge service, post
 verifier (Stage 2 stateful validation), sub-block assembly, UTXO engine,
 like processing, invite lifecycle, ordering block creator, stump engine,
-and persistent storage (SQLite). Depends on:
+mining subsystem, unified mempool, and persistent storage (SQLite).
 
+Depends on:
 - `@dagsocial/types` — shared data structures and constants
 - `@dagsocial/validation` — Stage 1 stateless checks (PoW, signatures,
   structural validity)
@@ -19,29 +20,50 @@ and persistent storage (SQLite). Depends on:
 
 ---
 
+## Unified Mempool
+
+All state-changing operations flow through a single mempool. No operation
+applies UTXO state immediately — every mutation is queued as a pool entry,
+included in an ordering block, and applied atomically when the block is
+finalized. See `MEMPOOL_INTERFACE.md` for the full contract.
+
+**Key properties:**
+- Single SQLite table `mempool` with type discriminator (`subblock` | `utxo_tx`)
+- FIFO ordering by insertion (`ORDER BY rowid ASC`)
+- TTL: 720 blocks (~12h at 60s block time)
+- Batch linking: sub-blocks and their linked UTXO payloads share a `batch_id`
+- Expired entries purged at block assembly time
+- Confirmed entries removed after block finalization
+- No size cap, no replacement semantics (no fees yet)
+
+---
+
 ## HTTP API
 
 Base URL: `http://{host}:{port}` (default: `localhost:3000`)
-All responses are JSON. Binary fields (signatures, public keys, hashes) are
-hex-encoded or base64-encoded per the types contract.
+All responses are JSON. Binary fields (public keys, signatures, challenges)
+are hex-encoded.
 
 ### Identity
 
-| Method | Path | Request | Response (200/201) | Errors |
-|--------|------|---------|-------------------|--------|
-| `POST` | `/identity` | `{}` | `{ userId, publicKey }` (201) | — |
-| `POST` | `/identity/import` | `{ publicKey: hex }` | `{ userId, publicKey }` (201 or 200 if exists) | 400 if key not 32 bytes |
-| `GET` | `/identity/:userId` | — | `{ userId, publicKey, createdAt }` | 404 |
+| Method | Path | Request | Response (200) | Errors |
+|--------|------|---------|----------------|--------|
+| `POST` | `/identity` | `{}` | `{ userId: hex, publicKey: hex }` (200) | — |
+| `POST` | `/identity/import` | `{ publicKey: hex }` | `{ userId: hex, publicKey: hex }` (200) | 400 if key not 32 bytes |
+| `GET` | `/identity/:userId` | — | `{ userId: hex, publicKey: hex, createdAt }` | 404 |
 
 **Invariant:** Secret key never in any response body. Identity creation here
 does nothing on the ledger — an account only exists after its first UTXO box
-appearance (via invite claim or genesis).
+appearance (via invite claim, genesis, or faucet).
+
+`userId` on the wire is hex-encoded (64 hex chars). Internally `UserId` is
+`Uint8Array` (32 raw bytes).
 
 ### Challenge (PoW)
 
 | Method | Path | Request | Response | Errors |
 |--------|------|---------|----------|--------|
-| `POST` | `/challenge` | `{ userId }` | `{ challenge: hex(32), targetBits, expiresAtBlock }` | 400 if userId unknown, 409 if challenge already outstanding |
+| `POST` | `/challenge` | `{ userId: hex }` | `{ challenge: hex(32), targetBits, expiresAtBlock }` | 400 if userId unknown, 409 if challenge already outstanding |
 
 One outstanding challenge per account. Requesting a new challenge before the
 previous is submitted or expired returns 409. Challenge expires at
@@ -51,58 +73,80 @@ previous is submitted or expired returns 409. Challenge expires at
 
 | Method | Path | Request | Response | Errors |
 |--------|------|---------|----------|--------|
-| `POST` | `/posts` | Post object (JSON) | `{ id, status: "pending" }` (201) | 400 on validation failure, 409 if no active challenge |
+| `POST` | `/posts` | Post object (JSON, hex fields) | `{ postId, status: "pending", expiresAtHeight }` (200) | 400 on validation failure |
 | `GET` | `/posts/:id` | — | Post object (with `likeCount`) or Stump object | 404 |
-| `GET` | `/posts` | `?author=&limit=50&offset=0` | Post[] (with `likeCount`, live only, no stumps) | — |
+| `GET` | `/posts` | `?author=hex&limit=50&offset=0` | Post[] (with `likeCount`, live only, no stumps) | — |
 
-**Post submission flow:**
-1. Validate all required fields present (`content`, `author`, `parentRefs`,
-   `challenge`, `powNonce`, `protocolVersion`, `timestamp`, `signature`)
-2. Verify challenge is active for this author (issued, not expired, matches value)
-3. `verifyPost(post, currentBlockHeight)` — see Verifier contract.
-   Checks karma: threads require `POST_LOCK_THREAD_COST` (5), replies require
-   `POST_LOCK_REPLY_COST` (3).
-4. Compute `id = computePostId(post)` — server-authoritative
-5. Lock karma via UTXO transaction:
-   - Consume author's existing KarmaBox
-   - Create new KarmaBox with `value - lockAmount`
-   - Create PostLockBox (`boxType: 'post_lock'`, `guard: 'epoch_tally'`)
-6. Assemble sub-block: `{ post, likeBoxes: dequeuePendingLikes() }`
-7. Store sub-block via store interface
-8. Consume challenge (mark as used)
-9. Signal ordering block creator
-10. Return `{ id, status: "pending" }`
+**Post submission flow (mempool-based):**
+
+1. Decode hex fields (`author`, `challenge`, `signature`) to binary
+2. Validate field presence, content length (1–300 bytes)
+3. Run `verifyPost()` — includes challenge check, PoW, signature, parent refs,
+   content limits, protocol version, karma sufficiency
+4. Compute `postId = computePostId(post)` — server-authoritative
+5. Store post (status = pending) with raw CBOR
+6. Build karma-lock UTXO transaction:
+   - Consume author's KarmaBox
+   - Create new KarmaBox (value - lockAmount, `createdAtBlock` = currentHeight)
+   - Create PostLockBox (value = lockAmount, `epoch_tally` guard)
+   - Reuse post signature for the karma input
+7. Consume challenge
+8. Assemble sub-block: `{ subBlockId: postId, post, likeBoxes: [], producerId: author, protocolVersion }`
+9. Insert both as a batch into mempool (same `batchId = postId`):
+   - `insertMempoolSubBlock(subBlock, expiresAtHeight, batchId)`
+   - `insertUtxoTx(karmaLockTx, batchId, expiresAtHeight)`
+10. Broadcast sub-block and UTXO tx to peers (fire-and-forget)
+11. Signal block creator via `onSubBlockReceived()`
+12. Return `{ postId, status: "pending", expiresAtHeight }`
 
 Parent refs may point to live posts or stumps. Both are valid — the DAG
 traversal handles both transparently.
+
+Unlike the old direct-apply model, state is NOT changed immediately. The post
+and its karma lock are applied when an ordering block includes the batch.
 
 ### Likes
 
 | Method | Path | Request | Response | Errors |
 |--------|------|---------|----------|--------|
-| `POST` | `/likes` | `{ targetPostId, likerId, signature }` | `{ likeId, type: "locked" \| "free" }` (201) | 400 if post unknown or pruned, 400 if insufficient karma, 400 if already liked, 404 if liker unknown |
-| `POST` | `/likes/remove` | `{ targetPostId, likerId, signature }` | `{ removed: true, netKarma }` (200) | 400 if post unknown or pruned, 404 if like not found |
+| `POST` | `/likes` | `{ targetPostId, likerId: hex, signature: hex }` | `{ status: "pending", txId, expiresAtHeight }` or `{ status: "free", likeId }` | 400 if post unknown or pruned, 400 if insufficient karma, 400 if already liked, 404 if liker unknown |
+| `POST` | `/likes/remove` | `{ targetPostId, likerId: hex, signature: hex }` | `{ status: "pending", txId, expiresAtHeight }` | 400 if post unknown or pruned, 404 if like not found |
 
-**Like flow:** (unchanged)
+**Like flow (locked, likes 1–50 on post):**
+
+1. Verify post exists and is live (not pruned)
+2. Verify liker has karma box with sufficient value
+3. Verify not already liked (checks both `dag_likes` and `utxo_boxes`)
+4. Verify signature over domain message
+5. Build UTXO transaction: consume karma box → new karma box + LikeBox (value 2)
+6. Insert UTXO tx into mempool: `insertUtxoTx(tx, null, expiresAtHeight)`
+7. Return `{ status: "pending", txId, expiresAtHeight }`
+
+**Like flow (free, like 51+ on post):**
+
+1. Same checks as locked, but no karma lock
+2. Insert free like row into `dag_likes` directly (no mempool)
+3. Return `{ status: "free", likeId }`
 
 **Unlike flow:**
-1. Verify post exists and is live (not pruned)
-2. Verify signature over `JSON.stringify({ targetPostId, likerId, action: "unlike" })`
-3. Check for locked like box (utxo_boxes, box_type='like', matching, unspent)
-   - If found: consume like box, refund 2 karma to liker, deduct 1 karma penalty. netKarma = +1.
-4. If no locked like: check `dag_likes` for free like row
-   - If found: delete row, deduct 1 karma penalty from liker. netKarma = −1.
-5. If neither: return 404
 
-Unlike costs 1 karma as a deterrent against gaming the like system.
-Locked karma (2) is refunded on unlike, so the net is +1 for the liker.
-Free likes have no locked karma, so the net is −1.
+1. Verify post exists and is live
+2. Check for locked like box → if found: consume like box, build UTXO tx
+   refunding 2 karma (net +1 after 1 karma penalty), insert into mempool
+3. If no locked like: check `dag_likes` for free like row → delete row,
+   build UTXO tx deducting 1 karma penalty, insert into mempool
+4. If neither: return 404
+5. Return `{ status: "pending", txId, expiresAtHeight }`
+
+**Unlike costs 1 karma** as a deterrent against gaming. Locked like boxes
+refund the 2 locked karma on unlike (net +1). Free likes have no locked karma
+(net −1).
 
 **Like refund schedule** (computed at epoch boundary by ordering block processor):
 
-| Likes on post | Refund | Effect |
-|---------------|--------|--------|
-| < 10 | 0 | Like stays locked, rolls over to next epoch |
+| Total likes on post | Refund | Effect |
+|---------------------|--------|--------|
+| < 10 (2× LIKE_THRESHOLD) | 0 | Like stays locked, rolls over to next epoch |
 | ≥ 10 | 2 (full) | Like box consumed, 2 karma returned to liker |
 
 Locked karma is never burned. Likes beyond 50 are free — no lock, no refund.
@@ -112,42 +156,50 @@ They count toward the total for author rewards.
 
 | Method | Path | Request | Response | Errors |
 |--------|------|---------|----------|--------|
-| `POST` | `/invites` | `{ inviterId, karmaAmount, bondAmount, signature }` | `{ inviteBoxId, bondBoxId, secretHash }` (201) | 400 if insufficient karma, 400 if exceeds `MAX_PENDING_INVITES`, 404 if inviter unknown |
-| `POST` | `/invites/claim` | `{ inviteBoxId, secret, publicKey }` | `{ userId, karmaBoxId }` (201) | 400 if hash mismatch, 400 if publicKey already an account |
-| `POST` | `/invites/cancel` | `{ inviteBoxId, inviterId, signature }` | `{ karmaBoxId }` (200) | 400 if already claimed, 403 if not inviter |
+| `POST` | `/invites` | `{ inviterId: hex, karmaAmount, bondAmount, signature: hex }` | `{ status: "pending", txId, expiresAtHeight, secretHash: hex, inviteBoxId, bondBoxId }` | 400 if insufficient karma, 400 if exceeds `MAX_PENDING_INVITES`, 404 if inviter unknown |
+| `POST` | `/invites/claim` | `{ inviteBoxId, secret, publicKey: hex }` | `{ status: "pending", txId, expiresAtHeight }` | 400 if hash mismatch, 400 if publicKey already an account |
+| `POST` | `/invites/cancel` | `{ inviteBoxId, inviterId: hex, signature: hex }` | `{ status: "pending", txId, expiresAtHeight }` | 400 if already claimed, 403 if not inviter |
 
 **Create flow:**
+
 1. Verify inviter has ≥ `karmaAmount + bondAmount` available karma
 2. Verify inviter has < `MAX_PENDING_INVITES` outstanding unclaimed invites
 3. Generate random secret `s`, compute `secretHash = blake2b512(s).subarray(0,32)`
-4. Construct UTXO transaction: consume inviter's karma box, create new karma
-   box (balance - N - D) + invite box (N, hash-locked) + bond box (D, inviter-owned)
-5. Return `{ inviteBoxId, bondBoxId, secretHash }` — inviter communicates `s`
-   to invitee out of band
+4. Build UTXO transaction: consume karma box → new karma box (balance - N - D) +
+   InviteBox (N, hash-locked) + BondBox (D, inviter-owned, with zeroed
+   inviteePublicKey/probation fields)
+5. Insert into mempool: `insertUtxoTx(tx, null, expiresAtHeight)`
+6. Return `{ status: "pending", txId, expiresAtHeight, secretHash, inviteBoxId, bondBoxId }`
+   — inviter communicates `s` to invitee out of band
 
 **Claim flow:**
+
 1. Verify `blake2b512(secret).subarray(0,32) === inviteBox.secretHash`
 2. Verify `publicKey` is not already associated with an existing account
-3. Construct UTXO transaction: consume invite box, create new karma box for
-   the invitee (value N, owner = publicKey) — account now exists
-4. Update bond box: set `inviteePublicKey`, `probationStartBlock`,
-   `probationEndBlock = currentBlock + INVITE_PROBATION_BLOCKS`
-5. Return `{ userId, karmaBoxId }`
+3. Build UTXO transaction:
+   - Consume InviteBox
+   - Create new KarmaBox for invitee (value N, owner = publicKey) — account now exists
+   - Update BondBox: set `inviteePublicKey`, `probationStartBlock`, `probationEndBlock`
+4. Insert into mempool: `insertUtxoTx(tx, null, expiresAtHeight)`
+5. Return `{ status: "pending", txId, expiresAtHeight }`
 
 **Cancel flow:**
+
 1. Verify invite is unclaimed
 2. Verify signature matches inviter's key
-3. Construct UTXO transaction: consume invite box + bond box, return both
-   values to inviter's karma box
-4. Return `{ karmaBoxId }`
+3. Build UTXO transaction: consume InviteBox + BondBox, create new KarmaBox
+   returning both values to inviter
+4. Insert into mempool: `insertUtxoTx(tx, null, expiresAtHeight)`
+5. Return `{ status: "pending", txId, expiresAtHeight }`
 
 ### Pruning
 
 | Method | Path | Request | Response | Errors |
 |--------|------|---------|----------|--------|
-| `POST` | `/posts/:id/prune` | `{ authorId, signature }` | `{ stumpId }` (201) | 400 if post is not root (has parent), 403 if not author, 404 |
+| `POST` | `/posts/:id/prune` | `{ authorId: hex, signature: hex }` | `{ stumpId }` (201) | 400 if post is not root (has parent), 403 if not author, 404 |
 
 **Prune flow:**
+
 1. Verify post exists, is live, and `parentRefs` is empty (it's a root post)
 2. Verify signature matches post author's key
 3. Walk the reply subtree — collect all descendant posts
@@ -163,31 +215,43 @@ They count toward the total for author rewards.
 
 | Method | Path | Response | Errors |
 |--------|------|----------|--------|
-| `GET` | `/karma/:userId` | `{ userId, balance, boxId, createdAtBlock }` | 404 |
-| `GET` | `/credits/:userId` | `{ userId, balance, boxId }` | 404 |
+| `GET` | `/karma/:userId` | `{ userId: hex, balance, boxId, createdAtBlock }` | 404 |
+| `GET` | `/credits/:userId` | `{ userId: hex, balance, boxId }` | 404 |
 | `GET` | `/invites/:userId` | `{ pending: InviteBox[], bonds: BondBox[] }` | 404 |
 
 ### Blocks
 
 | Method | Path | Response | Errors |
 |--------|------|----------|--------|
-| `GET` | `/blocks/:height` | OrderingBlock object | 400 if NaN, 404 |
+| `GET` | `/blocks/:height` | OrderingBlock object (JSON with hex fields) | 400 if NaN, 404 |
 | `GET` | `/blocks/current` | `{ height, hash }` | — |
 
 ### Faucet (testnet only)
 
 | Method | Path | Request | Response | Errors |
 |--------|------|---------|----------|--------|
-| `POST` | `/faucet` | `{ userId, amount }` | `{ userId, boxId, newBalance }` (201) | 400 if missing fields, 403 if not testnet, 404 if userId unknown |
+| `POST` | `/faucet` | `{ userId: hex, amount }` | `{ status: "pending", txId, expiresAtHeight }` | 400 if missing fields, 403 if not testnet, 404 if userId unknown |
 
-Grants karma to an identity. Mints from nothing — not a transfer. Creates a
-new karma box or tops up an existing one. Gated behind `networkMode === "testnet"`.
+Grants karma to an identity. Mints from nothing — not a transfer. Builds a
+UTXO transaction creating a new karma box, inserts into mempool. Gated behind
+`networkMode === "testnet"`.
+
+### Mining
+
+| Method | Path | Request | Response | Errors |
+|--------|------|---------|----------|--------|
+| `GET` | `/mining/block-template` | — | OrderingBlock template (powNonce=0, no signature) or 404 if not external mode | — |
+| `POST` | `/mining/submit` | `{ powNonce: number, height: number }` | `{ accepted: true, hash }` or `{ accepted: false, reason }` | 400 |
+
+External mining mode only. `GET /mining/block-template` returns the current
+block template for external miners to solve. `POST /mining/submit` accepts a
+mined nonce, verifies PoW, finalizes the block, and broadcasts.
 
 ### Status
 
 | Method | Path | Response |
 |--------|------|----------|
-| `GET` | `/status` | `{ blockHeight, postCount, pendingPosts, identityCount, totalKarma, totalCredits, networkMode }` |
+| `GET` | `/status` | `{ blockHeight, postCount, identityCount, totalKarma, totalCredits, networkMode, miningMode }` |
 
 ### Static
 
@@ -210,14 +274,12 @@ Verification order (fail-fast):
 3. **Signature** — `crypto.verify(null, signingHash(post), pubKeyObj, sigBuf)`
    with raw Ed25519
 4. **Parent refs** — each `parentId` must exist as a confirmed post or stump
-   (skip for genesis/empty parents)
-5. **Content limit** — reject if `content.length > MAX_CONTENT_BYTES` (300) or
-   empty
+   (skip for empty parents)
+5. **Content limit** — reject if `content.length > MAX_CONTENT_BYTES` (300) or empty
 6. **Protocol version** — reject if unsupported
 7. **Karma** — author must have a karma box with sufficient value:
    - Threads (no parentRefs): ≥ `POST_LOCK_THREAD_COST` (5)
    - Replies (has parentRefs): ≥ `POST_LOCK_REPLY_COST` (3)
-   (prevents posting from nonexistent or zero-karma accounts)
 
 ### verifyPostForRelay
 
@@ -229,50 +291,85 @@ origin node. Re-verifies: content limits, parent refs count, protocol version,
 PoW (stateless, re-verified), signature (stateless, re-verified), karma
 sufficiency, and parent ref existence.
 
-The Stage 1 stateless checks (structure, PoW, signature) are run by the net
-package via `@dagsocial/validation` before this function is called. Stage 2
-adds the stateful DB-dependent checks.
-
 ---
 
 ## UTXO Engine Contract
 
 The UTXO engine manages box lifecycle, transaction validation, karma decay,
-and conservation rules. It is a subsystem of the node — not a separate process.
+and conservation rules. It is split into three functions:
 
-### Transaction validation
+### validateTx
 
-`validateAndApplyTx(tx: UtxoTransaction, currentBlockHeight: number): { valid: boolean; error?: string }`
+```
+validateTx(deps, tx: UtxoTransaction, currentBlockHeight: number): UtxoResult
+```
 
-1. **Stateless validation:**
-   - All input box IDs exist and are unspent
-   - Total value in = total value out (except mint/burn ops)
-   - Every consumed box's guard condition is satisfied by the provided signature
-   - No duplicate input box IDs
-   - Box type transitions are legal (see below)
+Full read-only validation. Performs all checks without modifying state:
 
-2. **Stateful validation:**
-   - Karma decay applied at consumption time (see below)
-   - Conservation: mint only via like rewards (ordering block processor) or
-     genesis; burn only via bond forfeiture
-   - Karma box → invite/like/new-karma transitions only (no transfer to
-     other owner)
+1. No duplicate input box IDs
+2. All input boxes exist and are unspent
+3. All inputs have the same boxType
+4. Face-value conservation (non-karma types; karma uses decay-aware check)
+5. Guard satisfaction (signatures verified against tx hash)
+6. Legal box transitions (per the transition table below)
+7. Karma decay check (effective value must cover output values)
 
-3. **Apply:** mark consumed boxes as spent, insert created boxes as unspent,
-   update account indexes.
+Returns `{ valid, error?, computedOutputs?, txId? }`. On success, `computedOutputs`
+contains boxes with pre-computed IDs (for use by `applyTx`), and `txId` is the
+deterministic transaction ID.
+
+**Used at pool entry** for ideal validation (though currently gated by signing
+mismatch — see Known Gaps in SESSION_CONTEXT.md).
+
+### revalidateTxInContext
+
+```
+revalidateTxInContext(deps, tx: UtxoTransaction, currentBlockHeight: number): UtxoResult
+```
+
+Lightweight re-validation at block application time. Skips expensive checks
+(signatures, transitions) and only verifies:
+
+- Input liveness — are inputs still unspent?
+- Karma decay — has effective value expired at the new height?
+
+**Used during block finalization** when applying UTXO transactions from the
+mempool. Signatures and transitions were already verified (either at pool
+entry or at relay receipt). Only height-dependent liveness needs re-checking.
+
+### applyTx
+
+```
+applyTx(deps, tx: UtxoTransaction, outputsWithIds: AnyBox[], currentBlockHeight: number): void
+```
+
+Write-only. Consumes all input boxes and inserts all output boxes inside a
+SQLite transaction. Performs no validation — call `validateTx` or
+`revalidateTxInContext` first.
+
+### validateAndApplyTx (convenience)
+
+```
+validateAndApplyTx(deps, tx: UtxoTransaction, currentBlockHeight: number): UtxoResult
+```
+
+Delegates to `validateTx` + `applyTx`. Preserved for backward compatibility.
+New code should prefer the split functions.
 
 ### Legal box transitions
 
 | Consumed | Created | Condition |
 |----------|---------|-----------|
-| KarmaBox | KarmaBox + InviteBox + BondBox | Owner same, value conserved |
-| KarmaBox | KarmaBox + LikeBox | Owner same, value conserved |
-| KarmaBox | KarmaBox | Owner same, balance changes (earn/decay) |
-| InviteBox | KarmaBox | Hash preimage match OR inviter sig (cancel) |
+| KarmaBox | KarmaBox | Same owner, balance change (earn/decay) |
+| KarmaBox | KarmaBox + LikeBox | Same owner, value conserved |
+| KarmaBox | KarmaBox + PostLockBox | Same owner, value conserved |
+| KarmaBox | KarmaBox + InviteBox + BondBox | Same owner, value conserved |
+| InviteBox | KarmaBox | Hash preimage match OR inviter sig (cancel) — handled at service layer |
 | BondBox | KarmaBox (to inviter) | Unlock condition met |
 | BondBox | — (burn) | Invitee karma < minimum during probation |
 | CreditBox | CreditBox(+CreditBox) | Any owner, value conserved |
 | LikeBox | — (tallied) | Epoch tally consumption (ordering block only) |
+| PostLockBox | PostLockBox(+KarmaBox) | Epoch processing only (partial/full unlock) |
 
 ### Karma decay at consumption
 
@@ -290,84 +387,131 @@ use `effectiveValue` as the source. Decayed karma is destroyed (net deflation).
 
 ## Ordering Block Creator Contract
 
-`startBlockCreator()` / `stopBlockCreator()` / `onSubBlockReceived()`
+`startBlockCreator()` / `stopBlockCreator()` / `onSubBlockReceived()` /
+`createOrderingBlock()` / `submitMinedBlock(powNonce, height)`
 
-- **Timer-driven:** every `ORDERING_BLOCK_INTERVAL_MS` (default 60s), attempt
-  to create an ordering block
+### Triggers
+
+- **Timer-driven:** every `ORDERING_BLOCK_INTERVAL_MS` (default 60s)
 - **Sub-block-count-driven:** when pending sub-blocks ≥
-  `ORDERING_BLOCK_MIN_SUB_BLOCKS` (default 1), create immediately
-- Block creation:
-  1. Collect all pending sub-blocks since last ordering block
-  2. Collect standalone like boxes (no sub-block to ride)
-  3. Deduplicate likes (a like box appearing in both a sub-block and the
-     standalone pool is included only once)
-  4. Collect pending UTXO transactions (invites, claims, cancellations,
-     credit transfers)
-  5. Collect pending stumps
-  6. If `currentHeight % EPOCH_BLOCKS === 0`: run epoch tally (process all
-     locked like boxes + free likes, compute author rewards + liker refunds)
-  7. Assign block height, compute block hash
-  8. Sign with validator's key
-  9. Store block, update all sub-block/UTXO/stump statuses to confirmed
-  10. Return block or null if nothing to confirm
+  `ORDERING_BLOCK_MIN_SUB_BLOCKS` (default 1)
 
-| Config parameter | Default | Description |
-|-----------------|---------|-------------|
-| `ORDERING_BLOCK_INTERVAL_MS` | `60000` | Max time between ordering blocks |
-| `ORDERING_BLOCK_MIN_SUB_BLOCKS` | `1` | Sub-blocks to trigger immediate block |
-| `MAX_SUB_BLOCKS_PER_BLOCK` | `1000` | Max sub-blocks per ordering block |
+### Block creation (mempool-based)
 
-### Epoch tally
+1. Purge expired mempool entries (`purgeExpired(currentHeight)`)
+2. Get pending entries from mempool (`getPendingEntries(limit)`)
+3. Separate sub-blocks from standalone UTXO transactions (`batch_id IS NULL`)
+4. Decode sub-blocks from CBOR
+5. Resolve batch entries — UTXO payloads linked to sub-blocks via `batch_id`
+6. Attach standalone likes to matching sub-blocks by `targetPostId`
+7. Remaining standalone UTXO entries → `utxoTxIds`
+8. Batch-linked UTXO entries → `utxoTxIds`
+9. Collect standalone unprocessed locked like boxes
+10. Deduplicate likes (a like box in both a sub-block and standalone pool
+    is included only once via the sub-block)
+11. Check epoch boundary — if `currentHeight > 0 && currentHeight % epochBlocks === 0`,
+    run epoch tally
+12. Guard: if nothing to confirm and not epoch boundary and not external mode
+    and not genesis, return null
+13. Track confirmed mempool rowids for cleanup
+14. Build coinbase outputs (credit emission with Ergo-style decay,
+    treasury split if configured)
+15. Adjust difficulty at epoch boundaries (credit epochs, not like epochs)
+16. Build block template (powNonce=0, empty signature)
+17. **Internal mode:** mine PoW, sign body hash, compute final hash, finalize
+18. **External mode:** store template for `GET /mining/block-template`,
+    return null (block finalized when miner submits via `submitMinedBlock`)
 
-Triggered every `EPOCH_BLOCKS` ordering blocks (not every block). Processes all
-unprocessed locked like boxes and free like rows.
+### Block finalization
 
-1. Collect all unprocessed locked like boxes from `utxo_boxes`
-   (box_type = 'like', spent_at_block IS NULL)
-2. Collect all unprocessed free like rows from `dag_likes`
-   (processed = 0)
-3. Group by `targetPostId` — total like count = locked + free
-4. For each target post:
-   - `totalLikes` = locked count + free count
-   - Compute author reward: `min(floor(totalLikes / LIKE_THRESHOLD), LIKE_MAX_AUTHOR_REWARD)`
-   - For each **locked** like box:
-     - If `totalLikes >= 2 * LIKE_THRESHOLD` (10): refund 2 karma to liker's karma box, consume like box
-     - If `totalLikes < 2 * LIKE_THRESHOLD`: leave like box locked — rolls over to next epoch
-     - Locked karma is never burned
-   - Author reward: mint karma to post author's karma box
-5. For each **free** like row: mark as processed (no karma movement)
-6. Mark all **consumed** like boxes as spent (spent_at_block set). Like boxes that
-   didn't meet the threshold remain unspent and are processed in the next epoch.
-7. Record `EpochTally` in the ordering block
+1. Store block in `block_ordering` table
+2. Apply coinbase — mint credits for each output
+3. Broadcast ordering block to peers
+4. Confirm sub-blocks and their posts (`confirmPost`)
+5. Remove confirmed entries from mempool (`removeEntry` for each confirmed rowid)
+6. Reset pending counter and template
 
-Likes beyond `LIKE_FREE_THRESHOLD * LIKE_THRESHOLD` (50) are free — no lock,
-no refund. They count toward `totalLikes` for author reward purposes only.
+### Mining modes
+
+| Mode | Block creator | Block finalization | Template endpoint |
+|------|--------------|-------------------|-------------------|
+| `internal` (default) | Timer + trigger | PoW solved internally | N/A |
+| `external` | Timer + trigger | Via `submitMinedBlock` | `GET /mining/block-template` |
+
+In external mode, the block creator builds a template with `powNonce=0` and
+stores it. External miners poll the template endpoint, solve PoW, and submit
+via `POST /mining/submit`. The node verifies PoW, signs, and finalizes.
+
+### Coinbase emission (Ergo-style linear decay)
+
+```
+if height <= CREDIT_FIXED_RATE_BLOCKS (1,051,200):
+    reward = CREDIT_INITIAL_REWARD (100)
+else:
+    epochs = floor((height - CREDIT_FIXED_RATE_BLOCKS - 1) / CREDIT_EPOCH_BLOCKS) + 1
+    reward = max(CREDIT_INITIAL_REWARD - epochs * CREDIT_REWARD_REDUCTION, CREDIT_TAIL_REWARD)
+```
+
+Coinbase outputs are locked for `CREDIT_MINER_REWARD_DELAY` (720) blocks.
+If `treasuryPubKey` is configured, `CREDIT_TREASURY_PCT` (10%) goes to treasury.
+
+### Difficulty adjustment
+
+At each credit epoch boundary (`height % CREDIT_EPOCH_BLOCKS === 0`):
+
+```
+ratio = actualDuration / expectedDuration
+newTarget = round(currentTarget * ratio)
+finalTarget = clamp(newTarget, currentTarget * 0.5, currentTarget * 1.5)
+finalTarget = max(finalTarget, ORDERING_BLOCK_POW_TARGET_FLOOR (4))
+```
+
+Window is tracked from the first block of the current epoch.
+
+### Epoch tally (like processing)
+
+Runs every `EPOCH_BLOCKS` (60) ordering blocks. Processes locked like boxes,
+free like rows, and post lock boxes:
+
+1. Collect all unprocessed locked like boxes + unprocessed free like rows
+2. Group by `targetPostId`
+3. For each target post:
+   - Compute `totalLikeCount = locked + free`
+   - Author reward: `min(floor(totalLikes / LIKE_THRESHOLD), LIKE_MAX_AUTHOR_REWARD)`
+   - For locked likes: if `totalLikes >= 2 * LIKE_THRESHOLD` (10), refund 2 karma
+     to liker, consume like box. Otherwise leave locked — rolls over.
+   - For free likes: mark as processed (no karma movement)
+4. Process post lock boxes:
+   - For each unspent PostLockBox, compute `shouldUnlock = floor(totalLikes / POST_LOCK_UNLOCK_PER_LIKES)`
+   - `toUnlock = min(currentValue, shouldUnlock - alreadyUnlocked)`
+   - If `toUnlock > 0`: consume old PostLockBox, create reduced one, mint unlocked
+     karma back to author
+5. Record `EpochTally` in the ordering block
+6. Mark consumed like boxes and free likes as processed
 
 ---
 
 ## Store Interface
 
-Storage backends implement this interface. SQLite is the Phase 2 backend.
+Storage backends implement this interface. SQLite is the backend.
 Fresh schema — no Phase 1 migration.
-
-Table prefixes: `dag_*`, `utxo_*`, `sub_*`, `block_*`
 
 ### Database lifecycle
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `initDb(path)` | `(string) => void` | Initialize backend, run migrations, enable WAL |
-| `getDb()` | `() => BackendHandle` | Return backend handle, throw if not initialized |
+| `getDb()` | `() => Database` | Return better-sqlite3 handle, throw if not initialized |
 | `closeDb()` | `() => void` | Graceful shutdown |
 
-### Identity (carried forward)
+### Identity
 
 | Function | Signature |
 |----------|-----------|
 | `insertIdentity(userId, keyPair)` | `(UserId, KeyPair) => void` |
 | `getIdentity(userId)` | `(UserId) => { userId, publicKey, createdAt } \| null` |
 
-### Challenges (new)
+### Challenges
 
 | Function | Signature |
 |----------|-----------|
@@ -395,33 +539,56 @@ Table prefixes: `dag_*`, `utxo_*`, `sub_*`, `block_*`
 | `insertLike(targetPostId, likerId)` | `(PostId, UserId) => string` — free like, returns likeId |
 | `hasLiked(targetPostId, likerId)` | `(PostId, UserId) => boolean` — checks both dag_likes and utxo_boxes |
 | `getLikeCount(postId)` | `(PostId) => { locked: number, free: number }` |
-| `getUnprocessedFreeLikes()` | `() => FreeLike[]` — unprocessed dag_likes rows |
-| `markFreeLikesProcessed(likeIds)` | `(string[]) => void` — after epoch processing |
+| `getFreeLike(targetPostId, likerId)` | `(PostId, UserId) => FreeLike \| null` |
+| `deleteFreeLike(likeId)` | `(string) => void` |
+| `getUnprocessedFreeLikes()` | `() => FreeLike[]` |
+| `markFreeLikesProcessed(likeIds)` | `(string[]) => void` |
 
 ### UTXO
 
 | Function | Signature |
 |----------|-----------|
-| `getBox(boxId)` | `(string) => BoxBase \| null` |
-| `getUnspentBoxes(owner)` | `(PublicKey) => BoxBase[]` |
-| `getKarmaBox(owner)` | `(PublicKey) => KarmaBox \| null` — unspent karma box for account |
-| `getCreditBox(owner)` | `(PublicKey) => CreditBox \| null` — unspent credit box for account |
+| `getBox(boxId)` | `(string) => AnyBox \| null` |
+| `getUnspentBoxes(owner)` | `(Uint8Array) => AnyBox[]` |
+| `getKarmaBox(owner)` | `(Uint8Array) => KarmaBox \| null` — unspent karma box for account |
+| `getCreditBox(owner)` | `(Uint8Array) => CreditBox \| null` — unspent credit box for account |
 | `getPendingInvites(inviterId)` | `(UserId) => InviteBox[]` — unclaimed, unexpired |
 | `getPendingInviteCount(inviterId)` | `(UserId) => number` |
 | `getBondBoxes(inviterId)` | `(UserId) => BondBox[]` — active bonds |
+| `getUnspentLikeForLiker(targetPostId, likerId)` | `(PostId, UserId) => LikeBox \| null` |
 | `getLockedLikeBoxes(postId)` | `(PostId) => LikeBox[]` — all locked like boxes for a post |
 | `getUnprocessedLockedLikeBoxes()` | `() => LikeBox[]` — pending epoch tally |
-| `insertBox(box)` | `(BoxBase) => void` |
+| `getUnspentPostLockBoxes()` | `() => PostLockBox[]` |
+| `getPostTotalLikes(postId)` | `(PostId) => number` — locked + free |
+| `insertBox(box)` | `(AnyBox) => void` |
 | `consumeBox(boxId, consumedAtBlock)` | `(string, number) => void` — mark as spent |
 | `markLikeBoxesTallied(boxIds)` | `(string[]) => void` — after epoch processing |
 
-### Sub-blocks
+### Mempool
 
-| Function | Signature |
-|----------|-----------|
-| `insertSubBlock(subBlock)` | `(SubBlock) => void` |
-| `getPendingSubBlocks(limit)` | `(number) => SubBlock[]` — oldest first, unconfirmed |
-| `confirmSubBlock(subBlockId, blockHeight)` | `(string, number) => void` |
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `insertMempoolSubBlock(sb, expiresAtHeight, batchId?)` | `(SubBlock, number, string?) => number` | Queue sub-block, returns rowid |
+| `insertUtxoTx(tx, batchId, expiresAtHeight)` | `(UtxoTransaction, string?, number) => number` | Queue UTXO tx, returns rowid |
+| `getPendingEntries(limit)` | `(number) => PoolEntry[]` | FIFO-ordered pending entries |
+| `purgeExpired(currentHeight)` | `(number) => number` | Remove entries past expiry, returns count |
+| `removeEntry(rowid)` | `(number) => void` | Remove confirmed entry by rowid |
+| `removeBatch(batchId)` | `(string) => void` | Remove all entries in a batch |
+
+`PoolEntry`:
+```
+{
+  rowid: number
+  entryType: "subblock" | "utxo_tx"
+  subblockCbor: Uint8Array | null
+  utxoTxCbor: Uint8Array | null
+  batchId: string | null
+  expiresAtHeight: number
+  createdAt: string
+}
+```
+
+See `MEMPOOL_INTERFACE.md` for the full mempool contract.
 
 ### Ordering blocks
 
@@ -448,20 +615,22 @@ All config via environment variables with defaults:
 |----------|---------|-------------|
 | `PORT` | `3000` | HTTP listen port |
 | `DB_PATH` | `dagsocial.db` | SQLite database path |
-| `NODE_ROLE` | `server` | Role: `server` (applies peer blocks) or `miner` (produces blocks) |
+| `NETWORK_MODE` | `testnet` | Network mode — `testnet` enables debug endpoints (faucet) |
+| `NODE_ROLE` | `server` | Role: `server` (applies peer blocks, no mining) or `miner` (produces blocks) |
 | `POST_POW_TARGET_BITS` | `20` | Post PoW difficulty |
 | `CHALLENGE_WINDOW_BLOCKS` | `10` | Challenge expiry in blocks |
 | `ORDERING_BLOCK_INTERVAL_MS` | `60000` | Max time between ordering blocks |
 | `ORDERING_BLOCK_MIN_SUB_BLOCKS` | `1` | Sub-blocks to trigger immediate block |
 | `MAX_SUB_BLOCKS_PER_BLOCK` | `1000` | Max sub-blocks per ordering block |
 | `EPOCH_BLOCKS` | `60` | Like processing every N ordering blocks |
-| `NETWORK_MODE` | `testnet` | Network mode — `testnet` enables debug endpoints (faucet) |
+| `MINING_MODE` | `internal` | `internal` (node mines) or `external` (template endpoint) |
+| `ORDERING_BLOCK_POW_TARGET_BITS` | `12` | Initial ordering block PoW difficulty |
+| `CREDIT_INITIAL_REWARD` | `100` | Credits per block reward |
+| `CREDIT_TREASURY_PCT` | `10` | Percent of block reward to treasury |
+| `TREASURY_PUBKEY` | `""` | Hex-encoded 32-byte treasury key (empty = no treasury) |
 | `BOOTSTRAP_PEERS` | `[]` | Comma-separated libp2p multiaddrs |
 | `LISTEN_ADDRS` | `/ip4/0.0.0.0/tcp/0` | libp2p listen addresses |
 | `MAX_PEERS` | `50` | Max connected libp2p peers |
-
-All protocol parameters from `@dagsocial/types` are also overridable via env
-vars for testing and governance simulation.
 
 ---
 
@@ -476,7 +645,7 @@ Stage 2 handlers for inbound gossip messages. Startup order:
 3. Register Stage 2 handlers (onSubBlock, onOrderingBlock, onTx)
 4. await net.start()          // connect to bootstrap, subscribe to topics
 5. startHttpServer()          // begin accepting API requests
-6. startBlockCreator()        // begin producing ordering blocks
+6. startBlockCreator()         // begin producing ordering blocks
 ```
 
 Net starts before HTTP — the network layer is ready before the API accepts
@@ -488,38 +657,48 @@ Route handlers call `net.broadcastSubBlock()`, `net.broadcastTx()`, and
 to peers. Broadcast calls are fire-and-forget — failures are logged but do
 not fail the API request.
 
-### Node roles
+### Relay handlers (mempool-based)
 
-| Role | Block creator | Applies peer blocks | Description |
-|------|--------------|-------------------|-------------|
-| `server` (default) | Off | Yes | Serves API, validates and applies inbound ordering blocks from gossip |
-| `miner` | On (timer + trigger) | No | Produces ordering blocks, ignores peer blocks |
+- **`onSubBlock(sb)`**: validates (read-only) → inserts into mempool via
+  `insertMempoolSubBlock`
+- **`onTx(tx)`**: validates (read-only, `validateTx`) → inserts into mempool
+  via `insertUtxoTx`
+- **`onOrderingBlock(block)`**: full validation (structure, chain-link, PoW,
+  signature) → if valid, processes `utxoTxIds` with `revalidateTxInContext`
+  → `applyTx` → confirms posts → removes confirmed entries from mempool
+
+Unlike the old model where relay handlers applied state immediately, all
+state changes now flow through the mempool and are applied atomically when
+the ordering block is applied.
 
 ---
 
 ## Preconditions
 - Node.js ≥ 22
-- `@dagsocial/types` and `@dagsocial/validation` packages built and importable
-- `@dagsocial/net` package built and importable
+- `@dagsocial/types`, `@dagsocial/validation`, and `@dagsocial/net` packages
+  built and importable
 - `better-sqlite3` native bindings built
 - Write access to `DB_PATH` directory
 - Port available at `PORT` and libp2p listen address available
 
 ## Postconditions
 - HTTP server listening on `:PORT`
-- Fresh SQLite database created at `DB_PATH` with full Phase 2 schema
+- Fresh SQLite database created at `DB_PATH` with full schema including
+  `mempool` table
 - libp2p NetNode running with configured transports and subscribed to gossip
   topics
 - Connected to bootstrap peers and meshed on all subscribed topics
-- Ordering block creator running (timer + sub-block-count trigger)
+- Ordering block creator running (timer + sub-block-count trigger, internal
+  or external mining)
 - Sub-blocks, ordering blocks, and UTXO transactions broadcast to peers
   after local creation
-- UTXO engine initialized
+- UTXO engine initialized with split validate/revalidate/apply API
 - Demo UI served at `/`
 
 ## Invariants
 - Secret keys never in API responses
-- `raw_cbor` is the canonical authority for post content; parsed columns are derivative
+- `raw_cbor` is the canonical authority for post content; parsed columns are
+  derivative
 - `post.id` is computed server-side — client-submitted IDs are ignored
 - Content length limit enforced at API boundary
 - Protocol version checked at verification
@@ -529,3 +708,7 @@ not fail the API request.
 - Sub-block identity IS post identity — they cannot diverge
 - Like deduplication happens at ordering block creation time
 - Challenge one-per-account: creating a new challenge consumes the old one
+- All state mutations flow through mempool → ordering block inclusion →
+  block application. Zero direct `consumeBox`/`insertBox` calls in HTTP routes.
+- Mutating routes return `{ status: "pending", txId, expiresAtHeight }` —
+  state is not applied until the enclosing ordering block is finalized.

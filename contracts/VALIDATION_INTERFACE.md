@@ -1,15 +1,17 @@
 # VALIDATION Interface Contract
 
 **Component:** `@dagsocial/validation`
-**Protocol version:** 2
-**Last updated:** 2026-07-23
+**Protocol version:** 1
+**Last updated:** 2026-07-24
 
 ## Scope
 
 Stateless validation functions for DAGsocial. Pure functions — no I/O, no
 database access, no side effects. Shared by `@dagsocial/net` (Stage 1 checks
 before gossip forwarding) and `@dagsocial/node` (Stage 2 verification for
-both local and relayed posts). Depends only on `@dagsocial/types`.
+both local and relayed objects). Depends only on `@dagsocial/types`.
+
+Exports from `packages/validation/src/index.ts`.
 
 ---
 
@@ -25,8 +27,36 @@ Encodes `nonce` as an 8-byte little-endian unsigned integer, concatenates
 `input || nonceBytes`, hashes with blake2b512, takes first 32 bytes, checks
 that the result has at least `targetBits` leading zero bits.
 
-Used in Stage 1 (gossip) and Stage 2 (node) — PoW is purely stateless and
-must be verified before forwarding to prevent spam propagation.
+Used for post PoW verification in both Stage 1 (gossip) and Stage 2 (node).
+
+### verifyOrderingBlockPoW
+
+```
+verifyOrderingBlockPoW(block: OrderingBlock): boolean
+```
+
+Computes the block body hash via `computeBlockBodyHash`, encodes `block.powNonce`
+as u64 LE, hashes `bodyHash || nonceBytes` with blake2b512, and checks that the
+result has at least `block.powTargetBits` leading zero bits. Returns false if
+`powTargetBits < ORDERING_BLOCK_POW_TARGET_FLOOR`.
+
+Used by nodes to verify ordering block PoW before applying a relayed block, and
+by the block creator to verify externally-submitted mining solutions.
+
+### computeBlockBodyHash
+
+```
+computeBlockBodyHash(block: OrderingBlock): Buffer
+```
+
+Computes the preimage that the PoW nonce hashes against. Serializes the block
+with `powNonce=0` and `validatorSignature` zeroed (64 zero bytes) and `hash=""`,
+encodes as CBOR, then returns `blake2b512(cbor).subarray(0, 32)`. The body hash
+excludes the PoW nonce (not yet found), the validator signature (computed after
+PoW), and the final block hash (computed after signing). It covers everything
+else: height, prevBlockHash, subBlockRefs, likeBoxIds, utxoTxIds, stumpIds,
+validatorId, powTargetBits, coinbaseOutputs, epochTallyResults, protocolVersion,
+createdAt.
 
 ---
 
@@ -110,8 +140,11 @@ verifyOrderingBlockStructure(block: OrderingBlock): { valid: boolean; error?: st
 ```
 
 Checks: `prevBlockHash` present and non-empty, `subBlockRefs` is an array,
-`validatorSignature` is 64 bytes, `height` ≥ 1, `protocolVersion` is a
-number, `hash` present and non-empty.
+`validatorSignature` is 64 bytes, `height` ≥ 1, `protocolVersion` is a number,
+`hash` present and non-empty, `powNonce` is a non-negative number,
+`powTargetBits` ≥ `ORDERING_BLOCK_POW_TARGET_FLOOR` (4), `coinbaseOutputs` is
+an array with each output having a 32-byte `owner` and non-negative `value`
+and `lockedUntilBlock` ≥ `block.height`.
 
 ### verifyBlockChainLink
 
@@ -141,10 +174,18 @@ Stage 2 (@dagsocial/node — on* callbacks, after gossip receipt)
   ├── verifyPostSignature (now with public key from identity store)
   ├── Parent ref existence (DB lookup)
   └── Karma sufficiency (UTXO state)
+
+Block receipt (@dagsocial/node — onOrderingBlock callback)
+  ├── verifyOrderingBlockStructure
+  ├── verifyBlockChainLink (against previous block)
+  ├── verifyOrderingBlockPoW
+  ├── verifyValidatorSignature (body hash signed with validatorId's key)
+  └── State application (UTXO, sub-block confirmation, mempool cleanup)
 ```
 
-PoW is verified in both stages — Stage 1 blocks invalid-PoW spam from
-propagating; Stage 2 re-verifies for defense in depth.
+PoW is verified in both stages for posts — Stage 1 blocks invalid-PoW spam from
+propagating; Stage 2 re-verifies for defense in depth. Ordering block PoW is
+verified at receipt time only.
 
 ---
 
@@ -168,3 +209,5 @@ propagating; Stage 2 re-verifies for defense in depth.
 - Content limits measured in UTF-8 bytes, not characters
 - All functions are synchronous — no Promises, no callbacks
 - Protocol version `PROTOCOL_VERSION` from `@dagsocial/types`
+- Ordering block body hash excludes powNonce, validatorSignature, and hash
+  (computed after these are set)

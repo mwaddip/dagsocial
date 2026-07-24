@@ -1,7 +1,7 @@
 # DAGsocial Architecture
 
-**Protocol version:** 2 (Phase 2 redesign)
-**Last updated:** 2026-07-23
+**Protocol version:** 1
+**Last updated:** 2026-07-24
 
 ## Overview
 
@@ -616,31 +616,35 @@ Bootstrap uses a **two-phase genesis committee** model:
           ┌───────────┼───────────┐
           ▼           ▼           ▼
      ┌─────────┐ ┌─────────┐ ┌──────────┐
-     │  Posts  │ │  UTXO   │ │ Ordering │
-     │   DAG   │ │ Ledger  │ │  Blocks  │
-     └────┬────┘ └────┬────┘ └──────────┘
-          │           │
-          └─────┬─────┘
-                ▼
-          ┌──────────┐
-          │  Stumps  │
-          └──────────┘
+     │  Posts  │ │  UTXO   │ │  Mempool │
+     │   DAG   │ │ Ledger  │ │ (pending)│
+     └────┬────┘ └────┬────┘ └────┬─────┘
+          │           │           │
+          └─────┬─────┘           │
+                ▼                 ▼
+          ┌──────────┐     ┌──────────┐
+          │  Stumps  │     │ Ordering │
+          └──────────┘     │  Blocks  │
+                           └──────────┘
 ```
 
 1. **Genesis:** Committee mints initial karma/credit boxes
 2. **Invite:** Committee invites first users via hash-locked invite boxes
 3. **Account creation:** Invitee claims invite with keypair → karma box exists
-4. **Posting:** User requests challenge from node, constructs post, solves single-pass PoW →
-   sub-block with post + pending likes
-5. **Liking:** User spends karma → like box → committed in next sub-block or
-   ordering block
-6. **Ordering:** Validator solves full PoW → ordering block batches sub-blocks,
-   deduplicates likes, triggers epoch tally, distributes credit rewards
-7. **Pruning:** Author signs prune intent → stump constructed with deterministic
+4. **Posting:** User requests challenge from node, constructs post, solves
+   PoW → sub-block + karma-lock UTXO tx → mempool (batch-linked by postId)
+5. **Liking:** User spends karma → like box UTXO tx → mempool (standalone)
+6. **Ordering:** Block creator pulls from mempool (FIFO), assembles block with
+   sub-blocks + UTXO txs + standalone likes, mines PoW, finalizes → state
+   applied atomically
+7. **Epoch tally:** Every `EPOCH_BLOCKS` ordering blocks — processes locked
+   like boxes, free likes, post lock box unlocks, mints author rewards
+8. **Pruning:** Author signs prune intent → stump constructed with deterministic
    karma deltas → committed in ordering block → DAG compacted
-8. **Net:** libp2p gossips sub-blocks and ordering blocks between nodes.
+9. **Net:** libp2p gossips sub-blocks, ordering blocks, and UTXO transactions.
    Stage 1 (stateless) validation via `@dagsocial/validation` runs before
    forwarding. Stage 2 (stateful) validation runs in the node after receipt.
+   Relay handlers insert into mempool — state applied at block application.
 
 ---
 
@@ -649,12 +653,12 @@ Bootstrap uses a **two-phase genesis committee** model:
 Every post, stump, ordering block, sub-block, and UTXO transaction carries a
 `protocolVersion` field. Validation rules are keyed to this version:
 
-- **Version 1:** Phase 1 (implemented) — simple additive DAG, no pruning, no
-  UTXO, single-node HTTP server.
-- **Version 2:** Phase 2 (this contract) — dual-ledger architecture, sovereign
-  subtrees, stumps, UTXO karma/credits, likes, invite system, sub-blocks +
-  ordering blocks, PoW validators, libp2p networking, two-stage validation
-  (`@dagsocial/validation` + `@dagsocial/net`).
+- **Version 1 (current):** Dual-ledger architecture, sovereign subtrees, stumps,
+  UTXO karma/credits, likes, invite system, sub-blocks + ordering blocks, PoW
+  validators, libp2p networking, two-stage validation (`@dagsocial/validation`
+  + `@dagsocial/net`), unified mempool.
+- **Future versions:** Credit sinks, reply earning, karma-proportional PoW,
+  dRep governance pruning, storage pruning, view keys.
 
 An object with an old version is validated against that version's rules
 forever. A node rejects objects with an unsupported protocol version.
@@ -734,14 +738,31 @@ fresh. Namespacing keeps the option open to split into separate stores later
 
 ---
 
+## Implemented (v1)
+
+- Sovereign subtrees with author-controlled pruning
+- UTXO ledger: karma (non-tradeable) + credits (tradeable)
+- Like system: locked likes (karma staking) + free likes (post-50), epoch tally
+- Invite system: hash-locked bearer invites, bond/probation, cancel
+- Post karma locking with gradual unlock at epoch boundaries
+- Sub-blocks + ordering blocks with PoW (user PoW + validator PoW)
+- libp2p networking with two-stage validation (stateless + stateful)
+- Credit emission: Ergo-style linear decay, treasury split, miner reward delay
+- Difficulty adjustment for ordering block PoW
+- Internal + external mining modes
+- Unified mempool: all state mutations queued, applied atomically at block
+  finalization
+
 ## Deferred to future protocol versions
 
 - **Credit sinks:** Ads, author boosts, reader tips
-- **Reply earning:** Proportion of downstream likes flowing to upstream contributors
+- **Reply earning:** Proportion of downstream likes flowing to upstream
+  contributors
 - **Karma-proportional PoW:** High-karma accounts do less work
 - **dRep governance pruning:** Stump trigger via governance vote
 - **Storage pruning:** Automatic compaction for lean nodes (archive nodes
   retain full content)
 - **View keys / private content:** Reader spending credits to unlock content
-- **Karma decay governance:** Decay parameters adjustable by future governance
-- **Like threshold governance:** Like parameters adjustable by future governance
+- **Parameter governance:** Karma decay, like thresholds, emission schedule
+  adjustable by future governance
+- **Fee market:** Mempool size caps, replacement semantics, priority fees

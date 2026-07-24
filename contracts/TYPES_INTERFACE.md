@@ -1,30 +1,35 @@
 # TYPES Interface Contract
 
 **Component:** `@dagsocial/types`
-**Protocol version:** 1 (Phase 2 design — will be 2 when implemented)
-**Last updated:** 2026-07-20
+**Protocol version:** 1
+**Last updated:** 2026-07-24
 
 ## Scope
 
 Shared data structures, serialization, base58 encoding, hash functions, and
-protocol constants for Phase 2. Pure functions only — no side effects, no I/O,
-no imports from other DAGsocial packages.
+protocol constants. Pure functions only — no side effects, no I/O, no imports
+from other DAGsocial packages.
 
-All Phase 1 types are superseded. The Phase 1 implementation remains importable
-under protocol version 1 but Phase 2 code imports this contract.
+Exports from `packages/types/src/index.ts`. All types are importable by
+consumers; functions are pure and synchronous.
 
 ---
 
 ## Identity (`identity.ts`)
 
-Carried forward from Phase 1, unchanged:
+An account IS its Ed25519 public key. There is no separate "account" concept,
+no username table, no registration step. A user exists on the ledger the first
+time a UTXO box references their public key.
 
 | Export | Signature | Description |
 |--------|-----------|-------------|
 | `KeyPair` | `{ publicKey: Uint8Array(32), secretKey: Uint8Array }` | Ed25519 keypair (public: 32 raw bytes, secret: PKCS8 DER) |
-| `UserId` | `string` | `base58btc(blake2b512(publicKey))` — no truncation |
-| `generateKeyPair()` | `() => KeyPair` | Node `crypto.generateKeyPairSync('ed25519')` |
-| `getUserId(pub)` | `(Uint8Array) => UserId` | Deterministic, full 64-byte hash |
+| `UserId` | `Uint8Array` | 32 raw bytes — the Ed25519 public key |
+| `generateKeyPair()` | `() => KeyPair` | Node `crypto.generateKeyPairSync('ed25519')`, strips SPKI DER wrapper to extract raw 32 key bytes |
+
+`UserId` is binary. On the HTTP API wire it is hex-encoded (64 hex chars).
+In CBOR it stays raw bytes. There is no `getUserId` hash function — the public
+key IS the identity.
 
 ---
 
@@ -35,44 +40,48 @@ Carried forward from Phase 1, unchanged:
 ```
 Post {
   content: string              // 1–MAX_CONTENT_BYTES UTF-8
-  author: UserId
+  author: UserId               // 32-byte Ed25519 public key (Uint8Array)
   parentRefs: PostId[]         // 0–MAX_PARENT_REFS
   challenge: Uint8Array(32)    // Random nonce from node (anti-precomputation)
   powNonce: number             // PoW solution against challenge
-  protocolVersion: number      // 2
+  protocolVersion: number      // 1
   timestamp: number            // Unix ms
   signature: Uint8Array(64)    // Ed25519 over signingHash(post)
 }
 
-PostId = blake2b512(content || author || parentRefs || challenge || powNonce || protocolVersion || timestamp)
+PostId = blake2b512(content || author || parentRefs || challenge ||
+         protocolVersion || powNonce || timestamp)
          .subarray(0, 32).toString('hex')
 ```
 
+`PostId` is a hex string. `author` is binary (Uint8Array) — hex on the HTTP
+wire, raw bytes in CBOR.
+
 ### Profile posts
 
-Special `type` field for posts that carry identity metadata:
+Special `type` field for posts that carry identity metadata. The type
+discriminator is embedded in `content` as a JSON object:
 
 ```
-ProfileRoot = Post & { type: "profile" }       // content="" , parentRefs=[]
-BioPost     = Post & { type: "bio" }           // parentRefs=[profileRootId]
-NamePost    = Post & { type: "display_name" }  // parentRefs=[profileRootId]
-AvatarPost  = Post & { type: "avatar" }        // parentRefs=[profileRootId]
-UsernameClaim = Post & { type: "username_claim"; claim: string }  // e.g. "@alice"
+ProfileRoot = Post with content { type: "profile" }
+BioPost     = Post with content { type: "bio", ... }
+NamePost    = Post with content { type: "display_name", ... }
+AvatarPost  = Post with content { type: "avatar", ... }
+UsernameClaim = Post with content { type: "username_claim", claim: "@alice" }
 ```
-
-The `type` field is embedded in `content` as a JSON object. The post's
-structural type is identified by a discriminator in content.
 
 ### Hashing functions
 
 | Export | Signature | Description |
 |--------|-----------|-------------|
-| `signingHash(post)` | `(Post) => Uint8Array(32)` | `blake2b512(content \|\| author \|\| parentRefs \|\| challenge \|\| protocolVersion \|\| timestamp).subarray(0,32)` — what the author signs |
-| `computePostId(post)` | `(Post) => PostId` | `blake2b512(content \|\| author \|\| parentRefs \|\| challenge \|\| powNonce \|\| protocolVersion \|\| timestamp).subarray(0,32).toString('hex')` |
+| `signingHash(post)` | `(Post) => Buffer(32)` | `blake2b512(content \|\| author \|\| parentRefs \|\| challenge \|\| protocolVersion \|\| timestamp).subarray(0,32)` — what the author signs. Excludes `powNonce` and `signature`. |
+| `computePostId(post)` | `(Post) => PostId` | `blake2b512(content \|\| author \|\| parentRefs \|\| challenge \|\| protocolVersion \|\| powNonce \|\| timestamp).subarray(0,32).toString('hex')` — includes PoW nonce |
+| `getPostDiscriminator(content)` | `(string) => string \| null` | Parse JSON content and extract `type` field, or null |
+| `buildProfileContent(type, extra)` | `(string, Record?) => string` | Build JSON content string with type discriminator |
 
-`sigPowNonce` is intentionally excluded from `signingHash` — the author signs
+`powNonce` is intentionally excluded from `signingHash` — the author signs
 before finding the PoW nonce. It is included in `computePostId` to ensure
-uniqueness.
+uniqueness. `signature` is excluded from both.
 
 ---
 
@@ -81,31 +90,33 @@ uniqueness.
 ### BoxId
 
 ```
-BoxId = string  // blake2b512(serializedBoxBytes).subarray(0,32).toString('hex')
+BoxId = string  // blake2b512(canonicalCbor(box)).subarray(0,32).toString('hex')
 ```
 
 All box types share a common envelope:
 
 ```
 interface BoxBase {
-  id: BoxId
-  boxType: "karma" | "credit" | "like" | "invite" | "bond"
+  id?: BoxId           // Computed via computeBoxId; optional during construction
+  boxType: "karma" | "credit" | "like" | "invite" | "bond" | "post_lock"
   value: number
   createdAtBlock: number
 }
 ```
+
+Box identity is deterministic: `computeBoxId` encodes the box (minus its `id`
+field) as canonical CBOR, hashes with blake2b512, and takes the first 32 bytes
+as a hex string.
 
 ### KarmaBox
 
 ```
 KarmaBox extends BoxBase {
   boxType: "karma"
-  owner: PublicKey                // 32 raw bytes
-  guard: "owner_signature"        // Only owner may spend
-  proofSource: string             // PostId | StumpHash | InviteTxId
-
-  // Karma-specific: last activity block for decay
-  lastTouchBlock: number          // = createdAtBlock on creation
+  owner: Uint8Array            // 32 raw bytes — Ed25519 public key
+  guard: "owner_signature"     // Only owner may spend
+  proofSource: string          // PostId | StumpHash | InviteTxId
+  lastTouchBlock: number       // = createdAtBlock on creation
 }
 ```
 
@@ -113,30 +124,32 @@ Karma boxes are non-tradeable. They can only be consumed by the owner to:
 - Create invite boxes
 - Create like boxes
 - Create a new karma box for the same owner (balance change, resets decay clock)
+- Create a post lock box (when posting)
 
 ### CreditBox
 
 ```
 CreditBox extends BoxBase {
   boxType: "credit"
-  owner: PublicKey
+  owner: Uint8Array            // 32 raw bytes
   guard: "owner_signature"
-  proofSource: number              // Ordering block height that minted these credits
+  proofSource: number          // Ordering block height that minted these credits
+  lockedUntilBlock?: number    // Block height before which credits cannot be spent
 }
 ```
 
-Credits are freely transferable between any accounts.
+Credits are freely transferable between any accounts. Locked credits (from
+coinbase) cannot be spent until `lockedUntilBlock` passes.
 
 ### LikeBox
 
 ```
 LikeBox extends BoxBase {
   boxType: "like"
-  value: 2                         // LIKE_COST — always 2
+  value: 2                     // LIKE_COST — always 2
   likerId: UserId
   targetPostId: PostId
-  // Locked until epoch tally. No owner guard — consumed by ordering block processor.
-  guard: "epoch_tally"
+  guard: "epoch_tally"         // Locked until epoch tally. Consumed by ordering block processor.
 }
 ```
 
@@ -145,55 +158,76 @@ LikeBox extends BoxBase {
 ```
 InviteBox extends BoxBase {
   boxType: "invite"
-  value: number                    // N karma transferred
-  secretHash: Uint8Array(32)       // H(s) — blake2b512(s).subarray(0,32)
+  value: number                // N karma transferred
+  secretHash: Uint8Array(32)   // H(s) — blake2b512(s).subarray(0,32)
   inviterId: UserId
-  guard: "hash_preimage"           // H(s_preimage) == secretHash ∧ recipient pubkey not in ledger
-  // Also: cancellable by inviter's signature (co-guard)
+  guard: "hash_preimage"       // H(s_preimage) == secretHash ∧ recipient pubkey not in ledger
 }
 ```
+
+Also cancellable by inviter's signature (co-guard, handled at the service layer).
 
 ### BondBox
 
 ```
 BondBox extends BoxBase {
   boxType: "bond"
-  value: number                    // D karma deposited
-  inviterId: UserId                // Owner — Alice
-  inviteePublicKey?: PublicKey     // Set when invite is claimed (Bob's key)
-  probationStartBlock?: number     // Set when invite is claimed
-  probationEndBlock?: number       // probationStartBlock + INVITE_PROBATION_BLOCKS
-  guard: "inviter_signature"       // Only inviter may reclaim (after conditions met)
-
-  // Unlock conditions (evaluated at consumption time):
-  // 1. invitee.karma >= INVITE_KARMA_THRESHOLD within probation → inviter reclaims
-  // 2. invitee.karma < KARMA_POSTING_MINIMUM during probation → burned
-  // 3. block >= probationEndBlock → inviter reclaims
+  value: number                // D karma deposited
+  inviterId: UserId            // Owner — the inviter
+  inviteePublicKey: Uint8Array // 32 raw bytes — set when invite is claimed
+  probationStartBlock: number  // Set when invite is claimed
+  probationEndBlock: number    // probationStartBlock + INVITE_PROBATION_BLOCKS
+  guard: "inviter_signature"   // Only inviter may reclaim (after conditions met)
 }
+```
+
+### PostLockBox
+
+```
+PostLockBox extends BoxBase {
+  boxType: "post_lock"
+  value: number                // Current locked karma (decreases each epoch as likes accumulate)
+  originalValue: number        // Initial lock amount (POST_LOCK_THREAD_COST or POST_LOCK_REPLY_COST)
+  owner: Uint8Array            // 32 raw bytes — post author's Ed25519 public key
+  targetPostId: PostId         // The post this lock secures
+  guard: "epoch_tally"         // Only consumed by epoch processing (unlock schedule)
+}
+```
+
+Post lock karma is gradually unlocked at epoch boundaries: every
+`POST_LOCK_UNLOCK_PER_LIKES` (10) lifetime likes on the target post unlocks
+1 karma back to the author.
+
+### BoxGuard
+
+```
+type BoxGuard = "owner_signature" | "epoch_tally" | "hash_preimage" | "inviter_signature"
 ```
 
 ### UtxoTransaction
 
 ```
 UtxoTransaction {
-  inputs: BoxId[]                  // Boxes consumed
-  outputs: (KarmaBox | CreditBox | LikeBox | InviteBox | BondBox)[]  // Boxes created
-  signatures: { [publicKey: string]: Uint8Array(64) }  // Ed25519 sigs authorizing each input
-  protocolVersion: number          // 2
+  inputs: BoxId[]               // Boxes consumed
+  outputs: AnyBox[]             // Boxes created (AnyBox = KarmaBox | CreditBox | LikeBox | InviteBox | BondBox | PostLockBox)
+  signatures: Record<string, Uint8Array>  // publicKey (hex) → Ed25519 sig (64 bytes)
+  protocolVersion: number       // 1
 }
 
-TxId = blake2b512(serializeTx(inputs || outputs || protocolVersion))
+TxId = blake2b512(inputs || serializedOutputs || protocolVersion)
        .subarray(0, 32).toString('hex')
 ```
 
-### Box identity
+Transaction signatures are over the transaction hash (`computeTxId`), not over
+domain messages. The signer signs `TxId` with their Ed25519 key; verifiers
+recompute the hash and check the signature.
+
+### Functions
 
 | Export | Signature | Description |
 |--------|-----------|-------------|
-| `computeBoxId(box)` | `(BoxBase) => BoxId` | `blake2b512(serializeBox(box)).subarray(0,32).toString('hex')` |
-
-Box identity is deterministic — same box bytes = same ID. Box serialization
-is canonical (sorted fields, fixed-length encoding).
+| `computeBoxId(box)` | `(Omit<BoxBase, 'id'>) => BoxId` | Deterministic box ID from canonical CBOR |
+| `computeTxId(tx)` | `(UtxoTransaction) => TxId` | Deterministic transaction ID |
 
 ---
 
@@ -204,7 +238,7 @@ PruneIntent {
   rootPostHash: PostId
   trigger: "author" | "drep" | "storage_prune"
   authorId: UserId
-  signature: Uint8Array(64)        // Ed25519 from root author's key
+  signature: Uint8Array(64)    // Ed25519 from root author's key
 }
 
 Stump {
@@ -218,7 +252,7 @@ Stump {
   upvoteCount: number
 
   trigger: "author" | "drep" | "storage_prune"
-  protocolVersion: number            // PROTOCOL_VERSION (1, will be 2 when implemented)
+  protocolVersion: number
   compactedAtBlockHeight: number
 }
 
@@ -231,6 +265,10 @@ StumpId = blake2b512(rootPostHash || compactedAtBlockHeight || authorId)
           .subarray(0, 32).toString('hex')
 ```
 
+| Export | Signature | Description |
+|--------|-----------|-------------|
+| `computeStumpId(stump)` | `(Stump) => StumpId` | Deterministic stump ID |
+
 ---
 
 ## Block Types (`block.ts`)
@@ -239,18 +277,17 @@ StumpId = blake2b512(rootPostHash || compactedAtBlockHeight || authorId)
 
 ```
 SubBlock {
-  subBlockId: string               // = post.postId (the post IS the sub-block)
-  post: Post                       // The post (with PoW = sub-block proof)
-  likeBoxes: LikeBox[]             // Pending likes riding as sidecars
-  producerId: UserId               // = post.author
-  protocolVersion: number          // 2
+  subBlockId: PostId             // = post.postId (the post IS the sub-block)
+  post: Post                     // The post (with PoW = sub-block proof)
+  likeBoxes: LikeBox[]           // Pending likes riding as sidecars
+  producerId: UserId             // = post.author
+  protocolVersion: number        // 1
 }
-
-SubBlockId = computePostId(post)   // The sub-block is identified by its post
 ```
 
 Sub-blocks are user-produced. A sub-block carries exactly one post plus any
-pending like boxes queued since the last sub-block.
+pending like boxes queued since the last sub-block. Sub-block identity IS post
+identity — they are the same object.
 
 ### Ordering block
 
@@ -258,27 +295,46 @@ pending like boxes queued since the last sub-block.
 OrderingBlock {
   height: number                   // Monotonically increasing, starting from 1
   hash: string                     // blake2b512(serializeBlock(...)).subarray(0,32).toString('hex')
-  prevBlockHash: string            // Previous ordering block hash
-  subBlockRefs: SubBlockId[]       // Sub-blocks anchored by this block
+  prevBlockHash: string            // Previous ordering block hash (64 hex)
+  subBlockRefs: PostId[]           // Sub-blocks anchored by this block
   likeBoxIds: BoxId[]              // Standalone likes (no sub-block to ride)
   utxoTxIds: TxId[]                // UTXO transactions in this block
   stumpIds: StumpId[]              // Stumps committed in this block
   validatorId: UserId              // Block producer
-  validatorSignature: Uint8Array(64)  // Ed25519 over block hash
+  validatorSignature: Uint8Array(64)  // Ed25519 over body hash
+  powNonce: number                 // PoW solution
+  powTargetBits: number            // Difficulty target for this block
+  coinbaseOutputs: CoinbaseOutput[] // Block reward distribution
   epochTallyResults?: EpochTally   // Present if epoch transition triggered
-  protocolVersion: number          // 2
+  protocolVersion: number          // 1
   createdAt: number                // Unix ms
 }
+```
 
+### Coinbase output
+
+```
+CoinbaseOutput {
+  owner: UserId              // 32-byte recipient public key
+  value: number              // Credits minted
+  lockedUntilBlock: number   // Height at which credits become spendable
+  isTreasury: boolean        // Treasury or miner output
+}
+```
+
+### Epoch tally
+
+```
 EpochTally {
-  rewards: { [postId: string]: LikeReward }
+  rewards: Record<PostId, LikeReward>
 }
 
 LikeReward {
   targetPostId: PostId
   likeCount: number
   authorReward: number
-  likerRefunds: { [likerId: string]: number }  // Net karma refund per liker
+  likerRefunds: Record<string, number>  // likerId → net karma refund
+  postLockKarmaUnlocked?: number         // Karma released from post lock this epoch
 }
 ```
 
@@ -287,7 +343,7 @@ LikeReward {
 ## Serialization (`serialization.ts`)
 
 All wire format is CBOR via `cbor-x`. HTTP API is JSON. Signatures and public
-keys are base64-encoded on wire (HTTP JSON); raw bytes in CBOR.
+keys are hex-encoded on wire (HTTP JSON); raw bytes in CBOR.
 
 | Export | Signature | Description |
 |--------|-----------|-------------|
@@ -308,8 +364,6 @@ keys are base64-encoded on wire (HTTP JSON); raw bytes in CBOR.
 
 ## Base58 (`base58.ts`)
 
-Carried forward from Phase 1, unchanged:
-
 | Export | Signature | Description |
 |--------|-----------|-------------|
 | `base58Encode(buf)` | `(Uint8Array) => string` | Bitcoin-style base58 (alphabet: `123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz`) |
@@ -322,10 +376,10 @@ Carried forward from Phase 1, unchanged:
 ### Version
 
 ```typescript
-export const PROTOCOL_VERSION = 1;  // Incremented when Phase 2 is implemented
+export const PROTOCOL_VERSION = 1;
 ```
 
-### Content limits (carried forward)
+### Content limits
 
 ```typescript
 export const MAX_CONTENT_BYTES = 300;
@@ -335,75 +389,78 @@ export const MAX_PARENT_REFS = 8;
 ### PoW
 
 ```typescript
-export const POST_POW_TARGET_BITS = 20;    // Difficulty (higher = harder)
-export const CHALLENGE_WINDOW_BLOCKS = 10;  // Blocks before challenge expires
+export const POST_POW_TARGET_BITS = 20;       // Difficulty (higher = harder)
+export const CHALLENGE_WINDOW_BLOCKS = 10;     // Blocks before challenge expires
 ```
 
 ### Karma
 
 ```typescript
-export const KARMA_POSTING_MINIMUM = 1;      // Minimum karma to post
-export const KARMA_DECAY_RATE = 0.0001;      // Fraction per block after grace
-export const KARMA_DECAY_GRACE_BLOCKS = 100;  // Blocks before decay starts
-export const KARMA_FLOOR = 0;                // Minimum retained (0 = no floor)
+export const KARMA_POSTING_MINIMUM = 1;         // Minimum karma to post
+export const KARMA_DECAY_RATE = 0.0001;         // Fraction per block after grace
+export const KARMA_DECAY_GRACE_BLOCKS = 100;     // Blocks before decay starts
+export const KARMA_FLOOR = 0;                   // Minimum retained (0 = no floor)
+```
+
+### Post lock
+
+```typescript
+export const POST_LOCK_THREAD_COST = 5;           // Karma locked for new threads
+export const POST_LOCK_REPLY_COST = 3;            // Karma locked for replies
+export const POST_LOCK_UNLOCK_PER_LIKES = 10;     // Every N likes unlocks 1 karma
 ```
 
 ### Likes
 
 ```typescript
-export const LIKE_COST = 2;               // Karma locked to cast a like
-export const LIKE_THRESHOLD = 5;          // Absolute like count per multiplier step
-export const LIKE_MAX_AUTHOR_REWARD = 10; // Max karma an author earns per post
-export const LIKE_FREE_THRESHOLD = 10;    // 10x LIKE_THRESHOLD; beyond this, likes are free
+export const LIKE_COST = 2;                    // Karma locked to cast a like
+export const LIKE_THRESHOLD = 5;               // Absolute like count per multiplier step
+export const LIKE_MAX_AUTHOR_REWARD = 10;      // Max karma an author earns per post
+export const LIKE_FREE_THRESHOLD = 10;         // 10× LIKE_THRESHOLD; beyond this, likes are free
 ```
 
 ### Epoch
 
 ```typescript
-export const EPOCH_BLOCKS = 60;           // Like processing every N ordering blocks
+export const EPOCH_BLOCKS = 60;                // Like processing every N ordering blocks
 ```
-
-**Like refund schedule** (per liker, computed at epoch):
-
-| Total likes on post | Refund | Effect |
-|---------------------|--------|--------|
-| < 2× LIKE_THRESHOLD (10) | 0 | Locked like stays locked, rolls over to next epoch |
-| ≥ 2× (10+ on locked, 50+ total) | 2 (full) | Like box consumed, 2 karma returned to liker |
-
-Locked karma is never burned. It stays locked until enough likes accumulate.
-
-- Likes 1–50 on a post: 2 karma locked in LikeBox (UTXO, `epoch_tally` guard).
-  Refunded at epoch boundary per schedule above.
-- Likes 51+: free — recorded as `dag_likes` row (no karma lock). Only gate:
-  liker has karma > 0.
-- One like per account per post. Enforced at service layer.
-- Author reward unchanged: `min(floor(totalLikes / LIKE_THRESHOLD), LIKE_MAX_AUTHOR_REWARD)`.
-  Total includes both locked and free likes.
 
 ### Invites
 
 ```typescript
-export const MAX_PENDING_INVITES = 5;          // Max concurrent unclaimed invites per account
+export const MAX_PENDING_INVITES = 5;              // Max concurrent unclaimed invites per account
 export const INVITE_MIN_KARMA = KARMA_POSTING_MINIMUM;
-export const INVITE_BOND_KARMA = 10;           // Karma deposit locked during probation
-export const INVITE_PROBATION_BLOCKS = 1000;   // Probation window in blocks
-export const INVITE_KARMA_THRESHOLD = 20;      // Invitee karma target for early bond return
+export const INVITE_BOND_KARMA = 10;               // Karma deposit locked during probation
+export const INVITE_PROBATION_BLOCKS = 1000;        // Probation window in blocks
+export const INVITE_KARMA_THRESHOLD = 20;          // Invitee karma target for early bond return
 ```
 
 ### Genesis
 
 ```typescript
-// Genesis committee public keys (hex-encoded, 32 bytes each)
 export const GENESIS_COMMITTEE_KEYS: string[] = [];  // TBD at genesis
 export const GENESIS_KARMA_PER_MEMBER = 1000;
 export const GENESIS_CREDITS_PER_MEMBER = 10000;
-export const BOOTSTRAP_PERIOD_BLOCKS = 10000;  // Blocks before committee dissolution
+export const BOOTSTRAP_PERIOD_BLOCKS = 10000;         // Blocks before committee dissolution
 ```
 
-### Validators
+### Credit emission (Ergo-style linear decay)
 
 ```typescript
-export const ORDERING_BLOCK_REWARD_CREDITS = 100;
+export const CREDIT_FIXED_RATE_BLOCKS = 1_051_200;    // ~2 years at 60s blocks
+export const CREDIT_INITIAL_REWARD = 100;              // Credits per block in fixed-rate period
+export const CREDIT_EPOCH_BLOCKS = 129_600;            // ~90 days — reward reduction interval
+export const CREDIT_REWARD_REDUCTION = 2;               // Credits reduced per epoch
+export const CREDIT_TAIL_REWARD = 2;                   // Flat reward after emission ends
+export const CREDIT_MINER_REWARD_DELAY = 720;           // Blocks before coinbase is spendable (~12h)
+export const CREDIT_TREASURY_PCT = 10;                  // Percent of each reward to treasury
+```
+
+### Ordering block PoW
+
+```typescript
+export const ORDERING_BLOCK_POW_TARGET_BITS = 12;       // Initial difficulty (~4K hashes)
+export const ORDERING_BLOCK_POW_TARGET_FLOOR = 4;        // Sanity floor
 ```
 
 ---
@@ -417,8 +474,6 @@ export const ORDERING_BLOCK_REWARD_CREDITS = 100;
 - Build produces `dist/index.js` (ESM) + `dist/index.d.ts`
 - All functions are pure — no side effects, no module-level state
 - Types are importable by consumers without runtime cost (type-only imports)
-- Phase 1 exports remain available under protocol version 1 (separate entry
-  point or re-export with deprecation)
 
 ## Invariants
 - Must not import from `@dagsocial/node`, `@dagsocial/net`, or `@dagsocial/web`
@@ -430,3 +485,4 @@ export const ORDERING_BLOCK_REWARD_CREDITS = 100;
 - Box identity is deterministic: `blake2b512(canonicalCbor(box)).subarray(0,32)`
 - Post identity includes PoW nonce; signing hash excludes it
 - Sub-block identity IS post identity (they are the same object)
+- `UserId` IS the 32-byte Ed25519 public key — no hashing, no separate account concept
