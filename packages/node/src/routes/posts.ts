@@ -157,9 +157,23 @@ export function createRouter(deps: PostsDeps): Router {
     }
 
     // Verify the karma-lock tx matches the post author
-    const karmaInput = deps.getBox(karmaLockTx.inputs[0]!);
-    if (!karmaInput || (karmaInput as KarmaBox).owner &&
-        Buffer.from((karmaInput as KarmaBox).owner).toString('hex') !== Buffer.from(post.author).toString('hex')) {
+    if (!karmaLockTx.inputs[0]) {
+      res.status(400).json({ error: 'karmaLockTx has no inputs' });
+      return;
+    }
+    const karmaInput = deps.getBox(karmaLockTx.inputs[0]);
+    if (!karmaInput || karmaInput.boxType !== 'karma') {
+      try { deps.consumeChallenge(post.author, post.challenge); } catch { /* ok */ }
+      res.status(400).json({ error: 'karmaLockTx first input must be a karma box' });
+      return;
+    }
+    const karmaOwner = (karmaInput as KarmaBox).owner;
+    if (!karmaOwner || karmaOwner.length !== 32) {
+      try { deps.consumeChallenge(post.author, post.challenge); } catch { /* ok */ }
+      res.status(400).json({ error: 'Karma box has invalid owner' });
+      return;
+    }
+    if (!Buffer.from(post.author).equals(Buffer.from(karmaOwner))) {
       try { deps.consumeChallenge(post.author, post.challenge); } catch { /* ok */ }
       res.status(400).json({ error: 'karmaLockTx does not belong to post author' });
       return;
