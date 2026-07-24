@@ -1,10 +1,11 @@
 import { randomBytes, createHash, createPublicKey, verify as cryptoVerify } from 'crypto';
 import {
   computeBoxId,
-  getUserId,
+  computeTxId,
   MAX_PENDING_INVITES,
   INVITE_PROBATION_BLOCKS,
   PROTOCOL_VERSION,
+  decodeTx,
 } from '@dagsocial/types';
 import type { InviteBox, BondBox, KarmaBox, UtxoTransaction } from '@dagsocial/types';
 import {
@@ -16,6 +17,8 @@ import {
   getBondBoxes,
   getIdentity,
   getDb,
+  insertUtxoTx,
+  getPendingEntries,
 } from '../store/index.js';
 
 // ---------------------------------------------------------------------------
@@ -85,6 +88,30 @@ function findMatchingBondBox(
   return null;
 }
 
+/**
+ * Count pending invite creates in the mempool for a given inviter.
+ * This prevents bypassing the MAX_PENDING_INVITES limit by submitting
+ * multiple unconfirmed invite-create transactions.
+ */
+function countPendingInvitesInMempool(inviterId: Uint8Array): number {
+  const inviterIdHex = Buffer.from(inviterId).toString('hex');
+  const entries = getPendingEntries(1000);
+  let count = 0;
+  for (const entry of entries) {
+    if (entry.entryType !== 'utxo_tx' || !entry.utxoTxCbor) continue;
+    const tx = decodeTx(entry.utxoTxCbor);
+    for (const output of tx.outputs) {
+      if (output.boxType === 'invite') {
+        const inviteOut = output as InviteBox;
+        if (Buffer.from(inviteOut.inviterId).toString('hex') === inviterIdHex) {
+          count++;
+        }
+      }
+    }
+  }
+  return count;
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -99,6 +126,9 @@ function findMatchingBondBox(
  *   signMessage = blake2b512("create-invite:" + inviterId + ":" + karmaAmount +
  *                            ":" + bondAmount).subarray(0, 32)
  *
+ * The UTXO transaction is inserted into the mempool and applied when the next
+ * ordering block is confirmed — the invite is **pending** until then.
+ *
  * Returns the secret for out-of-band communication to the invitee.
  */
 export function createInvite(
@@ -109,19 +139,22 @@ export function createInvite(
   signature: Uint8Array,
   currentBlockHeight: number,
 ): {
+  status: 'pending';
+  txId: string;
+  expiresAtHeight: number;
   inviteBox: InviteBox;
   bondBox: BondBox;
   secret: Uint8Array;
   secretHash: Uint8Array;
   tx: UtxoTransaction;
 } {
-  const db = getDb();
-
-  // ---- 1. Verify pending invite count limit ----
-  const pendingCount = getPendingInviteCount(inviterId);
-  if (pendingCount >= MAX_PENDING_INVITES) {
+  // ---- 1. Verify pending invite count limit (UTXO + mempool) ----
+  const utxoCount = getPendingInviteCount(inviterId);
+  const mempoolCount = countPendingInvitesInMempool(inviterId);
+  const totalPending = utxoCount + mempoolCount;
+  if (totalPending >= MAX_PENDING_INVITES) {
     throw new Error(
-      `Invite limit reached: ${pendingCount} pending invites (max ${MAX_PENDING_INVITES})`,
+      `Invite limit reached: ${totalPending} pending invites (max ${MAX_PENDING_INVITES})`,
     );
   }
 
@@ -190,15 +223,7 @@ export function createInvite(
   const bondBoxId = computeBoxId(bondBox);
   const newKarmaBoxId = computeBoxId(newKarmaBox);
 
-  // ---- 7. Apply UTXO transaction ----
-  const txFn = db.transaction(() => {
-    consumeBox(karmaBox.id!, currentBlockHeight);
-    insertBox({ ...newKarmaBox, id: newKarmaBoxId });
-    insertBox({ ...inviteBox, id: inviteBoxId });
-    insertBox({ ...bondBox, id: bondBoxId });
-  });
-  txFn();
-
+  // ---- 7. Build and insert UTXO transaction into mempool ----
   const tx: UtxoTransaction = {
     inputs: [karmaBox.id!],
     outputs: [
@@ -210,7 +235,15 @@ export function createInvite(
     protocolVersion: PROTOCOL_VERSION,
   };
 
+  const expiresAtHeight = currentBlockHeight + 720;
+  insertUtxoTx(tx, null, expiresAtHeight);
+
+  const txId = computeTxId(tx);
+
   return {
+    status: 'pending',
+    txId,
+    expiresAtHeight,
     inviteBox: { ...inviteBox, id: inviteBoxId },
     bondBox: { ...bondBox, id: bondBoxId },
     secret,
@@ -224,13 +257,23 @@ export function createInvite(
  *
  * Consumes the InviteBox and creates a new KarmaBox for the invitee.
  * Updates the matching BondBox with the invitee's public key and probation window.
+ *
+ * The UTXO transaction is inserted into the mempool and applied when the next
+ * ordering block is confirmed — the claim is **pending** until then.
  */
 export function claimInvite(
   inviteBoxId: string,
   secret: Uint8Array,
   publicKey: Uint8Array,
   currentBlockHeight: number,
-): { userId: string; karmaBoxId: string; tx: UtxoTransaction } {
+): {
+  status: 'pending';
+  txId: string;
+  expiresAtHeight: number;
+  userId: Uint8Array;
+  karmaBoxId: string;
+  tx: UtxoTransaction;
+} {
   const db = getDb();
 
   // ---- 1. Get invite box, verify it exists and is unspent ----
@@ -264,8 +307,8 @@ export function claimInvite(
     throw new Error('Public key already associated with an account');
   }
 
-  // ---- 4. Compute userId ----
-  const userId = getUserId(publicKey);
+  // ---- 4. userId IS the public key ----
+  const userId = publicKey;
 
   // ---- 5. Find matching bond box ----
   const bondBox = findMatchingBondBox(inv.inviterId, inv.createdAtBlock);
@@ -298,15 +341,7 @@ export function claimInvite(
   };
   const updatedBondBoxId = computeBoxId(updatedBondBox);
 
-  // ---- 7. Apply in transaction ----
-  const txFn = db.transaction(() => {
-    consumeBox(inviteBoxId, currentBlockHeight);
-    insertBox({ ...newKarmaBox, id: karmaBoxId });
-    consumeBox(bondBox.id!, currentBlockHeight);
-    insertBox({ ...updatedBondBox, id: updatedBondBoxId });
-  });
-  txFn();
-
+  // ---- 7. Build and insert UTXO transaction into mempool ----
   const tx: UtxoTransaction = {
     inputs: [inviteBoxId, bondBox.id!],
     outputs: [
@@ -317,7 +352,12 @@ export function claimInvite(
     protocolVersion: PROTOCOL_VERSION,
   };
 
-  return { userId, karmaBoxId, tx };
+  const expiresAtHeight = currentBlockHeight + 720;
+  insertUtxoTx(tx, null, expiresAtHeight);
+
+  const txId = computeTxId(tx);
+
+  return { status: 'pending', txId, expiresAtHeight, userId, karmaBoxId, tx };
 }
 
 /**
@@ -325,13 +365,21 @@ export function claimInvite(
  * both values to the inviter's karma box.
  *
  * The signature covers: blake2b512("cancel-invite:" + inviteBoxId).subarray(0, 32)
+ *
+ * The UTXO transaction is inserted into the mempool and applied when the next
+ * ordering block is confirmed — the cancellation is **pending** until then.
  */
 export function cancelInvite(
   inviteBoxId: string,
   inviterId: string,
   signature: Uint8Array,
   currentBlockHeight: number,
-): { tx: UtxoTransaction } {
+): {
+  status: 'pending';
+  txId: string;
+  expiresAtHeight: number;
+  tx: UtxoTransaction;
+} {
   const db = getDb();
 
   // ---- 1. Get invite box, verify unclaimed ----
@@ -348,8 +396,8 @@ export function cancelInvite(
   }
 
   const inv = box as InviteBox;
-  if (inv.inviterId !== inviterId) {
-    throw new Error(`Inviter mismatch: expected ${inviterId}, got ${inv.inviterId}`);
+  if (!Buffer.from(inv.inviterId).equals(Buffer.from(inviterId))) {
+    throw new Error('Inviter mismatch');
   }
 
   // ---- 2. Verify inviter signature ----
@@ -390,15 +438,7 @@ export function cancelInvite(
   };
   const newKarmaBoxId = computeBoxId(newKarmaBox);
 
-  // ---- 6. Apply in transaction ----
-  const txFn = db.transaction(() => {
-    consumeBox(karmaBox.id!, currentBlockHeight);
-    consumeBox(inviteBoxId, currentBlockHeight);
-    consumeBox(bondBox.id!, currentBlockHeight);
-    insertBox({ ...newKarmaBox, id: newKarmaBoxId });
-  });
-  txFn();
-
+  // ---- 6. Build and insert UTXO transaction into mempool ----
   const tx: UtxoTransaction = {
     inputs: [karmaBox.id!, inviteBoxId, bondBox.id!],
     outputs: [{ ...newKarmaBox, id: newKarmaBoxId }],
@@ -406,5 +446,10 @@ export function cancelInvite(
     protocolVersion: PROTOCOL_VERSION,
   };
 
-  return { tx };
+  const expiresAtHeight = currentBlockHeight + 720;
+  insertUtxoTx(tx, null, expiresAtHeight);
+
+  const txId = computeTxId(tx);
+
+  return { status: 'pending', txId, expiresAtHeight, tx };
 }

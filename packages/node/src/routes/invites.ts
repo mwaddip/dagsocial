@@ -8,13 +8,16 @@ import { getNet } from '../services/net-instance.js';
 
 export interface InvitesDeps {
   createInvite(
-    inviterId: string,
+    inviterId: Uint8Array,
     karmaAmount: number,
     bondAmount: number,
     inviterPubKey: Uint8Array,
     signature: Uint8Array,
     currentBlockHeight: number,
   ): {
+    status: 'pending';
+    txId: string;
+    expiresAtHeight: number;
     inviteBox: { id?: string };
     bondBox: { id?: string };
     secret: Uint8Array;
@@ -26,16 +29,28 @@ export interface InvitesDeps {
     secret: Uint8Array,
     publicKey: Uint8Array,
     currentBlockHeight: number,
-  ): { userId: string; karmaBoxId: string; tx: UtxoTransaction };
+  ): {
+    status: 'pending';
+    txId: string;
+    expiresAtHeight: number;
+    userId: Uint8Array;
+    karmaBoxId: string;
+    tx: UtxoTransaction;
+  };
   cancelInvite(
     inviteBoxId: string,
-    inviterId: string,
+    inviterId: Uint8Array,
     signature: Uint8Array,
     currentBlockHeight: number,
-  ): { tx: UtxoTransaction };
+  ): {
+    status: 'pending';
+    txId: string;
+    expiresAtHeight: number;
+    tx: UtxoTransaction;
+  };
   getIdentity(
-    userId: string,
-  ): { userId: string; publicKey: Uint8Array; createdAt: number } | null;
+    userId: Uint8Array,
+  ): { userId: Uint8Array; publicKey: Uint8Array; createdAt: number } | null;
   getCurrentHeight(): number;
 }
 
@@ -67,8 +82,21 @@ export function createRouter(deps: InvitesDeps): Router {
       return;
     }
 
+    // Decode inviterId from hex
+    let inviterIdBytes: Uint8Array;
+    try {
+      inviterIdBytes = new Uint8Array(Buffer.from(body.inviterId, 'hex'));
+    } catch {
+      res.status(400).json({ error: 'inviterId must be a hex string' });
+      return;
+    }
+    if (inviterIdBytes.length !== 32) {
+      res.status(400).json({ error: 'inviterId must be 32 bytes (64 hex chars)' });
+      return;
+    }
+
     // Look up inviter's public key from identity
-    const identity = deps.getIdentity(body.inviterId);
+    const identity = deps.getIdentity(inviterIdBytes);
     if (!identity) {
       res.status(400).json({ error: 'Inviter identity not found' });
       return;
@@ -86,7 +114,7 @@ export function createRouter(deps: InvitesDeps): Router {
     try {
       const currentHeight = deps.getCurrentHeight();
       const result = deps.createInvite(
-        body.inviterId,
+        inviterIdBytes,
         body.karmaAmount,
         body.bondAmount,
         identity.publicKey,
@@ -103,6 +131,9 @@ export function createRouter(deps: InvitesDeps): Router {
       }
 
       res.status(201).json({
+        status: 'pending',
+        txId: result.txId,
+        expiresAtHeight: result.expiresAtHeight,
         inviteBoxId: result.inviteBox.id,
         bondBoxId: result.bondBox.id,
         secret: Buffer.from(result.secret).toString('hex'),
@@ -160,8 +191,14 @@ export function createRouter(deps: InvitesDeps): Router {
         });
       }
 
-      const { tx, ...response } = result;
-      res.status(201).json(response);
+      const { tx: _tx, status: _status, ...rest } = result;
+      res.status(201).json({
+        status: 'pending',
+        txId: result.txId,
+        expiresAtHeight: result.expiresAtHeight,
+        userId: Buffer.from(result.userId).toString('hex'),
+        karmaBoxId: result.karmaBoxId,
+      });
     } catch (err) {
       res.status(400).json({ error: (err as Error).message });
     }
@@ -182,6 +219,15 @@ export function createRouter(deps: InvitesDeps): Router {
       return;
     }
 
+    // Decode inviterId from hex
+    let inviterIdBytes: Uint8Array;
+    try {
+      inviterIdBytes = new Uint8Array(Buffer.from(body.inviterId, 'hex'));
+    } catch {
+      res.status(400).json({ error: 'inviterId must be a hex string' });
+      return;
+    }
+
     let signature: Uint8Array;
     try {
       signature = new Uint8Array(Buffer.from(body.signature, 'hex'));
@@ -192,9 +238,9 @@ export function createRouter(deps: InvitesDeps): Router {
 
     try {
       const currentHeight = deps.getCurrentHeight();
-      const cancelResult = deps.cancelInvite(
+      const result = deps.cancelInvite(
         body.inviteBoxId,
-        body.inviterId,
+        inviterIdBytes,
         signature,
         currentHeight,
       );
@@ -202,12 +248,16 @@ export function createRouter(deps: InvitesDeps): Router {
       // Broadcast invite cancel tx to peers (fire-and-forget)
       const net = getNet();
       if (net) {
-        net.broadcastTx(cancelResult.tx).catch((err: Error) => {
+        net.broadcastTx(result.tx).catch((err: Error) => {
           console.warn(`Failed to broadcast invite cancel tx: ${err.message}`);
         });
       }
 
-      res.status(200).json({ success: true });
+      res.status(200).json({
+        status: 'pending',
+        txId: result.txId,
+        expiresAtHeight: result.expiresAtHeight,
+      });
     } catch (err) {
       const msg = (err as Error).message;
       if (msg.includes('Inviter mismatch')) {

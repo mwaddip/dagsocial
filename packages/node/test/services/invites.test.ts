@@ -1,3 +1,4 @@
+import { uid } from '../helpers.js';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   generateKeyPairSync,
@@ -7,11 +8,12 @@ import {
 } from 'crypto';
 import {
   computeBoxId,
-  getUserId,
+  decodeTx,
   MAX_PENDING_INVITES,
   INVITE_PROBATION_BLOCKS,
+  PROTOCOL_VERSION,
 } from '@dagsocial/types';
-import type { KarmaBox, BondBox } from '@dagsocial/types';
+import type { KarmaBox, InviteBox, BondBox } from '@dagsocial/types';
 import Database from 'better-sqlite3';
 
 import {
@@ -22,6 +24,7 @@ import {
   getKarmaBox,
   insertBox,
   insertIdentity,
+  getPendingEntries,
 } from '../../src/store/index.js';
 import { createInvite, claimInvite, cancelInvite } from '../../src/services/invites.js';
 
@@ -57,9 +60,61 @@ function createKarmaBox(
   return full;
 }
 
+/** Create and insert an invite box into UTXO (simulates confirmed invite). */
+function insertInviteBox(
+  value: number,
+  createdAtBlock: number,
+  secretHash: Uint8Array,
+  inviterId: Uint8Array,
+): InviteBox {
+  const box: Omit<InviteBox, 'id'> & { id?: string } = {
+    boxType: 'invite',
+    value,
+    createdAtBlock,
+    secretHash,
+    inviterId,
+    guard: 'hash_preimage',
+  };
+  const id = computeBoxId(box);
+  const full: InviteBox = { ...box, id, boxType: 'invite', guard: 'hash_preimage' };
+  insertBox(full);
+  return full;
+}
+
+/** Create and insert a bond box into UTXO (simulates confirmed bond). */
+function insertBondBox(
+  value: number,
+  createdAtBlock: number,
+  inviterId: Uint8Array,
+): BondBox {
+  const box: Omit<BondBox, 'id'> & { id?: string } = {
+    boxType: 'bond',
+    value,
+    createdAtBlock,
+    inviterId,
+    inviteePublicKey: new Uint8Array(0),
+    probationStartBlock: 0,
+    probationEndBlock: 0,
+    guard: 'inviter_signature',
+  };
+  const id = computeBoxId(box);
+  const full: BondBox = { ...box, id, boxType: 'bond', guard: 'inviter_signature' };
+  insertBox(full);
+  return full;
+}
+
+/** Mark a box as spent in UTXO. */
+function markSpent(boxId: string, blockHeight: number): void {
+  const db = getDb();
+  db.prepare('UPDATE utxo_boxes SET spent_at_block = ? WHERE id = ?').run(
+    blockHeight,
+    boxId,
+  );
+}
+
 /** Sign the create-invite message. */
 function signCreateInvite(
-  inviterId: string,
+  inviterId: Uint8Array,
   karmaAmount: number,
   bondAmount: number,
   privKey: KeyObject,
@@ -84,10 +139,9 @@ describe('invites service', () => {
   let db: Database.Database;
   let inviterPubKey: Uint8Array;
   let inviterPrivKey: KeyObject;
-  let inviterId: string;
+  let inviterId: Uint8Array;
   let inviteePubKey: Uint8Array;
   let inviteePrivKey: KeyObject;
-  let inviteeId: string;
 
   beforeEach(() => {
     initDb(':memory:');
@@ -97,15 +151,14 @@ describe('invites service', () => {
     const inviterKeys = generateKeyPairSync('ed25519');
     inviterPubKey = rawPublicKey(inviterKeys.publicKey);
     inviterPrivKey = inviterKeys.privateKey;
-    inviterId = getUserId(inviterPubKey);
+    inviterId = inviterPubKey;
     insertIdentity(inviterId, inviterPubKey);
 
     // Generate invitee keypair
     const inviteeKeys = generateKeyPairSync('ed25519');
     inviteePubKey = rawPublicKey(inviteeKeys.publicKey);
     inviteePrivKey = inviteeKeys.privateKey;
-    inviteeId = getUserId(inviteePubKey);
-    insertIdentity(inviteeId, inviteePubKey);
+    insertIdentity(inviteePubKey, inviteePubKey);
   });
 
   afterEach(() => {
@@ -113,68 +166,130 @@ describe('invites service', () => {
   });
 
   // -----------------------------------------------------------------------
-  // 1. Full create->claim cycle produces invitee karma box
+  // 1. createInvite returns pending and inserts into mempool
   // -----------------------------------------------------------------------
-  it('Full create->claim cycle produces invitee karma box', () => {
+  it('createInvite returns pending and inserts into mempool', () => {
     createKarmaBox(inviterPubKey, 100, 1);
 
     const sig = signCreateInvite(inviterId, 15, 10, inviterPrivKey);
     const result = createInvite(inviterId, 15, 10, inviterPubKey, sig, 1);
 
+    expect(result.status).toBe('pending');
+    expect(result.txId).toBeDefined();
+    expect(typeof result.txId).toBe('string');
+    expect(result.expiresAtHeight).toBe(1 + 720);
     expect(result.inviteBox.id).toBeDefined();
     expect(result.bondBox.id).toBeDefined();
     expect(result.secret).toHaveLength(32);
     expect(result.secretHash).toHaveLength(32);
 
-    // Inviter's karma decreased
+    // Karma is unchanged (pending in mempool)
     const inviterKarma = getKarmaBox(inviterPubKey);
     expect(inviterKarma).not.toBeNull();
-    expect(inviterKarma!.value).toBe(75); // 100 - 15 - 10
+    expect(inviterKarma!.value).toBe(100); // unchanged — pending
 
-    // Claim
-    const claimResult = claimInvite(result.inviteBox.id!, result.secret, inviteePubKey, 5);
-
-    expect(claimResult.userId).toBe(inviteeId);
-    expect(claimResult.karmaBoxId).toBeDefined();
-
-    // Invitee now has karma
-    const inviteeKarma = getKarmaBox(inviteePubKey);
-    expect(inviteeKarma).not.toBeNull();
-    expect(inviteeKarma!.value).toBe(15);
-
-    // Invite box is spent
-    const inviteSpent = db
-      .prepare('SELECT spent_at_block FROM utxo_boxes WHERE id = ?')
-      .get(result.inviteBox.id!) as { spent_at_block: number | null };
-    expect(inviteSpent.spent_at_block).not.toBeNull();
+    // Verify mempool has the entry
+    const entries = getPendingEntries(100);
+    const matching = entries.filter((e) => {
+      if (e.entryType !== 'utxo_tx' || !e.utxoTxCbor) return false;
+      const tx = decodeTx(e.utxoTxCbor);
+      return tx.outputs.some((o) => o.boxType === 'invite');
+    });
+    expect(matching.length).toBe(1);
   });
 
   // -----------------------------------------------------------------------
-  // 2. Full create->cancel cycle returns karma to inviter
+  // 2. claimInvite returns pending and inserts into mempool
   // -----------------------------------------------------------------------
-  it('Full create->cancel cycle returns karma to inviter', () => {
+  it('claimInvite returns pending and inserts into mempool', () => {
     createKarmaBox(inviterPubKey, 100, 1);
 
     const sig = signCreateInvite(inviterId, 15, 10, inviterPrivKey);
-    const result = createInvite(inviterId, 15, 10, inviterPubKey, sig, 1);
+    const createResult = createInvite(inviterId, 15, 10, inviterPubKey, sig, 1);
 
-    const cancelSig = signCancelInvite(result.inviteBox.id!, inviterPrivKey);
-    cancelInvite(result.inviteBox.id!, inviterId, cancelSig, 5);
+    // Manually insert invite and bond boxes into UTXO (simulating confirmed create)
+    const inviteBox = insertInviteBox(15, 1, createResult.secretHash, inviterId);
+    const bondBox = insertBondBox(10, 1, inviterId);
 
-    // Inviter gets karma back
-    const inviterKarma = getKarmaBox(inviterPubKey);
-    expect(inviterKarma).not.toBeNull();
-    expect(inviterKarma!.value).toBe(100);
+    // Claim the invite
+    const claimResult = claimInvite(
+      inviteBox.id!,
+      createResult.secret,
+      inviteePubKey,
+      5,
+    );
 
-    // Invite box is spent
-    const inviteSpent = db
-      .prepare('SELECT spent_at_block FROM utxo_boxes WHERE id = ?')
-      .get(result.inviteBox.id!) as { spent_at_block: number | null };
-    expect(inviteSpent.spent_at_block).not.toBeNull();
+    expect(claimResult.status).toBe('pending');
+    expect(claimResult.txId).toBeDefined();
+    expect(typeof claimResult.txId).toBe('string');
+    expect(claimResult.expiresAtHeight).toBe(5 + 720);
+    expect(Buffer.from(claimResult.userId).toString('hex')).toBe(
+      Buffer.from(inviteePubKey).toString('hex'),
+    );
+    expect(claimResult.karmaBoxId).toBeDefined();
+
+    // Karma unchanged (pending)
+    const inviteeKarma = getKarmaBox(inviteePubKey);
+    expect(inviteeKarma).toBeNull(); // not yet created — pending
+
+    // Verify mempool has the claim entry
+    const entries = getPendingEntries(100);
+    // Filter for entries whose outputs contain a karma box with proofSource containing 'invite-claim'
+    const matching = entries.filter((e) => {
+      if (e.entryType !== 'utxo_tx' || !e.utxoTxCbor) return false;
+      const tx = decodeTx(e.utxoTxCbor);
+      return tx.outputs.some(
+        (o) =>
+          o.boxType === 'karma' &&
+          (o as KarmaBox).proofSource.startsWith('invite-claim'),
+      );
+    });
+    expect(matching.length).toBe(1);
   });
 
   // -----------------------------------------------------------------------
-  // 3. Create fails at MAX_PENDING_INVITES
+  // 3. cancelInvite returns pending and inserts into mempool
+  // -----------------------------------------------------------------------
+  it('cancelInvite returns pending and inserts into mempool', () => {
+    createKarmaBox(inviterPubKey, 100, 1);
+
+    // Manually insert invite and bond boxes into UTXO
+    const secretHash = createHash('blake2b512')
+      .update(Buffer.from(new Uint8Array(32).fill(0xaa)))
+      .digest()
+      .subarray(0, 32);
+    const inviteBox = insertInviteBox(15, 1, secretHash, inviterId);
+    const bondBox = insertBondBox(10, 1, inviterId);
+
+    const cancelSig = signCancelInvite(inviteBox.id!, inviterPrivKey);
+    const result = cancelInvite(inviteBox.id!, inviterId, cancelSig, 5);
+
+    expect(result.status).toBe('pending');
+    expect(result.txId).toBeDefined();
+    expect(typeof result.txId).toBe('string');
+    expect(result.expiresAtHeight).toBe(5 + 720);
+
+    // Karma unchanged (pending)
+    const inviterKarma = getKarmaBox(inviterPubKey);
+    expect(inviterKarma).not.toBeNull();
+    expect(inviterKarma!.value).toBe(100); // unchanged — pending
+
+    // Verify mempool has the cancel entry
+    const entries = getPendingEntries(100);
+    const matching = entries.filter((e) => {
+      if (e.entryType !== 'utxo_tx' || !e.utxoTxCbor) return false;
+      const tx = decodeTx(e.utxoTxCbor);
+      return tx.outputs.some(
+        (o) =>
+          o.boxType === 'karma' &&
+          (o as KarmaBox).proofSource.startsWith('invite-cancel'),
+      );
+    });
+    expect(matching.length).toBe(1);
+  });
+
+  // -----------------------------------------------------------------------
+  // 4. Create fails at MAX_PENDING_INVITES (UTXO + mempool)
   // -----------------------------------------------------------------------
   it('Create fails at MAX_PENDING_INVITES', () => {
     const totalNeeded = (15 + 10) * MAX_PENDING_INVITES;
@@ -192,7 +307,7 @@ describe('invites service', () => {
   });
 
   // -----------------------------------------------------------------------
-  // 4. Create fails if insufficient karma
+  // 5. Create fails if insufficient karma
   // -----------------------------------------------------------------------
   it('Create fails if insufficient karma', () => {
     createKarmaBox(inviterPubKey, 10, 1);
@@ -204,105 +319,84 @@ describe('invites service', () => {
   });
 
   // -----------------------------------------------------------------------
-  // 5. Claim fails with wrong secret
+  // 6. Claim fails with wrong secret
   // -----------------------------------------------------------------------
   it('Claim fails with wrong secret', () => {
-    createKarmaBox(inviterPubKey, 100, 1);
-    const sig = signCreateInvite(inviterId, 15, 10, inviterPrivKey);
-    const result = createInvite(inviterId, 15, 10, inviterPubKey, sig, 1);
+    // Manually insert invite and bond boxes into UTXO
+    const secret = new Uint8Array(32).fill(0x42);
+    const secretHash = createHash('blake2b512')
+      .update(Buffer.from(secret))
+      .digest()
+      .subarray(0, 32);
+    const inviteBox = insertInviteBox(15, 1, secretHash, inviterId);
+    insertBondBox(10, 1, inviterId);
 
     const wrongSecret = new Uint8Array(32).fill(0xff);
     expect(() =>
-      claimInvite(result.inviteBox.id!, wrongSecret, inviteePubKey, 5),
+      claimInvite(inviteBox.id!, wrongSecret, inviteePubKey, 5),
     ).toThrow('Secret hash mismatch');
   });
 
   // -----------------------------------------------------------------------
-  // 6. Claim fails if publicKey already account
+  // 7. Claim fails if publicKey already account
   // -----------------------------------------------------------------------
   it('Claim fails if publicKey already account', () => {
-    createKarmaBox(inviterPubKey, 100, 1);
     createKarmaBox(inviteePubKey, 50, 1); // invitee already has karma
 
-    const sig = signCreateInvite(inviterId, 15, 10, inviterPrivKey);
-    const result = createInvite(inviterId, 15, 10, inviterPubKey, sig, 1);
+    // Manually insert invite and bond boxes into UTXO
+    const secret = new Uint8Array(32).fill(0x42);
+    const secretHash = createHash('blake2b512')
+      .update(Buffer.from(secret))
+      .digest()
+      .subarray(0, 32);
+    const inviteBox = insertInviteBox(15, 1, secretHash, inviterId);
+    insertBondBox(10, 1, inviterId);
 
     expect(() =>
-      claimInvite(result.inviteBox.id!, result.secret, inviteePubKey, 5),
+      claimInvite(inviteBox.id!, secret, inviteePubKey, 5),
     ).toThrow('already associated with an account');
   });
 
   // -----------------------------------------------------------------------
-  // 7. Cancel fails if already claimed
+  // 8. Cancel fails if already claimed (confirmed — spent in UTXO)
   // -----------------------------------------------------------------------
   it('Cancel fails if already claimed', () => {
     createKarmaBox(inviterPubKey, 100, 1);
-    const sig = signCreateInvite(inviterId, 15, 10, inviterPrivKey);
-    const result = createInvite(inviterId, 15, 10, inviterPubKey, sig, 1);
 
-    // Claim first
-    claimInvite(result.inviteBox.id!, result.secret, inviteePubKey, 5);
+    // Manually insert invite and bond boxes into UTXO
+    const secretHash = createHash('blake2b512')
+      .update(Buffer.from(new Uint8Array(32).fill(0xaa)))
+      .digest()
+      .subarray(0, 32);
+    const inviteBox = insertInviteBox(15, 1, secretHash, inviterId);
+    insertBondBox(10, 1, inviterId);
 
-    // Try to cancel
-    const cancelSig = signCancelInvite(result.inviteBox.id!, inviterPrivKey);
+    // Simulate confirmed claim by marking invite box as spent
+    markSpent(inviteBox.id!, 3);
+
+    const cancelSig = signCancelInvite(inviteBox.id!, inviterPrivKey);
     expect(() =>
-      cancelInvite(result.inviteBox.id!, inviterId, cancelSig, 10),
+      cancelInvite(inviteBox.id!, inviterId, cancelSig, 10),
     ).toThrow('already claimed or spent');
   });
 
   // -----------------------------------------------------------------------
-  // 8. Cancel fails with wrong signature
+  // 9. Cancel fails with wrong signature
   // -----------------------------------------------------------------------
   it('Cancel fails with wrong signature', () => {
-    createKarmaBox(inviterPubKey, 100, 1);
-    const sig = signCreateInvite(inviterId, 15, 10, inviterPrivKey);
-    const result = createInvite(inviterId, 15, 10, inviterPubKey, sig, 1);
+    // Manually insert invite and bond boxes into UTXO
+    const secretHash = createHash('blake2b512')
+      .update(Buffer.from(new Uint8Array(32).fill(0xaa)))
+      .digest()
+      .subarray(0, 32);
+    const inviteBox = insertInviteBox(15, 1, secretHash, inviterId);
+    insertBondBox(10, 1, inviterId);
 
     // Sign with invitee's key
-    const wrongSig = signCancelInvite(result.inviteBox.id!, inviteePrivKey);
+    const wrongSig = signCancelInvite(inviteBox.id!, inviteePrivKey);
     expect(() =>
-      cancelInvite(result.inviteBox.id!, inviterId, wrongSig, 5),
+      cancelInvite(inviteBox.id!, inviterId, wrongSig, 5),
     ).toThrow('Invalid inviter signature');
-  });
-
-  // -----------------------------------------------------------------------
-  // 9. Bond box updated on claim (inviteeKey, probation blocks)
-  // -----------------------------------------------------------------------
-  it('Bond box updated on claim (inviteeKey, probation blocks)', () => {
-    createKarmaBox(inviterPubKey, 100, 1);
-    const sig = signCreateInvite(inviterId, 15, 10, inviterPrivKey);
-    const result = createInvite(inviterId, 15, 10, inviterPubKey, sig, 1);
-
-    // Check bond box is unclaimed initially
-    const initialBond = getBox(result.bondBox.id!) as BondBox;
-    expect(initialBond.inviteePublicKey.length).toBe(0);
-    expect(initialBond.probationStartBlock).toBe(0);
-    expect(initialBond.probationEndBlock).toBe(0);
-
-    // Claim
-    claimInvite(result.inviteBox.id!, result.secret, inviteePubKey, 5);
-
-    // Original bond box should be spent
-    const spentRow = db
-      .prepare('SELECT spent_at_block FROM utxo_boxes WHERE id = ?')
-      .get(result.bondBox.id!) as { spent_at_block: number | null };
-    expect(spentRow.spent_at_block).not.toBeNull();
-
-    // Find updated (new) bond box
-    const inviterBonds = db
-      .prepare(
-        `SELECT * FROM utxo_boxes
-         WHERE box_type = 'bond'
-           AND json_extract(extra_data, '$.inviterId') = ?
-           AND spent_at_block IS NULL`,
-      )
-      .all(inviterId) as Array<{ id: string; extra_data: string }>;
-
-    expect(inviterBonds.length).toBeGreaterThan(0);
-    const extra = JSON.parse(inviterBonds[0]!.extra_data);
-    expect(extra.inviteePublicKey).not.toBeNull();
-    expect(extra.probationStartBlock).toBe(5);
-    expect(extra.probationEndBlock).toBe(5 + INVITE_PROBATION_BLOCKS);
   });
 
   // -----------------------------------------------------------------------
