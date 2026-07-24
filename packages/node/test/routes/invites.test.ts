@@ -190,11 +190,12 @@ describe('invites routes', () => {
     inviteCounter++;
     const karmaAmount = 10 + inviteCounter;
     const bondAmount = 3 + inviteCounter;
-    const signMsg = `create-invite:${inviterId}:${karmaAmount}:${bondAmount}`;
+    const inviterIdHex = Buffer.from(inviterId).toString('hex');
+    const signMsg = `create-invite:${inviterIdHex}:${karmaAmount}:${bondAmount}`;
     const sig = signData(signMsg, inviterKp.secretKey);
 
     const res = await request('/', 'POST', {
-      inviterId,
+      inviterId: inviterIdHex,
       karmaAmount,
       bondAmount,
       signature: sig,
@@ -263,7 +264,7 @@ describe('invites routes', () => {
 
     const res = await request('/cancel', 'POST', {
       inviteBoxId: inviteBox.id,
-      inviterId,
+      inviterId: Buffer.from(inviterId).toString('hex'),
       signature: cancelSig,
     });
     expect(res.status).toBe(200);

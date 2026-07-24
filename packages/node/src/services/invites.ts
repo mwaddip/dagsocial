@@ -132,7 +132,7 @@ function countPendingInvitesInMempool(inviterId: Uint8Array): number {
  * Returns the secret for out-of-band communication to the invitee.
  */
 export function createInvite(
-  inviterId: string,
+  inviterId: Uint8Array,
   karmaAmount: number,
   bondAmount: number,
   inviterPubKey: Uint8Array,
@@ -148,6 +148,8 @@ export function createInvite(
   secretHash: Uint8Array;
   tx: UtxoTransaction;
 } {
+  const inviterIdHex = Buffer.from(inviterId).toString('hex');
+
   // ---- 1. Verify pending invite count limit (UTXO + mempool) ----
   const utxoCount = getPendingInviteCount(inviterId);
   const mempoolCount = countPendingInvitesInMempool(inviterId);
@@ -161,7 +163,7 @@ export function createInvite(
   // ---- 2. Verify karma balance ----
   const karmaBox = getKarmaBox(inviterPubKey);
   if (!karmaBox) {
-    throw new Error(`No karma box found for inviter ${inviterId}`);
+    throw new Error(`No karma box found for inviter ${inviterIdHex}`);
   }
 
   const totalRequired = karmaAmount + bondAmount;
@@ -172,7 +174,7 @@ export function createInvite(
   }
 
   // ---- 3. Verify signature over deterministic message ----
-  const signMessage = `create-invite:${inviterId}:${karmaAmount}:${bondAmount}`;
+  const signMessage = `create-invite:${inviterIdHex}:${karmaAmount}:${bondAmount}`;
   if (!verifySignature(Buffer.from(signMessage), signature, inviterPubKey)) {
     throw new Error('Invalid inviter signature');
   }
@@ -371,7 +373,7 @@ export function claimInvite(
  */
 export function cancelInvite(
   inviteBoxId: string,
-  inviterId: string,
+  inviterId: Uint8Array,
   signature: Uint8Array,
   currentBlockHeight: number,
 ): {
@@ -380,6 +382,7 @@ export function cancelInvite(
   expiresAtHeight: number;
   tx: UtxoTransaction;
 } {
+  const inviterIdHex = Buffer.from(inviterId).toString('hex');
   const db = getDb();
 
   // ---- 1. Get invite box, verify unclaimed ----
@@ -403,7 +406,7 @@ export function cancelInvite(
   // ---- 2. Verify inviter signature ----
   const identity = getIdentity(inviterId);
   if (!identity) {
-    throw new Error(`Inviter identity not found: ${inviterId}`);
+    throw new Error(`Inviter identity not found: ${inviterIdHex}`);
   }
 
   const signMessage = `cancel-invite:${inviteBoxId}`;
@@ -420,7 +423,7 @@ export function cancelInvite(
   // ---- 4. Get current karma box for inviter ----
   const karmaBox = getKarmaBox(identity.publicKey);
   if (!karmaBox) {
-    throw new Error(`No karma box found for inviter ${inviterId}`);
+    throw new Error(`No karma box found for inviter ${inviterIdHex}`);
   }
 
   // ---- 5. Build output: return both values to inviter ----

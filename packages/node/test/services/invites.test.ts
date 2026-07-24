@@ -119,7 +119,8 @@ function signCreateInvite(
   bondAmount: number,
   privKey: KeyObject,
 ): Uint8Array {
-  const message = `create-invite:${inviterId}:${karmaAmount}:${bondAmount}`;
+  const inviterIdHex = Buffer.from(inviterId).toString('hex');
+  const message = `create-invite:${inviterIdHex}:${karmaAmount}:${bondAmount}`;
   const hash = createHash('blake2b512').update(message).digest().subarray(0, 32);
   return new Uint8Array(cryptoSign(null, hash, privKey));
 }
