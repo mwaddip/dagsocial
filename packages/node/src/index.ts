@@ -1,19 +1,20 @@
 import { loadConfig } from './config.js';
 import { initDb, getDb, closeDb } from './store/db.js';
-import { startBlockCreator, stopBlockCreator } from './services/block-creator.js';
+import { startBlockCreator, stopBlockCreator, clearTemplate } from './services/block-creator.js';
 import { createApp } from './server.js';
 import { NetNode } from '@dagsocial/net';
 import * as validation from '@dagsocial/validation';
 import { verifyPostForRelay } from './services/verifier.js';
-import { validateAndApplyTx } from './services/utxo-engine.js';
+import { validateTx, revalidateTxInContext, applyTx } from './services/utxo-engine.js';
 import { setNet } from './services/net-instance.js';
 import { mintKarma } from './services/karma.js';
+import { mintCredits } from './services/credits.js';
+import { computeBlockReward } from './services/block-creator.js';
 import {
   getIdentity,
   getKarmaBox,
   getPost,
   insertPost,
-  insertSubBlock,
   getSubBlock,
   insertBox,
   getBox,
@@ -24,8 +25,13 @@ import {
   getCurrentHeight,
   createOrderingBlock as storeCreateOrderingBlock,
   getOrderingBlock,
+  insertMempoolSubBlock,
+  insertUtxoTx,
+  getPendingEntries,
+  removeEntry,
 } from './store/index.js';
-import { encodePost, PROTOCOL_VERSION } from '@dagsocial/types';
+import { encodePost, PROTOCOL_VERSION, decodeTx, computeTxId, computeBoxId } from '@dagsocial/types';
+import type { AnyBox } from '@dagsocial/types';
 
 const config = loadConfig();
 
@@ -65,13 +71,10 @@ net.onSubBlock((sb) => {
     console.warn(`Relayed sub-block rejected: ${result.error}`);
     return;
   }
-  // Store post and sub-block
   insertPost(sb.post, encodePost(sb.post));
-  insertSubBlock(sb);
-  // Store like boxes
-  for (const lb of sb.likeBoxes) {
-    insertBox(lb);
-  }
+  const currentHeight = getCurrentHeight();
+  insertMempoolSubBlock(sb, currentHeight + 720);
+  console.log(`Relayed sub-block queued in mempool: ${sb.subBlockId}`);
 });
 
 net.onOrderingBlock((block) => {
@@ -81,20 +84,21 @@ net.onOrderingBlock((block) => {
 net.onTx((tx) => {
   const deps = {
     getBox,
-    insertBox,
-    consumeBox,
+    insertBox: () => {},
+    consumeBox: () => {},
     getKarmaBox,
     getIdentity,
-    runInTransaction: (fn: () => void) => {
-      getDb().transaction(fn)();
-    },
+    runInTransaction: (fn: () => void) => fn(),
   };
-  const result = validateAndApplyTx(deps, tx, 0);
+  const currentHeight = getCurrentHeight();
+  const result = validateTx(deps, tx, currentHeight);
   if (!result.valid) {
     console.warn(`Relayed tx rejected: ${result.error}`);
     return;
   }
-  console.log(`Relayed tx accepted: ${tx.inputs.length} inputs`);
+  const expiresAtHeight = currentHeight + 720;
+  insertUtxoTx(tx, null, expiresAtHeight);
+  console.log(`Relayed tx queued in mempool: ${result.txId}`);
 });
 
 // 4. Start net
@@ -164,10 +168,34 @@ function applyOrderingBlock(block: import('@dagsocial/types').OrderingBlock): vo
     return;
   }
 
-  // 3. Store the block
+  // 3. PoW verification
+  if (!validation.verifyOrderingBlockPoW(block)) {
+    console.warn(`Rejected block height=${block.height}: PoW invalid`);
+    return;
+  }
+
+  // 4. Verify coinbase reward matches emission schedule
+  const expectedReward = computeBlockReward(block.height);
+  const totalCoinbase = block.coinbaseOutputs.reduce((sum, o) => sum + o.value, 0);
+  if (totalCoinbase !== expectedReward) {
+    console.warn(
+      `Rejected block height=${block.height}: coinbase value ${totalCoinbase} != expected ${expectedReward}`,
+    );
+    return;
+  }
+
+  // 5. Store the block
   storeCreateOrderingBlock(block);
 
-  // 4. Confirm sub-blocks and their posts
+  // 6. Clear the local mining template (this height is taken)
+  clearTemplate();
+
+  // 7. Apply coinbase — mint credits for each output
+  for (const out of block.coinbaseOutputs) {
+    mintCredits(out.owner, out.value, block.height, out.lockedUntilBlock);
+  }
+
+  // 7. Confirm sub-blocks and their posts
   for (const subBlockId of block.subBlockRefs) {
     try {
       confirmSubBlock(subBlockId, block.height);
@@ -177,12 +205,12 @@ function applyOrderingBlock(block: import('@dagsocial/types').OrderingBlock): vo
     }
   }
 
-  // 5. Mark standalone like boxes as tallied
+  // 8. Mark standalone like boxes as tallied
   if (block.likeBoxIds.length > 0) {
     markLikeBoxesTallied(block.likeBoxIds);
   }
 
-  // 6. Apply epoch tally results
+  // 9. Apply epoch tally results
   if (block.epochTallyResults) {
     const rewards = block.epochTallyResults.rewards;
     for (const postId of Object.keys(rewards)) {
@@ -201,7 +229,7 @@ function applyOrderingBlock(block: import('@dagsocial/types').OrderingBlock): vo
       for (const likerId of Object.keys(reward.likerRefunds)) {
         const refund = reward.likerRefunds[likerId];
         if (refund !== undefined && refund !== 0) {
-          mintKarma(likerId, refund, block.height);
+          mintKarma(new Uint8Array(Buffer.from(likerId, "hex")), refund, block.height);
         }
       }
 
@@ -213,6 +241,44 @@ function applyOrderingBlock(block: import('@dagsocial/types').OrderingBlock): vo
         }
       }
     }
+  }
+
+  // 10. Apply UTXO transactions from the block
+  const utxoDeps = {
+    getBox,
+    insertBox,
+    consumeBox,
+    getKarmaBox,
+    getIdentity,
+    runInTransaction: (fn: () => void) => {
+      getDb().transaction(fn)();
+    },
+  };
+  for (const txId of block.utxoTxIds) {
+    // Look up in local mempool
+    const entries = getPendingEntries(1000);
+    const entry = entries.find((e) => {
+      if (e.entryType !== 'utxo_tx' || !e.utxoTxCbor) return false;
+      const tx = decodeTx(e.utxoTxCbor);
+      return computeTxId(tx) === txId;
+    });
+    if (!entry) {
+      // Already applied by a prior block or not in our mempool
+      continue;
+    }
+    const tx = decodeTx(entry.utxoTxCbor!);
+    const revalResult = revalidateTxInContext(utxoDeps, tx, block.height);
+    if (!revalResult.valid) {
+      console.warn(`UTXO tx ${txId} failed revalidation: ${revalResult.error}`);
+      removeEntry(entry.rowid);
+      continue;
+    }
+    const computedOutputs = tx.outputs.map((box) => ({
+      ...box,
+      id: computeBoxId(box),
+    })) as AnyBox[];
+    applyTx(utxoDeps, tx, computedOutputs, block.height);
+    removeEntry(entry.rowid);
   }
 
   console.log(`Applied ordering block height=${block.height} hash=${block.hash} (${block.subBlockRefs.length} sub-blocks)`);
