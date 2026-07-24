@@ -6,7 +6,7 @@ import {
   KARMA_DECAY_GRACE_BLOCKS,
   KARMA_FLOOR,
 } from '@dagsocial/types';
-import type { UtxoTransaction, AnyBox, KarmaBox, BondBox, InviteBox } from '@dagsocial/types';
+import type { UtxoTransaction, AnyBox, KarmaBox, BondBox, InviteBox, LikeBox } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
 // Ed25519 SPKI prefix for raw 32-byte public keys
@@ -248,12 +248,18 @@ function checkTransitions(
     }
 
     // ------------------------------------------------------------------
-    // LikeBox — consumed by epoch only, rejected in guard check
+    // LikeBox → KarmaBox (unlike by liker)
+    // LikeBox consumed by epoch tally (handled in epoch code)
     // ------------------------------------------------------------------
     case 'like': {
+      const karmaOutputs = outputs.filter((o) => o.boxType === 'karma');
+      if (karmaOutputs.length >= 1 && karmaOutputs.length === outputs.length) {
+        // Unlike: liker consumes their LikeBox, gets karma back
+        return { valid: true };
+      }
       return {
         valid: false,
-        error: `LikeBox can only be consumed by epoch tally (not user transactions)`,
+        error: `LikeBox must produce karma outputs (unlike) or be consumed by epoch tally`,
       };
     }
 
@@ -330,11 +336,24 @@ function checkGuards(
         break;
       }
 
-      case 'epoch_tally':
+      case 'epoch_tally': {
+        const likeBox = box as LikeBox;
+        // Allow liker to consume their own LikeBox (unlike)
+        if (likeBox.boxType === 'like' && likeBox.likerId) {
+          if (verifyGuardSignature(tx, txHash, likeBox.likerId)) {
+            break; // Liker-authorized unlike
+          }
+          return {
+            valid: false,
+            error: `LikeBox can only be consumed by its liker or epoch tally`,
+          };
+        }
+        // PostLockBox and other epoch_tally boxes: epoch only
         return {
           valid: false,
-          error: `LikeBox can only be consumed by epoch tally, not user transactions`,
+          error: `Box with epoch_tally guard can only be consumed by epoch tally`,
         };
+      }
 
       case 'hash_preimage': {
         const preimage = tx.preimages?.[box.id!];

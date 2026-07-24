@@ -157,6 +157,12 @@ export function removeLike(
     throw new Error('Transaction does not consume a LikeBox');
   }
 
+  // Verify the LikeBox belongs to the signer
+  const signerHex = Object.keys(tx.signatures)[0];
+  if (!signerHex || Buffer.from(likerId).toString('hex') !== signerHex) {
+    throw new Error('LikeBox does not belong to signer');
+  }
+
   // ---- 2. Verify target post exists and is live ----
   const post = getPost(targetPostId);
   if (!post) {
