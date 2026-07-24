@@ -116,23 +116,31 @@ export function decodeUtxoTxTree(bytes: Uint8Array): UtxoTxTree {
  *   || u32BE(utxoTxTreeLen) || utxoTxTreeCbor || validatorSignature (64 bytes)
  */
 export function encodeOrderingBlock(block: OrderingBlock): Uint8Array {
-  const headerBytes = Buffer.from(encodeHeader(block.header));
-  const subBytes = Buffer.from(encodeSubBlockTree(block.subBlockTree));
-  const utxoBytes = Buffer.from(encodeUtxoTxTree(block.utxoTxTree));
+  const headerBytes = new Uint8Array(encodeHeader(block.header));
+  const subBytes = new Uint8Array(encodeSubBlockTree(block.subBlockTree));
+  const utxoBytes = new Uint8Array(encodeUtxoTxTree(block.utxoTxTree));
 
-  const headerLen = Buffer.alloc(4);
-  headerLen.writeUInt32BE(headerBytes.length);
-  const subLen = Buffer.alloc(4);
-  subLen.writeUInt32BE(subBytes.length);
-  const utxoLen = Buffer.alloc(4);
-  utxoLen.writeUInt32BE(utxoBytes.length);
+  const headerLen = new Uint8Array(4);
+  new DataView(headerLen.buffer).setUint32(0, headerBytes.length);
+  const subLen = new Uint8Array(4);
+  new DataView(subLen.buffer).setUint32(0, subBytes.length);
+  const utxoLen = new Uint8Array(4);
+  new DataView(utxoLen.buffer).setUint32(0, utxoBytes.length);
 
-  return new Uint8Array(Buffer.concat([
+  const parts = [
     headerLen, headerBytes,
     subLen, subBytes,
     utxoLen, utxoBytes,
-    Buffer.from(block.validatorSignature),
-  ]));
+    block.validatorSignature,
+  ];
+  const totalLen = parts.reduce((sum, p) => sum + p.length, 0);
+  const result = new Uint8Array(totalLen);
+  let offset = 0;
+  for (const p of parts) {
+    result.set(p, offset);
+    offset += p.length;
+  }
+  return result;
 }
 
 /**
@@ -143,13 +151,13 @@ export function decodeOrderingBlock(bytes: Uint8Array): OrderingBlock {
   let offset = 0;
 
   const headerLen = buf.readUInt32BE(offset); offset += 4;
-  const header = decodeHeader(buf.subarray(offset, offset + headerLen)); offset += headerLen;
+  const header = decodeHeader(new Uint8Array(buf.subarray(offset, offset + headerLen))); offset += headerLen;
 
   const subLen = buf.readUInt32BE(offset); offset += 4;
-  const subBlockTree = decodeSubBlockTree(buf.subarray(offset, offset + subLen)); offset += subLen;
+  const subBlockTree = decodeSubBlockTree(new Uint8Array(buf.subarray(offset, offset + subLen))); offset += subLen;
 
   const utxoLen = buf.readUInt32BE(offset); offset += 4;
-  const utxoTxTree = decodeUtxoTxTree(buf.subarray(offset, offset + utxoLen)); offset += utxoLen;
+  const utxoTxTree = decodeUtxoTxTree(new Uint8Array(buf.subarray(offset, offset + utxoLen))); offset += utxoLen;
 
   const validatorSignature = new Uint8Array(buf.subarray(offset, offset + 64));
   if (validatorSignature.length !== 64) throw new Error('decodeOrderingBlock: truncated validator signature');

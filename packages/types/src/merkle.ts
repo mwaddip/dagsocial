@@ -6,23 +6,25 @@ import { createHash } from 'crypto';
  * UTXO tx ID hash even if the underlying bytes match).
  */
 export function leafHash(domain: string, data: Uint8Array): Uint8Array {
-  const domainBytes = Buffer.from(domain + '\0', 'utf8');
-  return createHash('blake2b512')
+  const domainBytes = new TextEncoder().encode(domain + '\0');
+  const hash = createHash('blake2b512')
     .update(domainBytes)
     .update(data)
     .digest()
     .subarray(0, 32);
+  return new Uint8Array(hash);
 }
 
 /**
  * Hash of two child nodes in the Merkle tree.
  */
 export function nodeHash(left: Uint8Array, right: Uint8Array): Uint8Array {
-  return createHash('blake2b512')
+  const hash = createHash('blake2b512')
     .update(left)
     .update(right)
     .digest()
     .subarray(0, 32);
+  return new Uint8Array(hash);
 }
 
 /**
