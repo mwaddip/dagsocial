@@ -296,7 +296,7 @@ function checkValueConservation(
 
   if (inputType === 'bond' && outputs.length === 0) {
     // BondBox burn — no outputs, value deliberately destroyed. Skip conservation.
-  } else if (inputType === 'karma') {
+  } else if (inputType === 'karma' || inputType === 'like') {
     // Karma conservation is checked in checkKarmaDecay via effective values (decay-aware).
     // Face values differ legitimately — decay destroys karma, and like/invite
     // creation splits value across multiple output boxes.
