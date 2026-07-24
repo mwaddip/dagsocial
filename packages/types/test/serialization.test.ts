@@ -74,6 +74,9 @@ function makeOrderingBlock(): OrderingBlock {
     stumpIds: [],
     validatorId: 'validator1',
     validatorSignature: sig64,
+    powNonce: 0,
+    powTargetBits: 12,
+    coinbaseOutputs: [],
     protocolVersion: 2,
     createdAt: 1700000000000,
   };
@@ -164,6 +167,19 @@ describe('CBOR serialization', () => {
       const tx = makeTx();
       const decoded = decodeTx(encodeTx(tx));
       expect(decoded).toEqual(tx);
+    });
+
+    it('round-trips a transaction with preimages', () => {
+      const preimage = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+      const tx = {
+        ...makeTx(),
+        inputs: ['aaaa'.padEnd(64, '0'), 'bbbb'.padEnd(64, '0')],
+        preimages: { ['aaaa'.padEnd(64, '0')]: preimage },
+      };
+      const decoded = decodeTx(encodeTx(tx));
+      expect(decoded.preimages).toBeDefined();
+      expect(decoded.preimages!['aaaa'.padEnd(64, '0')]).toEqual(preimage);
+      expect(decoded.inputs).toEqual(tx.inputs);
     });
 
     it('serializeTx is deterministic', () => {

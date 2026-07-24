@@ -122,7 +122,8 @@ export interface UtxoTransaction {
 }
 
 /**
- * Deterministic transaction ID. Hashes inputs, serialized outputs, and
+ * Deterministic transaction ID. Hashes inputs, serialized outputs (excluding
+ * per-output `id`), preimages (sorted by boxId) when present, and
  * protocolVersion.
  */
 export function computeTxId(tx: UtxoTransaction): TxId {
