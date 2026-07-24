@@ -2,12 +2,11 @@ import { createHash, createPublicKey, verify as cryptoVerify } from 'crypto';
 import {
   computeBoxId,
   computeTxId,
-  serializeTx,
   KARMA_DECAY_RATE,
   KARMA_DECAY_GRACE_BLOCKS,
   KARMA_FLOOR,
 } from '@dagsocial/types';
-import type { UtxoTransaction, AnyBox, KarmaBox, BondBox } from '@dagsocial/types';
+import type { UtxoTransaction, AnyBox, KarmaBox, BondBox, InviteBox } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
 // Ed25519 SPKI prefix for raw 32-byte public keys
@@ -24,17 +23,6 @@ function publicKeyToKeyObject(pubKey: Uint8Array): ReturnType<typeof createPubli
     format: 'der',
     type: 'spki',
   });
-}
-
-// ---------------------------------------------------------------------------
-// Transaction hash (for signature verification)
-// ---------------------------------------------------------------------------
-
-function computeTxHash(tx: UtxoTransaction): Buffer {
-  return createHash('blake2b512')
-    .update(Buffer.from(serializeTx(tx)))
-    .digest()
-    .subarray(0, 32);
 }
 
 // ---------------------------------------------------------------------------
@@ -107,6 +95,35 @@ function checkTransitions(
   inputs: AnyBox[],
   outputs: AnyBox[],
 ): { valid: boolean; error?: string } {
+  // Handle invite claim: InviteBox + BondBox → KarmaBox + BondBox (claimed)
+  if (inputs.length === 2) {
+    const hasInvite = inputs.some((b) => b.boxType === 'invite');
+    const hasBond = inputs.some((b) => b.boxType === 'bond');
+    if (hasInvite && hasBond) {
+      const bondIn = inputs.find((b) => b.boxType === 'bond') as BondBox;
+      const karmaOuts = outputs.filter((o) => o.boxType === 'karma');
+      const bondOuts = outputs.filter((o) => o.boxType === 'bond');
+
+      // Unclaimed bond → claimed bond transition
+      if (bondIn.inviteePublicKey.length === 0 &&
+          bondOuts.length === 1 &&
+          karmaOuts.length === 1 &&
+          outputs.length === 2) {
+        const bondOut = bondOuts[0] as BondBox;
+        // inviteePublicKey must be set (32 bytes), probation must be set
+        if (bondOut.inviteePublicKey.length === 32 &&
+            bondOut.probationStartBlock > 0 &&
+            bondOut.probationEndBlock > bondOut.probationStartBlock) {
+          return { valid: true };
+        }
+      }
+      return {
+        valid: false,
+        error: `Invalid invite claim: expected 1 karma + 1 claimed bond output`,
+      };
+    }
+  }
+
   const inputType = inputs[0]!.boxType;
 
   switch (inputType) {
@@ -298,7 +315,7 @@ function checkGuards(
   tx: UtxoTransaction,
   inputBoxes: AnyBox[],
 ): UtxoResult {
-  const txHash = computeTxHash(tx);
+  const txHash = Buffer.from(computeTxId(tx), 'hex');
 
   for (const box of inputBoxes) {
     switch (box.guard) {
@@ -319,11 +336,27 @@ function checkGuards(
           error: `LikeBox can only be consumed by epoch tally, not user transactions`,
         };
 
-      case 'hash_preimage':
-        return {
-          valid: false,
-          error: `hash_preimage guard handled by invite claim route, not generic validation`,
-        };
+      case 'hash_preimage': {
+        const preimage = tx.preimages?.[box.id!];
+        if (!preimage) {
+          return {
+            valid: false,
+            error: `Missing preimage for hash-locked box ${box.id}`,
+          };
+        }
+        const expectedHash = (box as InviteBox).secretHash;
+        const computedHash = createHash('blake2b512')
+          .update(Buffer.from(preimage))
+          .digest()
+          .subarray(0, 32);
+        if (Buffer.from(computedHash).toString('hex') !== Buffer.from(expectedHash).toString('hex')) {
+          return {
+            valid: false,
+            error: `Hash preimage mismatch for box ${box.id}`,
+          };
+        }
+        break;
+      }
 
       case 'inviter_signature': {
         const bondBox = box as BondBox;
@@ -443,14 +476,20 @@ export function validateTx(
     inputBoxes.push(box);
   }
 
-  // ---- 3. All inputs must be same box_type ----
-  const inputType = inputBoxes[0]!.boxType;
-  for (const box of inputBoxes) {
-    if (box.boxType !== inputType) {
-      return {
-        valid: false,
-        error: `Mixed input types not allowed: ${inputType} vs ${box.boxType}`,
-      };
+  // ---- 3. All inputs must be same box_type (except invite+bond claim) ----
+  const isInviteBondClaim =
+    inputBoxes.length === 2 &&
+    inputBoxes.some((b) => b.boxType === 'invite') &&
+    inputBoxes.some((b) => b.boxType === 'bond');
+  if (!isInviteBondClaim) {
+    const inputType = inputBoxes[0]!.boxType;
+    for (const box of inputBoxes) {
+      if (box.boxType !== inputType) {
+        return {
+          valid: false,
+          error: `Mixed input types not allowed: ${inputType} vs ${box.boxType}`,
+        };
+      }
     }
   }
 
