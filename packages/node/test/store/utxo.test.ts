@@ -1,3 +1,4 @@
+import { uid } from '../helpers.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type Database from 'better-sqlite3';
 import { randomBytes } from 'node:crypto';
@@ -31,9 +32,9 @@ async function importUtxoFresh() {
     getUnspentBoxes: (owner: Uint8Array) => AnyBox[];
     getKarmaBox: (owner: Uint8Array) => KarmaBox | null;
     getCreditBox: (owner: Uint8Array) => CreditBox | null;
-    getPendingInvites: (inviterId: string) => InviteBox[];
-    getPendingInviteCount: (inviterId: string) => number;
-    getBondBoxes: (inviterId: string) => BondBox[];
+    getPendingInvites: (inviterId: Uint8Array) => InviteBox[];
+    getPendingInviteCount: (inviterId: Uint8Array) => number;
+    getBondBoxes: (inviterId: Uint8Array) => BondBox[];
     getLockedLikeBoxes: (targetPostId: string) => LikeBox[];
     getUnprocessedLockedLikeBoxes: () => LikeBox[];
     insertBox: (box: AnyBox) => void;
@@ -93,7 +94,7 @@ function makeLikeBox(overrides: Partial<LikeBox> = {}): LikeBox {
     boxType: 'like',
     value: 2,
     createdAtBlock: 5,
-    likerId: 'liker123',
+    likerId: uid('liker123'),
     targetPostId: 'post456',
     guard: 'epoch_tally',
     ...overrides,
@@ -107,7 +108,7 @@ function makeInviteBox(overrides: Partial<InviteBox> = {}): InviteBox {
     value: 50,
     createdAtBlock: 3,
     secretHash: bytes(32),
-    inviterId: 'alice-inviter',
+    inviterId: uid('alice-inviter'),
     guard: 'hash_preimage',
     ...overrides,
   };
@@ -119,7 +120,7 @@ function makeBondBox(overrides: Partial<BondBox> = {}): BondBox {
     boxType: 'bond',
     value: 10,
     createdAtBlock: 3,
-    inviterId: 'alice-inviter',
+    inviterId: uid('alice-inviter'),
     inviteePublicKey: new Uint8Array(0),
     probationStartBlock: 0,
     probationEndBlock: 0,
@@ -192,7 +193,7 @@ describe('utxo store', () => {
 
     initDb(':memory:');
 
-    const box = makeLikeBox({ likerId: 'user-liker', targetPostId: 'post-target-1' });
+    const box = makeLikeBox({ likerId: uid('user-liker'), targetPostId: 'post-target-1' });
     box.id = computeBoxId(box);
     insertBox(box);
 
@@ -200,7 +201,7 @@ describe('utxo store', () => {
     expect(result).not.toBeNull();
     expect(result.boxType).toBe('like');
     expect(result.value).toBe(2);
-    expect(result.likerId).toBe('user-liker');
+    expect(result.likerId).toEqual(uid('user-liker'));
     expect(result.targetPostId).toBe('post-target-1');
     expect(result.guard).toBe('epoch_tally');
   });
@@ -213,7 +214,7 @@ describe('utxo store', () => {
     initDb(':memory:');
 
     const secretHash = bytes(32);
-    const box = makeInviteBox({ value: 30, secretHash, inviterId: 'inviter-alice' });
+    const box = makeInviteBox({ value: 30, secretHash, inviterId: uid('inviter-alice') });
     box.id = computeBoxId(box);
     insertBox(box);
 
@@ -222,7 +223,7 @@ describe('utxo store', () => {
     expect(result.boxType).toBe('invite');
     expect(result.value).toBe(30);
     expect(result.secretHash).toEqual(secretHash);
-    expect(result.inviterId).toBe('inviter-alice');
+    expect(result.inviterId).toEqual(uid('inviter-alice'));
     expect(result.guard).toBe('hash_preimage');
   });
 
@@ -236,7 +237,7 @@ describe('utxo store', () => {
     const inviteePk = bytes(32);
     const box = makeBondBox({
       value: 10,
-      inviterId: 'inviter-bob',
+      inviterId: uid('inviter-bob'),
       inviteePublicKey: inviteePk,
       probationStartBlock: 100,
       probationEndBlock: 1100,
@@ -248,7 +249,7 @@ describe('utxo store', () => {
     expect(result).not.toBeNull();
     expect(result.boxType).toBe('bond');
     expect(result.value).toBe(10);
-    expect(result.inviterId).toBe('inviter-bob');
+    expect(result.inviterId).toEqual(uid('inviter-bob'));
     expect(result.inviteePublicKey).toEqual(inviteePk);
     expect(result.probationStartBlock).toBe(100);
     expect(result.probationEndBlock).toBe(1100);
@@ -363,26 +364,26 @@ describe('utxo store', () => {
 
     initDb(':memory:');
 
-    const inv1 = makeInviteBox({ value: 20, inviterId: 'alice' });
+    const inv1 = makeInviteBox({ value: 20, inviterId: uid('alice') });
     inv1.id = computeBoxId(inv1);
     insertBox(inv1);
 
-    const inv2 = makeInviteBox({ value: 30, inviterId: 'alice' });
+    const inv2 = makeInviteBox({ value: 30, inviterId: uid('alice') });
     inv2.id = computeBoxId(inv2);
     insertBox(inv2);
 
-    const inv3 = makeInviteBox({ value: 40, inviterId: 'bob' });
+    const inv3 = makeInviteBox({ value: 40, inviterId: uid('bob') });
     inv3.id = computeBoxId(inv3);
     insertBox(inv3);
 
     // Consume inv1
     consumeBox(inv1.id!, 7);
 
-    const aliceInvites = getPendingInvites('alice');
+    const aliceInvites = getPendingInvites(uid('alice'));
     expect(aliceInvites).toHaveLength(1);
     expect(aliceInvites[0].value).toBe(30);
 
-    const bobInvites = getPendingInvites('bob');
+    const bobInvites = getPendingInvites(uid('bob'));
     expect(bobInvites).toHaveLength(1);
     expect(bobInvites[0].value).toBe(40);
   });
@@ -396,20 +397,20 @@ describe('utxo store', () => {
 
     initDb(':memory:');
 
-    expect(getPendingInviteCount('alice')).toBe(0);
+    expect(getPendingInviteCount(uid('alice'))).toBe(0);
 
-    const inv1 = makeInviteBox({ inviterId: 'alice' });
+    const inv1 = makeInviteBox({ inviterId: uid('alice') });
     inv1.id = computeBoxId(inv1);
     insertBox(inv1);
 
-    const inv2 = makeInviteBox({ inviterId: 'alice' });
+    const inv2 = makeInviteBox({ inviterId: uid('alice') });
     inv2.id = computeBoxId(inv2);
     insertBox(inv2);
 
-    expect(getPendingInviteCount('alice')).toBe(2);
+    expect(getPendingInviteCount(uid('alice'))).toBe(2);
 
     consumeBox(inv1.id!, 5);
-    expect(getPendingInviteCount('alice')).toBe(1);
+    expect(getPendingInviteCount(uid('alice'))).toBe(1);
   });
 
   // --- getBondBoxes returns active bonds ------------------------------------
@@ -421,29 +422,29 @@ describe('utxo store', () => {
 
     initDb(':memory:');
 
-    const bond1 = makeBondBox({ inviterId: 'charlie', value: 10 });
+    const bond1 = makeBondBox({ inviterId: uid('charlie'), value: 10 });
     bond1.id = computeBoxId(bond1);
     insertBox(bond1);
 
-    const bond2 = makeBondBox({ inviterId: 'charlie', value: 15 });
+    const bond2 = makeBondBox({ inviterId: uid('charlie'), value: 15 });
     bond2.id = computeBoxId(bond2);
     insertBox(bond2);
 
-    const bond3 = makeBondBox({ inviterId: 'dave', value: 20 });
+    const bond3 = makeBondBox({ inviterId: uid('dave'), value: 20 });
     bond3.id = computeBoxId(bond3);
     insertBox(bond3);
 
-    const charlieBonds = getBondBoxes('charlie');
+    const charlieBonds = getBondBoxes(uid('charlie'));
     expect(charlieBonds).toHaveLength(2);
     expect(charlieBonds[0].value).toBe(10);
     expect(charlieBonds[1].value).toBe(15);
 
-    const daveBonds = getBondBoxes('dave');
+    const daveBonds = getBondBoxes(uid('dave'));
     expect(daveBonds).toHaveLength(1);
     expect(daveBonds[0].value).toBe(20);
 
     // No bonds for unknown inviter
-    const none = getBondBoxes('nobody');
+    const none = getBondBoxes(uid('nobody'));
     expect(none).toHaveLength(0);
   });
 
@@ -456,25 +457,25 @@ describe('utxo store', () => {
 
     initDb(':memory:');
 
-    const like1 = makeLikeBox({ targetPostId: 'post-aaa', likerId: 'user1' });
+    const like1 = makeLikeBox({ targetPostId: 'post-aaa', likerId: uid('user1') });
     like1.id = computeBoxId(like1);
     insertBox(like1);
 
-    const like2 = makeLikeBox({ targetPostId: 'post-aaa', likerId: 'user2' });
+    const like2 = makeLikeBox({ targetPostId: 'post-aaa', likerId: uid('user2') });
     like2.id = computeBoxId(like2);
     insertBox(like2);
 
-    const like3 = makeLikeBox({ targetPostId: 'post-bbb', likerId: 'user3' });
+    const like3 = makeLikeBox({ targetPostId: 'post-bbb', likerId: uid('user3') });
     like3.id = computeBoxId(like3);
     insertBox(like3);
 
     const forAaa = getLockedLikeBoxes('post-aaa');
     expect(forAaa).toHaveLength(2);
-    expect(forAaa.map((l) => l.likerId).sort()).toEqual(['user1', 'user2']);
+    expect(forAaa.map((l) => l.likerId).sort()).toEqual([uid('user1'), uid('user2')].sort());
 
     const forBbb = getLockedLikeBoxes('post-bbb');
     expect(forBbb).toHaveLength(1);
-    expect(forBbb[0].likerId).toBe('user3');
+    expect(forBbb[0].likerId).toEqual(uid('user3'));
 
     const forNone = getLockedLikeBoxes('post-zzz');
     expect(forNone).toHaveLength(0);
@@ -489,11 +490,11 @@ describe('utxo store', () => {
 
     initDb(':memory:');
 
-    const like1 = makeLikeBox({ targetPostId: 'p1', likerId: 'u1' });
+    const like1 = makeLikeBox({ targetPostId: 'p1', likerId: uid('u1') });
     like1.id = computeBoxId(like1);
     insertBox(like1);
 
-    const like2 = makeLikeBox({ targetPostId: 'p2', likerId: 'u2' });
+    const like2 = makeLikeBox({ targetPostId: 'p2', likerId: uid('u2') });
     like2.id = computeBoxId(like2);
     insertBox(like2);
 
@@ -502,7 +503,7 @@ describe('utxo store', () => {
 
     const unprocessed = getUnprocessedLockedLikeBoxes();
     expect(unprocessed).toHaveLength(1);
-    expect(unprocessed[0].likerId).toBe('u1');
+    expect(unprocessed[0].likerId).toEqual(uid('u1'));
   });
 
   // --- consumeBox marks as spent --------------------------------------------
@@ -536,15 +537,15 @@ describe('utxo store', () => {
 
     initDb(':memory:');
 
-    const like1 = makeLikeBox({ likerId: 'u1' });
+    const like1 = makeLikeBox({ likerId: uid('u1') });
     like1.id = computeBoxId(like1);
     insertBox(like1);
 
-    const like2 = makeLikeBox({ likerId: 'u2' });
+    const like2 = makeLikeBox({ likerId: uid('u2') });
     like2.id = computeBoxId(like2);
     insertBox(like2);
 
-    const like3 = makeLikeBox({ likerId: 'u3' });
+    const like3 = makeLikeBox({ likerId: uid('u3') });
     like3.id = computeBoxId(like3);
     insertBox(like3);
 

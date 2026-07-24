@@ -22,7 +22,6 @@ const EXPECTED_TABLES = [
   'dag_stumps',
   'utxo_boxes',
   'dag_likes',
-  'sub_blocks',
   'mempool',
   'ordering_blocks',
 ];

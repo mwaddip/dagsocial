@@ -1,3 +1,4 @@
+import { uid } from '../helpers.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import express from 'express';
 import http from 'http';
@@ -7,6 +8,7 @@ import { createRouter } from '../../src/routes/identity.js';
 import { generateKeyPair } from '@dagsocial/types';
 import { unlinkSync } from 'fs';
 
+function hex(u: Uint8Array): string { return Buffer.from(u).toString('hex'); }
 const TEST_DB = '/tmp/dagsocial-test-routes-identity.sqlite';
 
 async function request(
@@ -42,7 +44,7 @@ async function request(
           });
         },
       );
-      if (body !== undefined) r.write(JSON.stringify(body));
+      if (body !== undefined) r.write(JSON.stringify(body, (_k, v) => v instanceof Uint8Array ? Buffer.from(v).toString('hex') : v));
       r.end();
     });
   });
@@ -86,7 +88,7 @@ describe('identity routes', () => {
     expect(res.status).toBe(201);
     const body = res.data as Record<string, unknown>;
     expect(typeof body.userId).toBe('string');
-    expect(body.publicKey).toBe(publicKey);
+    expect(body.publicKey).toEqual(publicKey);
   });
 
   it('POST /identity/import with invalid hex returns 400', async () => {
@@ -110,18 +112,18 @@ describe('identity routes', () => {
 
   it('GET /identity/:userId returns identity data', async () => {
     const created = await request('/', 'POST', {});
-    const { userId } = created.data as { userId: string };
+    const { userId } = created.data as { userId: Uint8Array };
 
     const res = await request(`/${userId}`, 'GET');
     expect(res.status).toBe(200);
     const body = res.data as Record<string, unknown>;
-    expect(body.userId).toBe(userId);
+    expect(body.userId).toEqual(userId);
     expect(typeof body.publicKey).toBe('string');
     expect(typeof body.createdAt).toBe('number');
   });
 
   it('GET /identity/:userId returns 404 for unknown', async () => {
-    const res = await request('/nonexistent-id', 'GET');
+    const res = await request('/0000000000000000000000000000000000000000000000000000000000000000', 'GET');
     expect(res.status).toBe(404);
   });
 });

@@ -33,8 +33,16 @@ function blockToJson(block: OrderingBlock): Record<string, unknown> {
     likeBoxIds: block.likeBoxIds,
     utxoTxIds: block.utxoTxIds,
     stumpIds: block.stumpIds,
-    validatorId: block.validatorId,
+    validatorId: Buffer.from(block.validatorId).toString('hex'),
     validatorSignature: Buffer.from(block.validatorSignature).toString('hex'),
+    powNonce: block.powNonce,
+    powTargetBits: block.powTargetBits,
+    coinbaseOutputs: block.coinbaseOutputs.map((o) => ({
+      owner: Buffer.from(o.owner).toString('hex'),
+      value: o.value,
+      lockedUntilBlock: o.lockedUntilBlock,
+      isTreasury: o.isTreasury,
+    })),
     protocolVersion: block.protocolVersion,
     createdAt: block.createdAt,
     ...(block.epochTallyResults

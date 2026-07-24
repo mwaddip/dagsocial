@@ -1,3 +1,4 @@
+import { uid } from '../helpers.js';
 import { describe, it, expect } from 'vitest';
 import {
   generateKeyPairSync,
@@ -7,10 +8,10 @@ import {
 } from 'crypto';
 import {
   signingHash,
-  getUserId,
   PROTOCOL_VERSION,
   MAX_CONTENT_BYTES,
-  KARMA_POSTING_MINIMUM,
+  POST_LOCK_THREAD_COST,
+  POST_LOCK_REPLY_COST,
 } from '@dagsocial/types';
 import type { Post } from '@dagsocial/types';
 import { verifyPoW } from '../../src/services/pow.js';
@@ -67,16 +68,16 @@ function buildPowInput(post: Post): Buffer {
 // ---------------------------------------------------------------------------
 
 interface MockStore {
-  identities: Map<string, { userId: string; publicKey: Uint8Array; createdAt: number }>;
-  challenges: Map<string, { challenge: Uint8Array; expiresAtBlock: number; userId: string }>;
+  identities: Map<string, { userId: Uint8Array; publicKey: Uint8Array; createdAt: number }>;
+  challenges: Map<string, { challenge: Uint8Array; expiresAtBlock: number; userId: Uint8Array }>;
   karmaBoxes: Map<string, { value: number }>; // keyed by hex(owner publicKey)
   posts: Map<string, unknown>;
 }
 
 function createMockDeps(store: MockStore): VerifierDeps {
   return {
-    getActiveChallenge: (userId: string) => store.challenges.get(userId) ?? null,
-    getIdentity: (userId: string) => store.identities.get(userId) ?? null,
+    getActiveChallenge: (userId: Uint8Array) => store.challenges.get(userId) ?? null,
+    getIdentity: (userId: Uint8Array) => store.identities.get(userId) ?? null,
     getKarmaBox: (owner: Uint8Array) => {
       const hex = Buffer.from(owner).toString('hex');
       return store.karmaBoxes.get(hex) ?? null;
@@ -93,7 +94,7 @@ describe('verifyPost', () => {
   // Shared test fixtures
   let pubKeyRaw: Uint8Array;
   let privKey: KeyObject;
-  let userId: string;
+  let userId: Uint8Array;
   let challengeBytes: Uint8Array;
 
   // Build a fresh mock store for each test
@@ -139,7 +140,7 @@ describe('verifyPost', () => {
     pubKeyRaw = new Uint8Array(pubDer.slice(pubDer.length - 32));
     // Keep KeyObject — crypto.sign needs it for Ed25519
     privKey = privateKey;
-    userId = getUserId(pubKeyRaw);
+    userId = pubKeyRaw;
     challengeBytes = new Uint8Array(
       createHash('blake2b512').update('test-challenge').digest().subarray(0, 32),
     );
@@ -166,7 +167,7 @@ describe('verifyPost', () => {
         expiresAtBlock: 100,
       });
       store.karmaBoxes.set(Buffer.from(pubKeyRaw).toString('hex'), {
-        value: KARMA_POSTING_MINIMUM,
+        value: POST_LOCK_THREAD_COST,
       });
 
       // Build post and solve PoW
@@ -330,7 +331,7 @@ describe('verifyPost', () => {
         expiresAtBlock: 100,
       });
       store.karmaBoxes.set(Buffer.from(pubKeyRaw).toString('hex'), {
-        value: KARMA_POSTING_MINIMUM,
+        value: POST_LOCK_THREAD_COST,
       });
 
       // Build a valid post, solve PoW, and sign the original content
@@ -375,10 +376,13 @@ describe('verifyPost', () => {
         expiresAtBlock: 100,
       });
       store.karmaBoxes.set(Buffer.from(pubKeyRaw).toString('hex'), {
-        value: KARMA_POSTING_MINIMUM,
+        value: POST_LOCK_THREAD_COST,
       });
 
-      // Reference a post that does not exist
+      // Reference a post that does not exist — reply needs POST_LOCK_REPLY_COST karma
+      store.karmaBoxes.set(Buffer.from(pubKeyRaw).toString('hex'), {
+        value: POST_LOCK_REPLY_COST,
+      });
       let post = makePost({ parentRefs: ['nonexistent-parent-id'] });
       const powInput = buildPowInput(post);
       const nonce = solvePoW(powInput, 20);
@@ -411,7 +415,7 @@ describe('verifyPost', () => {
         challenge: challengeBytes,
         expiresAtBlock: 100,
       });
-      // Karma box value = 0, below KARMA_POSTING_MINIMUM (1)
+      // Karma box value = 0, below POST_LOCK_THREAD_COST (5)
       store.karmaBoxes.set(Buffer.from(pubKeyRaw).toString('hex'), { value: 0 });
 
       let post = makePost();
@@ -423,7 +427,7 @@ describe('verifyPost', () => {
       const deps = createMockDeps(store);
       const result = verifyPost(deps, post, 50);
       expect(result.valid).toBe(false);
-      expect(result.error).toBe('Insufficient karma');
+      expect(result.error).toContain('Insufficient karma');
     },
   );
 
@@ -447,7 +451,7 @@ describe('verifyPost', () => {
         expiresAtBlock: 100,
       });
       store.karmaBoxes.set(Buffer.from(pubKeyRaw).toString('hex'), {
-        value: KARMA_POSTING_MINIMUM,
+        value: POST_LOCK_THREAD_COST,
       });
 
       // Explicitly empty parentRefs

@@ -45,12 +45,14 @@ export function createRouter(deps: PruningDeps): Router {
       return;
     }
 
-    // Decode signature
+    // Decode authorId and signature from hex
+    let authorId: Uint8Array;
     let signature: Uint8Array;
     try {
+      authorId = new Uint8Array(Buffer.from(body.authorId, 'hex'));
       signature = new Uint8Array(Buffer.from(body.signature, 'hex'));
     } catch {
-      res.status(400).json({ error: 'Invalid hex signature' });
+      res.status(400).json({ error: 'Invalid hex encoding in authorId or signature' });
       return;
     }
 
@@ -58,7 +60,7 @@ export function createRouter(deps: PruningDeps): Router {
     const intent: PruneIntent = {
       rootPostHash: rootPostId,
       trigger: trigger as PruneIntent['trigger'],
-      authorId: body.authorId,
+      authorId,
       signature: new Uint8Array(64), // placeholder; real sig passed to executePrune
     };
 

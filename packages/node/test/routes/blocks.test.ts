@@ -1,3 +1,4 @@
+import { uid } from '../helpers.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import express from 'express';
 import http from 'http';
@@ -9,7 +10,7 @@ import {
 } from '../../src/store/ordering.js';
 import { insertIdentity } from '../../src/store/identities.js';
 import { createRouter } from '../../src/routes/blocks.js';
-import { generateKeyPair, getUserId, PROTOCOL_VERSION } from '@dagsocial/types';
+import { generateKeyPair, PROTOCOL_VERSION } from '@dagsocial/types';
 import type { OrderingBlock } from '@dagsocial/types';
 import { unlinkSync } from 'fs';
 
@@ -28,8 +29,11 @@ function makeBlock(height: number, hash: string): OrderingBlock {
     likeBoxIds: [],
     utxoTxIds: [],
     stumpIds: [],
-    validatorId: 'validator-1',
+    validatorId: uid('validator-1'),
     validatorSignature: new Uint8Array(64),
+    powNonce: 0,
+    powTargetBits: 12,
+    coinbaseOutputs: [],
     protocolVersion: PROTOCOL_VERSION,
     createdAt: Date.now(),
   };
@@ -132,7 +136,7 @@ describe('blocks routes', () => {
 
     // Create an identity
     const kp = generateKeyPair();
-    const userId = getUserId(kp.publicKey);
+    const userId = kp.publicKey;
     insertIdentity(userId, kp.publicKey);
   });
 

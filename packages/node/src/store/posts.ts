@@ -13,7 +13,7 @@ import type { Post, Stump } from '@dagsocial/types';
 interface PostRow {
   id: string;
   content: string;
-  author: string;
+  author: Buffer;             // 32-byte Ed25519 public key
   parent_refs: string;        // JSON array
   challenge: Buffer;
   pow_nonce: number;
@@ -29,7 +29,7 @@ interface StumpRow {
   id: string;
   root_post_hash: string;
   subtree_merkle_root: Buffer;
-  author_id: string;
+  author_id: Buffer;          // 32-byte Ed25519 public key
   prune_signature: Buffer;
   karma_deltas: string;       // JSON array
   reply_count: number;
@@ -47,7 +47,7 @@ interface StumpRow {
 function rowToPost(row: PostRow): Post {
   return {
     content: row.content,
-    author: row.author,
+    author: new Uint8Array(row.author),
     parentRefs: JSON.parse(row.parent_refs) as string[],
     challenge: new Uint8Array(row.challenge),
     powNonce: row.pow_nonce,
@@ -61,7 +61,7 @@ function rowToStump(row: StumpRow): Stump {
   return {
     rootPostHash: row.root_post_hash,
     subtreeMerkleRoot: new Uint8Array(row.subtree_merkle_root),
-    authorId: row.author_id,
+    authorId: new Uint8Array(row.author_id),
     pruneSignature: new Uint8Array(row.prune_signature),
     karmaDeltas: JSON.parse(row.karma_deltas),
     replyCount: row.reply_count,
@@ -92,7 +92,7 @@ export function insertPost(post: Post, rawCbor: Uint8Array): void {
   ).run(
     postId,
     post.content,
-    post.author,
+    Buffer.from(post.author),
     JSON.stringify(post.parentRefs),
     Buffer.from(post.challenge),
     post.powNonce,
@@ -156,7 +156,7 @@ export function getPost(id: string): Post | Stump | null {
  * @param opts.offset  Pagination offset (default 0).
  */
 export function queryPosts(opts: {
-  author?: string;
+  author?: Uint8Array;
   limit?: number;
   offset?: number;
 }): Post[] {
@@ -169,7 +169,7 @@ export function queryPosts(opts: {
 
   if (opts.author) {
     sql += ' AND author = ?';
-    params.push(opts.author);
+    params.push(Buffer.from(opts.author));
   }
 
   sql += ' ORDER BY timestamp DESC LIMIT ? OFFSET ?';
@@ -281,7 +281,7 @@ export function pruneSubtree(rootPostId: string, stump: Stump): void {
     stumpId,
     stump.rootPostHash,
     Buffer.from(stump.subtreeMerkleRoot),
-    stump.authorId,
+    Buffer.from(stump.authorId),
     Buffer.from(stump.pruneSignature),
     JSON.stringify(stump.karmaDeltas),
     stump.replyCount,

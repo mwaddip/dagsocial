@@ -1,3 +1,4 @@
+import { uid } from '../helpers.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import express from 'express';
 import http from 'http';
@@ -12,7 +13,6 @@ import {
 } from '../../src/store/utxo.js';
 import {
   generateKeyPair,
-  getUserId,
   computeBoxId,
 } from '@dagsocial/types';
 import type { KarmaBox, CreditBox, InviteBox, BondBox } from '@dagsocial/types';
@@ -72,9 +72,12 @@ async function request(
 // ---------------------------------------------------------------------------
 
 describe('UTXO routes', () => {
-  let karmaUserId: string;
-  let creditUserId: string;
-  let inviteUserId: string;
+  let karmaUserId: Uint8Array;
+  let karmaUserIdHex: string;
+  let creditUserId: Uint8Array;
+  let creditUserIdHex: string;
+  let inviteUserId: Uint8Array;
+  let inviteUserIdHex: string;
 
   beforeAll(() => {
     try { unlinkSync(TEST_DB); } catch { /* ignore */ }
@@ -82,7 +85,8 @@ describe('UTXO routes', () => {
 
     // User with karma
     const kp1 = generateKeyPair();
-    karmaUserId = getUserId(kp1.publicKey);
+    karmaUserId = kp1.publicKey;
+    karmaUserIdHex = Buffer.from(karmaUserId).toString('hex');
     insertIdentity(karmaUserId, kp1.publicKey);
     const karmaBox: KarmaBox = {
       boxType: 'karma',
@@ -97,7 +101,8 @@ describe('UTXO routes', () => {
 
     // User with credits
     const kp2 = generateKeyPair();
-    creditUserId = getUserId(kp2.publicKey);
+    creditUserId = kp2.publicKey;
+    creditUserIdHex = Buffer.from(creditUserId).toString('hex');
     insertIdentity(creditUserId, kp2.publicKey);
     const creditBox: CreditBox = {
       boxType: 'credit',
@@ -111,7 +116,8 @@ describe('UTXO routes', () => {
 
     // User with invites and bonds
     const kp3 = generateKeyPair();
-    inviteUserId = getUserId(kp3.publicKey);
+    inviteUserId = kp3.publicKey;
+    inviteUserIdHex = Buffer.from(inviteUserId).toString('hex');
     insertIdentity(inviteUserId, kp3.publicKey);
     const inviteBox: InviteBox = {
       boxType: 'invite',
@@ -141,26 +147,26 @@ describe('UTXO routes', () => {
   });
 
   it('GET /karma/:userId returns karma balance', async () => {
-    const res = await request(`/karma/${karmaUserId}`);
+    const res = await request(`/karma/${karmaUserIdHex}`);
     expect(res.status).toBe(200);
     const body = res.data as Record<string, unknown>;
-    expect(body.userId).toBe(karmaUserId);
+    expect(body.userId).toBe(karmaUserIdHex);
     expect(body.balance).toBe(42);
     expect(typeof body.boxId).toBe('string');
     expect(body.createdAtBlock).toBe(1);
   });
 
   it('GET /credits/:userId returns credit balance', async () => {
-    const res = await request(`/credits/${creditUserId}`);
+    const res = await request(`/credits/${creditUserIdHex}`);
     expect(res.status).toBe(200);
     const body = res.data as Record<string, unknown>;
-    expect(body.userId).toBe(creditUserId);
+    expect(body.userId).toBe(creditUserIdHex);
     expect(body.balance).toBe(99);
     expect(typeof body.boxId).toBe('string');
   });
 
   it('GET /invites/:userId returns pending and bonds arrays', async () => {
-    const res = await request(`/invites/${inviteUserId}`);
+    const res = await request(`/invites/${inviteUserIdHex}`);
     expect(res.status).toBe(200);
     const body = res.data as Record<string, unknown>;
     expect(Array.isArray(body.pending)).toBe(true);

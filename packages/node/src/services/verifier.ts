@@ -15,11 +15,11 @@ import { verifyPoW, verifyPostSignature } from '@dagsocial/validation';
 
 export interface VerifierDeps {
   getActiveChallenge: (
-    userId: string,
-  ) => { challenge: Uint8Array; expiresAtBlock: number; userId: string } | null;
+    userId: Uint8Array,
+  ) => { challenge: Uint8Array; expiresAtBlock: number; userId: Uint8Array } | null;
   getIdentity: (
-    userId: string,
-  ) => { userId: string; publicKey: Uint8Array; createdAt: number } | null;
+    userId: Uint8Array,
+  ) => { userId: Uint8Array; publicKey: Uint8Array; createdAt: number } | null;
   getKarmaBox: (owner: Uint8Array) => { value: number; id?: string } | null;
   getPost: (id: string) => unknown | null;
 }
@@ -95,18 +95,14 @@ export function verifyPost(
     return { valid: false, error: 'Proof of Work invalid' };
   }
 
-  // 6. Signature.
-  const identity = deps.getIdentity(post.author);
-  if (!identity) {
-    return { valid: false, error: 'Author identity not found' };
-  }
-
-  if (!verifyPostSignature(post, identity.publicKey)) {
+  // 6. Signature — post.author IS the 32-byte Ed25519 public key
+  if (!verifyPostSignature(post, post.author)) {
     return { valid: false, error: 'Signature invalid' };
   }
 
   // 7. Karma: author must have a karma box with sufficient value.
-  const karmaBox = deps.getKarmaBox(identity.publicKey);
+  // Look up by public key (post.author).
+  const karmaBox = deps.getKarmaBox(post.author);
   if (!karmaBox) {
     return { valid: false, error: 'No karma box found' };
   }
@@ -180,28 +176,17 @@ export function verifyPostForRelay(
     return { valid: false, error: 'Proof of Work invalid' };
   }
 
-  // 6. Signature
-  const identity = deps.getIdentity(post.author);
-  if (!identity) {
-    return { valid: false, error: 'Author identity not found on this node' };
-  }
-  if (!verifyPostSignature(post, identity.publicKey)) {
+  // 6. Signature — post.author IS the 32-byte Ed25519 public key.
+  // No identity lookup needed; the key proves the identity.
+  if (!verifyPostSignature(post, post.author)) {
     return { valid: false, error: 'Signature invalid' };
   }
 
-  // 7. Karma
-  const karmaBox = deps.getKarmaBox(identity.publicKey);
-  if (!karmaBox) {
-    return { valid: false, error: 'No karma box found' };
-  }
-  const requiredKarma =
-    post.parentRefs.length === 0 ? POST_LOCK_THREAD_COST : POST_LOCK_REPLY_COST;
-  if (karmaBox.value < requiredKarma) {
-    return {
-      valid: false,
-      error: `Insufficient karma: need ${requiredKarma} (have ${karmaBox.value})`,
-    };
-  }
+  // 7. Karma is NOT checked on relay.  The block producer (miner) already
+  //    verified economic rules before creating the sub-block.  A relaying
+  //    node caches the data and trusts the ordering block to confirm or
+  //    reject it.  Cryptographic checks (signature, PoW) are sufficient
+  //    for relay acceptance.
 
   // 8. Parent refs exist
   for (const parentId of post.parentRefs) {

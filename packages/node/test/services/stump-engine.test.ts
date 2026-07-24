@@ -1,3 +1,4 @@
+import { uid } from '../helpers.js';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   generateKeyPairSync,
@@ -9,7 +10,6 @@ import {
   computePostId,
   computeBoxId,
   encodePost,
-  getUserId,
   PROTOCOL_VERSION,
 } from '@dagsocial/types';
 import type { Post, PruneIntent, Stump } from '@dagsocial/types';
@@ -81,7 +81,7 @@ function insertKarmaBox(owner: Uint8Array, value: number, createdAtBlock: number
 }
 
 /** Insert a like box for a target post. */
-function insertLikeBox(likerId: string, targetPostId: string, value: number, createdAtBlock: number): string {
+function insertLikeBox(likerId: Uint8Array, targetPostId: string, value: number, createdAtBlock: number): string {
   const box = {
     boxType: 'like' as const,
     value,
@@ -103,7 +103,7 @@ describe('stump-engine', () => {
   let db: Database.Database;
   let authorPubKey: Uint8Array;
   let authorPrivKey: KeyObject;
-  let authorId: string;
+  let authorId: Uint8Array;
   let otherPubKey: Uint8Array;
   let otherId: string;
 
@@ -115,13 +115,13 @@ describe('stump-engine', () => {
     const authorKeys = generateKeyPairSync('ed25519');
     authorPubKey = rawPublicKey(authorKeys.publicKey);
     authorPrivKey = authorKeys.privateKey;
-    authorId = getUserId(authorPubKey);
+    authorId = authorPubKey;
     insertIdentity(authorId, authorPubKey);
 
     // Generate another keypair (for wrong-author tests)
     const otherKeys = generateKeyPairSync('ed25519');
     otherPubKey = rawPublicKey(otherKeys.publicKey);
-    otherId = getUserId(otherPubKey);
+    otherId = otherPubKey;
     insertIdentity(otherId, otherPubKey);
   });
 
@@ -137,7 +137,7 @@ describe('stump-engine', () => {
 
     expect(intent.rootPostHash).toBe('deadbeef');
     expect(intent.trigger).toBe('author');
-    expect(intent.authorId).toBe(authorId);
+    expect(intent.authorId).toEqual(authorId);
     expect(intent.signature).toEqual(new Uint8Array(64));
   });
 
@@ -189,7 +189,7 @@ describe('stump-engine', () => {
 
     // Stump should have correct fields
     expect(stump.rootPostHash).toBe(rootId);
-    expect(stump.authorId).toBe(authorId);
+    expect(stump.authorId).toEqual(authorId);
     expect(stump.replyCount).toBe(3); // reply1, reply2, reply3
     expect(stump.trigger).toBe('author');
     expect(stump.protocolVersion).toBe(PROTOCOL_VERSION);
@@ -306,8 +306,8 @@ describe('stump-engine', () => {
     expect(stump.karmaDeltas).toHaveLength(2);
 
     // Find each user's delta
-    const otherDelta = stump.karmaDeltas.find((d) => d.userId === otherId);
-    const authorDelta = stump.karmaDeltas.find((d) => d.userId === authorId);
+    const otherDelta = stump.karmaDeltas.find((d) => Buffer.from(d.userId).equals(Buffer.from(otherId)));
+    const authorDelta = stump.karmaDeltas.find((d) => Buffer.from(d.userId).equals(Buffer.from(authorId)));
 
     expect(otherDelta).toBeDefined();
     expect(otherDelta!.delta).toBe(4); // 2 + 2
@@ -341,7 +341,7 @@ describe('stump-engine', () => {
 
     const stump = retrieved as Stump;
     expect(stump.rootPostHash).toBe(rootId);
-    expect(stump.authorId).toBe(authorId);
+    expect(stump.authorId).toEqual(authorId);
   });
 
   // -----------------------------------------------------------------------

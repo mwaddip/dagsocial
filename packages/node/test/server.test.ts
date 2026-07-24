@@ -1,3 +1,4 @@
+import { uid } from './helpers.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import http from 'http';
 import type { AddressInfo } from 'net';
@@ -13,12 +14,22 @@ function makeConfig(overrides?: Partial<Config>): Config {
   return {
     port: 0,
     dbPath: ':memory:',
+    networkMode: 'testnet',
+    nodeRole: 'server',
     postPowTargetBits: 20,
     challengeWindowBlocks: 10,
     orderingBlockIntervalMs: 60000,
     orderingBlockMinSubBlocks: 1,
     maxSubBlocksPerBlock: 1000,
     epochBlocks: 60,
+    miningMode: 'internal',
+    orderingBlockPowTargetBits: 12,
+    creditInitialReward: 100,
+    creditTreasuryPct: 10,
+    treasuryPubKey: '',
+    bootstrapPeers: [],
+    listenAddrs: '/ip4/127.0.0.1/tcp/0',
+    maxPeers: 50,
     ...overrides,
   };
 }

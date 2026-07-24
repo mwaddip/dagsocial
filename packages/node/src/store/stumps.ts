@@ -10,7 +10,7 @@ interface StumpRow {
   id: string;
   root_post_hash: string;
   subtree_merkle_root: Buffer;
-  author_id: string;
+  author_id: Buffer; // 32-byte Ed25519 public key
   prune_signature: Buffer;
   karma_deltas: string;              // JSON array
   reply_count: number;
@@ -29,9 +29,12 @@ function rowToStump(row: StumpRow): Stump {
   return {
     rootPostHash: row.root_post_hash,
     subtreeMerkleRoot: new Uint8Array(row.subtree_merkle_root),
-    authorId: row.author_id,
+    authorId: new Uint8Array(row.author_id),
     pruneSignature: new Uint8Array(row.prune_signature),
-    karmaDeltas: JSON.parse(row.karma_deltas) as KarmaDelta[],
+    karmaDeltas: (JSON.parse(row.karma_deltas) as Array<{ userId: string; delta: number }>).map(d => ({
+      userId: new Uint8Array(Buffer.from(d.userId, 'hex')),
+      delta: d.delta,
+    })),
     replyCount: row.reply_count,
     upvoteCount: row.upvote_count,
     trigger: row.trigger as Stump['trigger'],
@@ -61,9 +64,9 @@ export function insertStump(stump: Stump): void {
     stumpId,
     stump.rootPostHash,
     Buffer.from(stump.subtreeMerkleRoot),
-    stump.authorId,
+    Buffer.from(stump.authorId),
     Buffer.from(stump.pruneSignature),
-    JSON.stringify(stump.karmaDeltas),
+    JSON.stringify(stump.karmaDeltas.map(d => ({ userId: Buffer.from(d.userId).toString('hex'), delta: d.delta }))),
     stump.replyCount,
     stump.upvoteCount,
     stump.trigger,

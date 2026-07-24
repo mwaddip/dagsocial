@@ -1,6 +1,7 @@
+import { uid } from '../helpers.js';
 import { describe, it, expect } from 'vitest';
 import { generateKeyPairSync, createHash, sign as cryptoSign } from 'crypto';
-import { signingHash, getUserId, PROTOCOL_VERSION } from '@dagsocial/types';
+import { signingHash, PROTOCOL_VERSION } from '@dagsocial/types';
 import type { Post } from '@dagsocial/types';
 import { verifyPost } from '../../src/services/verifier.js';
 import type { VerifierDeps } from '../../src/services/verifier.js';
@@ -10,16 +11,16 @@ import type { VerifierDeps } from '../../src/services/verifier.js';
 // ---------------------------------------------------------------------------
 
 interface MockStore {
-  identities: Map<string, { userId: string; publicKey: Uint8Array; createdAt: number }>;
-  challenges: Map<string, { challenge: Uint8Array; expiresAtBlock: number; userId: string }>;
+  identities: Map<string, { userId: Uint8Array; publicKey: Uint8Array; createdAt: number }>;
+  challenges: Map<string, { challenge: Uint8Array; expiresAtBlock: number; userId: Uint8Array }>;
   karmaBoxes: Map<string, { value: number }>;
   posts: Map<string, unknown>;
 }
 
 function createMockDeps(store: MockStore): VerifierDeps {
   return {
-    getActiveChallenge: (userId: string) => store.challenges.get(userId) ?? null,
-    getIdentity: (userId: string) => store.identities.get(userId) ?? null,
+    getActiveChallenge: (userId: Uint8Array) => store.challenges.get(userId) ?? null,
+    getIdentity: (userId: Uint8Array) => store.identities.get(userId) ?? null,
     getKarmaBox: (owner: Uint8Array) => {
       const hex = Buffer.from(owner).toString('hex');
       return store.karmaBoxes.get(hex) ?? null;
@@ -43,7 +44,7 @@ function signPost(post: Post, privKey: Buffer | crypto.KeyObject): Post {
 }
 
 describe('verifier', () => {
-  let userId: string;
+  let userId: Uint8Array;
   let pubKeyRaw: Uint8Array;
   let privKey: crypto.KeyObject;
   let challengeBytes: Uint8Array;
@@ -54,7 +55,7 @@ describe('verifier', () => {
     const pubDer = publicKey.export({ type: 'spki', format: 'der' }) as Buffer;
     pubKeyRaw = new Uint8Array(pubDer.slice(pubDer.length - 32));
     privKey = privateKey;
-    userId = getUserId(pubKeyRaw);
+    userId = pubKeyRaw;
     challengeBytes = new Uint8Array(
       createHash('blake2b512').update('unit-test-challenge').digest().subarray(0, 32),
     );

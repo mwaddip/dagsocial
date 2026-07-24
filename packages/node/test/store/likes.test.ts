@@ -1,3 +1,4 @@
+import { uid } from '../helpers.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type Database from 'better-sqlite3';
 
@@ -17,13 +18,13 @@ async function importDbFresh() {
 async function importLikesFresh() {
   const mod = await import('../../src/store/likes.js');
   return mod as {
-    insertLike: (targetPostId: string, likerId: string) => string;
-    hasLiked: (targetPostId: string, likerId: string) => boolean;
+    insertLike: (targetPostId: string, likerId: Uint8Array) => string;
+    hasLiked: (targetPostId: string, likerId: Uint8Array) => boolean;
     getLikeCount: (postId: string) => { locked: number; free: number };
     getUnprocessedFreeLikes: () => Array<{
       id: string;
       targetPostId: string;
-      likerId: string;
+      likerId: Uint8Array;
     }>;
     markFreeLikesProcessed: (likeIds: string[]) => void;
   };
@@ -88,7 +89,7 @@ describe('likes store', () => {
     getDb().prepare(
       `INSERT INTO utxo_boxes (id, box_type, value, created_at_block, guard, extra_data)
        VALUES (?, 'like', 2, 5, 'epoch_tally', ?)`,
-    ).run('locked-box-1', JSON.stringify({ likerId: 'user-c', targetPostId: 'post-1' }));
+    ).run('locked-box-1', JSON.stringify({ likerId: uid('user-c'), targetPostId: 'post-1' }));
 
     const counts = getLikeCount('post-1');
     expect(counts.locked).toBe(1);

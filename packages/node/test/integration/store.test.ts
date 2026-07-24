@@ -1,3 +1,4 @@
+import { uid } from '../helpers.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { initDb, closeDb } from '../../src/store/db.js';
 import {
@@ -24,7 +25,7 @@ function bytes(n: number): Uint8Array {
 function makePost(overrides: Partial<Post> = {}): Post {
   return {
     content: 'integration test post',
-    author: 'author-integration',
+    author: uid('author-integration'),
     parentRefs: [],
     challenge: bytes(32),
     powNonce: 42,
@@ -39,7 +40,7 @@ function makeStump(rootPostHash: string, overrides: Partial<Stump> = {}): Stump 
   return {
     rootPostHash,
     subtreeMerkleRoot: bytes(32),
-    authorId: 'author-integration',
+    authorId: uid('author-integration'),
     pruneSignature: bytes(64),
     karmaDeltas: [],
     replyCount: 0,
@@ -70,7 +71,7 @@ describe('posts store (integration)', () => {
     expect(retrieved).not.toBeNull();
     const p = retrieved as Post;
     expect(p.content).toBe('integration round-trip');
-    expect(p.author).toBe('author-integration');
+    expect(p.author).toEqual(uid('author-integration'));
     expect(p.parentRefs).toEqual([]);
   });
 
@@ -88,18 +89,18 @@ describe('posts store (integration)', () => {
   });
 
   it('queryPosts filters by author', () => {
-    const suffix = Date.now();
-    const alice = 'alice-int-' + suffix;
-    const bob = 'bob-int-' + suffix;
+    const suffix = Date.now().toString();
+    const alice = uid('alice-int-' + suffix);
+    const bob = uid('bob-int-' + suffix);
 
     insertPost(makePost({ author: alice, content: 'alice post' }), bytes(8));
     insertPost(makePost({ author: bob, content: 'bob post' }), bytes(8));
 
     const aliceResults = queryPosts({ author: alice });
-    expect(aliceResults.every((p) => p.author === alice)).toBe(true);
+    expect(aliceResults.every((p) => Buffer.from(p.author).equals(Buffer.from(alice)))).toBe(true);
 
     const bobResults = queryPosts({ author: bob });
-    expect(bobResults.every((p) => p.author === bob)).toBe(true);
+    expect(bobResults.every((p) => Buffer.from(p.author).equals(Buffer.from(bob)))).toBe(true);
   });
 
   it('post lifecycle: pending -> confirm -> not in pending', () => {

@@ -1,3 +1,4 @@
+import { uid } from '../helpers.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import express from 'express';
 import http from 'http';
@@ -6,6 +7,7 @@ import { insertIdentity, getIdentity } from '../../src/store/identities.js';
 import { createRouter } from '../../src/routes/identity.js';
 import { unlinkSync } from 'fs';
 
+function hex(u: Uint8Array): string { return Buffer.from(u).toString('hex'); }
 const TEST_DB = '/tmp/dagsocial-test-identity.sqlite';
 
 async function req(path: string, method: string, body?: unknown): Promise<{ status: number; data: unknown }> {
@@ -27,7 +29,7 @@ async function req(path: string, method: string, body?: unknown): Promise<{ stat
           catch { resolve({ status: res.statusCode ?? 0, data: d }); }
         });
       });
-      if (body) r.write(JSON.stringify(body));
+      if (body) r.write(JSON.stringify(body, (_k, v) => v instanceof Uint8Array ? Buffer.from(v).toString('hex') : v));
       r.end();
     });
   });
@@ -54,14 +56,14 @@ describe('identity routes', () => {
 
   it('GET /identity/:userId returns identity without secret key', async () => {
     const created = await req('/', 'POST', {});
-    const { userId } = created.data as { userId: string };
+    const { userId } = created.data as { userId: Uint8Array };
     const res = await req(`/${userId}`, 'GET');
     expect(res.status).toBe(200);
     expect((res.data as Record<string, unknown>).secretKey).toBeUndefined();
   });
 
   it('GET /identity/:userId returns 404 for unknown', async () => {
-    const res = await req('/nonexistent', 'GET');
+    const res = await req('/0000000000000000000000000000000000000000000000000000000000000000', 'GET');
     expect(res.status).toBe(404);
   });
 });

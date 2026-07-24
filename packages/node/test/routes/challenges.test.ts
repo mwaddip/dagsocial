@@ -1,3 +1,4 @@
+import { uid } from '../helpers.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import express from 'express';
 import http from 'http';
@@ -10,11 +11,11 @@ import {
   CHALLENGE_WINDOW_BLOCKS,
   POST_POW_TARGET_BITS,
   generateKeyPair,
-  getUserId,
 } from '@dagsocial/types';
 import { createRouter } from '../../src/routes/challenges.js';
 import { unlinkSync } from 'fs';
 
+function hex(u: Uint8Array): string { return Buffer.from(u).toString('hex'); }
 const TEST_DB = '/tmp/dagsocial-test-routes-challenges.sqlite';
 
 async function request(
@@ -58,7 +59,7 @@ async function request(
           });
         },
       );
-      if (body !== undefined) r.write(JSON.stringify(body));
+      if (body !== undefined) r.write(JSON.stringify(body, (_k, v) => v instanceof Uint8Array ? Buffer.from(v).toString('hex') : v));
       r.end();
     });
   });
@@ -86,10 +87,10 @@ describe('challenges routes', () => {
   it('POST /challenge returns challenge, targetBits, and expiresAtBlock', async () => {
     // Use a fresh identity to avoid conflicts with other tests
     const kp = generateKeyPair();
-    const freshUserId = getUserId(kp.publicKey);
+    const freshUserId = kp.publicKey;
     insertIdentity(freshUserId, kp.publicKey);
 
-    const res = await request('/', 'POST', { userId: freshUserId });
+    const res = await request('/', 'POST', { userId: Buffer.from(freshUserId).toString('hex') });
     expect(res.status).toBe(201);
     const body = res.data as Record<string, unknown>;
     expect(typeof body.challenge).toBe('string');
@@ -98,24 +99,27 @@ describe('challenges routes', () => {
     expect(typeof body.expiresAtBlock).toBe('number');
   });
 
-  it('POST /challenge with existing active challenge returns 409', async () => {
+  it('POST /challenge replaces existing active challenge (upsert)', async () => {
     // Use a fresh identity so the first request is guaranteed to succeed
     const kp = generateKeyPair();
-    const freshUserId = getUserId(kp.publicKey);
+    const freshUserId = kp.publicKey;
     insertIdentity(freshUserId, kp.publicKey);
 
     // First request succeeds (201)
-    const first = await request('/', 'POST', { userId: freshUserId });
+    const first = await request('/', 'POST', { userId: hex(freshUserId) });
     expect(first.status).toBe(201);
+    const firstChallenge = (first.data as Record<string, unknown>).challenge;
 
-    // Second request with same userId fails (409)
-    const second = await request('/', 'POST', { userId: freshUserId });
-    expect(second.status).toBe(409);
+    // Second request replaces existing challenge (201, new challenge bytes)
+    const second = await request('/', 'POST', { userId: hex(freshUserId) });
+    expect(second.status).toBe(201);
+    const secondChallenge = (second.data as Record<string, unknown>).challenge;
+    expect(secondChallenge).not.toBe(firstChallenge);
   });
 
   it('POST /challenge with unknown userId returns 400', async () => {
     const res = await request('/', 'POST', {
-      userId: 'nonexistent-user-id',
+      userId: uid('nonexistent-user-id'),
     });
     expect(res.status).toBe(400);
   });
@@ -123,10 +127,10 @@ describe('challenges routes', () => {
   it('POST /challenge computes expiresAtBlock correctly', async () => {
     // Use a fresh identity so no existing challenge
     const kp = generateKeyPair();
-    const freshUserId = getUserId(kp.publicKey);
+    const freshUserId = kp.publicKey;
     insertIdentity(freshUserId, kp.publicKey);
 
-    const res = await request('/', 'POST', { userId: freshUserId });
+    const res = await request('/', 'POST', { userId: Buffer.from(freshUserId).toString('hex') });
     expect(res.status).toBe(201);
     const body = res.data as Record<string, unknown>;
 

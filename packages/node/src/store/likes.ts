@@ -8,7 +8,7 @@ import { getDb } from './db.js';
 interface LikeRow {
   id: string;
   target_post_id: string;
-  liker_id: string;
+  liker_id: Buffer;          // 32-byte Ed25519 public key
   created_at: number;
   processed: number;
 }
@@ -22,13 +22,13 @@ interface LikeRow {
  * Returns the generated id (UUID v4).
  * Throws on UNIQUE violation (duplicate like).
  */
-export function insertLike(targetPostId: string, likerId: string): string {
+export function insertLike(targetPostId: string, likerId: Uint8Array): string {
   const db = getDb();
   const id = randomUUID();
   db.prepare(
     `INSERT INTO dag_likes (id, target_post_id, liker_id)
      VALUES (?, ?, ?)`,
-  ).run(id, targetPostId, likerId);
+  ).run(id, targetPostId, Buffer.from(likerId));
   return id;
 }
 
@@ -36,8 +36,9 @@ export function insertLike(targetPostId: string, likerId: string): string {
  * Check whether a user has already liked a post.
  * Checks both dag_likes (free) and utxo_boxes (locked like boxes).
  */
-export function hasLiked(targetPostId: string, likerId: string): boolean {
+export function hasLiked(targetPostId: string, likerId: Uint8Array): boolean {
   const db = getDb();
+  const likerBuf = Buffer.from(likerId);
   const row = db
     .prepare(
       `SELECT 1 FROM dag_likes WHERE target_post_id = ? AND liker_id = ?
@@ -48,7 +49,7 @@ export function hasLiked(targetPostId: string, likerId: string): boolean {
          AND json_extract(extra_data, '$.likerId') = ?
          AND spent_at_block IS NULL`,
     )
-    .get(targetPostId, likerId, targetPostId, likerId) as unknown;
+    .get(targetPostId, likerBuf, targetPostId, Buffer.from(likerId).toString('hex')) as unknown;
   return row !== undefined;
 }
 
@@ -58,25 +59,25 @@ export function hasLiked(targetPostId: string, likerId: string): boolean {
  */
 export function getFreeLike(
   targetPostId: string,
-  likerId: string,
+  likerId: Uint8Array,
 ): { id: string } | null {
   const db = getDb();
   const row = db
     .prepare(
       'SELECT id FROM dag_likes WHERE target_post_id = ? AND liker_id = ?',
     )
-    .get(targetPostId, likerId) as { id: string } | undefined;
+    .get(targetPostId, Buffer.from(likerId)) as { id: string } | undefined;
   return row ?? null;
 }
 
 /**
  * Delete a free like row.
  */
-export function deleteFreeLike(targetPostId: string, likerId: string): void {
+export function deleteFreeLike(targetPostId: string, likerId: Uint8Array): void {
   const db = getDb();
   db.prepare(
     'DELETE FROM dag_likes WHERE target_post_id = ? AND liker_id = ?',
-  ).run(targetPostId, likerId);
+  ).run(targetPostId, Buffer.from(likerId));
 }
 
 /**
@@ -109,7 +110,7 @@ export function getLikeCount(postId: string): { locked: number; free: number } {
 export function getUnprocessedFreeLikes(): Array<{
   id: string;
   targetPostId: string;
-  likerId: string;
+  likerId: Uint8Array;
 }> {
   const db = getDb();
   const rows = db
@@ -118,7 +119,7 @@ export function getUnprocessedFreeLikes(): Array<{
   return rows.map((r) => ({
     id: r.id,
     targetPostId: r.target_post_id,
-    likerId: r.liker_id,
+    likerId: new Uint8Array(r.liker_id),
   }));
 }
 

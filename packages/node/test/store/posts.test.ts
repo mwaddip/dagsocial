@@ -1,7 +1,9 @@
+import { uid } from '../helpers.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type Database from 'better-sqlite3';
 import { randomBytes } from 'node:crypto';
 
+function hex(u: Uint8Array): string { return Buffer.from(u).toString('hex'); }
 import type { Post, Stump, KarmaDelta } from '@dagsocial/types';
 
 // Module-level state in db.ts requires reset between tests.
@@ -48,7 +50,7 @@ function bytes(n: number): Uint8Array {
 function makePost(overrides: Partial<Post> = {}): Post {
   return {
     content: 'Hello, world!',
-    author: 'alice123',
+    author: uid('alice123'),
     parentRefs: [],
     challenge: bytes(32),
     powNonce: 42,
@@ -63,7 +65,7 @@ function makeStump(overrides: Partial<Stump> & { karmaDeltas?: KarmaDelta[] }): 
   return {
     rootPostHash: '0000000000000000000000000000000000000000000000000000000000000000',
     subtreeMerkleRoot: bytes(32),
-    authorId: 'alice123',
+    authorId: uid('alice123'),
     pruneSignature: bytes(64),
     karmaDeltas: [],
     replyCount: 0,
@@ -114,7 +116,7 @@ describe('posts store', () => {
     // Should be a Post (not a Stump)
     const retrieved = result as Post;
     expect(retrieved.content).toBe('round-trip test');
-    expect(retrieved.author).toBe('alice123');
+    expect(retrieved.author).toEqual(uid('alice123'));
     expect(retrieved.parentRefs).toEqual([]);
     expect(retrieved.challenge).toEqual(post.challenge);
     expect(retrieved.powNonce).toBe(12345);
@@ -167,7 +169,7 @@ describe('posts store', () => {
     // Should now be a Stump, not a Post
     const retrieved = result as Stump;
     expect(retrieved.rootPostHash).toBe(postId);
-    expect(retrieved.authorId).toBe(post.author);
+    expect(retrieved.authorId).toEqual(post.author);
     expect(retrieved.replyCount).toBe(3);
     expect(retrieved.upvoteCount).toBe(7);
     expect(retrieved.compactedAtBlockHeight).toBe(5);
@@ -181,17 +183,17 @@ describe('posts store', () => {
 
     initDb(':memory:');
 
-    const alicePost = makePost({ author: 'alice', content: 'alice post', timestamp: 100 });
-    const bobPost = makePost({ author: 'bob', content: 'bob post', timestamp: 200 });
+    const alicePost = makePost({ author: uid('alice'), content: 'alice post', timestamp: 100 });
+    const bobPost = makePost({ author: uid('bob'), content: 'bob post', timestamp: 200 });
 
     insertPost(alicePost, bytes(8));
     insertPost(bobPost, bytes(8));
 
-    const aliceResults = queryPosts({ author: 'alice' });
+    const aliceResults = queryPosts({ author: uid('alice') });
     expect(aliceResults).toHaveLength(1);
     expect(aliceResults[0].content).toBe('alice post');
 
-    const bobResults = queryPosts({ author: 'bob' });
+    const bobResults = queryPosts({ author: uid('bob') });
     expect(bobResults).toHaveLength(1);
     expect(bobResults[0].content).toBe('bob post');
 

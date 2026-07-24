@@ -1,20 +1,21 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type Database from 'better-sqlite3';
 import { randomBytes } from 'node:crypto';
+import { uid } from '../helpers.js';
 
 // Module-level state in db.ts requires reset between tests.
 async function importFresh() {
   const mod = await import('../../src/store/challenges.js');
   return mod as {
     createChallenge: (
-      userId: string,
+      userId: Uint8Array,
       challenge: Uint8Array,
       expiresAtBlock: number,
     ) => void;
     getActiveChallenge: (
-      userId: string,
-    ) => { challenge: Uint8Array; expiresAtBlock: number; userId: string } | null;
-    consumeChallenge: (userId: string, challenge: Uint8Array) => void;
+      userId: Uint8Array,
+    ) => { challenge: Uint8Array; expiresAtBlock: number; userId: Uint8Array } | null;
+    consumeChallenge: (userId: Uint8Array, challenge: Uint8Array) => void;
   };
 }
 
@@ -47,11 +48,11 @@ describe('challenges store', () => {
     initDb(':memory:');
 
     const challenge = makeChallenge();
-    createChallenge('alice', challenge, 100);
+    const alice = uid('alice');
+    createChallenge(alice, challenge, 100);
 
-    const result = getActiveChallenge('alice');
+    const result = getActiveChallenge(alice);
     expect(result).not.toBeNull();
-    expect(result!.userId).toBe('alice');
     expect(result!.challenge).toEqual(challenge);
     expect(result!.expiresAtBlock).toBe(100);
   });
@@ -62,7 +63,7 @@ describe('challenges store', () => {
 
     initDb(':memory:');
 
-    const result = getActiveChallenge('nonexistent');
+    const result = getActiveChallenge(uid('nonexistent'));
     expect(result).toBeNull();
   });
 
@@ -72,12 +73,13 @@ describe('challenges store', () => {
 
     initDb(':memory:');
 
+    const bob = uid('bob');
     const first = makeChallenge();
     const second = makeChallenge();
-    createChallenge('bob', first, 50);
-    createChallenge('bob', second, 200);
+    createChallenge(bob, first, 50);
+    createChallenge(bob, second, 200);
 
-    const result = getActiveChallenge('bob');
+    const result = getActiveChallenge(bob);
     expect(result).not.toBeNull();
     expect(result!.challenge).toEqual(second);
     expect(result!.expiresAtBlock).toBe(200);
@@ -86,7 +88,7 @@ describe('challenges store', () => {
     const { getDb } = await importDbFresh();
     const rowCount = getDb()
       .prepare('SELECT COUNT(*) as count FROM challenges WHERE user_id = ?')
-      .get('bob') as { count: number };
+      .get(Buffer.from(bob)) as { count: number };
     expect(rowCount.count).toBe(1);
   });
 
@@ -97,16 +99,17 @@ describe('challenges store', () => {
 
     initDb(':memory:');
 
+    const carol = uid('carol');
     const challenge = makeChallenge();
-    createChallenge('carol', challenge, 100);
+    createChallenge(carol, challenge, 100);
 
     // Verify it exists first
-    expect(getActiveChallenge('carol')).not.toBeNull();
+    expect(getActiveChallenge(carol)).not.toBeNull();
 
-    consumeChallenge('carol', challenge);
+    consumeChallenge(carol, challenge);
 
     // After consumption, should be null
-    expect(getActiveChallenge('carol')).toBeNull();
+    expect(getActiveChallenge(carol)).toBeNull();
   });
 
   it('consumeChallenge throws if challenge bytes do not match stored', async () => {
@@ -115,11 +118,12 @@ describe('challenges store', () => {
 
     initDb(':memory:');
 
+    const dave = uid('dave');
     const stored = makeChallenge();
     const wrong = makeChallenge();
-    createChallenge('dave', stored, 100);
+    createChallenge(dave, stored, 100);
 
-    expect(() => consumeChallenge('dave', wrong)).toThrow(
+    expect(() => consumeChallenge(dave, wrong)).toThrow(
       /challenge bytes mismatch/,
     );
   });

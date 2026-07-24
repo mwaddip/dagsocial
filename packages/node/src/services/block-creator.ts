@@ -49,7 +49,6 @@ import {
   createOrderingBlock as storeCreateOrderingBlock,
   getOrderingBlock,
   getCurrentHeight,
-  confirmSubBlock,
   confirmPost,
   getUnprocessedLockedLikeBoxes,
   markLikeBoxesTallied,
@@ -498,7 +497,6 @@ function finalizeBlock(block: OrderingBlock): void {
 
   // 4. Confirm sub-blocks and their posts
   for (const sbId of block.subBlockRefs) {
-    confirmSubBlock(sbId, block.height);
     confirmPost(sbId, block.height);
   }
 

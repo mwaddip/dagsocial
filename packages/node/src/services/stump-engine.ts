@@ -127,7 +127,7 @@ export function executePrune(
   }
 
   // ---- 2. Verify author matches ----
-  if (post.author !== intent.authorId) {
+  if (!Buffer.from(post.author).equals(Buffer.from(intent.authorId))) {
     throw new Error('Author mismatch: post author does not match intent authorId');
   }
 
@@ -149,13 +149,14 @@ export function executePrune(
   let upvoteCount = 0;
   for (const likeBox of allLikeBoxes) {
     upvoteCount += 1;
-    const current = karmaMap.get(likeBox.likerId) ?? 0;
-    karmaMap.set(likeBox.likerId, current + likeBox.value);
+    const key = Buffer.from(likeBox.likerId).toString('hex');
+    const current = karmaMap.get(key) ?? 0;
+    karmaMap.set(key, current + likeBox.value);
   }
 
   const karmaDeltas: KarmaDelta[] = [];
-  for (const [userId, delta] of karmaMap) {
-    karmaDeltas.push({ userId, delta });
+  for (const [hexUserId, delta] of karmaMap) {
+    karmaDeltas.push({ userId: new Uint8Array(Buffer.from(hexUserId, 'hex')), delta });
   }
 
   // ---- 6. Compute subtree Merkle root ----

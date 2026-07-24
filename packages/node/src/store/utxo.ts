@@ -6,6 +6,7 @@ import type {
   LikeBox,
   InviteBox,
   BondBox,
+  PostLockBox,
 } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
@@ -36,28 +37,45 @@ interface KarmaExtra {
 
 interface CreditExtra {
   proofSource: number;
+  lockedUntilBlock?: number;
 }
 
 interface LikeExtra {
-  likerId: string;
+  likerId: string;       // hex-encoded pubkey in JSON (Uint8Array in code)
   targetPostId: string;
 }
 
 interface InviteExtra {
   secretHash: number[];
-  inviterId: string;
+  inviterId: string;     // hex-encoded pubkey in JSON (Uint8Array in code)
 }
 
 interface BondExtra {
-  inviterId: string;
+  inviterId: string;     // hex-encoded pubkey in JSON (Uint8Array in code)
   inviteePublicKey: number[] | null;
   probationStartBlock: number | null;
   probationEndBlock: number | null;
 }
 
+interface PostLockExtra {
+  originalValue: number;
+  owner: number[];
+  targetPostId: string;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** Convert a hex-encoded pubkey string (from JSON extra_data) to Uint8Array. */
+function hexToPubkey(hex: string): Uint8Array {
+  return new Uint8Array(Buffer.from(hex, 'hex'));
+}
+
+/** Convert a Uint8Array pubkey to a hex string for JSON extra_data storage. */
+function pubkeyToHex(pk: Uint8Array): string {
+  return Buffer.from(pk).toString('hex');
+}
 
 /**
  * Reconstruct a typed box from a utxo_boxes row.
@@ -87,7 +105,7 @@ function rowToBox(row: UtxoRow): AnyBox {
 
     case 'credit': {
       const e = extra as CreditExtra;
-      return {
+      const cb: CreditBox = {
         id: row.id,
         boxType: 'credit',
         value: row.value,
@@ -95,7 +113,11 @@ function rowToBox(row: UtxoRow): AnyBox {
         owner: new Uint8Array(row.owner!),
         guard: 'owner_signature',
         proofSource: e.proofSource,
-      } satisfies CreditBox as CreditBox;
+      };
+      if (e.lockedUntilBlock !== undefined) {
+        cb.lockedUntilBlock = e.lockedUntilBlock;
+      }
+      return cb satisfies CreditBox as CreditBox;
     }
 
     case 'like': {
@@ -105,7 +127,7 @@ function rowToBox(row: UtxoRow): AnyBox {
         boxType: 'like',
         value: 2,
         createdAtBlock: row.created_at_block,
-        likerId: e.likerId,
+        likerId: hexToPubkey(e.likerId),
         targetPostId: e.targetPostId,
         guard: 'epoch_tally',
       } satisfies LikeBox as LikeBox;
@@ -119,7 +141,7 @@ function rowToBox(row: UtxoRow): AnyBox {
         value: row.value,
         createdAtBlock: row.created_at_block,
         secretHash: new Uint8Array(e.secretHash),
-        inviterId: e.inviterId,
+        inviterId: hexToPubkey(e.inviterId),
         guard: 'hash_preimage',
       } satisfies InviteBox as InviteBox;
     }
@@ -131,7 +153,7 @@ function rowToBox(row: UtxoRow): AnyBox {
         boxType: 'bond',
         value: row.value,
         createdAtBlock: row.created_at_block,
-        inviterId: e.inviterId,
+        inviterId: hexToPubkey(e.inviterId),
         inviteePublicKey: e.inviteePublicKey
           ? new Uint8Array(e.inviteePublicKey)
           : new Uint8Array(0),
@@ -139,6 +161,20 @@ function rowToBox(row: UtxoRow): AnyBox {
         probationEndBlock: e.probationEndBlock ?? 0,
         guard: 'inviter_signature',
       } satisfies BondBox as BondBox;
+    }
+
+    case 'post_lock': {
+      const e = extra as PostLockExtra;
+      return {
+        id: row.id,
+        boxType: 'post_lock',
+        value: row.value,
+        createdAtBlock: row.created_at_block,
+        originalValue: e.originalValue,
+        owner: new Uint8Array(e.owner),
+        targetPostId: e.targetPostId,
+        guard: 'epoch_tally',
+      } satisfies PostLockBox as PostLockBox;
     }
 
     default:
@@ -208,7 +244,7 @@ export function getCreditBox(owner: Uint8Array): CreditBox | null {
 /**
  * Return all unclaimed (unspent) invite boxes created by the given inviter.
  */
-export function getPendingInvites(inviterId: string): InviteBox[] {
+export function getPendingInvites(inviterId: Uint8Array): InviteBox[] {
   const db = getDb();
   const rows = db
     .prepare(
@@ -217,14 +253,14 @@ export function getPendingInvites(inviterId: string): InviteBox[] {
          AND spent_at_block IS NULL
          AND json_extract(extra_data, '$.inviterId') = ?`,
     )
-    .all(inviterId) as UtxoRow[];
+    .all(pubkeyToHex(inviterId)) as UtxoRow[];
   return rows.map((r) => rowToBox(r) as InviteBox);
 }
 
 /**
  * Return the count of unclaimed invite boxes for the given inviter.
  */
-export function getPendingInviteCount(inviterId: string): number {
+export function getPendingInviteCount(inviterId: Uint8Array): number {
   const db = getDb();
   const row = db
     .prepare(
@@ -233,14 +269,14 @@ export function getPendingInviteCount(inviterId: string): number {
          AND spent_at_block IS NULL
          AND json_extract(extra_data, '$.inviterId') = ?`,
     )
-    .get(inviterId) as { cnt: number };
+    .get(pubkeyToHex(inviterId)) as { cnt: number };
   return row.cnt;
 }
 
 /**
  * Return all bond boxes associated with the given inviter.
  */
-export function getBondBoxes(inviterId: string): BondBox[] {
+export function getBondBoxes(inviterId: Uint8Array): BondBox[] {
   const db = getDb();
   const rows = db
     .prepare(
@@ -248,7 +284,7 @@ export function getBondBoxes(inviterId: string): BondBox[] {
        WHERE box_type = 'bond'
          AND json_extract(extra_data, '$.inviterId') = ?`,
     )
-    .all(inviterId) as UtxoRow[];
+    .all(pubkeyToHex(inviterId)) as UtxoRow[];
   return rows.map((r) => rowToBox(r) as BondBox);
 }
 
@@ -258,7 +294,7 @@ export function getBondBoxes(inviterId: string): BondBox[] {
  */
 export function getUnspentLikeForLiker(
   targetPostId: string,
-  likerId: string,
+  likerId: Uint8Array,
 ): LikeBox | null {
   const db = getDb();
   const row = db
@@ -270,7 +306,7 @@ export function getUnspentLikeForLiker(
          AND spent_at_block IS NULL
        LIMIT 1`,
     )
-    .get(targetPostId, likerId) as UtxoRow | undefined;
+    .get(targetPostId, pubkeyToHex(likerId)) as UtxoRow | undefined;
   return row ? (rowToBox(row) as LikeBox) : null;
 }
 
@@ -304,6 +340,43 @@ export function getUnprocessedLockedLikeBoxes(): LikeBox[] {
 }
 
 /**
+ * Return all unspent post lock boxes for epoch tally.
+ */
+export function getUnspentPostLockBoxes(): PostLockBox[] {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT * FROM utxo_boxes
+       WHERE box_type = 'post_lock' AND spent_at_block IS NULL`,
+    )
+    .all() as UtxoRow[];
+  return rows.map((r) => rowToBox(r) as PostLockBox);
+}
+
+/**
+ * Return the total lifetime like count for a post.
+ * Counts ALL like boxes (including spent/tallied) plus ALL free likes
+ * (including processed). This is needed because post lock unlocking is
+ * cumulative — past likes still count.
+ */
+export function getPostTotalLikes(targetPostId: string): number {
+  const db = getDb();
+  const likeRow = db
+    .prepare(
+      `SELECT COUNT(*) AS cnt FROM utxo_boxes
+       WHERE box_type = 'like'
+         AND json_extract(extra_data, '$.targetPostId') = ?`,
+    )
+    .get(targetPostId) as { cnt: number };
+  const freeRow = db
+    .prepare(
+      'SELECT COUNT(*) AS cnt FROM dag_likes WHERE target_post_id = ?',
+    )
+    .get(targetPostId) as { cnt: number };
+  return likeRow.cnt + freeRow.cnt;
+}
+
+/**
  * Insert a box into the utxo_boxes table.
  *
  * Common fields are stored directly; box-type-specific fields are serialised
@@ -332,9 +405,11 @@ export function insertBox(box: AnyBox): void {
     }
     case 'credit': {
       const c = box as CreditBox;
-      extraData = {
-        proofSource: c.proofSource,
-      } satisfies CreditExtra;
+      const ce: CreditExtra = { proofSource: c.proofSource };
+      if (c.lockedUntilBlock !== undefined) {
+        ce.lockedUntilBlock = c.lockedUntilBlock;
+      }
+      extraData = ce satisfies CreditExtra;
       owner = Buffer.from(c.owner);
       proofSource = String(c.proofSource);
       break;
@@ -342,7 +417,7 @@ export function insertBox(box: AnyBox): void {
     case 'like': {
       const l = box as LikeBox;
       extraData = {
-        likerId: l.likerId,
+        likerId: pubkeyToHex(l.likerId),
         targetPostId: l.targetPostId,
       } satisfies LikeExtra;
       break;
@@ -351,14 +426,14 @@ export function insertBox(box: AnyBox): void {
       const i = box as InviteBox;
       extraData = {
         secretHash: Array.from(i.secretHash),
-        inviterId: i.inviterId,
+        inviterId: pubkeyToHex(i.inviterId),
       } satisfies InviteExtra;
       break;
     }
     case 'bond': {
       const b = box as BondBox;
       extraData = {
-        inviterId: b.inviterId,
+        inviterId: pubkeyToHex(b.inviterId),
         inviteePublicKey:
           b.inviteePublicKey.length > 0
             ? Array.from(b.inviteePublicKey)
@@ -368,6 +443,16 @@ export function insertBox(box: AnyBox): void {
         probationEndBlock:
           b.probationEndBlock > 0 ? b.probationEndBlock : null,
       } satisfies BondExtra;
+      break;
+    }
+    case 'post_lock': {
+      const p = box as PostLockBox;
+      owner = Buffer.from(p.owner);
+      extraData = {
+        originalValue: p.originalValue,
+        owner: Array.from(p.owner),
+        targetPostId: p.targetPostId,
+      } satisfies PostLockExtra;
       break;
     }
     default:

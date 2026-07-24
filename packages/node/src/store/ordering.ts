@@ -1,5 +1,5 @@
 import { getDb } from './db.js';
-import type { OrderingBlock, EpochTally } from '@dagsocial/types';
+import type { OrderingBlock, CoinbaseOutput, EpochTally } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
 // Row shape
@@ -13,8 +13,11 @@ interface OrderingBlockRow {
   like_box_ids: string;      // JSON array
   utxo_tx_ids: string;       // JSON array
   stump_ids: string;         // JSON array
-  validator_id: string;
+  validator_id: Buffer;      // 32-byte Ed25519 public key
   validator_signature: Buffer;
+  pow_nonce: number;
+  pow_target_bits: number;
+  coinbase_outputs: string;  // JSON array
   epoch_tally_results: string | null;  // JSON, nullable
   protocol_version: number;
   created_at: number;
@@ -23,6 +26,16 @@ interface OrderingBlockRow {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+function parseCoinbaseOutputs(json: string): CoinbaseOutput[] {
+  const raw: { owner: number[]; value: number; lockedUntilBlock: number; isTreasury: boolean }[] = JSON.parse(json);
+  return raw.map((o) => ({
+    owner: new Uint8Array(o.owner),
+    value: o.value,
+    lockedUntilBlock: o.lockedUntilBlock,
+    isTreasury: o.isTreasury,
+  }));
+}
 
 function rowToOrderingBlock(row: OrderingBlockRow): OrderingBlock {
   const block: OrderingBlock = {
@@ -33,8 +46,11 @@ function rowToOrderingBlock(row: OrderingBlockRow): OrderingBlock {
     likeBoxIds: JSON.parse(row.like_box_ids) as string[],
     utxoTxIds: JSON.parse(row.utxo_tx_ids) as string[],
     stumpIds: JSON.parse(row.stump_ids) as string[],
-    validatorId: row.validator_id,
+    validatorId: new Uint8Array(row.validator_id),
     validatorSignature: new Uint8Array(row.validator_signature),
+    powNonce: row.pow_nonce,
+    powTargetBits: row.pow_target_bits,
+    coinbaseOutputs: parseCoinbaseOutputs(row.coinbase_outputs),
     protocolVersion: row.protocol_version,
     createdAt: row.created_at,
   };
@@ -53,6 +69,20 @@ function rowToOrderingBlock(row: OrderingBlockRow): OrderingBlock {
 // ---------------------------------------------------------------------------
 
 /**
+ * Serialize coinbase outputs to JSON — owner Uint8Array → number[].
+ */
+function serializeCoinbaseOutputs(outputs: CoinbaseOutput[]): string {
+  return JSON.stringify(
+    outputs.map((o) => ({
+      owner: Array.from(o.owner),
+      value: o.value,
+      lockedUntilBlock: o.lockedUntilBlock,
+      isTreasury: o.isTreasury,
+    })),
+  );
+}
+
+/**
  * Insert a new ordering block.
  */
 export function createOrderingBlock(block: OrderingBlock): void {
@@ -62,8 +92,9 @@ export function createOrderingBlock(block: OrderingBlock): void {
     `INSERT INTO ordering_blocks
        (height, hash, prev_block_hash, sub_block_refs, like_box_ids,
         utxo_tx_ids, stump_ids, validator_id, validator_signature,
+        pow_nonce, pow_target_bits, coinbase_outputs,
         epoch_tally_results, protocol_version, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     block.height,
     block.hash,
@@ -72,8 +103,11 @@ export function createOrderingBlock(block: OrderingBlock): void {
     JSON.stringify(block.likeBoxIds),
     JSON.stringify(block.utxoTxIds),
     JSON.stringify(block.stumpIds),
-    block.validatorId,
+    Buffer.from(block.validatorId),
     Buffer.from(block.validatorSignature),
+    block.powNonce,
+    block.powTargetBits,
+    serializeCoinbaseOutputs(block.coinbaseOutputs),
     block.epochTallyResults
       ? JSON.stringify(block.epochTallyResults)
       : null,

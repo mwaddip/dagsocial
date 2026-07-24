@@ -1,3 +1,4 @@
+import { uid } from '../helpers.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type Database from 'better-sqlite3';
 import type { OrderingBlock } from '@dagsocial/types';
@@ -39,8 +40,11 @@ function makeOrderingBlock(
     likeBoxIds: ['like-box-1'],
     utxoTxIds: ['tx-1'],
     stumpIds: ['stump-1'],
-    validatorId: 'validator-1',
+    validatorId: uid('validator-1'),
     validatorSignature: new Uint8Array(64).fill(0xab),
+    powNonce: 0,
+    powTargetBits: 12,
+    coinbaseOutputs: [],
     protocolVersion: 1,
     createdAt: Date.now(),
     ...overrides,
@@ -84,7 +88,7 @@ describe('ordering store', () => {
       likeBoxIds: ['like-id-1', 'like-id-2'],
       utxoTxIds: ['tx-id-1'],
       stumpIds: ['stump-aaa'],
-      validatorId: 'validator-alice',
+      validatorId: uid('validator-alice'),
       validatorSignature: new Uint8Array(64).fill(0xcd),
       epochTallyResults: {
         rewards: {
@@ -111,7 +115,7 @@ describe('ordering store', () => {
     expect(result!.likeBoxIds).toEqual(['like-id-1', 'like-id-2']);
     expect(result!.utxoTxIds).toEqual(['tx-id-1']);
     expect(result!.stumpIds).toEqual(['stump-aaa']);
-    expect(result!.validatorId).toBe('validator-alice');
+    expect(result!.validatorId).toEqual(uid('validator-alice'));
     expect(result!.validatorSignature).toEqual(
       new Uint8Array(64).fill(0xcd),
     );

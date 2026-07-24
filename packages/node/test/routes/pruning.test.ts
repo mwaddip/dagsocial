@@ -1,3 +1,4 @@
+import { uid } from '../helpers.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import express from 'express';
 import http from 'http';
@@ -9,7 +10,6 @@ import {
   computeStumpId,
   computePostId,
   generateKeyPair,
-  getUserId,
   PROTOCOL_VERSION,
 } from '@dagsocial/types';
 import type { Post } from '@dagsocial/types';
@@ -22,7 +22,7 @@ const TEST_DB = '/tmp/dagsocial-test-routes-pruning.sqlite';
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makePost(authorId: string, parentRefs: string[] = []): Post {
+function makePost(authorId: Uint8Array, parentRefs: string[] = []): Post {
   return {
     content: 'test post for pruning',
     author: authorId,
@@ -67,7 +67,7 @@ async function request(
           });
         },
       );
-      if (body !== undefined) r.write(JSON.stringify(body));
+      if (body !== undefined) r.write(JSON.stringify(body, (_k, v) => v instanceof Uint8Array ? Buffer.from(v).toString('hex') : v));
       r.end();
     });
   });
@@ -80,7 +80,7 @@ async function request(
 describe('pruning routes', () => {
   let rootPostId: string;
   let childPostId: string;
-  let authorId: string;
+  let authorId: Uint8Array;
 
   beforeAll(() => {
     try { unlinkSync(TEST_DB); } catch { /* ignore */ }
@@ -88,7 +88,7 @@ describe('pruning routes', () => {
 
     // Create an author
     const kp = generateKeyPair();
-    authorId = getUserId(kp.publicKey);
+    authorId = kp.publicKey;
     insertIdentity(authorId, kp.publicKey);
 
     // Create a root post (empty parentRefs)
@@ -130,7 +130,7 @@ describe('pruning routes', () => {
   it('POST /posts/:id/prune with wrong author returns 403', async () => {
     // Create another root post by a different author
     const kp2 = generateKeyPair();
-    const author2 = getUserId(kp2.publicKey);
+    const author2 = kp2.publicKey;
     insertIdentity(author2, kp2.publicKey);
 
     const otherRoot = makePost(author2, []);

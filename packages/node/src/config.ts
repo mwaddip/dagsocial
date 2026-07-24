@@ -2,6 +2,9 @@ import {
   POST_POW_TARGET_BITS,
   CHALLENGE_WINDOW_BLOCKS,
   EPOCH_BLOCKS,
+  ORDERING_BLOCK_POW_TARGET_BITS,
+  CREDIT_INITIAL_REWARD,
+  CREDIT_TREASURY_PCT,
 } from '@dagsocial/types';
 
 export interface Config {
@@ -15,6 +18,12 @@ export interface Config {
   orderingBlockMinSubBlocks: number;
   maxSubBlocksPerBlock: number;
   epochBlocks: number;
+  // Mining
+  miningMode: 'internal' | 'external';
+  orderingBlockPowTargetBits: number;
+  creditInitialReward: number;
+  creditTreasuryPct: number;
+  treasuryPubKey: string;  // hex-encoded 32-byte key, empty = no treasury
   // Net settings
   bootstrapPeers: string[];
   listenAddrs: string;
@@ -51,6 +60,21 @@ export function loadConfig(): Readonly<Config> {
       process.env['EPOCH_BLOCKS'] ?? String(EPOCH_BLOCKS),
       10,
     ),
+    // Mining
+    miningMode: parseMiningMode(process.env['MINING_MODE'] ?? 'internal'),
+    orderingBlockPowTargetBits: parseInt(
+      process.env['ORDERING_BLOCK_POW_TARGET_BITS'] ?? String(ORDERING_BLOCK_POW_TARGET_BITS),
+      10,
+    ),
+    creditInitialReward: parseInt(
+      process.env['CREDIT_INITIAL_REWARD'] ?? String(CREDIT_INITIAL_REWARD),
+      10,
+    ),
+    creditTreasuryPct: parseInt(
+      process.env['CREDIT_TREASURY_PCT'] ?? String(CREDIT_TREASURY_PCT),
+      10,
+    ),
+    treasuryPubKey: process.env['TREASURY_PUBKEY'] ?? '',
     // Net settings
     bootstrapPeers: parseBootstrapPeers(process.env['BOOTSTRAP_PEERS'] ?? ''),
     listenAddrs: process.env['LISTEN_ADDRS'] ?? '/ip4/0.0.0.0/tcp/0',
@@ -58,6 +82,11 @@ export function loadConfig(): Readonly<Config> {
   };
 
   return Object.freeze(cfg);
+}
+
+function parseMiningMode(raw: string): 'internal' | 'external' {
+  if (raw === 'internal' || raw === 'external') return raw;
+  throw new Error(`Invalid MINING_MODE "${raw}" — must be "internal" or "external"`);
 }
 
 function parseBootstrapPeers(raw: string): string[] {

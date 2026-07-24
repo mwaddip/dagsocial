@@ -5,7 +5,7 @@ import { getIdentity, getKarmaBox, insertBox, consumeBox } from '../store/index.
 /**
  * Mint (or increase) karma for a given user.
  *
- * Looks up the user's identity to obtain their public key, then either creates
+ * userId IS the public key — no identity lookup needed. Either creates
  * a new karma box or increases the value of their existing one. The old box
  * is consumed and a new one created (even for top-ups — this resets the decay
  * clock via createdAtBlock).
@@ -14,16 +14,14 @@ import { getIdentity, getKarmaBox, insertBox, consumeBox } from '../store/index.
  * block-application path can use it.
  */
 export function mintKarma(
-  userId: string,
+  userId: Uint8Array,
   amount: number,
   blockHeight: number,
 ): void {
   if (amount <= 0) return;
 
-  const identity = getIdentity(userId);
-  if (!identity) return;
-
-  const existingBox = getKarmaBox(identity.publicKey);
+  // userId IS the public key — look up karma box directly
+  const existingBox = getKarmaBox(userId);
 
   let newValue: number;
   let proofSource: string;
@@ -42,7 +40,7 @@ export function mintKarma(
     boxType: 'karma',
     value: newValue,
     createdAtBlock: blockHeight,
-    owner: identity.publicKey,
+    owner: userId,
     guard: 'owner_signature',
     proofSource,
     lastTouchBlock: blockHeight,

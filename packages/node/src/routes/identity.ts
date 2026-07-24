@@ -1,15 +1,15 @@
 import { Router } from 'express';
-import { generateKeyPair, getUserId } from '@dagsocial/types';
+import { generateKeyPair } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
 // Dependency types
 // ---------------------------------------------------------------------------
 
 export interface IdentityStore {
-  insertIdentity(userId: string, publicKey: Uint8Array): void;
+  insertIdentity(userId: Uint8Array, publicKey: Uint8Array): void;
   getIdentity(
-    userId: string,
-  ): { userId: string; publicKey: Uint8Array; createdAt: number } | null;
+    userId: Uint8Array,
+  ): { userId: Uint8Array; publicKey: Uint8Array; createdAt: number } | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -22,10 +22,10 @@ export function createRouter(deps: IdentityStore): Router {
   // POST /identity — generate key pair, store identity, return secretKey for demo
   router.post('/', (_req, res) => {
     const keyPair = generateKeyPair();
-    const userId = getUserId(keyPair.publicKey);
-    deps.insertIdentity(userId, keyPair.publicKey);
+    // userId IS the public key
+    deps.insertIdentity(keyPair.publicKey, keyPair.publicKey);
     res.status(201).json({
-      userId,
+      userId: Buffer.from(keyPair.publicKey).toString('hex'),
       publicKey: Buffer.from(keyPair.publicKey).toString('hex'),
       secretKey: Buffer.from(keyPair.secretKey).toString('hex'),
     });
@@ -54,33 +54,45 @@ export function createRouter(deps: IdentityStore): Router {
       return;
     }
 
-    const userId = getUserId(pubBytes);
-    const existing = deps.getIdentity(userId);
+    // userId IS the public key
+    const existing = deps.getIdentity(pubBytes);
     if (existing) {
       res.status(200).json({
-        userId: existing.userId,
+        userId: Buffer.from(existing.userId).toString('hex'),
         publicKey: Buffer.from(existing.publicKey).toString('hex'),
         createdAt: existing.createdAt,
       });
       return;
     }
 
-    deps.insertIdentity(userId, pubBytes);
+    deps.insertIdentity(pubBytes, pubBytes);
     res.status(201).json({
-      userId,
+      userId: Buffer.from(pubBytes).toString('hex'),
       publicKey: Buffer.from(pubBytes).toString('hex'),
     });
   });
 
-  // GET /identity/:userId — retrieve an identity
+  // GET /identity/:userId — retrieve an identity by public key (hex-encoded)
   router.get('/:userId', (req, res) => {
-    const identity = deps.getIdentity(req.params['userId']!);
+    let userId: Uint8Array;
+    try {
+      userId = new Uint8Array(Buffer.from(req.params['userId']!, 'hex'));
+    } catch {
+      res.status(400).json({ error: 'userId must be hex-encoded public key' });
+      return;
+    }
+    if (userId.length !== 32) {
+      res.status(400).json({ error: 'userId must be 32 bytes (64 hex chars)' });
+      return;
+    }
+
+    const identity = deps.getIdentity(userId);
     if (!identity) {
       res.status(404).json({ error: 'Identity not found' });
       return;
     }
     res.json({
-      userId: identity.userId,
+      userId: Buffer.from(identity.userId).toString('hex'),
       publicKey: Buffer.from(identity.publicKey).toString('hex'),
       createdAt: identity.createdAt,
     });

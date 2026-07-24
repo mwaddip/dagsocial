@@ -1,13 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type Database from 'better-sqlite3';
 import { randomBytes } from 'node:crypto';
+import { uid } from '../helpers.js';
 
+function hex(u: Uint8Array): string { return Buffer.from(u).toString('hex'); }
 // Module-level state in db.ts requires reset between tests.
 async function importFresh() {
   const mod = await import('../../src/store/identities.js');
   return mod as {
-    insertIdentity: (userId: string, publicKey: Uint8Array) => void;
-    getIdentity: (userId: string) => { userId: string; publicKey: Uint8Array; createdAt: number } | null;
+    insertIdentity: (userId: Uint8Array, publicKey: Uint8Array) => void;
+    getIdentity: (userId: Uint8Array) => { userId: Uint8Array; publicKey: Uint8Array; createdAt: number } | null;
   };
 }
 
@@ -40,11 +42,11 @@ describe('identities store', () => {
     initDb(':memory:');
 
     const pubKey = makePublicKey();
-    insertIdentity('alice', pubKey);
+    const alice = uid('alice');
+    insertIdentity(alice, pubKey);
 
-    const result = getIdentity('alice');
+    const result = getIdentity(alice);
     expect(result).not.toBeNull();
-    expect(result!.userId).toBe('alice');
     expect(result!.publicKey).toEqual(pubKey);
     expect(result!.createdAt).toBeGreaterThan(0);
   });
@@ -55,7 +57,7 @@ describe('identities store', () => {
 
     initDb(':memory:');
 
-    const result = getIdentity('nonexistent');
+    const result = getIdentity(uid('nonexistent'));
     expect(result).toBeNull();
   });
 
@@ -65,8 +67,9 @@ describe('identities store', () => {
 
     initDb(':memory:');
 
-    insertIdentity('bob', makePublicKey());
-    expect(() => insertIdentity('bob', makePublicKey())).toThrow();
+    const bob = uid('bob');
+    insertIdentity(bob, makePublicKey());
+    expect(() => insertIdentity(bob, makePublicKey())).toThrow();
   });
 
   it('returned publicKey is 32 raw bytes', async () => {
@@ -76,9 +79,10 @@ describe('identities store', () => {
     initDb(':memory:');
 
     const pubKey = makePublicKey();
-    insertIdentity('carol', pubKey);
+    const carol = uid('carol');
+    insertIdentity(carol, pubKey);
 
-    const result = getIdentity('carol');
+    const result = getIdentity(carol);
     expect(result).not.toBeNull();
     expect(result!.publicKey).toBeInstanceOf(Uint8Array);
     expect(result!.publicKey.length).toBe(32);
@@ -90,9 +94,10 @@ describe('identities store', () => {
 
     initDb(':memory:');
 
-    insertIdentity('dave', makePublicKey());
+    const dave = uid('dave');
+    insertIdentity(dave, makePublicKey());
 
-    const result = getIdentity('dave');
+    const result = getIdentity(dave);
     expect(result).not.toBeNull();
     expect(typeof result!.createdAt).toBe('number');
     expect(result!.createdAt).toBeGreaterThan(0);
