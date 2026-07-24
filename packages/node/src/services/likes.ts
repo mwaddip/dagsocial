@@ -1,6 +1,7 @@
 import { createHash, createPublicKey, verify as cryptoVerify } from 'crypto';
 import {
   computeBoxId,
+  computeTxId,
   LIKE_COST,
   LIKE_THRESHOLD,
   LIKE_FREE_THRESHOLD,
@@ -17,10 +18,10 @@ import {
   getFreeLike,
   deleteFreeLike,
   getUnspentLikeForLiker,
-  insertBox,
-  consumeBox,
-  getDb,
+  getPendingEntries,
+  insertUtxoTx,
 } from '../store/index.js';
+import { decodeTx } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
 // Ed25519 helpers
@@ -58,6 +59,35 @@ function verifySignature(
 }
 
 // ---------------------------------------------------------------------------
+// MemPool helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Check if there is a pending like transaction in the mempool for the given
+ * target post and liker.  This prevents double-likes during the window between
+ * mempool insertion and block confirmation.
+ */
+function hasPendingLike(targetPostId: string, likerId: Uint8Array): boolean {
+  const entries = getPendingEntries(1000);
+  for (const entry of entries) {
+    if (entry.entryType !== 'utxo_tx' || !entry.utxoTxCbor) continue;
+    const tx = decodeTx(entry.utxoTxCbor);
+    for (const output of tx.outputs) {
+      if (output.boxType === 'like') {
+        const likeOut = output as LikeBox;
+        if (
+          likeOut.targetPostId === targetPostId &&
+          Buffer.from(likeOut.likerId).equals(Buffer.from(likerId))
+        ) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -65,19 +95,26 @@ function verifySignature(
  * Cast a like on a target post.
  *
  * If the post has >= LIKE_FREE_THRESHOLD * LIKE_THRESHOLD (50) total likes,
- * the like is free (no karma lock, recorded in dag_likes). Otherwise, LIKE_COST
- * karma is locked in a LikeBox (UTXO, epoch_tally guard).
+ * the like is free (no karma lock, recorded in dag_likes).
  *
- * For locked likes, the signature must cover JSON.stringify({ targetPostId, likerId }).
+ * Otherwise, LIKE_COST karma is locked in a LikeBox (UTXO, epoch_tally guard).
+ * The UTXO transaction is inserted into the mempool and applied when the next
+ * ordering block is confirmed — the like is **pending** until then.
  *
- * @returns The like ID and whether it was a 'locked' or 'free' like.
+ * For locked likes, the signature must cover
+ * JSON.stringify({ targetPostId, likerId }) where likerId is the hex-encoded
+ * public key.
+ *
+ * @returns `{ castLikeResult: 'pending', txId, expiresAtHeight }` for locked
+ *          likes, or `{ castLikeResult: 'free', likeId }` for free likes.
  */
 export function castLike(
   targetPostId: string,
-  likerId: string,
+  likerId: Uint8Array,
   signature: Uint8Array,
   currentBlockHeight: number,
-): { likeId: string; type: 'locked' | 'free'; tx?: UtxoTransaction } {
+): { castLikeResult: 'pending'; txId: string; expiresAtHeight: number; tx: UtxoTransaction }
+ | { castLikeResult: 'free'; likeId: string } {
   // ---- 1. Verify target post exists and is live ----
   const post = getPost(targetPostId);
   if (!post) {
@@ -87,8 +124,11 @@ export function castLike(
     throw new Error('Cannot like a pruned post');
   }
 
-  // ---- 2. Verify not already liked ----
+  // ---- 2. Verify not already liked (DB + mempool) ----
   if (hasLiked(targetPostId, likerId)) {
+    throw new Error('Already liked this post');
+  }
+  if (hasPendingLike(targetPostId, likerId)) {
     throw new Error('Already liked this post');
   }
 
@@ -100,7 +140,7 @@ export function castLike(
   // Get liker's identity (needed for both paths)
   const identity = getIdentity(likerId);
   if (!identity) {
-    throw new Error(`Liker identity not found: ${likerId}`);
+    throw new Error(`Liker identity not found: ${Buffer.from(likerId).toString('hex')}`);
   }
 
   // ---- 4a. Free like (>= 50 total likes) ----
@@ -111,10 +151,10 @@ export function castLike(
     }
 
     const likeId = insertLike(targetPostId, likerId);
-    return { likeId, type: 'free' };
+    return { castLikeResult: 'free', likeId };
   }
 
-  // ---- 4b. Locked like (< 50 total likes) ----
+  // ---- 4b. Locked like (< 50 total likes) → mempool ----
 
   // Verify karma >= LIKE_COST
   const karmaBox = getKarmaBox(identity.publicKey);
@@ -123,7 +163,8 @@ export function castLike(
   }
 
   // Verify signature over { targetPostId, likerId }
-  const signData = JSON.stringify({ targetPostId, likerId });
+  const likerIdHex = Buffer.from(likerId).toString('hex');
+  const signData = JSON.stringify({ targetPostId, likerId: likerIdHex });
 
   if (!verifySignature(Buffer.from(signData), signature, identity.publicKey)) {
     throw new Error('Invalid like signature');
@@ -151,29 +192,26 @@ export function castLike(
     guard: 'epoch_tally',
   };
 
-  const newKarmaId = computeBoxId(newKarmaBox);
-  const likeBoxId = computeBoxId(likeBox);
-
-  // Apply in transaction
-  const db = getDb();
-  const txFn = db.transaction(() => {
-    consumeBox(karmaBox.id!, currentBlockHeight);
-    insertBox({ ...newKarmaBox, id: newKarmaId });
-    insertBox({ ...likeBox, id: likeBoxId });
-  });
-  txFn();
-
+  // Build UtxoTransaction
   const tx: UtxoTransaction = {
     inputs: [karmaBox.id!],
-    outputs: [
-      { ...newKarmaBox, id: newKarmaId },
-      { ...likeBox, id: likeBoxId },
-    ],
+    outputs: [newKarmaBox, likeBox],
     signatures: {},
     protocolVersion: PROTOCOL_VERSION,
   };
 
-  return { likeId: likeBoxId, type: 'locked', tx };
+  // Insert into mempool
+  const expiresAtHeight = currentBlockHeight + 720;
+  insertUtxoTx(tx, null, expiresAtHeight);
+
+  const txId = computeTxId(tx);
+
+  return {
+    castLikeResult: 'pending',
+    txId,
+    expiresAtHeight,
+    tx,
+  };
 }
 
 /**
@@ -185,14 +223,22 @@ export function castLike(
  *   netKarma = -1.
  * - Neither: throw (404).
  *
- * The signature must cover JSON.stringify({ targetPostId, likerId, action: "unlike" }).
+ * UTXO changes go through the mempool and are applied on the next block
+ * confirmation.  Non-UTXO side-effects (dag_likes row deletion for free
+ * likes) are applied immediately.
+ *
+ * The signature must cover
+ * JSON.stringify({ targetPostId, likerId, action: "unlike" }) where likerId
+ * is the hex-encoded public key.
+ *
+ * @returns `{ removeLikeResult: 'pending', txId, expiresAtHeight }`
  */
 export function removeLike(
   targetPostId: string,
-  likerId: string,
+  likerId: Uint8Array,
   signature: Uint8Array,
   currentBlockHeight: number,
-): { removed: true; netKarma: number } {
+): { removeLikeResult: 'pending'; txId: string; expiresAtHeight: number; tx: UtxoTransaction } {
   // ---- 1. Verify target post exists and is live ----
   const post = getPost(targetPostId);
   if (!post) {
@@ -205,11 +251,12 @@ export function removeLike(
   // ---- 2. Get liker's identity ----
   const identity = getIdentity(likerId);
   if (!identity) {
-    throw new Error(`Liker identity not found: ${likerId}`);
+    throw new Error(`Liker identity not found: ${Buffer.from(likerId).toString('hex')}`);
   }
 
   // ---- 3. Verify signature over { targetPostId, likerId, action: "unlike" } ----
-  const signData = JSON.stringify({ targetPostId, likerId, action: 'unlike' });
+  const likerIdHex = Buffer.from(likerId).toString('hex');
+  const signData = JSON.stringify({ targetPostId, likerId: likerIdHex, action: 'unlike' });
   if (!verifySignature(Buffer.from(signData), signature, identity.publicKey)) {
     throw new Error('Invalid unlike signature');
   }
@@ -232,19 +279,24 @@ export function removeLike(
       lastTouchBlock: currentBlockHeight,
     };
 
-    const newKarmaId = computeBoxId(newKarmaBox);
+    const inputs = [lockedLike.id!];
+    if (karmaBox?.id) {
+      inputs.push(karmaBox.id);
+    }
 
-    const db = getDb();
-    const txFn = db.transaction(() => {
-      consumeBox(lockedLike.id!, currentBlockHeight);
-      if (karmaBox?.id) {
-        consumeBox(karmaBox.id, currentBlockHeight);
-      }
-      insertBox({ ...newKarmaBox, id: newKarmaId });
-    });
-    txFn();
+    const tx: UtxoTransaction = {
+      inputs,
+      outputs: [newKarmaBox],
+      signatures: {},
+      protocolVersion: PROTOCOL_VERSION,
+    };
 
-    return { removed: true, netKarma: 1 };
+    const expiresAtHeight = currentBlockHeight + 720;
+    insertUtxoTx(tx, null, expiresAtHeight);
+
+    const txId = computeTxId(tx);
+
+    return { removeLikeResult: 'pending', txId, expiresAtHeight, tx };
   }
 
   // ---- 5. Check for free like ----
@@ -269,19 +321,27 @@ export function removeLike(
       lastTouchBlock: currentBlockHeight,
     };
 
-    const newKarmaId = computeBoxId(newKarmaBox);
+    const inputs: string[] = [];
+    if (karmaBox?.id) {
+      inputs.push(karmaBox.id);
+    }
 
-    const db = getDb();
-    const txFn = db.transaction(() => {
-      deleteFreeLike(targetPostId, likerId);
-      if (karmaBox?.id) {
-        consumeBox(karmaBox.id, currentBlockHeight);
-      }
-      insertBox({ ...newKarmaBox, id: newKarmaId });
-    });
-    txFn();
+    const tx: UtxoTransaction = {
+      inputs,
+      outputs: [newKarmaBox],
+      signatures: {},
+      protocolVersion: PROTOCOL_VERSION,
+    };
 
-    return { removed: true, netKarma: -1 };
+    // Delete the free-like dag_likes row immediately (non-UTXO side-effect)
+    deleteFreeLike(targetPostId, likerId);
+
+    const expiresAtHeight = currentBlockHeight + 720;
+    insertUtxoTx(tx, null, expiresAtHeight);
+
+    const txId = computeTxId(tx);
+
+    return { removeLikeResult: 'pending', txId, expiresAtHeight, tx };
   }
 
   // ---- 6. Neither locked nor free ----

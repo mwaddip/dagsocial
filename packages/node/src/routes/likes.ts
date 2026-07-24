@@ -9,16 +9,18 @@ import { getNet } from '../services/net-instance.js';
 export interface LikesDeps {
   castLike(
     targetPostId: string,
-    likerId: string,
+    likerId: Uint8Array,
     signature: Uint8Array,
     currentBlockHeight: number,
-  ): { likeId: string; type: 'locked' | 'free'; tx?: UtxoTransaction };
+  ):
+    | { castLikeResult: 'pending'; txId: string; expiresAtHeight: number; tx: UtxoTransaction }
+    | { castLikeResult: 'free'; likeId: string };
   removeLike(
     targetPostId: string,
-    likerId: string,
+    likerId: Uint8Array,
     signature: Uint8Array,
     currentBlockHeight: number,
-  ): { removed: true; netKarma: number };
+  ): { removeLikeResult: 'pending'; txId: string; expiresAtHeight: number; tx: UtxoTransaction };
   getCurrentHeight(): number;
 }
 
@@ -43,12 +45,14 @@ export function createRouter(deps: LikesDeps): Router {
       return;
     }
 
-    // Decode signature from hex
+    // Decode likerId and signature from hex
+    let likerId: Uint8Array;
     let signature: Uint8Array;
     try {
+      likerId = new Uint8Array(Buffer.from(body.likerId, 'hex'));
       signature = new Uint8Array(Buffer.from(body.signature, 'hex'));
     } catch {
-      res.status(400).json({ error: 'Invalid hex encoding in signature' });
+      res.status(400).json({ error: 'Invalid hex encoding in likerId or signature' });
       return;
     }
 
@@ -62,11 +66,25 @@ export function createRouter(deps: LikesDeps): Router {
       const currentHeight = deps.getCurrentHeight();
       const result = deps.removeLike(
         body.targetPostId,
-        body.likerId,
+        likerId,
         signature,
         currentHeight,
       );
-      res.status(200).json(result);
+
+      // Broadcast transaction to peers (fire-and-forget)
+      const net = getNet();
+      if (net) {
+        net.broadcastTx(result.tx).catch((err: Error) => {
+          console.warn(`Failed to broadcast unlike tx: ${err.message}`);
+        });
+      }
+
+      const { tx: _tx, ...response } = result;
+      res.status(200).json({
+        status: 'pending',
+        txId: response.txId,
+        expiresAtHeight: response.expiresAtHeight,
+      });
     } catch (err) {
       const message = (err as Error).message;
       if (message === 'Like not found') {
@@ -92,12 +110,14 @@ export function createRouter(deps: LikesDeps): Router {
       return;
     }
 
-    // Decode signature from hex
+    // Decode likerId and signature from hex
+    let likerId: Uint8Array;
     let signature: Uint8Array;
     try {
+      likerId = new Uint8Array(Buffer.from(body.likerId, 'hex'));
       signature = new Uint8Array(Buffer.from(body.signature, 'hex'));
     } catch {
-      res.status(400).json({ error: 'Invalid hex encoding in signature' });
+      res.status(400).json({ error: 'Invalid hex encoding in likerId or signature' });
       return;
     }
 
@@ -111,23 +131,29 @@ export function createRouter(deps: LikesDeps): Router {
       const currentHeight = deps.getCurrentHeight();
       const result = deps.castLike(
         body.targetPostId,
-        body.likerId,
+        likerId,
         signature,
         currentHeight,
       );
 
-      // Broadcast locked like transaction to peers (fire-and-forget)
-      if (result.type === 'locked' && result.tx) {
-        const net = getNet();
-        if (net) {
-          net.broadcastTx(result.tx).catch((err: Error) => {
-            console.warn(`Failed to broadcast like tx: ${err.message}`);
-          });
-        }
+      if (result.castLikeResult === 'free') {
+        res.status(200).json({ status: 'free', likeId: result.likeId });
+        return;
       }
 
-      const { tx, ...response } = result;
-      res.status(201).json(response);
+      // Broadcast locked-like transaction to peers (fire-and-forget)
+      const net = getNet();
+      if (net) {
+        net.broadcastTx(result.tx).catch((err: Error) => {
+          console.warn(`Failed to broadcast like tx: ${err.message}`);
+        });
+      }
+
+      res.status(200).json({
+        status: 'pending',
+        txId: result.txId,
+        expiresAtHeight: result.expiresAtHeight,
+      });
     } catch (err) {
       res.status(400).json({ error: (err as Error).message });
     }
