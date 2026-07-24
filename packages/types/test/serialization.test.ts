@@ -291,6 +291,18 @@ describe('CBOR serialization', () => {
       expect(sig).toEqual(Buffer.from(block.validatorSignature));
     });
 
+    it('decodeOrderingBlock throws on truncated signature (only 32 bytes of sig)', () => {
+      const block = makeOrderingBlock();
+      // Encode full block, then slice off the last 32 bytes of the signature
+      const fullBytes = Buffer.from(encodeOrderingBlock(block));
+      // fullBytes layout: 4 + headerLen + 4 + subLen + 4 + utxoLen + 64
+      // Remove last 32 bytes (half the signature)
+      const truncated = fullBytes.subarray(0, fullBytes.length - 32);
+      expect(() => decodeOrderingBlock(truncated)).toThrow(
+        'decodeOrderingBlock: truncated validator signature',
+      );
+    });
+
     it('decodeOrderingBlock throws on truncated input', () => {
       const encoded = encodeOrderingBlock(makeOrderingBlock());
       // Truncate to just the first length prefix + partial header CBOR

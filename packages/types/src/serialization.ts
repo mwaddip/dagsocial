@@ -152,6 +152,7 @@ export function decodeOrderingBlock(bytes: Uint8Array): OrderingBlock {
   const utxoTxTree = decodeUtxoTxTree(buf.subarray(offset, offset + utxoLen)); offset += utxoLen;
 
   const validatorSignature = new Uint8Array(buf.subarray(offset, offset + 64));
+  if (validatorSignature.length !== 64) throw new Error('decodeOrderingBlock: truncated validator signature');
 
   return { header, subBlockTree, utxoTxTree, validatorSignature };
 }
