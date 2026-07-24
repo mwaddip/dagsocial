@@ -10,6 +10,7 @@ import { createRouter as utxoRoutes } from './routes/utxo.js';
 import { createRouter as blockRoutes } from './routes/blocks.js';
 import { createRouter as miningRoutes } from './routes/mining.js';
 import * as store from './store/index.js';
+import { initSystemKeypair, ensureSystemKarmaBox, getSystemKeypair } from './store/system.js';
 import { generateChallenge } from './services/pow.js';
 import { verifyPost } from './services/verifier.js';
 import { onSubBlockReceived, getCurrentTemplate, submitMinedBlock } from './services/block-creator.js';
@@ -45,6 +46,15 @@ export function createApp(config: Config): express.Express {
     getKarmaBox: store.getKarmaBox,
     getIdentity: store.getIdentity,
     runInTransaction: (fn: () => void) => getDb().transaction(fn)(),
+    isSystemBox: (boxId: string) => {
+      const sysKey = getSystemKeypair();
+      if (!sysKey) return false;
+      const box = store.getBox(boxId);
+      if (!box || box.boxType !== 'karma') return false;
+      return Buffer.from((box as import('@dagsocial/types').KarmaBox).owner).equals(
+        Buffer.from(sysKey.publicKey),
+      );
+    },
   };
 
   // ---- Routes ----
@@ -137,6 +147,11 @@ export function createApp(config: Config): express.Express {
         getIdentity: store.getIdentity,
         getKarmaBox: store.getKarmaBox,
         getCurrentHeight: store.getCurrentHeight,
+        getBox: store.getBox,
+        insertBox: store.insertBox,
+        consumeBox: store.consumeBox,
+        runInTransaction: (fn: () => void) => getDb().transaction(fn)(),
+        isSystemBox: utxoEngineDeps.isSystemBox,
       }),
     );
   } else {

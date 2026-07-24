@@ -39,6 +39,8 @@ export interface UtxoEngineDeps {
   getIdentity: (userId: Uint8Array) => { publicKey: Uint8Array } | null;
   /** Wrap fn in a better-sqlite3 transaction. */
   runInTransaction: (fn: () => void) => void;
+  /** Return true if the box is the system karma box (faucet source). */
+  isSystemBox?: (boxId: string) => boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -94,6 +96,7 @@ function verifyGuardSignature(
 function checkTransitions(
   inputs: AnyBox[],
   outputs: AnyBox[],
+  deps?: UtxoEngineDeps,
 ): { valid: boolean; error?: string } {
   // Handle invite cancel: KarmaBox + InviteBox + BondBox → KarmaBox
   if (inputs.length === 3) {
@@ -172,15 +175,32 @@ function checkTransitions(
         };
       }
 
-      // All karma outputs must belong to the same owner as the consumed karma
+      // All karma outputs must belong to the same owner as the consumed karma.
+      // Exception: system box faucet grant — 2 karma outputs, one same-owner
+      // (system change), one different-owner (faucet beneficiary).
       const inputKarma = inputs[0] as KarmaBox;
-      for (const ko of karmaOutputs) {
-        const k = ko as KarmaBox;
-        if (Buffer.from(k.owner).toString('hex') !== Buffer.from(inputKarma.owner).toString('hex')) {
+      if (karmaOutputs.length === 2 && inputs.length === 1 &&
+          outputs.length === 2 && deps?.isSystemBox?.(inputKarma.id!)) {
+        const sameOwner = karmaOutputs.filter(
+          (ko) => Buffer.from((ko as KarmaBox).owner).toString('hex') ===
+                  Buffer.from(inputKarma.owner).toString('hex'),
+        );
+        if (sameOwner.length !== 1) {
           return {
             valid: false,
-            error: `Karma cannot be transferred (owner change on karma box)`,
+            error: `Faucet grant must produce exactly one same-owner karma output (system change)`,
           };
+        }
+        // Faucet grant: allowed. Skip the strict same-owner check below.
+      } else {
+        for (const ko of karmaOutputs) {
+          const k = ko as KarmaBox;
+          if (Buffer.from(k.owner).toString('hex') !== Buffer.from(inputKarma.owner).toString('hex')) {
+            return {
+              valid: false,
+              error: `Karma cannot be transferred (owner change on karma box)`,
+            };
+          }
         }
       }
 
@@ -557,7 +577,7 @@ export function validateTx(
   if (!guardCheck.valid) return guardCheck;
 
   // ---- 6. Legal box transitions ----
-  const transitionCheck = checkTransitions(inputBoxes, tx.outputs);
+  const transitionCheck = checkTransitions(inputBoxes, tx.outputs, deps);
   if (!transitionCheck.valid) return transitionCheck;
 
   // ---- 7. Karma decay ----

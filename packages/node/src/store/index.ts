@@ -45,13 +45,6 @@ export {
 } from './likes.js';
 
 export {
-  insertSubBlock,
-  getPendingSubBlocks,
-  getSubBlock,
-  confirmSubBlock,
-} from './subblocks.js';
-
-export {
   createOrderingBlock,
   getOrderingBlock,
   getCurrentHeight,
@@ -71,3 +64,11 @@ export {
   removeBatch,
 } from './mempool.js';
 export type { PoolEntry } from './mempool.js';
+
+export {
+  getSystemKeypair,
+  initSystemKeypair,
+  ensureSystemKarmaBox,
+  signWithSystemKey,
+} from './system.js';
+export type { SystemKeypair } from './system.js';

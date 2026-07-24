@@ -11,7 +11,6 @@ const MIGRATIONS = [
   'DROP TABLE IF EXISTS dag_parent_refs',
   'DROP TABLE IF EXISTS dag_stumps',
   'DROP TABLE IF EXISTS dag_likes',
-  'DROP TABLE IF EXISTS sub_blocks',
   'DROP TABLE IF EXISTS ordering_blocks',
   'DROP TABLE IF EXISTS utxo_boxes',
   // Identity (Phase 2 — no secret_key).
@@ -91,18 +90,6 @@ const MIGRATIONS = [
     UNIQUE(target_post_id, liker_id)
   )`,
 
-  // Sub-blocks
-  `CREATE TABLE IF NOT EXISTS sub_blocks (
-    sub_block_id TEXT PRIMARY KEY,
-    post_id TEXT NOT NULL,
-    post_cbor BLOB NOT NULL,
-    like_box_ids TEXT NOT NULL,       -- JSON array of BoxId
-    producer_id BLOB NOT NULL,        -- 32-byte Ed25519 public key
-    protocol_version INTEGER NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'confirmed'
-    block_height INTEGER
-  )`,
-
   // Mempool (unified sub-block + UTXO transaction pool)
   `CREATE TABLE IF NOT EXISTS mempool (
     rowid INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -112,6 +99,12 @@ const MIGRATIONS = [
     batch_id TEXT,
     expires_at_height INTEGER NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+
+  // System config (persistent node-level keypairs, etc.)
+  `CREATE TABLE IF NOT EXISTS system_config (
+    key TEXT PRIMARY KEY,
+    value BLOB NOT NULL
   )`,
 
   // Ordering blocks

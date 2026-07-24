@@ -1,5 +1,6 @@
 import { loadConfig } from './config.js';
 import { initDb, getDb, closeDb } from './store/db.js';
+import { initSystemKeypair, ensureSystemKarmaBox } from './store/system.js';
 import { startBlockCreator, stopBlockCreator, clearTemplate } from './services/block-creator.js';
 import { createApp } from './server.js';
 import { NetNode } from '@dagsocial/net';
@@ -15,11 +16,9 @@ import {
   getKarmaBox,
   getPost,
   insertPost,
-  getSubBlock,
   insertBox,
   getBox,
   consumeBox,
-  confirmSubBlock,
   confirmPost,
   markLikeBoxesTallied,
   getCurrentHeight,
@@ -30,13 +29,25 @@ import {
   getPendingEntries,
   removeEntry,
 } from './store/index.js';
-import { encodePost, PROTOCOL_VERSION, decodeTx, computeTxId, computeBoxId } from '@dagsocial/types';
+import { encodePost, PROTOCOL_VERSION, decodeTx, decodeSubBlock, computeTxId, computeBoxId } from '@dagsocial/types';
 import type { AnyBox } from '@dagsocial/types';
 
 const config = loadConfig();
 
 // 1. Init DB
 initDb(config.dbPath);
+
+// 1a. Init system keypair (testnet faucet source). Must happen after DB init,
+//     before any route that might need the system box.
+const systemKeypair = initSystemKeypair();
+if (config.networkMode === 'testnet') {
+  const height = getCurrentHeight();
+  ensureSystemKarmaBox(systemKeypair.publicKey, height);
+  console.log(
+    `System keypair: ${Buffer.from(systemKeypair.publicKey).toString('hex').slice(0, 12)}... ` +
+    `(faucet source)`,
+  );
+}
 
 // 2. Create NetNode
 const net = new NetNode(
@@ -109,8 +120,13 @@ try {
   // Register storage-backed sync handler (replaces the null placeholder
   // registered during NetNode.start())
   net.setSyncHandler((subBlockId: string) => {
-    const sb = getSubBlock(subBlockId);
-    return sb ?? null;
+    const entries = getPendingEntries(1000);
+    for (const entry of entries) {
+      if (entry.entryType !== 'subblock' || !entry.subblockCbor) continue;
+      const sb = decodeSubBlock(entry.subblockCbor);
+      if (sb.subBlockId === subBlockId) return sb;
+    }
+    return null;
   });
 } catch (err) {
   console.warn(`Net startup failed (continuing without networking): ${String(err)}`);
@@ -198,7 +214,6 @@ function applyOrderingBlock(block: import('@dagsocial/types').OrderingBlock): vo
   // 7. Confirm sub-blocks and their posts
   for (const subBlockId of block.subBlockRefs) {
     try {
-      confirmSubBlock(subBlockId, block.height);
       confirmPost(subBlockId, block.height);
     } catch (err) {
       console.warn(`Failed to confirm sub-block ${subBlockId}: ${String(err)}`);
