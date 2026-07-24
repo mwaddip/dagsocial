@@ -64,7 +64,7 @@ export function subscribeTopics(
 
   gs.topicValidators.set(TOPICS.subblock, (_peer, msg) => {
     try {
-      const raw = Buffer.from(msg.data);
+      const raw = new Uint8Array(msg.data);
       const sb = decodeSubBlock(raw);
       const vr = runStage1SubBlock(sb, validators);
       if (!vr.valid) {
@@ -80,7 +80,7 @@ export function subscribeTopics(
 
   gs.topicValidators.set(TOPICS.orderingBlock, (_peer, msg) => {
     try {
-      const raw = Buffer.from(msg.data);
+      const raw = new Uint8Array(msg.data);
       const block = decodeOrderingBlock(raw);
       const vr = validators.verifyOrderingBlockStructure(block);
       if (!vr.valid) {
@@ -100,7 +100,7 @@ export function subscribeTopics(
 
   gs.topicValidators.set(TOPICS.tx, (_peer, msg) => {
     try {
-      const raw = Buffer.from(msg.data);
+      const raw = new Uint8Array(msg.data);
       const tx = decodeTx(raw);
       const vr = validators.verifyTxStructure(tx);
       if (!vr.valid) {
@@ -129,7 +129,7 @@ export function subscribeTopics(
     if (!detail?.msg) return;
 
     const { topic } = detail.msg;
-    const raw = Buffer.from(detail.msg.data);
+    const raw = new Uint8Array(detail.msg.data);
 
     try {
       if (topic === TOPICS.subblock) {
@@ -174,14 +174,22 @@ function runStage1SubBlock(
     return { valid: false, error: 'Unsupported protocol version' };
   }
 
-  const powInput = Buffer.concat([
-    Buffer.from(post.content),
-    Buffer.from(post.author),
-    ...post.parentRefs.map((r) => Buffer.from(r)),
-    Buffer.from(post.challenge),
-    Buffer.from(String(post.protocolVersion)),
-    Buffer.from(String(post.timestamp)),
-  ]);
+  const encoder = new TextEncoder();
+  const parts: Uint8Array[] = [
+    encoder.encode(post.content),
+    post.author,  // raw 32-byte Ed25519 public key
+    ...post.parentRefs.map((r) => encoder.encode(r)),
+    post.challenge,
+    encoder.encode(String(post.protocolVersion)),
+    encoder.encode(String(post.timestamp)),
+  ];
+  const totalLen = parts.reduce((s, p) => s + p.length, 0);
+  const powInput = new Uint8Array(totalLen);
+  let offset = 0;
+  for (const p of parts) {
+    powInput.set(p, offset);
+    offset += p.length;
+  }
   if (!v.verifyPoW(powInput, post.powNonce, POST_POW_TARGET_BITS)) {
     return { valid: false, error: 'Proof of Work invalid' };
   }

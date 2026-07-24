@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { generateKeyPair, getUserId, computePostId } from '@dagsocial/types';
+import { generateKeyPair, computePostId } from '@dagsocial/types';
 import type { Post, SubBlock, OrderingBlock } from '@dagsocial/types';
 import {
   verifyPoW,
@@ -132,7 +132,7 @@ describe('Two-node integration', () => {
     const kp = generateKeyPair();
     const postBase: Omit<Post, 'powNonce'> = {
       content: 'hello from integration test',
-      author: getUserId(kp.publicKey),
+      author: kp.publicKey,
       parentRefs: [],
       challenge: new Uint8Array(32),
       protocolVersion: 1,
@@ -143,7 +143,7 @@ describe('Two-node integration', () => {
     const encoder = new TextEncoder();
     const powParts: Uint8Array[] = [
       encoder.encode(postBase.content),
-      encoder.encode(postBase.author),
+      postBase.author,  // raw 32-byte Ed25519 public key
       postBase.challenge,
       encoder.encode(String(postBase.protocolVersion)),
       encoder.encode(String(postBase.timestamp)),
@@ -197,8 +197,11 @@ describe('Two-node integration', () => {
       likeBoxIds: [],
       utxoTxIds: [],
       stumpIds: [],
-      validatorId: 'validator-1',
+      validatorId: 'validator-1' as unknown as Uint8Array,
       validatorSignature: new Uint8Array(64),
+      powNonce: 0,
+      powTargetBits: 12,
+      coinbaseOutputs: [],
       protocolVersion: 1,
       createdAt: Date.now(),
     };

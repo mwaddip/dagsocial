@@ -75,26 +75,67 @@ export class NetNode {
         maxConnections: this.config.maxPeers,
         minConnections: 0,
       },
+      // Disable the built-in connection monitor heartbeat.  When enabled it
+      // pings peers every 10 s via /ipfs/ping/1.0.0 and aborts the connection
+      // if the ping fails.  The AdaptiveTimeout uses a 2 s floor derived from
+      // an uninitialised moving average, so the first heartbeat almost always
+      // times out and kills the connection.  Explicit pings are still available
+      // via @libp2p/ping if needed.
+      connectionMonitor: {
+        enabled: false,
+      },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
 
-    // Track peers on connect/disconnect
+    // Track peers on connect/disconnect.
+    // Listen for all four event types because the timing and payload differ:
+    //   connection:open  — fires first, has full Connection object (addr, direction)
+    //   peer:connect     — fires after, only has PeerId
+    //   connection:close — fires first, has full Connection object + timeline
+    //   peer:disconnect  — fires after, only has PeerId
+    this.libp2p.addEventListener('connection:open', (evt: any) => {
+      const conn = evt.detail;
+      const peerId = conn?.remotePeer?.toString() ?? 'unknown';
+      const direction = conn?.direction ?? '?';
+      console.log(`[net] connection:open peer=${peerId} dir=${direction}`);
+    });
+
     this.libp2p.addEventListener('peer:connect', (evt: any) => {
       const peerId = evt.detail?.toString() ?? 'unknown';
-      console.log(`[net] peer connected: ${peerId}`);
+      console.log(`[net] peer:connect ${peerId} (total=${this.peerMgr.getPeerCount() + 1})`);
       this.peerMgr.addPeer({
         id: peerId,
         multiaddrs: [],
         protocols: [],
         connectedAt: Date.now(),
       });
-      console.log(`[net] peer count: ${this.peerMgr.getPeerCount()}`);
+    });
+
+    this.libp2p.addEventListener('connection:close', (evt: any) => {
+      const conn = evt.detail;
+      const peerId = conn?.remotePeer?.toString() ?? 'unknown';
+      const remoteAddr = conn?.remoteAddr?.toString() ?? '?';
+      const direction = conn?.direction ?? '?';
+      const timeline = conn?.timeline;
+      const openTs = timeline?.open ? new Date(timeline.open).toISOString() : '?';
+      const closeTs = timeline?.close ? new Date(timeline.close).toISOString() : '?';
+      const durationMs = (timeline?.close && timeline?.open)
+        ? timeline.close - timeline.open
+        : '?';
+      console.log(`[net] connection:close peer=${peerId} addr=${remoteAddr} dir=${direction} durationMs=${durationMs} opened=${openTs} closed=${closeTs}`);
     });
 
     this.libp2p.addEventListener('peer:disconnect', (evt: any) => {
       const peerId = evt.detail?.toString() ?? 'unknown';
-      console.log(`[net] peer disconnected: ${peerId}`);
+      console.log(`[net] peer:disconnect ${peerId} (total=${Math.max(0, this.peerMgr.getPeerCount() - 1)})`);
       this.peerMgr.removePeer(peerId);
+    });
+
+    // Log identify completion — confirms the connection was fully upgraded
+    this.libp2p.addEventListener('peer:identify', (evt: any) => {
+      const result = evt.detail;
+      const peerId = result?.peerId?.toString() ?? '?';
+      console.log(`[net] peer:identify ${peerId}`);
     });
 
     // Subscribe to gossip topics
@@ -108,13 +149,19 @@ export class NetNode {
 
     // Sync handler registered later via setSyncHandler() — node provides storage
 
+    // Log listen addresses
+    const listenAddrs = this.libp2p.getMultiaddrs();
+    console.log(`[net] listening on: ${listenAddrs.map(a => a.toString()).join(', ')}`);
+
     // Connect to bootstrap peers
     for (const addr of this.config.bootstrapPeers) {
+      console.log(`[net] dialing bootstrap peer: ${addr}`);
       try {
-        await this.libp2p.dial(multiaddr(addr));
-      } catch {
+        const conn = await this.libp2p.dial(multiaddr(addr));
+        console.log(`[net] bootstrap dial succeeded: ${addr} -> peer=${conn.remotePeer.toString()}`);
+      } catch (err: any) {
         // Bootstrap peer unreachable — not fatal
-        console.warn(`Bootstrap peer unreachable: ${addr}`);
+        console.warn(`[net] bootstrap dial FAILED: ${addr} — ${err?.message ?? err}`);
       }
     }
 
