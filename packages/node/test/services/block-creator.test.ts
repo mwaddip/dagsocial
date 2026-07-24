@@ -616,10 +616,10 @@ describe('block-creator', () => {
     // Liker refunds: totalLikes=7, below 2x threshold, likes stay locked — no refunds
     const refunds = rewards[postId].likerRefunds;
     for (const liker of likers) {
-      expect(refunds[liker.userId]).toBeUndefined(); // not unlocked yet
+      expect(refunds[Buffer.from(liker.userId).toString('hex')]).toBeUndefined(); // not unlocked yet
     }
     // Free liker should NOT have a refund entry
-    expect(refunds[freeLiker.userId]).toBeUndefined();
+    expect(refunds[Buffer.from(freeLiker.userId).toString('hex')]).toBeUndefined();
   });
 
   // -----------------------------------------------------------------------
@@ -727,7 +727,7 @@ describe('block-creator', () => {
     expect(rewards[postAId].likeCount).toBe(3);
     expect(rewards[postAId].authorReward).toBe(0); // floor(3/5) = 0
     for (const liker of likersA) {
-      expect(rewards[postAId].likerRefunds[liker.userId]).toBeUndefined(); // not unlocked
+      expect(rewards[postAId].likerRefunds[Buffer.from(liker.userId).toString('hex')]).toBeUndefined(); // not unlocked
     }
 
     // Post B: 7 likes, below threshold — likes stay locked, no refund
@@ -735,7 +735,7 @@ describe('block-creator', () => {
     expect(rewards[postBId].likeCount).toBe(7);
     expect(rewards[postBId].authorReward).toBe(1); // floor(7/5) = 1
     for (const liker of likersB) {
-      expect(rewards[postBId].likerRefunds[liker.userId]).toBeUndefined(); // not unlocked
+      expect(rewards[postBId].likerRefunds[Buffer.from(liker.userId).toString('hex')]).toBeUndefined(); // not unlocked
     }
 
     // Post C: 12 likes, threshold met — all locked likes unlocked, net 0
@@ -745,7 +745,7 @@ describe('block-creator', () => {
       Math.min(Math.floor(12 / LIKE_THRESHOLD), LIKE_MAX_AUTHOR_REWARD),
     ); // floor(12/5)=2, capped at 10
     for (const liker of likersC) {
-      expect(rewards[postCId].likerRefunds[liker.userId]).toBe(0);
+      expect(rewards[postCId].likerRefunds[Buffer.from(liker.userId).toString('hex')]).toBe(0);
     }
   });
 

@@ -20,6 +20,7 @@ const FAUCET_AMOUNT = 100;
 export interface FaucetDeps extends UtxoEngineDeps {
   // Inherits: getBox, insertBox, consumeBox, getKarmaBox, getIdentity,
   //           runInTransaction, isSystemBox (optional)
+  getCurrentHeight(): number;
 }
 
 // ---------------------------------------------------------------------------

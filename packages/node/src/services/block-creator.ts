@@ -32,6 +32,7 @@ import type {
   PostLockBox,
   UtxoTransaction,
   LikeBox,
+  UserId,
 } from '@dagsocial/types';
 import { verifyOrderingBlockPoW, computeBlockBodyHash } from '@dagsocial/validation';
 import type { Config } from '../config.js';
@@ -595,7 +596,7 @@ function runEpochTally(blockHeight: number): EpochTally {
       if (thresholdMet) {
         if (lb.id) allLockedBoxIds.push(lb.id);
         mintKarma(lb.likerId, LIKE_COST, blockHeight);
-        likerRefunds[lb.likerId] = 0;
+        likerRefunds[Buffer.from(lb.likerId).toString('hex')] = 0;
       }
     }
 
@@ -676,11 +677,11 @@ function runEpochTally(blockHeight: number): EpochTally {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function getPostAuthorId(postId: string): string | null {
+function getPostAuthorId(postId: string): UserId | null {
   const post = getPost(postId);
   if (!post) return null;
   if ('author' in post) {
-    return post.author;
+    return post.author as UserId;
   }
   return null;
 }

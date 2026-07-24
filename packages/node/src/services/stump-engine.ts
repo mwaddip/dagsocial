@@ -3,7 +3,7 @@ import {
   computePostId,
   PROTOCOL_VERSION,
 } from '@dagsocial/types';
-import type { Stump, PruneIntent, KarmaDelta, Post, LikeBox } from '@dagsocial/types';
+import type { Stump, PruneIntent, KarmaDelta, Post, LikeBox, UserId } from '@dagsocial/types';
 import {
   getPost,
   getSubtree,
@@ -79,7 +79,7 @@ function buildMerkleRoot(leafHashes: Uint8Array[]): Uint8Array {
  */
 export function createPruneIntent(
   rootPostId: string,
-  authorId: string,
+  authorId: UserId,
   trigger: 'author' | 'drep' | 'storage_prune',
 ): PruneIntent {
   return {
