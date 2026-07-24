@@ -2,12 +2,8 @@ import { Router } from 'express';
 import {
   computePostId,
   MAX_CONTENT_BYTES,
-  POST_LOCK_THREAD_COST,
-  POST_LOCK_REPLY_COST,
-  computeBoxId,
-  PROTOCOL_VERSION,
 } from '@dagsocial/types';
-import type { Post, KarmaBox, PostLockBox, UtxoTransaction } from '@dagsocial/types';
+import type { Post, KarmaBox, UtxoTransaction, AnyBox } from '@dagsocial/types';
 import type { VerifierDeps, VerificationResult } from '../services/verifier.js';
 import { getNet } from '../services/net-instance.js';
 
@@ -35,6 +31,8 @@ export interface PostsDeps extends VerifierDeps {
   insertMempoolSubBlock(subBlock: { subBlockId: string; post: Post; likeBoxes: unknown[]; producerId: Uint8Array; protocolVersion: number }, expiresAtHeight: number, batchId: string | null): number;
   insertUtxoTx(tx: UtxoTransaction, batchId: string | null, expiresAtHeight: number): number;
   onSubBlockReceived(): void;
+  validateTx: (tx: UtxoTransaction, currentBlockHeight: number) => { valid: boolean; error?: string; computedOutputs?: AnyBox[]; txId?: string };
+  getBox: (id: string) => AnyBox | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -143,48 +141,29 @@ export function createRouter(deps: PostsDeps): Router {
     const rawCbor = deps.encodePost(post);
     deps.insertPost(post, rawCbor);
 
-    // Lock karma via UTXO transaction.
-    // Verification already confirmed the karma box exists with sufficient value.
-    // post.author IS the public key.
-    const karmaBox = deps.getKarmaBox(post.author)!;
-    const lockAmount = post.parentRefs.length === 0
-      ? POST_LOCK_THREAD_COST
-      : POST_LOCK_REPLY_COST;
-    const remainingKarma = karmaBox.value - lockAmount;
+    // Extract karma-lock tx from request body
+    const karmaLockTx = (req.body as { karmaLockTx?: UtxoTransaction }).karmaLockTx;
+    if (!karmaLockTx) {
+      res.status(400).json({ error: 'karmaLockTx required' });
+      return;
+    }
 
-    // Create reduced karma box
-    const newKarmaBox: KarmaBox = {
-      boxType: 'karma',
-      value: remainingKarma,
-      createdAtBlock: currentHeight,
-      owner: post.author,
-      guard: 'owner_signature',
-      proofSource: `post-lock:${postId}`,
-      lastTouchBlock: currentHeight,
-    };
+    // Validate the karma-lock tx via the UTXO engine
+    const txResult = deps.validateTx(karmaLockTx, currentHeight);
+    if (!txResult.valid) {
+      try { deps.consumeChallenge(post.author, post.challenge); } catch { /* ok */ }
+      res.status(400).json({ error: txResult.error });
+      return;
+    }
 
-    // Create post lock box (epoch_tally guarded)
-    const postLockBox: PostLockBox = {
-      boxType: 'post_lock',
-      value: lockAmount,
-      originalValue: lockAmount,
-      createdAtBlock: currentHeight,
-      owner: post.author,
-      targetPostId: postId,
-      guard: 'epoch_tally',
-    };
-
-    // Build karma-lock UTXO transaction
-    const pubKeyHex = Buffer.from(post.author).toString('hex');
-    const karmaLockTx: UtxoTransaction = {
-      inputs: [karmaBox.id!],
-      outputs: [
-        { ...newKarmaBox, id: computeBoxId(newKarmaBox) },
-        { ...postLockBox, id: computeBoxId(postLockBox) },
-      ],
-      signatures: { [pubKeyHex]: post.signature },
-      protocolVersion: PROTOCOL_VERSION,
-    };
+    // Verify the karma-lock tx matches the post author
+    const karmaInput = deps.getBox(karmaLockTx.inputs[0]!);
+    if (!karmaInput || (karmaInput as KarmaBox).owner &&
+        Buffer.from((karmaInput as KarmaBox).owner).toString('hex') !== Buffer.from(post.author).toString('hex')) {
+      try { deps.consumeChallenge(post.author, post.challenge); } catch { /* ok */ }
+      res.status(400).json({ error: 'karmaLockTx does not belong to post author' });
+      return;
+    }
 
     // Consume the challenge
     deps.consumeChallenge(post.author, post.challenge);
@@ -222,6 +201,7 @@ export function createRouter(deps: PostsDeps): Router {
       postId,
       status: 'pending',
       expiresAtHeight,
+      txId: txResult.txId,
     });
   });
 
