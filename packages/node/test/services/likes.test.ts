@@ -1,9 +1,6 @@
-import { uid } from '../helpers.js';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   generateKeyPairSync,
-  createHash,
-  sign as cryptoSign,
   type KeyObject,
 } from 'crypto';
 import {
@@ -16,32 +13,27 @@ import {
   LIKE_FREE_THRESHOLD,
   PROTOCOL_VERSION,
 } from '@dagsocial/types';
-import type { KarmaBox, LikeBox, Post } from '@dagsocial/types';
+import type { KarmaBox, LikeBox, Post, UtxoTransaction, AnyBox } from '@dagsocial/types';
 import Database from 'better-sqlite3';
 
 import {
   initDb,
   closeDb,
   getDb,
-  getBox,
   getKarmaBox,
   insertBox,
   insertPost,
   insertIdentity,
-  getPost as storeGetPost,
+  getBox as storeGetBox,
   getPendingEntries,
 } from '../../src/store/index.js';
 import { castLike } from '../../src/services/likes.js';
+import type { UtxoEngineDeps } from '../../src/services/utxo-engine.js';
+import { rawPublicKey, signTransaction } from '../helpers.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Extract raw 32-byte Ed25519 public key from SPKI DER KeyObject. */
-function rawPublicKey(keyObj: KeyObject): Uint8Array {
-  const der = keyObj.export({ type: 'spki', format: 'der' }) as Buffer;
-  return new Uint8Array(der.subarray(der.length - 32));
-}
 
 /** Create and insert a karma box. */
 function createKarmaBox(
@@ -106,18 +98,6 @@ function fakeUserId(index: number): Uint8Array {
   return rawPublicKey(publicKey);
 }
 
-/** Sign a castLike message for locked likes. */
-function signCastLike(
-  targetPostId: string,
-  likerId: Uint8Array,
-  privKey: KeyObject,
-): Uint8Array {
-  const likerIdHex = Buffer.from(likerId).toString('hex');
-  const signData = JSON.stringify({ targetPostId, likerId: likerIdHex });
-  const hash = createHash('blake2b512').update(signData).digest().subarray(0, 32);
-  return new Uint8Array(cryptoSign(null, hash, privKey));
-}
-
 // ---------------------------------------------------------------------------
 // Test suite
 // ---------------------------------------------------------------------------
@@ -126,7 +106,39 @@ describe('likes service', () => {
   let db: Database.Database;
   let likerPubKey: Uint8Array;
   let likerPrivKey: KeyObject;
+  let likerPubKeyHex: string;
   let likerId: Uint8Array;
+
+  function makeDeps(): UtxoEngineDeps {
+    return {
+      getBox: (id: string): AnyBox | null => {
+        const box = storeGetBox(id);
+        if (!box) return null;
+        const r = db
+          .prepare('SELECT spent_at_block FROM utxo_boxes WHERE id = ?')
+          .get(id) as { spent_at_block: number | null } | undefined;
+        return r && r.spent_at_block === null ? box : null;
+      },
+      insertBox: (box: AnyBox) => {
+        insertBox(box);
+      },
+      consumeBox: (id: string, atBlock: number) => {
+        db.prepare('UPDATE utxo_boxes SET spent_at_block = ? WHERE id = ?').run(atBlock, id);
+      },
+      getKarmaBox: (owner: Uint8Array) => getKarmaBox(owner),
+      getIdentity: (userId: Uint8Array) => {
+        const stmt = db.prepare('SELECT * FROM identities WHERE user_id = ?');
+        const row = stmt.get(Buffer.from(userId)) as Record<string, unknown> | undefined;
+        if (!row) return null;
+        return { publicKey: new Uint8Array(row.public_key as Buffer) };
+      },
+      runInTransaction: (fn: () => void) => {
+        (db.transaction(fn) as () => void)();
+      },
+    };
+  }
+
+  let deps: UtxoEngineDeps;
 
   beforeEach(() => {
     initDb(':memory:');
@@ -135,8 +147,11 @@ describe('likes service', () => {
     const likerKeys = generateKeyPairSync('ed25519');
     likerPubKey = rawPublicKey(likerKeys.publicKey);
     likerPrivKey = likerKeys.privateKey;
+    likerPubKeyHex = Buffer.from(likerPubKey).toString('hex');
     likerId = likerPubKey;
     insertIdentity(likerId, likerPubKey);
+
+    deps = makeDeps();
   });
 
   afterEach(() => {
@@ -147,11 +162,42 @@ describe('likes service', () => {
   // 1. castLike locked case returns pending
   // -----------------------------------------------------------------------
   it('castLike locked case returns pending', () => {
-    createKarmaBox(likerPubKey, 100, 1);
+    const karma = createKarmaBox(likerPubKey, 100, 1);
     const postId = createTestPost(likerId);
 
-    const signature = signCastLike(postId, likerId, likerPrivKey);
-    const result = castLike(postId, likerId, signature, 5);
+    const newKarma: KarmaBox = {
+      boxType: 'karma',
+      value: 98,
+      createdAtBlock: 5,
+      owner: likerPubKey,
+      guard: 'owner_signature',
+      proofSource: `like:${postId}`,
+      lastTouchBlock: 5,
+    };
+    const newKarmaId = computeBoxId(newKarma);
+    const likeBox: LikeBox = {
+      boxType: 'like',
+      value: LIKE_COST,
+      createdAtBlock: 5,
+      likerId,
+      targetPostId: postId,
+      guard: 'epoch_tally',
+    };
+    const likeBoxId = computeBoxId(likeBox);
+
+    const tx: UtxoTransaction = {
+      inputs: [karma.id!],
+      outputs: [
+        { ...newKarma, id: newKarmaId },
+        { ...likeBox, id: likeBoxId },
+      ],
+      signatures: {},
+      protocolVersion: PROTOCOL_VERSION,
+    };
+
+    signTransaction(tx, likerPrivKey, likerPubKeyHex);
+
+    const result = castLike(deps, tx, 5);
 
     expect(result.castLikeResult).toBe('pending');
     expect(result.txId).toBeDefined();
@@ -163,19 +209,49 @@ describe('likes service', () => {
   // 2. castLike locked case inserts transaction into mempool
   // -----------------------------------------------------------------------
   it('castLike locked case inserts transaction into mempool', () => {
-    createKarmaBox(likerPubKey, 100, 1);
+    const karma = createKarmaBox(likerPubKey, 100, 1);
     const postId = createTestPost(likerId);
 
-    const signature = signCastLike(postId, likerId, likerPrivKey);
-    const result = castLike(postId, likerId, signature, 5);
+    const newKarma: KarmaBox = {
+      boxType: 'karma',
+      value: 98,
+      createdAtBlock: 5,
+      owner: likerPubKey,
+      guard: 'owner_signature',
+      proofSource: `like:${postId}`,
+      lastTouchBlock: 5,
+    };
+    const newKarmaId = computeBoxId(newKarma);
+    const likeBox: LikeBox = {
+      boxType: 'like',
+      value: LIKE_COST,
+      createdAtBlock: 5,
+      likerId,
+      targetPostId: postId,
+      guard: 'epoch_tally',
+    };
+    const likeBoxId = computeBoxId(likeBox);
+
+    const tx: UtxoTransaction = {
+      inputs: [karma.id!],
+      outputs: [
+        { ...newKarma, id: newKarmaId },
+        { ...likeBox, id: likeBoxId },
+      ],
+      signatures: {},
+      protocolVersion: PROTOCOL_VERSION,
+    };
+
+    signTransaction(tx, likerPrivKey, likerPubKeyHex);
+
+    castLike(deps, tx, 5);
 
     // Verify mempool has the entry
     const entries = getPendingEntries(100);
     const matching = entries.filter((e) => {
       if (e.entryType !== 'utxo_tx' || !e.utxoTxCbor) return false;
-      const tx = decodeTx(e.utxoTxCbor);
-      // Check the tx contains a like box output for our target post
-      return tx.outputs.some(
+      const storedTx = decodeTx(e.utxoTxCbor);
+      return storedTx.outputs.some(
         (o) => o.boxType === 'like' && (o as LikeBox).targetPostId === postId,
       );
     });
@@ -183,137 +259,283 @@ describe('likes service', () => {
   });
 
   // -----------------------------------------------------------------------
-  // 3. castLike free case still works (no UTXO, direct dag_likes insert)
+  // 3. castLike rejects locked tx on post at free threshold
   // -----------------------------------------------------------------------
-  it('castLike free case when at/above free threshold', () => {
-    createKarmaBox(likerPubKey, 100, 1);
+  it('castLike rejects locked tx on post at free threshold', () => {
+    const karma = createKarmaBox(likerPubKey, 100, 1);
     const postId = createTestPost(likerId);
 
-    // Pre-populate 50 locked likes (free threshold)
+    // Pre-populate to reach free threshold
     const freeThreshold = LIKE_FREE_THRESHOLD * LIKE_THRESHOLD; // 50
     for (let i = 0; i < freeThreshold; i++) {
       const fakeId = fakeUserId(i);
       insertLockedLikeBox(fakeId, postId, 1);
     }
 
-    const signature = signCastLike(postId, likerId, likerPrivKey);
-    const result = castLike(postId, likerId, signature, 5);
+    const newKarma: KarmaBox = {
+      boxType: 'karma',
+      value: 98,
+      createdAtBlock: 5,
+      owner: likerPubKey,
+      guard: 'owner_signature',
+      proofSource: `like:${postId}`,
+      lastTouchBlock: 5,
+    };
+    const newKarmaId = computeBoxId(newKarma);
+    const likeBox: LikeBox = {
+      boxType: 'like',
+      value: LIKE_COST,
+      createdAtBlock: 5,
+      likerId,
+      targetPostId: postId,
+      guard: 'epoch_tally',
+    };
+    const likeBoxId = computeBoxId(likeBox);
 
-    expect(result.castLikeResult).toBe('free');
-    expect(result.likeId).toBeDefined();
-    expect(typeof result.likeId).toBe('string');
+    const tx: UtxoTransaction = {
+      inputs: [karma.id!],
+      outputs: [
+        { ...newKarma, id: newKarmaId },
+        { ...likeBox, id: likeBoxId },
+      ],
+      signatures: {},
+      protocolVersion: PROTOCOL_VERSION,
+    };
+
+    signTransaction(tx, likerPrivKey, likerPubKeyHex);
+
+    expect(() => castLike(deps, tx, 5)).toThrow(
+      'sufficient likes for free liking',
+    );
   });
 
   // -----------------------------------------------------------------------
-  // 4. castLike free like does not lock karma
-  // -----------------------------------------------------------------------
-  it('castLike free like does not lock karma', () => {
-    createKarmaBox(likerPubKey, 100, 1);
-    const postId = createTestPost(likerId);
-
-    // Pre-populate to reach free threshold
-    const freeThreshold = LIKE_FREE_THRESHOLD * LIKE_THRESHOLD;
-    for (let i = 0; i < freeThreshold; i++) {
-      insertLockedLikeBox(fakeUserId(i), postId, 1);
-    }
-
-    const signature = signCastLike(postId, likerId, likerPrivKey);
-    castLike(postId, likerId, signature, 5);
-
-    // Karma should be unchanged (free like)
-    const karmaBox = getKarmaBox(likerPubKey);
-    expect(karmaBox).not.toBeNull();
-    expect(karmaBox!.value).toBe(100); // unchanged
-  });
-
-  // -----------------------------------------------------------------------
-  // 5. castLike fails if post unknown
+  // 4. castLike fails if post unknown
   // -----------------------------------------------------------------------
   it('castLike fails if post unknown', () => {
-    createKarmaBox(likerPubKey, 100, 1);
+    const karma = createKarmaBox(likerPubKey, 100, 1);
 
-    const signature = signCastLike('nonexistent', likerId, likerPrivKey);
-    expect(() =>
-      castLike('nonexistent', likerId, signature, 5),
-    ).toThrow('Post not found');
+    const newKarma: KarmaBox = {
+      boxType: 'karma',
+      value: 98,
+      createdAtBlock: 5,
+      owner: likerPubKey,
+      guard: 'owner_signature',
+      proofSource: 'like:nonexistent',
+      lastTouchBlock: 5,
+    };
+    const newKarmaId = computeBoxId(newKarma);
+    const likeBox: LikeBox = {
+      boxType: 'like',
+      value: LIKE_COST,
+      createdAtBlock: 5,
+      likerId,
+      targetPostId: 'nonexistent',
+      guard: 'epoch_tally',
+    };
+    const likeBoxId = computeBoxId(likeBox);
+
+    const tx: UtxoTransaction = {
+      inputs: [karma.id!],
+      outputs: [
+        { ...newKarma, id: newKarmaId },
+        { ...likeBox, id: likeBoxId },
+      ],
+      signatures: {},
+      protocolVersion: PROTOCOL_VERSION,
+    };
+
+    signTransaction(tx, likerPrivKey, likerPubKeyHex);
+
+    expect(() => castLike(deps, tx, 5)).toThrow('Post not found');
   });
 
   // -----------------------------------------------------------------------
-  // 6. castLike fails if already liked (via DB)
+  // 5. castLike fails if already liked (via DB)
   // -----------------------------------------------------------------------
   it('castLike fails if already liked (via DB)', () => {
-    createKarmaBox(likerPubKey, 100, 1);
+    const karma = createKarmaBox(likerPubKey, 100, 1);
     const postId = createTestPost(likerId);
 
     // Insert a like box directly (simulates confirmed like)
     insertLockedLikeBox(likerId, postId, 1);
 
-    const signature = signCastLike(postId, likerId, likerPrivKey);
-    expect(() =>
-      castLike(postId, likerId, signature, 5),
-    ).toThrow('Already liked');
+    const newKarma: KarmaBox = {
+      boxType: 'karma',
+      value: 98,
+      createdAtBlock: 5,
+      owner: likerPubKey,
+      guard: 'owner_signature',
+      proofSource: `like:${postId}`,
+      lastTouchBlock: 5,
+    };
+    const newKarmaId = computeBoxId(newKarma);
+    const likeBox: LikeBox = {
+      boxType: 'like',
+      value: LIKE_COST,
+      createdAtBlock: 5,
+      likerId,
+      targetPostId: postId,
+      guard: 'epoch_tally',
+    };
+    const likeBoxId = computeBoxId(likeBox);
+
+    const tx: UtxoTransaction = {
+      inputs: [karma.id!],
+      outputs: [
+        { ...newKarma, id: newKarmaId },
+        { ...likeBox, id: likeBoxId },
+      ],
+      signatures: {},
+      protocolVersion: PROTOCOL_VERSION,
+    };
+
+    signTransaction(tx, likerPrivKey, likerPubKeyHex);
+
+    expect(() => castLike(deps, tx, 5)).toThrow('Already liked');
   });
 
   // -----------------------------------------------------------------------
-  // 7. castLike fails if already liked (via mempool — duplicate pending)
+  // 6. castLike fails if already liked (via mempool — duplicate pending)
   // -----------------------------------------------------------------------
   it('castLike fails if already liked (via mempool)', () => {
-    createKarmaBox(likerPubKey, 100, 1);
+    const karma = createKarmaBox(likerPubKey, 100, 1);
     const postId = createTestPost(likerId);
 
-    const signature = signCastLike(postId, likerId, likerPrivKey);
-    // First like → pending
-    castLike(postId, likerId, signature, 5);
+    const newKarma: KarmaBox = {
+      boxType: 'karma',
+      value: 98,
+      createdAtBlock: 5,
+      owner: likerPubKey,
+      guard: 'owner_signature',
+      proofSource: `like:${postId}`,
+      lastTouchBlock: 5,
+    };
+    const newKarmaId = computeBoxId(newKarma);
+    const likeBox: LikeBox = {
+      boxType: 'like',
+      value: LIKE_COST,
+      createdAtBlock: 5,
+      likerId,
+      targetPostId: postId,
+      guard: 'epoch_tally',
+    };
+    const likeBoxId = computeBoxId(likeBox);
 
-    // Second like with same params → should detect pending and throw
-    expect(() =>
-      castLike(postId, likerId, signature, 5),
-    ).toThrow('Already liked');
+    const tx: UtxoTransaction = {
+      inputs: [karma.id!],
+      outputs: [
+        { ...newKarma, id: newKarmaId },
+        { ...likeBox, id: likeBoxId },
+      ],
+      signatures: {},
+      protocolVersion: PROTOCOL_VERSION,
+    };
+
+    signTransaction(tx, likerPrivKey, likerPubKeyHex);
+
+    // First like -> pending
+    castLike(deps, tx, 5);
+
+    // Second like with same params -> should detect pending and throw
+    // Build a fresh tx (different txId but same target/liker)
+    const tx2: UtxoTransaction = {
+      inputs: [karma.id!],
+      outputs: [
+        { ...newKarma, id: newKarmaId },
+        { ...likeBox, id: likeBoxId },
+      ],
+      signatures: {},
+      protocolVersion: PROTOCOL_VERSION,
+    };
+    signTransaction(tx2, likerPrivKey, likerPubKeyHex);
+
+    expect(() => castLike(deps, tx2, 5)).toThrow('Already liked');
   });
 
   // -----------------------------------------------------------------------
-  // 8. castLike fails if insufficient karma (locked)
+  // 7. castLike fails if insufficient karma (locked)
   // -----------------------------------------------------------------------
   it('castLike fails if insufficient karma (locked)', () => {
-    createKarmaBox(likerPubKey, 1, 1); // Only 1 karma, need 2
+    const karma = createKarmaBox(likerPubKey, 1, 1); // Only 1 karma, need 2+ for like cost
     const postId = createTestPost(likerId);
 
-    const signature = signCastLike(postId, likerId, likerPrivKey);
-    expect(() =>
-      castLike(postId, likerId, signature, 5),
-    ).toThrow('Insufficient karma');
+    const newKarma: KarmaBox = {
+      boxType: 'karma',
+      value: 0,
+      createdAtBlock: 5,
+      owner: likerPubKey,
+      guard: 'owner_signature',
+      proofSource: `like:${postId}`,
+      lastTouchBlock: 5,
+    };
+    const newKarmaId = computeBoxId(newKarma);
+    const likeBox: LikeBox = {
+      boxType: 'like',
+      value: LIKE_COST,
+      createdAtBlock: 5,
+      likerId,
+      targetPostId: postId,
+      guard: 'epoch_tally',
+    };
+    const likeBoxId = computeBoxId(likeBox);
+
+    const tx: UtxoTransaction = {
+      inputs: [karma.id!],
+      outputs: [
+        { ...newKarma, id: newKarmaId },
+        { ...likeBox, id: likeBoxId },
+      ],
+      signatures: {},
+      protocolVersion: PROTOCOL_VERSION,
+    };
+
+    signTransaction(tx, likerPrivKey, likerPubKeyHex);
+
+    expect(() => castLike(deps, tx, 5)).toThrow('Invalid like transaction');
   });
 
   // -----------------------------------------------------------------------
-  // 9. castLike fails if zero karma (free case)
-  // -----------------------------------------------------------------------
-  it('castLike fails if zero karma (free case)', () => {
-    createKarmaBox(likerPubKey, 0, 1); // Zero karma
-    const postId = createTestPost(likerId);
-
-    // Pre-populate to reach free threshold
-    const freeThreshold = LIKE_FREE_THRESHOLD * LIKE_THRESHOLD;
-    for (let i = 0; i < freeThreshold; i++) {
-      insertLockedLikeBox(fakeUserId(i), postId, 1);
-    }
-
-    const signature = signCastLike(postId, likerId, likerPrivKey);
-    expect(() =>
-      castLike(postId, likerId, signature, 5),
-    ).toThrow('Insufficient karma (need > 0 for free like)');
-  });
-
-  // -----------------------------------------------------------------------
-  // 10. castLike pending does not change karma immediately
+  // 8. castLike pending does not change karma immediately
   // -----------------------------------------------------------------------
   it('castLike pending does not change karma immediately', () => {
-    createKarmaBox(likerPubKey, 100, 1);
+    const karma = createKarmaBox(likerPubKey, 100, 1);
     const postId = createTestPost(likerId);
 
-    const signature = signCastLike(postId, likerId, likerPrivKey);
-    castLike(postId, likerId, signature, 5);
+    const newKarma: KarmaBox = {
+      boxType: 'karma',
+      value: 98,
+      createdAtBlock: 5,
+      owner: likerPubKey,
+      guard: 'owner_signature',
+      proofSource: `like:${postId}`,
+      lastTouchBlock: 5,
+    };
+    const newKarmaId = computeBoxId(newKarma);
+    const likeBox: LikeBox = {
+      boxType: 'like',
+      value: LIKE_COST,
+      createdAtBlock: 5,
+      likerId,
+      targetPostId: postId,
+      guard: 'epoch_tally',
+    };
+    const likeBoxId = computeBoxId(likeBox);
 
-    // Karma should be unchanged (pending in mempool)
+    const tx: UtxoTransaction = {
+      inputs: [karma.id!],
+      outputs: [
+        { ...newKarma, id: newKarmaId },
+        { ...likeBox, id: likeBoxId },
+      ],
+      signatures: {},
+      protocolVersion: PROTOCOL_VERSION,
+    };
+
+    signTransaction(tx, likerPrivKey, likerPubKeyHex);
+    castLike(deps, tx, 5);
+
+    // Karma should be unchanged (pending in mempool, not applied)
     const karmaBox = getKarmaBox(likerPubKey);
     expect(karmaBox).not.toBeNull();
     expect(karmaBox!.value).toBe(100); // unchanged — pending

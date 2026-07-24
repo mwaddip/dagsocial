@@ -6,6 +6,7 @@ import {
 import type { Post, KarmaBox, UtxoTransaction, AnyBox } from '@dagsocial/types';
 import type { VerifierDeps, VerificationResult } from '../services/verifier.js';
 import { getNet } from '../services/net-instance.js';
+import { jsonToTx } from './json-to-tx.js';
 
 // ---------------------------------------------------------------------------
 // Dependency types
@@ -142,11 +143,12 @@ export function createRouter(deps: PostsDeps): Router {
     deps.insertPost(post, rawCbor);
 
     // Extract karma-lock tx from request body
-    const karmaLockTx = (req.body as { karmaLockTx?: UtxoTransaction }).karmaLockTx;
-    if (!karmaLockTx) {
+    const rawKarmaLockTx = (req.body as { karmaLockTx?: Record<string, unknown> }).karmaLockTx;
+    if (!rawKarmaLockTx) {
       res.status(400).json({ error: 'karmaLockTx required' });
       return;
     }
+    const karmaLockTx = jsonToTx(rawKarmaLockTx);
 
     // Validate the karma-lock tx via the UTXO engine
     const txResult = deps.validateTx(karmaLockTx, currentHeight);

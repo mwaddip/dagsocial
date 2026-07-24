@@ -1,11 +1,11 @@
-import { uid } from '../helpers.js';
+import { txToJson, signTransaction } from '../helpers.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import express from 'express';
 import http from 'http';
-import { createHash, createPrivateKey, sign as cryptoSign } from 'crypto';
-import { initDb, closeDb } from '../../src/store/db.js';
-import { insertIdentity, getIdentity } from '../../src/store/identities.js';
-import { insertBox } from '../../src/store/utxo.js';
+import { createHash, generateKeyPairSync, createPrivateKey } from 'crypto';
+import { initDb, closeDb, getDb } from '../../src/store/db.js';
+import { insertIdentity, getIdentity as storeGetIdentity } from '../../src/store/identities.js';
+import { getKarmaBox, getBox as storeGetBox, insertBox as storeInsertBox } from '../../src/store/utxo.js';
 import { getCurrentHeight } from '../../src/store/ordering.js';
 import {
   createInvite,
@@ -15,31 +15,17 @@ import {
 import {
   generateKeyPair,
   computeBoxId,
+  INVITE_KARMA_AMOUNT,
+  INVITE_BOND_KARMA,
+  PROTOCOL_VERSION,
+  INVITE_PROBATION_BLOCKS,
 } from '@dagsocial/types';
-import type { KarmaBox, InviteBox, BondBox } from '@dagsocial/types';
+import type { KarmaBox, InviteBox, BondBox, UtxoTransaction, AnyBox } from '@dagsocial/types';
 import { createRouter } from '../../src/routes/invites.js';
+import type { InvitesDeps } from '../../src/routes/invites.js';
 import { unlinkSync } from 'fs';
 
 const TEST_DB = '/tmp/dagsocial-test-routes-invites.sqlite';
-
-// ---------------------------------------------------------------------------
-// Ed25519 signing helper
-// ---------------------------------------------------------------------------
-
-function signData(data: string, secretKey: Uint8Array): string {
-  const keyObj = createPrivateKey({
-    key: Buffer.from(secretKey),
-    format: 'der',
-    type: 'pkcs8',
-  });
-  const hash = createHash('blake2b512').update(data).digest().subarray(0, 32);
-  const sig = cryptoSign(null, hash, keyObj);
-  return Buffer.from(sig).toString('hex');
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 async function request(
   path: string,
@@ -47,11 +33,24 @@ async function request(
   body?: unknown,
 ): Promise<{ status: number; data: unknown }> {
   return new Promise((resolve) => {
-    const deps = {
+    const db = getDb();
+    const deps: InvitesDeps = {
+      getBox: (id: string): AnyBox | null => {
+        const box = storeGetBox(id);
+        if (!box) return null;
+        const r = db.prepare('SELECT spent_at_block FROM utxo_boxes WHERE id = ?').get(id) as { spent_at_block: number | null } | undefined;
+        return r && r.spent_at_block === null ? box : null;
+      },
+      insertBox: (box: AnyBox) => { storeInsertBox(box); },
+      consumeBox: (id: string, atBlock: number) => {
+        db.prepare('UPDATE utxo_boxes SET spent_at_block = ? WHERE id = ?').run(atBlock, id);
+      },
+      getKarmaBox: (owner: Uint8Array) => getKarmaBox(owner),
+      getIdentity: (userId: Uint8Array) => storeGetIdentity(userId),
+      runInTransaction: (fn: () => void) => { (db.transaction(fn) as () => void)(); },
       createInvite,
       claimInvite,
       cancelInvite,
-      getIdentity,
       getCurrentHeight,
     };
     const app = express();
@@ -80,105 +79,32 @@ async function request(
           });
         },
       );
-      if (body !== undefined) r.write(JSON.stringify(body, (_k, v) => v instanceof Uint8Array ? Buffer.from(v).toString('hex') : v));
+      if (body !== undefined) r.write(JSON.stringify(body));
       r.end();
     });
   });
 }
 
-/** Insert a karma box into UTXO. */
-function insertKarmaBox(
-  owner: Uint8Array,
-  value: number,
-  createdAtBlock: number,
-): KarmaBox {
-  const box: Omit<KarmaBox, 'id'> & { id?: string } = {
-    boxType: 'karma',
-    value,
-    createdAtBlock,
-    owner,
-    guard: 'owner_signature',
-    proofSource: 'test',
-    lastTouchBlock: createdAtBlock,
-  };
-  const id = computeBoxId(box);
-  const full: KarmaBox = { ...box, id, boxType: 'karma', guard: 'owner_signature' };
-  insertBox(full);
-  return full;
-}
-
-/** Insert an invite box into UTXO. */
-function insertInviteBox(
-  value: number,
-  createdAtBlock: number,
-  secretHash: Uint8Array,
-  inviterId: Uint8Array,
-): InviteBox {
-  const box: Omit<InviteBox, 'id'> & { id?: string } = {
-    boxType: 'invite',
-    value,
-    createdAtBlock,
-    secretHash,
-    inviterId,
-    guard: 'hash_preimage',
-  };
-  const id = computeBoxId(box);
-  const full: InviteBox = { ...box, id, boxType: 'invite', guard: 'hash_preimage' };
-  insertBox(full);
-  return full;
-}
-
-/** Insert a bond box into UTXO. */
-function insertBondBox(
-  value: number,
-  createdAtBlock: number,
-  inviterId: Uint8Array,
-): BondBox {
-  const box: Omit<BondBox, 'id'> & { id?: string } = {
-    boxType: 'bond',
-    value,
-    createdAtBlock,
-    inviterId,
-    inviteePublicKey: new Uint8Array(0),
-    probationStartBlock: 0,
-    probationEndBlock: 0,
-    guard: 'inviter_signature',
-  };
-  const id = computeBoxId(box);
-  const full: BondBox = { ...box, id, boxType: 'bond', guard: 'inviter_signature' };
-  insertBox(full);
-  return full;
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 describe('invites routes', () => {
   let inviterId: Uint8Array;
   let inviterKp: ReturnType<typeof generateKeyPair>;
-  let inviteCounter = 0;
+  let inviterPrivKeyObj: ReturnType<typeof createPrivateKey>;
+  let inviterPubKeyHex: string;
 
   beforeAll(() => {
     try { unlinkSync(TEST_DB); } catch { /* ignore */ }
     initDb(TEST_DB);
 
-    // Create inviter identity with karma
     inviterKp = generateKeyPair();
     inviterId = inviterKp.publicKey;
+    inviterPubKeyHex = Buffer.from(inviterId).toString('hex');
     insertIdentity(inviterId, inviterKp.publicKey);
+    inviterPrivKeyObj = createPrivateKey({
+      key: Buffer.from(inviterKp.secretKey),
+      format: 'der',
+      type: 'pkcs8',
+    });
 
-    const karmaBox: KarmaBox = {
-      boxType: 'karma',
-      value: 1000,
-      createdAtBlock: 1,
-      owner: inviterKp.publicKey,
-      guard: 'owner_signature',
-      proofSource: 'test',
-      lastTouchBlock: 1,
-    };
-    const karmaBoxId = computeBoxId(karmaBox);
-    insertBox({ ...karmaBox, id: karmaBoxId });
   });
 
   afterAll(() => {
@@ -187,19 +113,65 @@ describe('invites routes', () => {
   });
 
   it('POST /invites creates invite and returns 201 with pending', async () => {
-    inviteCounter++;
-    const karmaAmount = 10 + inviteCounter;
-    const bondAmount = 3 + inviteCounter;
-    const inviterIdHex = Buffer.from(inviterId).toString('hex');
-    const signMsg = `create-invite:${inviterIdHex}:${karmaAmount}:${bondAmount}`;
-    const sig = signData(signMsg, inviterKp.secretKey);
+    const karma: KarmaBox = {
+      boxType: 'karma',
+      value: 100,
+      createdAtBlock: 1,
+      owner: inviterId,
+      guard: 'owner_signature',
+      proofSource: 'test-create',
+      lastTouchBlock: 1,
+    };
+    const karmaId = computeBoxId(karma);
+    storeInsertBox({ ...karma, id: karmaId, boxType: 'karma', guard: 'owner_signature' } as KarmaBox);
 
-    const res = await request('/', 'POST', {
-      inviterId: inviterIdHex,
-      karmaAmount,
-      bondAmount,
-      signature: sig,
-    });
+    const newKarma: KarmaBox = {
+      boxType: 'karma',
+      value: 50,
+      createdAtBlock: 1,
+      owner: inviterId,
+      guard: 'owner_signature',
+      proofSource: 'create-invite',
+      lastTouchBlock: 1,
+    };
+    const newKarmaId = computeBoxId(newKarma);
+
+    const secretHash = new Uint8Array(32).fill(0x99);
+    const inviteBox: InviteBox = {
+      boxType: 'invite',
+      value: INVITE_KARMA_AMOUNT,
+      createdAtBlock: 1,
+      secretHash,
+      inviterId,
+      guard: 'hash_preimage',
+    };
+    const inviteBoxId = computeBoxId(inviteBox);
+
+    const bondBox: BondBox = {
+      boxType: 'bond',
+      value: INVITE_BOND_KARMA,
+      createdAtBlock: 1,
+      inviterId,
+      inviteePublicKey: new Uint8Array(0),
+      probationStartBlock: 0,
+      probationEndBlock: 0,
+      guard: 'inviter_signature',
+    };
+    const bondBoxId = computeBoxId(bondBox);
+
+    const tx: UtxoTransaction = {
+      inputs: [karmaId],
+      outputs: [
+        { ...newKarma, id: newKarmaId },
+        { ...inviteBox, id: inviteBoxId },
+        { ...bondBox, id: bondBoxId },
+      ],
+      signatures: {},
+      protocolVersion: PROTOCOL_VERSION,
+    };
+    signTransaction(tx, inviterPrivKeyObj, inviterPubKeyHex);
+
+    const res = await request('/', 'POST', { tx: txToJson(tx) });
     expect(res.status).toBe(201);
     const body = res.data as Record<string, unknown>;
     expect(body.status).toBe('pending');
@@ -211,33 +183,79 @@ describe('invites routes', () => {
     expect((body.secretHash as string).length).toBe(64);
   });
 
-  it('POST /invites with missing fields returns 400', async () => {
+  it('POST /invites with missing tx returns 400', async () => {
     const res = await request('/', 'POST', {});
     expect(res.status).toBe(400);
   });
 
   it('POST /invites/claim claims an invite and returns 201 with pending', async () => {
-    inviteCounter++;
-    const bondAmount = 10 + inviteCounter; // unique per test to avoid ID collision
-    const secret = new Uint8Array(32).fill(inviteCounter);
-    const secretHex = Buffer.from(secret).toString('hex');
-    const secretHash = createHash('blake2b512')
-      .update(Buffer.from(secret))
-      .digest()
-      .subarray(0, 32);
+    const secret = new Uint8Array(32).fill(0x55);
+    const secretHash = createHash('blake2b512').update(Buffer.from(secret)).digest().subarray(0, 32);
 
-    // Manually insert invite and bond boxes into UTXO (simulating confirmed invite)
-    const inviteBox = insertInviteBox(15, 1, secretHash, inviterId);
-    insertBondBox(bondAmount, 1, inviterId);
+    const inviteBox: InviteBox = {
+      boxType: 'invite',
+      value: INVITE_KARMA_AMOUNT,
+      createdAtBlock: 1,
+      secretHash,
+      inviterId,
+      guard: 'hash_preimage',
+    };
+    const inviteBoxId = computeBoxId(inviteBox);
+    storeInsertBox({ ...inviteBox, id: inviteBoxId, boxType: 'invite', guard: 'hash_preimage' } as InviteBox);
+
+    const bondBox: BondBox = {
+      boxType: 'bond',
+      value: INVITE_BOND_KARMA,
+      createdAtBlock: 1,
+      inviterId,
+      inviteePublicKey: new Uint8Array(0),
+      probationStartBlock: 0,
+      probationEndBlock: 0,
+      guard: 'inviter_signature',
+    };
+    const bondBoxId = computeBoxId(bondBox);
+    storeInsertBox({ ...bondBox, id: bondBoxId, boxType: 'bond', guard: 'inviter_signature' } as BondBox);
 
     const newKp = generateKeyPair();
-    const publicKey = Buffer.from(newKp.publicKey).toString('hex');
+    const inviteePubKey = newKp.publicKey;
+    insertIdentity(inviteePubKey, inviteePubKey);
 
-    const res = await request('/claim', 'POST', {
-      inviteBoxId: inviteBox.id,
-      secret: secretHex,
-      publicKey,
-    });
+    const karmaOut: KarmaBox = {
+      boxType: 'karma',
+      value: INVITE_KARMA_AMOUNT,
+      createdAtBlock: 5,
+      owner: inviteePubKey,
+      guard: 'owner_signature',
+      proofSource: `invite-claim:${inviteBoxId}`,
+      lastTouchBlock: 5,
+    };
+    const karmaOutId = computeBoxId(karmaOut);
+
+    const bondOut: BondBox = {
+      boxType: 'bond',
+      value: INVITE_BOND_KARMA,
+      createdAtBlock: 1,
+      inviterId,
+      inviteePublicKey: inviteePubKey,
+      probationStartBlock: 5,
+      probationEndBlock: 5 + INVITE_PROBATION_BLOCKS,
+      guard: 'inviter_signature',
+    };
+    const bondOutId = computeBoxId(bondOut);
+
+    const tx: UtxoTransaction = {
+      inputs: [inviteBoxId, bondBoxId],
+      outputs: [
+        { ...karmaOut, id: karmaOutId },
+        { ...bondOut, id: bondOutId },
+      ],
+      signatures: {},
+      preimages: { [inviteBoxId]: secret },
+      protocolVersion: PROTOCOL_VERSION,
+    };
+    signTransaction(tx, inviterPrivKeyObj, inviterPubKeyHex);
+
+    const res = await request('/claim', 'POST', { tx: txToJson(tx) });
     expect(res.status).toBe(201);
     const body = res.data as Record<string, unknown>;
     expect(body.status).toBe('pending');
@@ -248,25 +266,69 @@ describe('invites routes', () => {
   });
 
   it('POST /invites/cancel cancels an unclaimed invite and returns 200 with pending', async () => {
-    inviteCounter++;
-    const bondAmount = 10 + inviteCounter; // unique per test to avoid ID collision
-    const secretHash = createHash('blake2b512')
-      .update(Buffer.from(new Uint8Array(32).fill(inviteCounter)))
-      .digest()
-      .subarray(0, 32);
+    const secret = new Uint8Array(32).fill(0x33);
+    const secretHash = createHash('blake2b512').update(Buffer.from(secret)).digest().subarray(0, 32);
 
-    // Manually insert invite and bond boxes into UTXO
-    const inviteBox = insertInviteBox(15, 1, secretHash, inviterId);
-    insertBondBox(bondAmount, 1, inviterId);
+    const blockHeight = 10;
 
-    const cancelMsg = `cancel-invite:${inviteBox.id}`;
-    const cancelSig = signData(cancelMsg, inviterKp.secretKey);
+    const inviteBox: InviteBox = {
+      boxType: 'invite',
+      value: INVITE_KARMA_AMOUNT,
+      createdAtBlock: blockHeight,
+      secretHash,
+      inviterId,
+      guard: 'hash_preimage',
+    };
+    const inviteBoxId = computeBoxId(inviteBox);
+    storeInsertBox({ ...inviteBox, id: inviteBoxId, boxType: 'invite', guard: 'hash_preimage' } as InviteBox);
 
-    const res = await request('/cancel', 'POST', {
-      inviteBoxId: inviteBox.id,
-      inviterId: Buffer.from(inviterId).toString('hex'),
-      signature: cancelSig,
-    });
+    const bondBox: BondBox = {
+      boxType: 'bond',
+      value: INVITE_BOND_KARMA,
+      createdAtBlock: blockHeight,
+      inviterId,
+      inviteePublicKey: new Uint8Array(0),
+      probationStartBlock: 0,
+      probationEndBlock: 0,
+      guard: 'inviter_signature',
+    };
+    const bondBoxId = computeBoxId(bondBox);
+    storeInsertBox({ ...bondBox, id: bondBoxId, boxType: 'bond', guard: 'inviter_signature' } as BondBox);
+
+    const karmaIn: KarmaBox = {
+      boxType: 'karma',
+      value: 200,
+      createdAtBlock: blockHeight,
+      owner: inviterId,
+      guard: 'owner_signature',
+      proofSource: 'test-cancel',
+      lastTouchBlock: blockHeight,
+    };
+    const karmaInId = computeBoxId(karmaIn);
+    storeInsertBox({ ...karmaIn, id: karmaInId, boxType: 'karma', guard: 'owner_signature' } as KarmaBox);
+
+    const totalValue = 200 + INVITE_KARMA_AMOUNT + INVITE_BOND_KARMA;
+    const newKarma: KarmaBox = {
+      boxType: 'karma',
+      value: totalValue,
+      createdAtBlock: blockHeight,
+      owner: inviterId,
+      guard: 'owner_signature',
+      proofSource: `invite-cancel:${inviteBoxId}`,
+      lastTouchBlock: blockHeight,
+    };
+    const newKarmaId = computeBoxId(newKarma);
+
+    const tx: UtxoTransaction = {
+      inputs: [karmaInId, inviteBoxId, bondBoxId],
+      outputs: [{ ...newKarma, id: newKarmaId }],
+      signatures: {},
+      preimages: { [inviteBoxId]: secret },
+      protocolVersion: PROTOCOL_VERSION,
+    };
+    signTransaction(tx, inviterPrivKeyObj, inviterPubKeyHex);
+
+    const res = await request('/cancel', 'POST', { tx: txToJson(tx) });
     expect(res.status).toBe(200);
     const body = res.data as Record<string, unknown>;
     expect(body.status).toBe('pending');
@@ -275,25 +337,79 @@ describe('invites routes', () => {
   });
 
   it('POST /invites/cancel with wrong inviter returns 403', async () => {
-    inviteCounter++;
-    const bondAmount = 10 + inviteCounter; // unique per test to avoid ID collision
-    const secretHash = createHash('blake2b512')
-      .update(Buffer.from(new Uint8Array(32).fill(inviteCounter)))
-      .digest()
-      .subarray(0, 32);
+    const secret = new Uint8Array(32).fill(0x44);
+    const secretHash = createHash('blake2b512').update(Buffer.from(secret)).digest().subarray(0, 32);
 
-    // Manually insert invite and bond boxes into UTXO
-    const inviteBox = insertInviteBox(15, 1, secretHash, inviterId);
-    insertBondBox(bondAmount, 1, inviterId);
+    const blockHeight = 20;
 
-    const cancelMsg = `cancel-invite:${inviteBox.id}`;
-    const wrongSig = signData(cancelMsg, inviterKp.secretKey);
+    const inviteBox: InviteBox = {
+      boxType: 'invite',
+      value: INVITE_KARMA_AMOUNT,
+      createdAtBlock: blockHeight,
+      secretHash,
+      inviterId,
+      guard: 'hash_preimage',
+    };
+    const inviteBoxId = computeBoxId(inviteBox);
+    storeInsertBox({ ...inviteBox, id: inviteBoxId, boxType: 'invite', guard: 'hash_preimage' } as InviteBox);
 
-    const res = await request('/cancel', 'POST', {
-      inviteBoxId: inviteBox.id,
-      inviterId: uid('wrong-inviter-id'),
-      signature: wrongSig,
+    const bondBox: BondBox = {
+      boxType: 'bond',
+      value: INVITE_BOND_KARMA,
+      createdAtBlock: blockHeight,
+      inviterId,
+      inviteePublicKey: new Uint8Array(0),
+      probationStartBlock: 0,
+      probationEndBlock: 0,
+      guard: 'inviter_signature',
+    };
+    const bondBoxId = computeBoxId(bondBox);
+    storeInsertBox({ ...bondBox, id: bondBoxId, boxType: 'bond', guard: 'inviter_signature' } as BondBox);
+
+    const wrongKp = generateKeyPair();
+    const wrongPubKey = wrongKp.publicKey;
+    const wrongPubKeyHex = Buffer.from(wrongPubKey).toString('hex');
+    insertIdentity(wrongPubKey, wrongPubKey);
+    const wrongPrivKeyObj = createPrivateKey({
+      key: Buffer.from(wrongKp.secretKey),
+      format: 'der',
+      type: 'pkcs8',
     });
+
+    const wrongKarma: KarmaBox = {
+      boxType: 'karma',
+      value: 200,
+      createdAtBlock: blockHeight,
+      owner: wrongPubKey,
+      guard: 'owner_signature',
+      proofSource: 'test-wrong',
+      lastTouchBlock: blockHeight,
+    };
+    const wrongKarmaId = computeBoxId(wrongKarma);
+    storeInsertBox({ ...wrongKarma, id: wrongKarmaId, boxType: 'karma', guard: 'owner_signature' } as KarmaBox);
+
+    const totalValue = 200 + INVITE_KARMA_AMOUNT + INVITE_BOND_KARMA;
+    const newKarma: KarmaBox = {
+      boxType: 'karma',
+      value: totalValue,
+      createdAtBlock: blockHeight,
+      owner: wrongPubKey,
+      guard: 'owner_signature',
+      proofSource: `invite-cancel:${inviteBoxId}`,
+      lastTouchBlock: blockHeight,
+    };
+    const newKarmaId = computeBoxId(newKarma);
+
+    const tx: UtxoTransaction = {
+      inputs: [wrongKarmaId, inviteBoxId, bondBoxId],
+      outputs: [{ ...newKarma, id: newKarmaId }],
+      signatures: {},
+      preimages: { [inviteBoxId]: secret },
+      protocolVersion: PROTOCOL_VERSION,
+    };
+    signTransaction(tx, wrongPrivKeyObj, wrongPubKeyHex);
+
+    const res = await request('/cancel', 'POST', { tx: txToJson(tx) });
     expect(res.status).toBe(403);
   });
 });

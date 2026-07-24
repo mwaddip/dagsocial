@@ -1,23 +1,26 @@
-import { uid } from '../helpers.js';
+import { uid, txToJson, rawPublicKey, signTransaction } from '../helpers.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import express from 'express';
 import http from 'http';
-import { initDb, closeDb } from '../../src/store/db.js';
+import { createHash, generateKeyPairSync, createPrivateKey } from 'crypto';
+import { initDb, closeDb, getDb } from '../../src/store/db.js';
 import { insertIdentity, getIdentity } from '../../src/store/identities.js';
 import { insertPost, getPost, queryPosts } from '../../src/store/posts.js';
 import { consumeChallenge, getActiveChallenge } from '../../src/store/challenges.js';
 import { getCurrentHeight } from '../../src/store/ordering.js';
-import { getKarmaBox, insertBox } from '../../src/store/utxo.js';
+import { getKarmaBox, insertBox, getBox as storeGetBox } from '../../src/store/utxo.js';
 import { getLikeCount } from '../../src/store/likes.js';
 import { insertSubBlock as insertMempoolSubBlock, insertUtxoTx, getPendingEntries } from '../../src/store/mempool.js';
 import { verifyPost } from '../../src/services/verifier.js';
+import { validateTx } from '../../src/services/utxo-engine.js';
 import {
   encodePost,
   generateKeyPair,
   PROTOCOL_VERSION,
   computeBoxId,
+  POST_LOCK_THREAD_COST,
 } from '@dagsocial/types';
-import type { KarmaBox } from '@dagsocial/types';
+import type { KarmaBox, PostLockBox, UtxoTransaction, AnyBox } from '@dagsocial/types';
 import { createRouter } from '../../src/routes/posts.js';
 import { unlinkSync } from 'fs';
 
@@ -36,6 +39,7 @@ async function request(
   },
 ): Promise<{ status: number; data: unknown }> {
   return new Promise((resolve) => {
+    const db = getDb();
     const deps = {
       insertPost,
       consumeChallenge,
@@ -51,6 +55,37 @@ async function request(
       insertMempoolSubBlock,
       insertUtxoTx,
       onSubBlockReceived: () => {},
+      validateTx: (tx: UtxoTransaction, height: number) => {
+        return validateTx(
+          {
+            getBox: (id: string): AnyBox | null => {
+              const box = storeGetBox(id);
+              if (!box) return null;
+              const r = db.prepare('SELECT spent_at_block FROM utxo_boxes WHERE id = ?').get(id) as { spent_at_block: number | null } | undefined;
+              return r && r.spent_at_block === null ? box : null;
+            },
+            insertBox: (box: AnyBox) => {
+              insertBox(box);
+            },
+            consumeBox: (id: string, atBlock: number) => {
+              db.prepare('UPDATE utxo_boxes SET spent_at_block = ? WHERE id = ?').run(atBlock, id);
+            },
+            getKarmaBox: (owner: Uint8Array) => getKarmaBox(owner),
+            getIdentity: (userId: Uint8Array) => getIdentity(userId),
+            runInTransaction: (fn: () => void) => {
+              (db.transaction(fn) as () => void)();
+            },
+          },
+          tx,
+          height,
+        );
+      },
+	      getBox: (id: string): AnyBox | null => {
+        const box = storeGetBox(id);
+        if (!box) return null;
+        const r = db.prepare('SELECT spent_at_block FROM utxo_boxes WHERE id = ?').get(id) as { spent_at_block: number | null } | undefined;
+        return r && r.spent_at_block === null ? box : null;
+      },
     };
     const app = express();
     app.use(express.json());
@@ -107,7 +142,7 @@ describe('posts routes', () => {
   it('POST /posts with invalid hex returns 400', async () => {
     const res = await request('/', 'POST', {
       content: 'test',
-      author: uid('someone'),
+      author: 'not-hex!!@@',
       parentRefs: [],
       challenge: 'not-hex!!@@',
       powNonce: 0,
@@ -138,13 +173,18 @@ describe('posts routes', () => {
   });
 
   // -----------------------------------------------------------------------
-  // Success case: post → mempool batch
+  // Success case: post -> mempool batch with karmaLockTx
   // -----------------------------------------------------------------------
 
-  it('POST /posts with valid post inserts batch into mempool', async () => {
+  it('POST /posts with valid post and karmaLockTx inserts batch into mempool', async () => {
     const kp = generateKeyPair();
     const userId = kp.publicKey;
     const userIdHex = Buffer.from(userId).toString('hex');
+    const privKeyObj = createPrivateKey({
+      key: Buffer.from(kp.secretKey),
+      format: 'der',
+      type: 'pkcs8',
+    });
 
     // Setup: identity
     insertIdentity(userId, kp.publicKey);
@@ -160,8 +200,7 @@ describe('posts routes', () => {
       lastTouchBlock: 1,
     };
     const karmaBoxId = computeBoxId(karmaBox);
-    const karmaBoxWithId: KarmaBox = { ...karmaBox, id: karmaBoxId };
-    insertBox(karmaBoxWithId);
+    insertBox({ ...karmaBox, id: karmaBoxId });
 
     // Setup: challenge
     const challengeBytes = new Uint8Array(Buffer.from('cc'.repeat(32), 'hex'));
@@ -170,6 +209,45 @@ describe('posts routes', () => {
 
     const timestamp = Date.now();
 
+    // Build karma-lock tx
+    const newKarma: KarmaBox = {
+      boxType: 'karma',
+      value: 100 - POST_LOCK_THREAD_COST,
+      createdAtBlock: 5,
+      owner: userId,
+      guard: 'owner_signature',
+      proofSource: 'post-lock',
+      lastTouchBlock: 5,
+    };
+    const newKarmaId = computeBoxId(newKarma);
+
+    const postLockBox: PostLockBox = {
+      boxType: 'post_lock',
+      value: POST_LOCK_THREAD_COST,
+      createdAtBlock: 5,
+      originalValue: POST_LOCK_THREAD_COST,
+      owner: userId,
+      targetPostId: '', // Will be filled by postId after submission
+      guard: 'epoch_tally',
+    };
+
+    // Use a placeholder postId for the lock box (the tx is validated before the
+    // post ID is known, but the lock box must reference a valid post ID)
+    // We'll compute it from the post so it matches
+    const challengeHex = Buffer.from(challengeBytes).toString('hex');
+
+    const karmaLockTx: UtxoTransaction = {
+      inputs: [karmaBoxId],
+      outputs: [
+        { ...newKarma, id: newKarmaId },
+        { ...postLockBox, id: computeBoxId(postLockBox) },
+      ],
+      signatures: {},
+      protocolVersion: PROTOCOL_VERSION,
+    };
+    signTransaction(karmaLockTx, privKeyObj, userIdHex);
+    const karmaLockTxJson = txToJson(karmaLockTx);
+
     // Mock verifyPost to return valid
     const mockVerify = () => ({ valid: true as const });
 
@@ -177,11 +255,12 @@ describe('posts routes', () => {
       content: 'hello mempool',
       author: userIdHex,
       parentRefs: [],
-      challenge: Buffer.from(challengeBytes).toString('hex'),
+      challenge: challengeHex,
       powNonce: 42,
       protocolVersion: PROTOCOL_VERSION,
       timestamp,
       signature: 'dd'.repeat(64),
+      karmaLockTx: karmaLockTxJson,
     }, { verifyPost: mockVerify as typeof verifyPost });
 
     expect(res.status).toBe(200);

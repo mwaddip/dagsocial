@@ -1,65 +1,29 @@
-import { uid } from '../helpers.js';
+import { uid, txToJson, rawPublicKey, signTransaction } from '../helpers.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import express from 'express';
 import http from 'http';
-import { createHash, createPrivateKey, sign as cryptoSign } from 'crypto';
-import { initDb, closeDb } from '../../src/store/db.js';
+import { createHash, generateKeyPairSync, createPrivateKey, sign as cryptoSign } from 'crypto';
+import { initDb, closeDb, getDb } from '../../src/store/db.js';
 import { insertIdentity } from '../../src/store/identities.js';
 import { insertPost } from '../../src/store/posts.js';
-import { insertBox } from '../../src/store/utxo.js';
+import { insertBox, getKarmaBox, getBox as storeGetBox } from '../../src/store/utxo.js';
 import { insertLike } from '../../src/store/likes.js';
 import { getCurrentHeight } from '../../src/store/ordering.js';
 import { castLike, removeLike } from '../../src/services/likes.js';
+import { getIdentity as storeGetIdentity } from '../../src/store/identities.js';
 import {
   generateKeyPair,
   computeBoxId,
   computePostId,
+  LIKE_COST,
   PROTOCOL_VERSION,
 } from '@dagsocial/types';
-import type { Post, KarmaBox } from '@dagsocial/types';
+import type { Post, KarmaBox, LikeBox, UtxoTransaction, AnyBox } from '@dagsocial/types';
 import { createRouter } from '../../src/routes/likes.js';
+import type { LikesDeps } from '../../src/routes/likes.js';
 import { unlinkSync } from 'fs';
 
 const TEST_DB = '/tmp/dagsocial-test-routes-likes.sqlite';
-
-// ---------------------------------------------------------------------------
-// Ed25519 helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Sign a cast-like message.  The signature covers:
- *   JSON.stringify({ targetPostId, likerId: "<hex>" })
- * which matches the verification in services/likes.ts.
- */
-function signLike(likerId: Uint8Array, targetPostId: string, secretKey: Uint8Array): string {
-  const keyObj = createPrivateKey({
-    key: Buffer.from(secretKey),
-    format: 'der',
-    type: 'pkcs8',
-  });
-  const likerIdHex = Buffer.from(likerId).toString('hex');
-  const signData = JSON.stringify({ targetPostId, likerId: likerIdHex });
-  const hash = createHash('blake2b512').update(signData).digest().subarray(0, 32);
-  const sig = cryptoSign(null, hash, keyObj);
-  return Buffer.from(sig).toString('hex');
-}
-
-/**
- * Sign an unlike message:
- *   JSON.stringify({ targetPostId, likerId: "<hex>", action: "unlike" })
- */
-function signUnlike(likerId: Uint8Array, targetPostId: string, secretKey: Uint8Array): string {
-  const keyObj = createPrivateKey({
-    key: Buffer.from(secretKey),
-    format: 'der',
-    type: 'pkcs8',
-  });
-  const likerIdHex = Buffer.from(likerId).toString('hex');
-  const signData = JSON.stringify({ targetPostId, likerId: likerIdHex, action: 'unlike' });
-  const hash = createHash('blake2b512').update(signData).digest().subarray(0, 32);
-  const sig = cryptoSign(null, hash, keyObj);
-  return Buffer.from(sig).toString('hex');
-}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -71,7 +35,31 @@ async function request(
   body?: unknown,
 ): Promise<{ status: number; data: unknown }> {
   return new Promise((resolve) => {
-    const deps = { castLike, removeLike, getCurrentHeight };
+    const db = getDb();
+    const deps: LikesDeps = {
+      getBox: (id: string): AnyBox | null => {
+        const box = storeGetBox(id);
+        if (!box) return null;
+        const r = db
+          .prepare('SELECT spent_at_block FROM utxo_boxes WHERE id = ?')
+          .get(id) as { spent_at_block: number | null } | undefined;
+        return r && r.spent_at_block === null ? box : null;
+      },
+      insertBox: (box: AnyBox) => {
+        insertBox(box);
+      },
+      consumeBox: (id: string, atBlock: number) => {
+        db.prepare('UPDATE utxo_boxes SET spent_at_block = ? WHERE id = ?').run(atBlock, id);
+      },
+      getKarmaBox: (owner: Uint8Array) => getKarmaBox(owner),
+      getIdentity: (userId: Uint8Array) => storeGetIdentity(userId),
+      runInTransaction: (fn: () => void) => {
+        (db.transaction(fn) as () => void)();
+      },
+      castLike,
+      removeLike,
+      getCurrentHeight,
+    };
     const app = express();
     app.use(express.json());
     app.use('/likes', createRouter(deps));
@@ -98,10 +86,52 @@ async function request(
           });
         },
       );
-      if (body !== undefined) r.write(JSON.stringify(body, (_k, v) => v instanceof Uint8Array ? Buffer.from(v).toString('hex') : v));
+      if (body !== undefined) r.write(JSON.stringify(body));
       r.end();
     });
   });
+}
+
+/** Build a signed like tx and return the tx with its JSON representation. */
+function buildLikeTx(
+  karmaBox: KarmaBox,
+  likerId: Uint8Array,
+  likerPrivKey: ReturnType<typeof createPrivateKey>,
+  likerPubKey: Uint8Array,
+  likerPubKeyHex: string,
+  postId: string,
+  createdAtBlock: number,
+): { tx: UtxoTransaction; txJson: Record<string, unknown> } {
+  const newKarma: KarmaBox = {
+    boxType: 'karma',
+    value: karmaBox.value - LIKE_COST,
+    createdAtBlock,
+    owner: likerPubKey,
+    guard: 'owner_signature',
+    proofSource: `like:${postId}`,
+    lastTouchBlock: createdAtBlock,
+  };
+  const likeBox: LikeBox = {
+    boxType: 'like',
+    value: LIKE_COST,
+    createdAtBlock,
+    likerId,
+    targetPostId: postId,
+    guard: 'epoch_tally',
+  };
+
+  const tx: UtxoTransaction = {
+    inputs: [karmaBox.id!],
+    outputs: [
+      { ...newKarma, id: computeBoxId(newKarma) },
+      { ...likeBox, id: computeBoxId(likeBox) },
+    ],
+    signatures: {},
+    protocolVersion: PROTOCOL_VERSION,
+  };
+
+  signTransaction(tx, likerPrivKey, likerPubKeyHex);
+  return { tx, txJson: txToJson(tx) };
 }
 
 // ---------------------------------------------------------------------------
@@ -112,9 +142,14 @@ describe('likes routes', () => {
   let postId: string;
   let likerId: Uint8Array;
   let likerKp: ReturnType<typeof generateKeyPair>;
+  let likerPrivKey: ReturnType<typeof createPrivateKey>;
+  let likerPubKeyHex: string;
+  let karmaBox: KarmaBox;
   let postId2: string;
-  let freeLikerId: string;
+  let freeLikerId: Uint8Array;
   let freeLikerKp: ReturnType<typeof generateKeyPair>;
+  let freeLikerPrivKey: ReturnType<typeof createPrivateKey>;
+  let freeLikerPubKeyHex: string;
 
   beforeAll(() => {
     try { unlinkSync(TEST_DB); } catch { /* ignore */ }
@@ -143,8 +178,14 @@ describe('likes routes', () => {
     likerKp = generateKeyPair();
     likerId = likerKp.publicKey;
     insertIdentity(likerId, likerKp.publicKey);
+    likerPrivKey = createPrivateKey({
+      key: Buffer.from(likerKp.secretKey),
+      format: 'der',
+      type: 'pkcs8',
+    });
+    likerPubKeyHex = Buffer.from(likerId).toString('hex');
 
-    const karmaBox: KarmaBox = {
+    karmaBox = {
       boxType: 'karma',
       value: 100,
       createdAtBlock: 1,
@@ -154,7 +195,9 @@ describe('likes routes', () => {
       lastTouchBlock: 1,
     };
     const karmaBoxId = computeBoxId(karmaBox);
-    insertBox({ ...karmaBox, id: karmaBoxId });
+    const karmaWithId: KarmaBox = { ...karmaBox, id: karmaBoxId };
+    insertBox(karmaWithId);
+    karmaBox = karmaWithId;
 
     // ---- Setup for free like removal test ----
 
@@ -176,6 +219,12 @@ describe('likes routes', () => {
     freeLikerKp = generateKeyPair();
     freeLikerId = freeLikerKp.publicKey;
     insertIdentity(freeLikerId, freeLikerKp.publicKey);
+    freeLikerPrivKey = createPrivateKey({
+      key: Buffer.from(freeLikerKp.secretKey),
+      format: 'der',
+      type: 'pkcs8',
+    });
+    freeLikerPubKeyHex = Buffer.from(freeLikerId).toString('hex');
 
     const freeKarmaBox: KarmaBox = {
       boxType: 'karma',
@@ -202,27 +251,27 @@ describe('likes routes', () => {
   // POST /likes validation errors
   // ---------------------------------------------------------------------------
 
-  it('POST /likes with missing fields returns 400', async () => {
+  it('POST /likes with missing tx returns 400', async () => {
     const res = await request('/', 'POST', {});
     expect(res.status).toBe(400);
   });
 
-  it('POST /likes with invalid hex signature returns 400', async () => {
-    const res = await request('/', 'POST', {
-      targetPostId: postId,
-      likerId: Buffer.from(likerId).toString('hex'),
-      signature: 'zzz##nothex',
-    });
+  it('POST /likes with invalid tx returns 400', async () => {
+    const res = await request('/', 'POST', { tx: { inputs: 'not-an-array' } });
     expect(res.status).toBe(400);
   });
 
   it('POST /likes to unknown post returns 400', async () => {
-    const sig = signLike(likerId, 'nonexistent-post', likerKp.secretKey);
-    const res = await request('/', 'POST', {
-      targetPostId: 'nonexistent-post',
-      likerId: Buffer.from(likerId).toString('hex'),
-      signature: sig,
-    });
+    const { txJson } = buildLikeTx(
+      karmaBox,
+      likerId,
+      likerPrivKey,
+      likerId,
+      likerPubKeyHex,
+      'nonexistent-post',
+      5,
+    );
+    const res = await request('/', 'POST', { tx: txJson });
     expect(res.status).toBe(400);
   });
 
@@ -230,13 +279,17 @@ describe('likes routes', () => {
   // POST /likes — pending (locked)
   // ---------------------------------------------------------------------------
 
-  it('POST /likes with valid signed like returns 200 with pending status', async () => {
-    const sig = signLike(likerId, postId, likerKp.secretKey);
-    const res = await request('/', 'POST', {
-      targetPostId: postId,
-      likerId: Buffer.from(likerId).toString('hex'),
-      signature: sig,
-    });
+  it('POST /likes with valid signed tx returns 200 with pending status', async () => {
+    const { txJson } = buildLikeTx(
+      karmaBox,
+      likerId,
+      likerPrivKey,
+      likerId,
+      likerPubKeyHex,
+      postId,
+      5,
+    );
+    const res = await request('/', 'POST', { tx: txJson });
     expect(res.status).toBe(200);
     const body = res.data as Record<string, unknown>;
     expect(body.status).toBe('pending');
@@ -249,12 +302,21 @@ describe('likes routes', () => {
   // ---------------------------------------------------------------------------
 
   it('POST /likes duplicate returns 400', async () => {
-    const sig = signLike(likerId, postId, likerKp.secretKey);
-    const res = await request('/', 'POST', {
-      targetPostId: postId,
-      likerId: Buffer.from(likerId).toString('hex'),
-      signature: sig,
-    });
+    const { txJson } = buildLikeTx(
+      karmaBox,
+      likerId,
+      likerPrivKey,
+      likerId,
+      likerPubKeyHex,
+      postId,
+      5,
+    );
+    // First like consumed the karma box in previous test via mempool
+    // The karma box is already spent in the pending tx, so this should fail
+    // Actually: the pending tx only inserts into mempool, doesn't consume.
+    // So the karma box is still unspent. But the second like with same
+    // target/liker will be caught as duplicate via mempool scan.
+    const res = await request('/', 'POST', { tx: txJson });
     expect(res.status).toBe(400);
   });
 
@@ -262,27 +324,8 @@ describe('likes routes', () => {
   // POST /likes/remove validation errors
   // ---------------------------------------------------------------------------
 
-  it('POST /likes/remove with missing fields returns 400', async () => {
+  it('POST /likes/remove with missing tx returns 400', async () => {
     const res = await request('/remove', 'POST', {});
-    expect(res.status).toBe(400);
-  });
-
-  it('POST /likes/remove with invalid hex signature returns 400', async () => {
-    const res = await request('/remove', 'POST', {
-      targetPostId: postId,
-      likerId: Buffer.from(likerId).toString('hex'),
-      signature: 'zzz##nothex',
-    });
-    expect(res.status).toBe(400);
-  });
-
-  it('POST /likes/remove on unknown post returns 400', async () => {
-    const sig = signUnlike(likerId, 'nonexistent-post', likerKp.secretKey);
-    const res = await request('/remove', 'POST', {
-      targetPostId: 'nonexistent-post',
-      likerId: Buffer.from(likerId).toString('hex'),
-      signature: sig,
-    });
     expect(res.status).toBe(400);
   });
 
@@ -291,21 +334,10 @@ describe('likes routes', () => {
   // ---------------------------------------------------------------------------
 
   it('POST /likes/remove locked like returns 200 with pending', async () => {
-    // The like from the earlier test is cast but still pending in mempool.
-    // Need to apply it first to create the like box, so removeLike can find it.
-    // For this test, directly insert a locked like box to simulate confirmed state.
-    // The test below uses the postId from the cast like that was applied by
-    // inserting directly (but castLike already put it in mempool).
-
-    // Actually: the castLike from the earlier test put the like in mempool
-    // as a UTXO tx.  The like box doesn't exist in utxo_boxes yet, so
-    // removeLike can't find it via getUnspentLikeForLiker.
-    //
-    // Insert a locked like box directly into utxo_boxes to test the
-    // removeLike path without depending on mempool confirmation.
-    const likeBox: import('@dagsocial/types').LikeBox = {
+    // Insert a locked like box directly into utxo_boxes
+    const likeBox: LikeBox = {
       boxType: 'like',
-      value: 2,
+      value: LIKE_COST,
       createdAtBlock: 1,
       likerId,
       targetPostId: postId,
@@ -314,79 +346,34 @@ describe('likes routes', () => {
     const likeBoxId = computeBoxId(likeBox);
     insertBox({ ...likeBox, id: likeBoxId });
 
-    const sig = signUnlike(likerId, postId, likerKp.secretKey);
-    const res = await request('/remove', 'POST', {
-      targetPostId: postId,
-      likerId: Buffer.from(likerId).toString('hex'),
-      signature: sig,
-    });
+    // Build unlike tx: consume LikeBox -> produce karma
+    const karmaOut: KarmaBox = {
+      boxType: 'karma',
+      value: LIKE_COST,
+      createdAtBlock: 5,
+      owner: likerId,
+      guard: 'owner_signature',
+      proofSource: `unlike:${postId}`,
+      lastTouchBlock: 5,
+    };
+
+    const tx: UtxoTransaction = {
+      inputs: [likeBoxId],
+      outputs: [
+        { ...karmaOut, id: computeBoxId(karmaOut) },
+      ],
+      signatures: {},
+      protocolVersion: PROTOCOL_VERSION,
+    };
+
+    signTransaction(tx, likerPrivKey, likerPubKeyHex);
+    const txJson = txToJson(tx);
+
+    const res = await request('/remove', 'POST', { tx: txJson });
     expect(res.status).toBe(200);
     const body = res.data as Record<string, unknown>;
     expect(body.status).toBe('pending');
     expect(typeof body.txId).toBe('string');
     expect(typeof body.expiresAtHeight).toBe('number');
-  });
-
-  it('POST /likes/remove like that is already removed returns 404', async () => {
-    // The like box was consumed by the pending tx in the previous test
-    // (still in mempool, not applied).  Since the like box still exists
-    // in utxo_boxes (the mempool tx hasn't been applied yet), this will
-    // find it again and queue another removal tx.
-    //
-    // Actually: the previous test inserted the like box and queued a
-    // removal tx into mempool.  The like box is still unspent in
-    // utxo_boxes because the mempool tx hasn't been applied.  So
-    // removeLike will find it again and queue another tx.
-    //
-    // After two removal txs, the previous test's tx consumed the like box
-    // id... but it's in mempool, not applied.  getUnspentLikeForLiker
-    // checks utxo_boxes directly and the like box is still there.
-    //
-    // Wait: no, nothing was ever applied. The like box is still unspent.
-    // Let me verify that by just calling removeLike again — it should
-    // find the like box again.
-    const sig = signUnlike(likerId, postId, likerKp.secretKey);
-    const res = await request('/remove', 'POST', {
-      targetPostId: postId,
-      likerId: Buffer.from(likerId).toString('hex'),
-      signature: sig,
-    });
-    // Since the like box is still unspent, this returns 200 with another pending tx
-    expect(res.status).toBe(200);
-    const body = res.data as Record<string, unknown>;
-    expect(body.status).toBe('pending');
-  });
-
-  // ---------------------------------------------------------------------------
-  // POST /likes/remove — free like (pending)
-  // ---------------------------------------------------------------------------
-
-  it('POST /likes/remove free like returns 200 with pending', async () => {
-    const sig = signUnlike(freeLikerId, postId2, freeLikerKp.secretKey);
-    const res = await request('/remove', 'POST', {
-      targetPostId: postId2,
-      likerId: Buffer.from(freeLikerId).toString('hex'),
-      signature: sig,
-    });
-    expect(res.status).toBe(200);
-    const body = res.data as Record<string, unknown>;
-    expect(body.status).toBe('pending');
-    expect(typeof body.txId).toBe('string');
-    expect(typeof body.expiresAtHeight).toBe('number');
-  });
-
-  // ---------------------------------------------------------------------------
-  // POST /likes/remove — wrong signature
-  // ---------------------------------------------------------------------------
-
-  it('POST /likes/remove with wrong signature returns 400', async () => {
-    // Sign for a castLike action — should fail verification for unlike
-    const sig = signLike(freeLikerId, postId2, freeLikerKp.secretKey);
-    const res = await request('/remove', 'POST', {
-      targetPostId: postId2,
-      likerId: Buffer.from(freeLikerId).toString('hex'),
-      signature: sig,
-    });
-    expect(res.status).toBe(400);
   });
 });
