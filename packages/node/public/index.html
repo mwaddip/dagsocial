@@ -63,6 +63,10 @@
   </div>
   <input type="file" id="importFileInput" accept=".json" style="display:none">
   <div class="id-badge" id="currentUserId">loading...</div>
+  <div class="status-bar" id="identityStatus" style="margin-top:8px">
+    <div><span>Karma:</span> <strong id="identityKarma">—</strong></div>
+    <div><span>Credits:</span> <strong id="identityCredits">—</strong></div>
+  </div>
 
   <h2>Compose</h2>
   <textarea id="content" placeholder="What's on your mind?"></textarea>
@@ -87,13 +91,9 @@
     <div id="faucetResult"></div>
 
     <h3>Invites</h3>
-    <h4>Create</h4>
+    <h4>Create (fixed: 25 karma + 25 bond)</h4>
     <div class="row">
-      <label>Karma:</label>
-      <input id="inviteKarma" type="number" value="10" min="1" style="width:70px">
-      <label>Bond:</label>
-      <input id="inviteBond" type="number" value="5" min="1" style="width:70px">
-      <button id="createInviteBtn" class="small">Create</button>
+      <button id="createInviteBtn" class="small">Create Invite</button>
     </div>
     <div id="inviteResult"></div>
 
@@ -102,10 +102,23 @@
       <input id="inviteBoxIdInput" placeholder="Invite Box ID" style="flex:1;font-size:11px">
     </div>
     <div class="row" style="margin-top:4px">
+      <input id="bondBoxIdForClaimInput" placeholder="Bond Box ID" style="flex:1;font-size:11px">
+    </div>
+    <div class="row" style="margin-top:4px">
+      <input id="inviterIdForClaimInput" placeholder="Inviter ID (hex)" style="flex:1;font-size:11px">
+    </div>
+    <div class="row" style="margin-top:4px">
       <input id="inviteSecretInput" placeholder="Secret (hex)" style="flex:1;font-size:11px">
       <button id="redeemInviteBtn" class="small">Redeem</button>
     </div>
     <div id="redeemResult"></div>
+
+    <h4>Cancel Invite</h4>
+    <div class="row">
+      <input id="cancelInviteBoxIdInput" placeholder="Invite Box ID" style="flex:1;font-size:11px">
+      <button id="cancelInviteBtn" class="small danger">Cancel</button>
+    </div>
+    <div id="cancelInviteResult"></div>
   </div>
 </div>
 
@@ -120,20 +133,36 @@ import { blake2b } from 'https://cdn.jsdelivr.net/npm/blakejs@1.2.1/+esm';
 const API = '';
 const encoder = new TextEncoder();
 
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// Protocol constants (mirrored from @dagsocial/types constants.ts)
+// ===========================================================================
+
+const PROTOCOL_VERSION = 1;
+const LIKE_COST = 2;
+const POST_LOCK_THREAD_COST = 5;
+const POST_LOCK_REPLY_COST = 3;
+const INVITE_KARMA_AMOUNT = 25;
+const INVITE_BOND_KARMA = 25;
+const INVITE_PROBATION_BLOCKS = 1000;
+
+// ===========================================================================
 // State
-// ---------------------------------------------------------------------------
+// ===========================================================================
 
 const STORAGE_KEY = 'dagsocial-identities';
-let identities = [];           // [{ pubKeyHex, privKeyBase64 }]
+let identities = [];
 let activeIndex = -1;
 let userId, pubKeyRaw, privKey;
 let networkMode = 'mainnet';
 const likedPosts = new Set();
+/** Map of targetPostId → { likeBoxId, isFree } for unlike */
+const likeBoxes = new Map();
+/** Current block height from /status */
+let currentBlockHeight = 0;
 
-// ---------------------------------------------------------------------------
+// ===========================================================================
 // Hex / byte utilities
-// ---------------------------------------------------------------------------
+// ===========================================================================
 
 function buf2hex(buf) {
   return [...buf].map(b => b.toString(16).padStart(2, '0')).join('');
@@ -164,9 +193,126 @@ function encodeLE64(n) {
   return new Uint8Array(buf);
 }
 
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// CBOR Encoder (minimal, matches cbor-x 1.6.4 output for box types)
+// ===========================================================================
+
+/**
+ * Key insight: cbor-x preserves JavaScript object insertion order for map
+ * keys — it does NOT sort canonically.  We match by encoding keys in the
+ * order Object.keys() returns them, which is insertion order.
+ */
+
+function cborEncodeString(str) {
+  const bytes = encoder.encode(str);
+  const len = bytes.length;
+  if (len <= 23) return concatUint8Arrays([new Uint8Array([0x60 | len]), bytes]);
+  if (len <= 255) return concatUint8Arrays([new Uint8Array([0x78, len]), bytes]);
+  throw new Error('String too long for CBOR: ' + len);
+}
+
+function cborEncodeBytes(buf) {
+  const len = buf.length;
+  if (len <= 23) return concatUint8Arrays([new Uint8Array([0x40 | len]), buf]);
+  if (len <= 255) return concatUint8Arrays([new Uint8Array([0x58, len]), buf]);
+  throw new Error('Bytes too long for CBOR: ' + len);
+}
+
+function cborEncodeUint(n) {
+  if (n <= 23) return new Uint8Array([n]);
+  if (n <= 255) return new Uint8Array([0x18, n]);
+  if (n <= 65535) return new Uint8Array([0x19, (n >> 8) & 0xFF, n & 0xFF]);
+  throw new Error('Number too large for CBOR: ' + n);
+}
+
+function cborEncodeUndefined() { return new Uint8Array([0xf7]); }
+
+/** Encode a plain object as a CBOR map.  Preserves insertion order. */
+function cborEncodeMap(obj) {
+  const keys = Object.keys(obj);
+  const parts = [];
+  for (const k of keys) {
+    parts.push(cborEncodeString(k));
+    const v = obj[k];
+    if (typeof v === 'string')            parts.push(cborEncodeString(v));
+    else if (typeof v === 'number')       parts.push(cborEncodeUint(v));
+    else if (typeof v === 'boolean')      parts.push(new Uint8Array([v ? 0xf5 : 0xf4]));
+    else if (v === undefined || v === null) parts.push(cborEncodeUndefined());
+    else if (v instanceof Uint8Array)     parts.push(cborEncodeBytes(v));
+    else throw new Error('Unsupported CBOR value type for key ' + k);
+  }
+  const body = concatUint8Arrays(parts);
+  const numPairs = keys.length;
+  // cbor-x always emits 0xB9 + 2-byte big-endian length for maps
+  const header = new Uint8Array([0xB9, (numPairs >> 8) & 0xFF, numPairs & 0xFF]);
+  return concatUint8Arrays([header, body]);
+}
+
+function cborEncode(value) {
+  if (typeof value === 'string')              return cborEncodeString(value);
+  if (typeof value === 'number')              return cborEncodeUint(value);
+  if (typeof value === 'boolean')             return new Uint8Array([value ? 0xf5 : 0xf4]);
+  if (value === undefined || value === null)  return cborEncodeUndefined();
+  if (value instanceof Uint8Array)            return cborEncodeBytes(value);
+  if (typeof value === 'object')              return cborEncodeMap(value);
+  throw new Error('Unsupported CBOR type');
+}
+
+// ===========================================================================
+// computeTxId (client-side, matches server @dagsocial/types computeTxId)
+// ===========================================================================
+
+/**
+ * Deterministic transaction ID.
+ * Hashes inputs (hex strings), CBOR-encoded outputs (minus `id`),
+ * preimages (sorted by boxId), and protocolVersion.
+ */
+function computeTxId(tx) {
+  const parts = [];
+
+  // 1. Inputs — hash hex strings as UTF-8 text
+  for (const input of tx.inputs) {
+    parts.push(encoder.encode(input));
+  }
+
+  // 2. Outputs — CBOR encode each box, stripping `id` before encoding
+  for (const output of tx.outputs) {
+    const { id, ...rest } = output;
+    // Convert hex-string binary fields to Uint8Array for CBOR encoding
+    const binaryFields = ['owner', 'likerId', 'secretHash', 'inviterId', 'inviteePublicKey'];
+    const boxForCbor = {};
+    for (const [k, v] of Object.entries(rest)) {
+      if (binaryFields.includes(k) && typeof v === 'string') {
+        boxForCbor[k] = hex2buf(v);
+      } else {
+        boxForCbor[k] = v;
+      }
+    }
+    parts.push(cborEncode(boxForCbor));
+  }
+
+  // 3. Preimages (sorted by boxId key, if present)
+  if (tx.preimages) {
+    const sortedKeys = Object.keys(tx.preimages).sort();
+    for (const boxId of sortedKeys) {
+      parts.push(encoder.encode(boxId));
+      const preimage = tx.preimages[boxId];
+      parts.push(typeof preimage === 'string' ? hex2buf(preimage) : preimage);
+    }
+  }
+
+  // 4. Protocol version as UTF-8 string
+  parts.push(encoder.encode(String(tx.protocolVersion)));
+
+  // 5. Blake2b-512 → first 32 bytes → hex
+  const combined = concatUint8Arrays(parts);
+  const hash = blake2b(combined, null, 64).slice(0, 32);
+  return buf2hex(hash);
+}
+
+// ===========================================================================
 // Base58
-// ---------------------------------------------------------------------------
+// ===========================================================================
 
 const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 const B58MAP = {}; for (let i = 0; i < 58; i++) B58MAP[B58[i]] = i;
@@ -182,9 +328,9 @@ function base58Encode(buf) {
   return '1'.repeat(zeros) + digits.reverse().map(d => B58[d]).join('');
 }
 
-// ---------------------------------------------------------------------------
+// ===========================================================================
 // PoW
-// ---------------------------------------------------------------------------
+// ===========================================================================
 
 function countLeadingZeroBits(buf) {
   let bits = 0;
@@ -197,10 +343,10 @@ function countLeadingZeroBits(buf) {
   return bits;
 }
 
-function buildPowInput(content, author, parentRefs, challengeBytes, protocolVersion, timestamp) {
+function buildPowInput(content, authorBytes, parentRefs, challengeBytes, protocolVersion, timestamp) {
   const parts = [
     encoder.encode(content),
-    encoder.encode(author),
+    authorBytes,
     ...parentRefs.map(r => encoder.encode(r)),
     challengeBytes,
     encoder.encode(String(protocolVersion)),
@@ -226,50 +372,294 @@ function solvePoW(powInput, targetBits, onProgress) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Signing helpers
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// Signing — txId-based (Ed25519 over computeTxId)
+// ===========================================================================
 
-/** Sign an arbitrary message: blake2b512(message)[0:32] → Ed25519 sign → hex */
-async function signMessage(message) {
-  const hash = blake2b(encoder.encode(message), null, 64).slice(0, 32);
-  const sig = await crypto.subtle.sign('Ed25519', privKey, hash);
-  return buf2hex(new Uint8Array(sig));
+/** Sign a txId hash with the current identity's Ed25519 private key. */
+async function signTxId(tx) {
+  const txId = computeTxId(tx);
+  const txIdBytes = hex2buf(txId);
+  const sig = await crypto.subtle.sign('Ed25519', privKey, txIdBytes);
+  return { txId, signature: buf2hex(new Uint8Array(sig)) };
 }
 
-/** Sign a post (same input as PoW) */
-function buildSignHashInput(content, author, parentRefs, challengeBytes, protocolVersion, timestamp) {
-  return buildPowInput(content, author, parentRefs, challengeBytes, protocolVersion, timestamp);
+/** Sign a post (same input as PoW, excludes powNonce). Preserved for post signing. */
+function buildSignHashInput(content, authorBytes, parentRefs, challengeBytes, protocolVersion, timestamp) {
+  return buildPowInput(content, authorBytes, parentRefs, challengeBytes, protocolVersion, timestamp);
 }
 
-async function signPost(content, author, parentRefs, challengeBytes, protocolVersion, timestamp) {
-  const input = buildSignHashInput(content, author, parentRefs, challengeBytes, protocolVersion, timestamp);
+async function signPost(content, authorBytes, parentRefs, challengeBytes, protocolVersion, timestamp) {
+  const input = buildSignHashInput(content, authorBytes, parentRefs, challengeBytes, protocolVersion, timestamp);
   const hash = blake2b(input, null, 64).slice(0, 32);
   const sig = await crypto.subtle.sign('Ed25519', privKey, hash);
   return buf2hex(new Uint8Array(sig));
 }
 
-async function signLike(targetPostId, likerId) {
-  return signMessage(JSON.stringify({ targetPostId, likerId }));
+// ===========================================================================
+// UTXO state fetching
+// ===========================================================================
+
+/** Fetch the current karma box for the active identity. */
+async function fetchKarmaBox() {
+  if (!userId) return null;
+  try {
+    const res = await fetch(API + '/karma/' + encodeURIComponent(userId));
+    if (!res.ok) return null;
+    return await res.json(); // { userId, balance, boxId, createdAtBlock }
+  } catch {
+    return null;
+  }
 }
 
-async function signUnlike(targetPostId, likerId) {
-  return signMessage(JSON.stringify({ targetPostId, likerId, action: 'unlike' }));
+/** Fetch pending invite and bond boxes for the active identity. */
+async function fetchInviteState() {
+  if (!userId) return { pending: [], bonds: [] };
+  try {
+    const res = await fetch(API + '/invites/' + encodeURIComponent(userId));
+    if (!res.ok) return { pending: [], bonds: [] };
+    return await res.json(); // { pending: InviteBox[], bonds: BondBox[] }
+  } catch {
+    return { pending: [], bonds: [] };
+  }
 }
 
-async function signInviteCreate(inviterId, karmaAmount, bondAmount) {
-  return signMessage(`create-invite:${inviterId}:${karmaAmount}:${bondAmount}`);
+// ===========================================================================
+// Tx construction helpers
+// ===========================================================================
+
+/** Build the karma-lock tx for post creation. */
+function buildKarmaLockTx(karmaBox, lockAmount, targetPostId, pubKeyHex) {
+  const now = currentBlockHeight;
+  const newKarmaValue = karmaBox.balance - lockAmount;
+
+  const karmaOutput = {
+    boxType: 'karma',
+    value: newKarmaValue,
+    createdAtBlock: now,
+    owner: pubKeyHex,
+    guard: 'owner_signature',
+    proofSource: targetPostId,
+    lastTouchBlock: now,
+  };
+
+  const postLockOutput = {
+    boxType: 'post_lock',
+    value: lockAmount,
+    createdAtBlock: now,
+    originalValue: lockAmount,
+    owner: pubKeyHex,
+    targetPostId,
+    guard: 'epoch_tally',
+  };
+
+  return {
+    inputs: [karmaBox.boxId],
+    outputs: [karmaOutput, postLockOutput],
+    signatures: {},
+    protocolVersion: PROTOCOL_VERSION,
+  };
 }
 
-// ---------------------------------------------------------------------------
-// Post ID computation (client-side, matches server's computePostId)
-// ---------------------------------------------------------------------------
+/** Build a like tx: consumes karma box, produces karma (value - 2) + LikeBox. */
+function buildLikeTx(karmaBox, targetPostId, pubKeyHex) {
+  const now = currentBlockHeight;
+  const newKarmaValue = karmaBox.balance - LIKE_COST;
+
+  const karmaOutput = {
+    boxType: 'karma',
+    value: newKarmaValue,
+    createdAtBlock: now,
+    owner: pubKeyHex,
+    guard: 'owner_signature',
+    proofSource: karmaBox.boxId,
+    lastTouchBlock: now,
+  };
+
+  const likeOutput = {
+    boxType: 'like',
+    value: LIKE_COST,
+    createdAtBlock: now,
+    likerId: pubKeyHex,
+    targetPostId,
+    guard: 'epoch_tally',
+  };
+
+  return {
+    inputs: [karmaBox.boxId],
+    outputs: [karmaOutput, likeOutput],
+    signatures: {},
+    protocolVersion: PROTOCOL_VERSION,
+  };
+}
+
+/** Build an unlike tx: consumes a LikeBox, produces karma (value - 1 penalty). */
+function buildUnlikeTx(likeBoxId, pubKeyHex) {
+  const now = currentBlockHeight;
+  const refundValue = LIKE_COST - 1; // 2 locked - 1 penalty = 1
+
+  const karmaOutput = {
+    boxType: 'karma',
+    value: refundValue,
+    createdAtBlock: now,
+    owner: pubKeyHex,
+    guard: 'owner_signature',
+    proofSource: 'unlike',
+    lastTouchBlock: now,
+  };
+
+  return {
+    inputs: [likeBoxId],
+    outputs: [karmaOutput],
+    signatures: {},
+    protocolVersion: PROTOCOL_VERSION,
+  };
+}
+
+/** Build an invite-create tx: karma → karma + invite + bond. */
+function buildCreateInviteTx(karmaBox, pubKeyHex, secretHashHex) {
+  const now = currentBlockHeight;
+  const totalDeducted = INVITE_KARMA_AMOUNT + INVITE_BOND_KARMA;
+  const newKarmaValue = karmaBox.balance - totalDeducted;
+
+  const karmaOutput = {
+    boxType: 'karma',
+    value: newKarmaValue,
+    createdAtBlock: now,
+    owner: pubKeyHex,
+    guard: 'owner_signature',
+    proofSource: karmaBox.boxId,
+    lastTouchBlock: now,
+  };
+
+  const inviteOutput = {
+    boxType: 'invite',
+    value: INVITE_KARMA_AMOUNT,
+    createdAtBlock: now,
+    secretHash: secretHashHex,
+    inviterId: pubKeyHex,
+    guard: 'hash_preimage',
+  };
+
+  const bondOutput = {
+    boxType: 'bond',
+    value: INVITE_BOND_KARMA,
+    createdAtBlock: now,
+    inviterId: pubKeyHex,
+    inviteePublicKey: '00'.repeat(32), // 32 zero bytes = unclaimed
+    probationStartBlock: 0,
+    probationEndBlock: 0,
+    guard: 'inviter_signature',
+  };
+
+  return {
+    inputs: [karmaBox.boxId],
+    outputs: [karmaOutput, inviteOutput, bondOutput],
+    signatures: {},
+    protocolVersion: PROTOCOL_VERSION,
+  };
+}
+
+/**
+ * Build an invite-claim tx: invite + bond → karma(invitee) + bond(claimed).
+ * @param {Object} inviteBox - { id, value, inviterId, secretHash }
+ * @param {Object} bondBox - { id, value }
+ * @param {string} inviteePubKeyHex
+ * @param {string} secretHex - raw hex preimage for hash_preimage guard
+ */
+function buildClaimInviteTx(inviteBox, bondBox, inviteePubKeyHex, secretHex) {
+  const now = currentBlockHeight;
+
+  const karmaOutput = {
+    boxType: 'karma',
+    value: inviteBox.value,
+    createdAtBlock: now,
+    owner: inviteePubKeyHex,
+    guard: 'owner_signature',
+    proofSource: inviteBox.id,
+    lastTouchBlock: now,
+  };
+
+  const bondOutput = {
+    boxType: 'bond',
+    value: bondBox.value,
+    createdAtBlock: now,
+    inviterId: inviteBox.inviterId,
+    inviteePublicKey: inviteePubKeyHex,
+    probationStartBlock: now,
+    probationEndBlock: now + INVITE_PROBATION_BLOCKS,
+    guard: 'inviter_signature',
+  };
+
+  return {
+    inputs: [inviteBox.id, bondBox.id],
+    outputs: [karmaOutput, bondOutput],
+    signatures: {},
+    preimages: { [inviteBox.id]: secretHex },
+    protocolVersion: PROTOCOL_VERSION,
+  };
+}
+
+/**
+ * Build an invite-cancel tx: karma + invite + bond → karma (refund to inviter).
+ * @param {Object} karmaBox - { boxId, balance }
+ * @param {Object} inviteBox - { id, value }
+ * @param {Object} bondBox - { id, value }
+ * @param {string} pubKeyHex - inviter's public key
+ */
+function buildCancelInviteTx(karmaBox, inviteBox, bondBox, pubKeyHex) {
+  const now = currentBlockHeight;
+  // Refund: current karma + invite value + bond value
+  const totalRefund = karmaBox.balance + inviteBox.value + bondBox.value;
+
+  const karmaOutput = {
+    boxType: 'karma',
+    value: totalRefund,
+    createdAtBlock: now,
+    owner: pubKeyHex,
+    guard: 'owner_signature',
+    proofSource: 'invite-cancel',
+    lastTouchBlock: now,
+  };
+
+  return {
+    inputs: [karmaBox.boxId, inviteBox.id, bondBox.id],
+    outputs: [karmaOutput],
+    signatures: {},
+    protocolVersion: PROTOCOL_VERSION,
+  };
+}
+
+// ===========================================================================
+// computeBoxId (client-side, matches server computeBoxId)
+// ===========================================================================
+
+function computeBoxId(box) {
+  const { id, ...rest } = box;
+  const binaryFields = ['owner', 'likerId', 'secretHash', 'inviterId', 'inviteePublicKey'];
+  const boxForCbor = {};
+  for (const [k, v] of Object.entries(rest)) {
+    if (binaryFields.includes(k) && typeof v === 'string') {
+      boxForCbor[k] = hex2buf(v);
+    } else {
+      boxForCbor[k] = v;
+    }
+  }
+  const cborBytes = cborEncode(boxForCbor);
+  const hash = blake2b(cborBytes, null, 64).slice(0, 32);
+  return buf2hex(hash);
+}
+
+// ===========================================================================
+// Post ID computation (client-side, matches server computePostId)
+// ===========================================================================
 
 function computePostId(post) {
   const cBytes = typeof post.challenge === 'string' ? hex2buf(post.challenge) : post.challenge;
+  const aBytes = typeof post.author === 'string' ? hex2buf(post.author) : post.author;
   const parts = [
     encoder.encode(post.content),
-    encoder.encode(post.author),
+    aBytes,
     ...post.parentRefs.map(r => encoder.encode(r)),
     cBytes,
     encoder.encode(String(post.protocolVersion)),
@@ -286,9 +676,9 @@ async function computeUserId(pub) {
   return base58Encode(hash);
 }
 
-// ---------------------------------------------------------------------------
+// ===========================================================================
 // UI helpers
-// ---------------------------------------------------------------------------
+// ===========================================================================
 
 function setStatus(text, cls) {
   const s = document.getElementById('postStatus');
@@ -297,9 +687,9 @@ function setStatus(text, cls) {
 
 function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
-// ---------------------------------------------------------------------------
+// ===========================================================================
 // Identity management
-// ---------------------------------------------------------------------------
+// ===========================================================================
 
 async function importIdentityToServer(pubKeyHex) {
   try {
@@ -354,6 +744,10 @@ async function activateIdentity(index) {
 
   // Clear per-session liked tracking for this identity
   likedPosts.clear();
+  likeBoxes.clear();
+
+  // Load per-identity balances
+  loadIdentityStatus();
 
   // Reload feed
   loadFeed();
@@ -491,9 +885,9 @@ document.getElementById('importFileInput').addEventListener('change', (e) => {
   }
 });
 
-// ---------------------------------------------------------------------------
-// Post flow
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// Post flow (with karma-lock tx)
+// ===========================================================================
 
 document.getElementById('postBtn').addEventListener('click', async () => {
   const btn = document.getElementById('postBtn');
@@ -502,7 +896,14 @@ document.getElementById('postBtn').addEventListener('click', async () => {
 
   btn.disabled = true;
   try {
-    // 1. Request challenge
+    // 1. Fetch current karma box
+    const karmaBox = await fetchKarmaBox();
+    if (!karmaBox) {
+      setStatus('No karma box found — use faucet first', 'error');
+      return;
+    }
+
+    // 2. Request challenge
     setStatus('requesting challenge...', 'busy');
     const chalRes = await fetch(API + '/challenge', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -516,23 +917,49 @@ document.getElementById('postBtn').addEventListener('click', async () => {
     const { challenge: challengeHex, targetBits } = await chalRes.json();
     const challengeBytes = hex2buf(challengeHex);
 
-    // 2. Build powInput and solve PoW
+    // 3. Build powInput and solve PoW
     setStatus(`solving PoW (${targetBits} bits)...`, 'busy');
     const parentRefs = document.getElementById('parents').value
       .split(',').map(s => s.trim()).filter(Boolean);
     const timestamp = Date.now();
-    const protocolVersion = 1;
-    const powInput = buildPowInput(content, userId, parentRefs, challengeBytes, protocolVersion, timestamp);
+    const powInput = buildPowInput(content, pubKeyRaw, parentRefs, challengeBytes, PROTOCOL_VERSION, timestamp);
 
     const powNonce = solvePoW(powInput, targetBits, (msg) => {
       setStatus(msg, 'busy');
     });
 
-    // 3. Sign the post
-    setStatus('signing...', 'busy');
-    const signature = await signPost(content, userId, parentRefs, challengeBytes, protocolVersion, timestamp);
+    // 4. Sign the post
+    setStatus('signing post...', 'busy');
+    const signature = await signPost(content, pubKeyRaw, parentRefs, challengeBytes, PROTOCOL_VERSION, timestamp);
 
-    // 4. Submit post
+    // 5. Determine lock amount
+    const lockAmount = parentRefs.length === 0 ? POST_LOCK_THREAD_COST : POST_LOCK_REPLY_COST;
+    if (karmaBox.balance < lockAmount) {
+      setStatus(`Insufficient karma: need ${lockAmount}, have ${karmaBox.balance}`, 'error');
+      return;
+    }
+
+    // 6. Build post (for postId computation)
+    const post = {
+      content,
+      author: userId,
+      parentRefs,
+      challenge: challengeHex,
+      powNonce,
+      protocolVersion: PROTOCOL_VERSION,
+      timestamp,
+      signature,
+    };
+    const postId = computePostId(post);
+
+    // 7. Build and sign karma-lock tx
+    setStatus('building karma-lock tx...', 'busy');
+    const pubKeyHex = buf2hex(pubKeyRaw);
+    const karmaLockTx = buildKarmaLockTx(karmaBox, lockAmount, postId, pubKeyHex);
+    const { signature: txSig } = await signTxId(karmaLockTx);
+    karmaLockTx.signatures[pubKeyHex] = txSig;
+
+    // 8. Submit post + karma-lock tx
     setStatus('posting...', 'busy');
     const postRes = await fetch(API + '/posts', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -542,9 +969,10 @@ document.getElementById('postBtn').addEventListener('click', async () => {
         parentRefs,
         challenge: challengeHex,
         powNonce,
-        protocolVersion,
+        protocolVersion: PROTOCOL_VERSION,
         timestamp,
         signature,
+        karmaLockTx,
       }),
     });
     if (!postRes.ok) {
@@ -553,10 +981,11 @@ document.getElementById('postBtn').addEventListener('click', async () => {
       return;
     }
     const posted = await postRes.json();
-    setStatus('posted! ' + posted.id.slice(0, 12) + '...', 'ok');
+    setStatus('posted! ' + posted.postId.slice(0, 12) + '...', 'ok');
     document.getElementById('content').value = '';
     document.getElementById('parents').value = '';
     loadFeed();
+    loadIdentityStatus();
   } catch (e) {
     setStatus('error: ' + e.message, 'error');
   } finally {
@@ -564,22 +993,45 @@ document.getElementById('postBtn').addEventListener('click', async () => {
   }
 });
 
-// ---------------------------------------------------------------------------
-// Like flow
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// Like / Unlike flow (tx-based)
+// ===========================================================================
 
 async function doLike(targetPostId) {
   try {
-    const sigHex = await signLike(targetPostId, userId);
-    const res = await fetch(API + '/likes', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ targetPostId, likerId: userId, signature: sigHex }),
-    });
-    if (!res.ok) {
-      const err = await res.json();
-      setStatus(err.error || 'like failed', 'error');
+    const karmaBox = await fetchKarmaBox();
+    if (!karmaBox) {
+      setStatus('No karma box — cannot like', 'error');
       return false;
     }
+    if (karmaBox.balance < LIKE_COST) {
+      setStatus(`Insufficient karma to like: need ${LIKE_COST}, have ${karmaBox.balance}`, 'error');
+      return false;
+    }
+
+    const pubKeyHex = buf2hex(pubKeyRaw);
+    const tx = buildLikeTx(karmaBox, targetPostId, pubKeyHex);
+    const { signature } = await signTxId(tx);
+    tx.signatures[pubKeyHex] = signature;
+
+    const res = await fetch(API + '/likes', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tx }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      setStatus(data.error || 'like failed', 'error');
+      return false;
+    }
+
+    // Compute and store the LikeBox ID for later unlike
+    if (data.status === 'pending') {
+      const likeBoxId = computeBoxId(tx.outputs[1]); // second output is the LikeBox
+      likeBoxes.set(targetPostId, { likeBoxId, isFree: false });
+    } else if (data.status === 'free') {
+      likeBoxes.set(targetPostId, { likeBoxId: null, isFree: true, likeId: data.likeId });
+    }
+
     return true;
   } catch (e) {
     setStatus('like error: ' + e.message, 'error');
@@ -588,57 +1040,162 @@ async function doLike(targetPostId) {
 }
 
 async function doUnlike(targetPostId) {
+  const stored = likeBoxes.get(targetPostId);
+  if (!stored) {
+    setStatus('No like record found for this post', 'error');
+    return false;
+  }
+
   try {
-    const sigHex = await signUnlike(targetPostId, userId);
-    const res = await fetch(API + '/likes/remove', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ targetPostId, likerId: userId, signature: sigHex }),
-    });
-    if (!res.ok) {
-      const err = await res.json();
-      setStatus(err.error || 'unlike failed', 'error');
-      return false;
+    const pubKeyHex = buf2hex(pubKeyRaw);
+
+    if (stored.isFree) {
+      // Free like — no LikeBox to consume. The client still sends a tx
+      // for the server to deduct the 1-karma penalty.
+      // For now, send a simple karma→karma tx with -1 penalty.
+      const karmaBox = await fetchKarmaBox();
+      if (!karmaBox) {
+        setStatus('No karma box for unlike penalty', 'error');
+        return false;
+      }
+      const now = currentBlockHeight;
+      const tx = {
+        inputs: [karmaBox.boxId],
+        outputs: [{
+          boxType: 'karma',
+          value: karmaBox.balance - 1, // 1 karma penalty
+          createdAtBlock: now,
+          owner: pubKeyHex,
+          guard: 'owner_signature',
+          proofSource: 'unlike-free',
+          lastTouchBlock: now,
+        }],
+        signatures: {},
+        protocolVersion: PROTOCOL_VERSION,
+      };
+      const { signature } = await signTxId(tx);
+      tx.signatures[pubKeyHex] = signature;
+
+      const res = await fetch(API + '/likes/remove', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tx }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setStatus(data.error || 'unlike failed', 'error');
+        return false;
+      }
+      return true;
+    } else {
+      // Locked like — consume the LikeBox
+      if (!stored.likeBoxId) {
+        setStatus('No LikeBox ID stored for unlike', 'error');
+        return false;
+      }
+      const tx = buildUnlikeTx(stored.likeBoxId, pubKeyHex);
+      const { signature } = await signTxId(tx);
+      tx.signatures[pubKeyHex] = signature;
+
+      const res = await fetch(API + '/likes/remove', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tx }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setStatus(data.error || 'unlike failed', 'error');
+        return false;
+      }
+      return true;
     }
-    return true;
   } catch (e) {
     setStatus('unlike error: ' + e.message, 'error');
     return false;
   }
 }
 
-// ---------------------------------------------------------------------------
+// ===========================================================================
 // Feed
-// ---------------------------------------------------------------------------
+// ===========================================================================
+
+function renderPost(p, id, depth) {
+  const shortId = id.slice(0, 16);
+  const liked = likedPosts.has(id);
+  const likeCount = typeof p.likeCount === 'number' ? p.likeCount : 0;
+  const indent = depth * 20;
+  return `
+    <div class="post" data-post-id="${id}" style="margin-left:${indent}px;border-left:${depth > 0 ? '2px solid #30363d' : 'none'};padding-left:${depth > 0 ? '10px' : '12px'}">
+      <div class="post-author">${esc(p.author.slice(0, 20))}...</div>
+      <div class="post-content">${esc(p.content)}</div>
+      <div class="post-meta">
+        <span>${new Date(p.timestamp).toLocaleTimeString()}</span>
+        <span>${p.parentRefs.length ? p.parentRefs.length + ' parent(s)' : 'genesis'}</span>
+        <span style="font-family:monospace;font-size:10px">${esc(shortId)}...</span>
+        <button class="like-btn reply-btn" data-post-id="${id}">&#8617; Reply</button>
+        <button class="like-btn${liked ? ' liked' : ''}" data-post-id="${id}" data-liked="${liked ? '1' : '0'}">
+          ${liked ? '&#10084;&#65039; Liked' : '&#10084;&#65039; Like'} (${likeCount})
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+function renderThread(roots, postMap, children, depth) {
+  const sorted = [...roots].sort((a, b) => b.timestamp - a.timestamp);
+  return sorted.map(p => {
+    const id = computePostId(p);
+    const childPosts = (children.get(id) || []).sort((a, b) => a.timestamp - b.timestamp);
+    return renderPost(p, id, depth) + renderThread(childPosts, postMap, children, depth + 1);
+  }).join('');
+}
 
 async function loadFeed() {
   const feed = document.getElementById('feed');
   try {
-    const res = await fetch(API + '/posts?limit=30');
+    const res = await fetch(API + '/posts?limit=50');
     const posts = await res.json();
     if (!posts.length) { feed.innerHTML = '<div class="empty">No posts yet. Write something!</div>'; return; }
-    feed.innerHTML = posts.map(p => {
+
+    // Build post map and children index
+    const postMap = new Map();
+    const children = new Map();
+    for (const p of posts) {
       const id = computePostId(p);
-      const shortId = id.slice(0, 16);
-      const liked = likedPosts.has(id);
-      const likeCount = typeof p.likeCount === 'number' ? p.likeCount : 0;
-      return `
-        <div class="post" data-post-id="${id}">
-          <div class="post-author">${esc(p.author.slice(0, 20))}...</div>
-          <div class="post-content">${esc(p.content)}</div>
-          <div class="post-meta">
-            <span>${new Date(p.timestamp).toLocaleTimeString()}</span>
-            <span>${p.parentRefs.length ? p.parentRefs.length + ' parents' : 'genesis'}</span>
-            <span style="font-family:monospace;font-size:10px">${esc(shortId)}...</span>
-            <button class="like-btn${liked ? ' liked' : ''}" data-post-id="${id}" data-liked="${liked ? '1' : '0'}">
-              ${liked ? '&#10084;&#65039; Liked' : '&#10084;&#65039; Like'} (${likeCount})
-            </button>
-          </div>
-        </div>
-      `;
-    }).join('');
+      postMap.set(id, p);
+    }
+    for (const p of posts) {
+      const id = computePostId(p);
+      for (const parentId of p.parentRefs) {
+        if (postMap.has(parentId)) {
+          if (!children.has(parentId)) children.set(parentId, []);
+          children.get(parentId).push(p);
+        }
+      }
+    }
+
+    // Roots: posts whose parentRefs are empty or none are in the fetched set
+    const rootPosts = posts.filter(p => {
+      if (!p.parentRefs.length) return true;
+      return !p.parentRefs.some(pid => postMap.has(pid));
+    });
+
+    feed.innerHTML = renderThread(rootPosts, postMap, children, 0) ||
+      '<div class="empty">No root posts found. Try posting something!</div>';
+
+    // Attach reply handlers
+    feed.querySelectorAll('.reply-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const postId = btn.dataset.postId;
+        if (!postId) return;
+        const input = document.getElementById('parents');
+        const current = input.value.trim();
+        input.value = current ? current + ', ' + postId : postId;
+        input.scrollIntoView({ behavior: 'smooth' });
+        input.focus();
+      });
+    });
 
     // Attach like/unlike handlers
-    feed.querySelectorAll('.like-btn').forEach(btn => {
+    feed.querySelectorAll('.like-btn:not(.reply-btn)').forEach(btn => {
       btn.addEventListener('click', async () => {
         const postId = btn.dataset.postId;
         const isLiked = btn.dataset.liked === '1';
@@ -648,24 +1205,23 @@ async function loadFeed() {
         btn.textContent = '...';
 
         if (isLiked) {
-          // Unlike
           const ok = await doUnlike(postId);
           if (ok) {
             likedPosts.delete(postId);
+            likeBoxes.delete(postId);
+            loadIdentityStatus();
           }
           btn.disabled = false;
-          // Reload feed to get updated counts
           loadFeed();
         } else {
-          // Like
           const ok = await doLike(postId);
           if (ok) {
             likedPosts.add(postId);
             btn.classList.add('liked');
             btn.dataset.liked = '1';
+            loadIdentityStatus();
           }
           btn.disabled = false;
-          // Reload feed to get updated counts
           loadFeed();
         }
       });
@@ -675,9 +1231,45 @@ async function loadFeed() {
   }
 }
 
-// ---------------------------------------------------------------------------
+// ===========================================================================
 // Status bar
-// ---------------------------------------------------------------------------
+// ===========================================================================
+
+async function loadIdentityStatus() {
+  if (!userId) return;
+  const karmaEl = document.getElementById('identityKarma');
+  const creditsEl = document.getElementById('identityCredits');
+
+  try {
+    const res = await fetch(API + '/karma/' + encodeURIComponent(userId));
+    if (res.ok) {
+      const data = await res.json();
+      karmaEl.textContent = data.balance;
+      karmaEl.style.color = data.balance > 0 ? '#3fb950' : '#8b949e';
+    } else {
+      karmaEl.textContent = '0';
+      karmaEl.style.color = '#8b949e';
+    }
+  } catch {
+    karmaEl.textContent = '—';
+    karmaEl.style.color = '#8b949e';
+  }
+
+  try {
+    const res = await fetch(API + '/credits/' + encodeURIComponent(userId));
+    if (res.ok) {
+      const data = await res.json();
+      creditsEl.textContent = data.balance;
+      creditsEl.style.color = data.balance > 0 ? '#3fb950' : '#8b949e';
+    } else {
+      creditsEl.textContent = '0';
+      creditsEl.style.color = '#8b949e';
+    }
+  } catch {
+    creditsEl.textContent = '—';
+    creditsEl.style.color = '#8b949e';
+  }
+}
 
 async function loadStatus() {
   const bar = document.getElementById('statusBar');
@@ -686,6 +1278,7 @@ async function loadStatus() {
     if (!res.ok) { bar.innerHTML = 'Status unavailable'; return; }
     const s = await res.json();
     networkMode = s.networkMode || 'mainnet';
+    currentBlockHeight = s.blockHeight || 0;
 
     bar.innerHTML = `
       <div><span>Network:</span> <strong style="color:${networkMode === 'testnet' ? '#d29922' : '#3fb950'}">${esc(networkMode)}</strong></div>
@@ -703,9 +1296,9 @@ async function loadStatus() {
   }
 }
 
-// ---------------------------------------------------------------------------
+// ===========================================================================
 // Admin / Debug - Faucet
-// ---------------------------------------------------------------------------
+// ===========================================================================
 
 document.getElementById('faucetBtn').addEventListener('click', async () => {
   const btn = document.getElementById('faucetBtn');
@@ -723,7 +1316,8 @@ document.getElementById('faucetBtn').addEventListener('click', async () => {
     });
     const data = await res.json();
     if (res.ok) {
-      result.innerHTML = `<span class="result-msg ok">Granted ${amount} karma. New balance: ${data.newBalance}. Box: ${data.boxId.slice(0, 16)}...</span>`;
+      result.innerHTML = `<span class="result-msg ok">Granted ${amount} karma. Status: ${data.status}. TxId: ${(data.txId || '').slice(0, 16)}...</span>`;
+      loadIdentityStatus();
       loadStatus();
     } else {
       result.innerHTML = `<span class="result-msg err">${esc(data.error || 'faucet failed')}</span>`;
@@ -735,25 +1329,47 @@ document.getElementById('faucetBtn').addEventListener('click', async () => {
   }
 });
 
-// ---------------------------------------------------------------------------
-// Admin / Debug - Invites
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// Admin / Debug - Invites (tx-based)
+// ===========================================================================
 
 document.getElementById('createInviteBtn').addEventListener('click', async () => {
   const btn = document.getElementById('createInviteBtn');
   const result = document.getElementById('inviteResult');
-  const karmaAmount = parseInt(document.getElementById('inviteKarma').value) || 10;
-  const bondAmount = parseInt(document.getElementById('inviteBond').value) || 5;
 
   btn.disabled = true;
   result.innerHTML = '<span class="result-msg">Creating invite...</span>';
 
   try {
-    const signature = await signInviteCreate(userId, karmaAmount, bondAmount);
+    // 1. Fetch karma box
+    const karmaBox = await fetchKarmaBox();
+    if (!karmaBox) {
+      result.innerHTML = '<span class="result-msg err">No karma box found</span>';
+      return;
+    }
+    const totalNeeded = INVITE_KARMA_AMOUNT + INVITE_BOND_KARMA;
+    if (karmaBox.balance < totalNeeded) {
+      result.innerHTML = `<span class="result-msg err">Insufficient karma: need ${totalNeeded}, have ${karmaBox.balance}</span>`;
+      return;
+    }
+
+    // 2. Generate random secret and compute secretHash
+    const secretBytes = crypto.getRandomValues(new Uint8Array(32));
+    const secretHex = buf2hex(secretBytes);
+    const secretHash = blake2b(secretBytes, null, 64).slice(0, 32);
+    const secretHashHex = buf2hex(secretHash);
+
+    // 3. Build and sign tx
+    const pubKeyHex = buf2hex(pubKeyRaw);
+    const tx = buildCreateInviteTx(karmaBox, pubKeyHex, secretHashHex);
+    const { signature } = await signTxId(tx);
+    tx.signatures[pubKeyHex] = signature;
+
+    // 4. Submit
     const res = await fetch(API + '/invites', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ inviterId: userId, karmaAmount, bondAmount, signature }),
+      body: JSON.stringify({ tx }),
     });
     const data = await res.json();
     if (res.ok) {
@@ -762,13 +1378,14 @@ document.getElementById('createInviteBtn').addEventListener('click', async () =>
         <div style="font-size:11px;color:#8b949e;margin:4px 0">Invite Box ID:</div>
         <pre>${esc(data.inviteBoxId)}</pre>
         <div style="font-size:11px;color:#8b949e;margin:4px 0">Secret (share with invitee):</div>
-        <pre>${esc(data.secret)}</pre>
+        <pre>${esc(secretHex)}</pre>
         <div style="font-size:11px;color:#8b949e;margin:4px 0">Secret Hash:</div>
-        <pre>${esc(data.secretHash)}</pre>
+        <pre>${esc(secretHashHex)}</pre>
         <div style="font-size:11px;color:#8b949e;margin:4px 0">Bond Box ID:</div>
         <pre>${esc(data.bondBoxId)}</pre>
       `;
       loadStatus();
+      loadIdentityStatus();
     } else {
       result.innerHTML = `<span class="result-msg err">${esc(data.error || 'invite creation failed')}</span>`;
     }
@@ -783,10 +1400,12 @@ document.getElementById('redeemInviteBtn').addEventListener('click', async () =>
   const btn = document.getElementById('redeemInviteBtn');
   const result = document.getElementById('redeemResult');
   const inviteBoxId = document.getElementById('inviteBoxIdInput').value.trim();
-  const secret = document.getElementById('inviteSecretInput').value.trim();
+  const bondBoxId = document.getElementById('bondBoxIdForClaimInput').value.trim();
+  const inviterId = document.getElementById('inviterIdForClaimInput').value.trim();
+  const secretHex = document.getElementById('inviteSecretInput').value.trim();
 
-  if (!inviteBoxId || !secret) {
-    result.innerHTML = '<span class="result-msg err">Both Invite Box ID and Secret are required</span>';
+  if (!inviteBoxId || !bondBoxId || !inviterId || !secretHex) {
+    result.innerHTML = '<span class="result-msg err">All fields are required: Invite Box ID, Bond Box ID, Inviter ID, and Secret</span>';
     return;
   }
 
@@ -794,14 +1413,26 @@ document.getElementById('redeemInviteBtn').addEventListener('click', async () =>
   result.innerHTML = '<span class="result-msg">Redeeming...</span>';
 
   try {
+    const inviteePubKeyHex = buf2hex(pubKeyRaw);
+
+    const inviteBox = {
+      id: inviteBoxId,
+      value: INVITE_KARMA_AMOUNT,
+      inviterId,
+    };
+    const bondBox = {
+      id: bondBoxId,
+      value: INVITE_BOND_KARMA,
+    };
+
+    const tx = buildClaimInviteTx(inviteBox, bondBox, inviteePubKeyHex, secretHex);
+    const { signature } = await signTxId(tx);
+    tx.signatures[inviteePubKeyHex] = signature;
+
     const res = await fetch(API + '/invites/claim', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        inviteBoxId,
-        secret,
-        publicKey: buf2hex(pubKeyRaw),
-      }),
+      body: JSON.stringify({ tx }),
     });
     const data = await res.json();
     if (res.ok) {
@@ -813,6 +1444,7 @@ document.getElementById('redeemInviteBtn').addEventListener('click', async () =>
         <pre>${esc(data.karmaBoxId)}</pre>
       `;
       loadStatus();
+      loadIdentityStatus();
     } else {
       result.innerHTML = `<span class="result-msg err">${esc(data.error || 'redeem failed')}</span>`;
     }
@@ -823,9 +1455,73 @@ document.getElementById('redeemInviteBtn').addEventListener('click', async () =>
   }
 });
 
-// ---------------------------------------------------------------------------
+document.getElementById('cancelInviteBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('cancelInviteBtn');
+  const result = document.getElementById('cancelInviteResult');
+  const inviteBoxId = document.getElementById('cancelInviteBoxIdInput').value.trim();
+
+  if (!inviteBoxId) {
+    result.innerHTML = '<span class="result-msg err">Invite Box ID is required</span>';
+    return;
+  }
+
+  btn.disabled = true;
+  result.innerHTML = '<span class="result-msg">Cancelling invite...</span>';
+
+  try {
+    // Fetch karma box and invite state to build the cancel tx
+    const karmaBox = await fetchKarmaBox();
+    if (!karmaBox) {
+      result.innerHTML = '<span class="result-msg err">No karma box found</span>';
+      return;
+    }
+
+    const inviteState = await fetchInviteState();
+    const invBox = inviteState.pending.find(b => b.id === inviteBoxId);
+    if (!invBox) {
+      result.innerHTML = `<span class="result-msg err">Invite ${inviteBoxId.slice(0, 16)}... not found in your pending invites</span>`;
+      return;
+    }
+
+    // Find the matching bond box (same inviterId, unclaimed)
+    const bondBox = inviteState.bonds.find(b =>
+      b.inviterId === invBox.inviterId &&
+      (!b.inviteePublicKey || b.inviteePublicKey === '00'.repeat(32))
+    );
+
+    const pubKeyHex = buf2hex(pubKeyRaw);
+    const tx = buildCancelInviteTx(
+      { boxId: karmaBox.boxId, balance: karmaBox.balance },
+      { id: invBox.id, value: invBox.value },
+      { id: bondBox?.id || '00'.repeat(32), value: bondBox?.value || 0 },
+      pubKeyHex,
+    );
+    const { signature } = await signTxId(tx);
+    tx.signatures[pubKeyHex] = signature;
+
+    const res = await fetch(API + '/invites/cancel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tx }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      result.innerHTML = `<span class="result-msg ok">Invite cancelled! TxId: ${(data.txId || '').slice(0, 16)}...</span>`;
+      loadStatus();
+      loadIdentityStatus();
+    } else {
+      result.innerHTML = `<span class="result-msg err">${esc(data.error || 'cancel failed')}</span>`;
+    }
+  } catch (e) {
+    result.innerHTML = `<span class="result-msg err">${esc(e.message)}</span>`;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ===========================================================================
 // Init
-// ---------------------------------------------------------------------------
+// ===========================================================================
 
 await loadIdentities();
 loadFeed();
