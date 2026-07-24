@@ -127,12 +127,14 @@ describe('db lifecycle', () => {
     expect(dagPostsNames).toContain('status');
     expect(dagPostsNames).toContain('block_height');
 
-    // ordering_blocks
+    // ordering_blocks (blob-based from Phase 2 block-header split)
     const orderCols = db.pragma('table_info(ordering_blocks)') as Array<{ name: string }>;
     const orderNames = orderCols.map((c) => c.name);
     expect(orderNames).toContain('height');
-    expect(orderNames).toContain('hash');
-    expect(orderNames).toContain('prev_block_hash');
-    expect(orderNames).toContain('epoch_tally_results');
+    expect(orderNames).toContain('header_cbor');
+    expect(orderNames).toContain('subblock_tree_cbor');
+    expect(orderNames).toContain('utxotx_tree_cbor');
+    expect(orderNames).toContain('validator_signature');
+    expect(orderNames).toContain('created_at');
   });
 });

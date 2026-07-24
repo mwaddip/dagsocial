@@ -33,20 +33,28 @@ function makeOrderingBlock(
   overrides: Partial<OrderingBlock> = {},
 ): OrderingBlock {
   return {
-    height: 1,
-    hash: 'abc123hash',
-    prevBlockHash: '000000prevhash',
-    subBlockRefs: ['sb-1', 'sb-2'],
-    likeBoxIds: ['like-box-1'],
-    utxoTxIds: ['tx-1'],
-    stumpIds: ['stump-1'],
-    validatorId: uid('validator-1'),
+    header: {
+      protocolVersion: 1,
+      height: 1,
+      prevBlockHash: '00'.repeat(64),
+      subBlockRoot: '00'.repeat(64),
+      utxoTxRoot: '00'.repeat(64),
+      stateRoot: '00'.repeat(33),
+      validatorId: uid('validator-1'),
+      powNonce: 0,
+      powTargetBits: 12,
+      createdAt: Date.now(),
+    },
+    subBlockTree: {
+      subBlockRefs: ['sb-1', 'sb-2'],
+      stumpIds: ['stump-1'],
+    },
+    utxoTxTree: {
+      utxoTxIds: ['tx-1'],
+      likeBoxIds: ['like-box-1'],
+      coinbaseOutputs: [],
+    },
     validatorSignature: new Uint8Array(64).fill(0xab),
-    powNonce: 0,
-    powTargetBits: 12,
-    coinbaseOutputs: [],
-    protocolVersion: 1,
-    createdAt: Date.now(),
     ...overrides,
   };
 }
@@ -81,53 +89,82 @@ describe('ordering store', () => {
     initDb(':memory:');
 
     const block = makeOrderingBlock({
-      height: 1,
-      hash: 'hash-abc',
-      prevBlockHash: 'prev-hash-000',
-      subBlockRefs: ['sb-ref-1', 'sb-ref-2'],
-      likeBoxIds: ['like-id-1', 'like-id-2'],
-      utxoTxIds: ['tx-id-1'],
-      stumpIds: ['stump-aaa'],
-      validatorId: uid('validator-alice'),
-      validatorSignature: new Uint8Array(64).fill(0xcd),
-      epochTallyResults: {
-        rewards: {
-          'post-1': {
-            targetPostId: 'post-1',
-            likeCount: 5,
-            authorReward: 10,
-            likerRefunds: { 'user-a': 2, 'user-b': 1 },
+      header: {
+        protocolVersion: 1,
+        height: 1,
+        prevBlockHash: 'aa'.repeat(64),
+        subBlockRoot: 'bb'.repeat(64),
+        utxoTxRoot: 'cc'.repeat(64),
+        stateRoot: '00'.repeat(33),
+        validatorId: uid('validator-alice'),
+        powNonce: 42,
+        powTargetBits: 14,
+        createdAt: 1234567890,
+      },
+      subBlockTree: {
+        subBlockRefs: ['sb-ref-1', 'sb-ref-2'],
+        stumpIds: ['stump-aaa'],
+      },
+      utxoTxTree: {
+        utxoTxIds: ['tx-id-1'],
+        likeBoxIds: ['like-id-1', 'like-id-2'],
+        coinbaseOutputs: [
+          {
+            owner: uid('coinbase-recipient'),
+            value: 100,
+            lockedUntilBlock: 100,
+            isTreasury: false,
+          },
+        ],
+        epochTallyResults: {
+          rewards: {
+            'post-1': {
+              targetPostId: 'post-1',
+              likeCount: 5,
+              authorReward: 10,
+              likerRefunds: { 'user-a': 2, 'user-b': 1 },
+            },
           },
         },
       },
-      protocolVersion: 1,
-      createdAt: 1234567890,
+      validatorSignature: new Uint8Array(64).fill(0xcd),
     });
 
     createOrderingBlock(block);
 
     const result = getOrderingBlock(1);
     expect(result).not.toBeNull();
-    expect(result!.height).toBe(1);
-    expect(result!.hash).toBe('hash-abc');
-    expect(result!.prevBlockHash).toBe('prev-hash-000');
-    expect(result!.subBlockRefs).toEqual(['sb-ref-1', 'sb-ref-2']);
-    expect(result!.likeBoxIds).toEqual(['like-id-1', 'like-id-2']);
-    expect(result!.utxoTxIds).toEqual(['tx-id-1']);
-    expect(result!.stumpIds).toEqual(['stump-aaa']);
-    expect(result!.validatorId).toEqual(uid('validator-alice'));
+    const h = result!.header;
+    expect(h.height).toBe(1);
+    expect(h.protocolVersion).toBe(1);
+    expect(h.prevBlockHash).toBe('aa'.repeat(64));
+    expect(h.subBlockRoot).toBe('bb'.repeat(64));
+    expect(h.utxoTxRoot).toBe('cc'.repeat(64));
+    expect(h.validatorId).toEqual(uid('validator-alice'));
+    expect(h.powNonce).toBe(42);
+    expect(h.powTargetBits).toBe(14);
+    expect(h.createdAt).toBe(1234567890);
+
     expect(result!.validatorSignature).toEqual(
       new Uint8Array(64).fill(0xcd),
     );
-    expect(result!.protocolVersion).toBe(1);
-    expect(result!.createdAt).toBe(1234567890);
 
-    // Check epochTallyResults were round-tripped
-    expect(result!.epochTallyResults).toBeDefined();
-    const rewards = result!.epochTallyResults!.rewards;
-    expect(rewards['post-1'].likeCount).toBe(5);
-    expect(rewards['post-1'].authorReward).toBe(10);
-    expect(rewards['post-1'].likerRefunds).toEqual({
+    // subBlockTree
+    expect(result!.subBlockTree.subBlockRefs).toEqual(['sb-ref-1', 'sb-ref-2']);
+    expect(result!.subBlockTree.stumpIds).toEqual(['stump-aaa']);
+
+    // utxoTxTree
+    expect(result!.utxoTxTree.utxoTxIds).toEqual(['tx-id-1']);
+    expect(result!.utxoTxTree.likeBoxIds).toEqual(['like-id-1', 'like-id-2']);
+    expect(result!.utxoTxTree.coinbaseOutputs).toHaveLength(1);
+    expect(result!.utxoTxTree.coinbaseOutputs[0]!.value).toBe(100);
+
+    // epochTallyResults
+    expect(result!.utxoTxTree.epochTallyResults).toBeDefined();
+    const rewards = result!.utxoTxTree.epochTallyResults!.rewards;
+    expect(rewards['post-1']!.likeCount).toBe(5);
+    expect(rewards['post-1']!.authorReward).toBe(10);
+    expect(rewards['post-1']!.likerRefunds).toEqual({
       'user-a': 2,
       'user-b': 1,
     });

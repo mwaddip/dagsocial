@@ -110,19 +110,10 @@ const MIGRATIONS = [
   // Ordering blocks
   `CREATE TABLE IF NOT EXISTS ordering_blocks (
     height INTEGER PRIMARY KEY,
-    hash TEXT NOT NULL UNIQUE,
-    prev_block_hash TEXT NOT NULL,
-    sub_block_refs TEXT NOT NULL,     -- JSON array
-    like_box_ids TEXT NOT NULL,       -- JSON array
-    utxo_tx_ids TEXT NOT NULL,        -- JSON array
-    stump_ids TEXT NOT NULL,          -- JSON array
-    validator_id BLOB NOT NULL,       -- 32-byte Ed25519 public key
-    validator_signature BLOB NOT NULL,
-    pow_nonce INTEGER NOT NULL DEFAULT 0,
-    pow_target_bits INTEGER NOT NULL DEFAULT 12,
-    coinbase_outputs TEXT NOT NULL DEFAULT '[]',  -- JSON array of CoinbaseOutput
-    epoch_tally_results TEXT,         -- JSON, nullable
-    protocol_version INTEGER NOT NULL,
+    header_cbor BLOB NOT NULL,
+    subblock_tree_cbor BLOB NOT NULL,
+    utxotx_tree_cbor BLOB NOT NULL,
+    validator_signature BLOB NOT NULL,  -- 64 bytes
     created_at INTEGER NOT NULL
   )`,
 ];
