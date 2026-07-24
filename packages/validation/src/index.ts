@@ -8,4 +8,6 @@ export {
   verifyTxStructure,
   verifyOrderingBlockStructure,
   verifyBlockChainLink,
+  verifyOrderingBlockPoW,
+  computeBlockBodyHash,
 } from './verify.js';

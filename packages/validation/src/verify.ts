@@ -3,8 +3,10 @@ import {
   PROTOCOL_VERSION,
   MAX_CONTENT_BYTES,
   MAX_PARENT_REFS,
+  ORDERING_BLOCK_POW_TARGET_FLOOR,
 } from '@dagsocial/types';
 import { signingHash } from '@dagsocial/types';
+import { encodeOrderingBlock } from '@dagsocial/types';
 import type { Post, SubBlock, OrderingBlock, UtxoTransaction } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
@@ -130,7 +132,64 @@ export function verifyOrderingBlockStructure(
     return { valid: false, error: 'Ordering block missing protocolVersion' };
   }
   if (!block.hash) return { valid: false, error: 'Ordering block missing hash' };
+  if (typeof block.powNonce !== 'number' || block.powNonce < 0) {
+    return { valid: false, error: 'Ordering block missing or invalid powNonce' };
+  }
+  if (typeof block.powTargetBits !== 'number' || block.powTargetBits < ORDERING_BLOCK_POW_TARGET_FLOOR) {
+    return { valid: false, error: 'Ordering block missing or invalid powTargetBits' };
+  }
+  if (!Array.isArray(block.coinbaseOutputs)) {
+    return { valid: false, error: 'Ordering block missing coinbaseOutputs' };
+  }
+  for (const out of block.coinbaseOutputs) {
+    if (!out.owner || out.owner.length !== 32) {
+      return { valid: false, error: 'Coinbase output missing or invalid owner' };
+    }
+    if (typeof out.value !== 'number' || out.value < 0) {
+      return { valid: false, error: 'Coinbase output invalid value' };
+    }
+    if (typeof out.lockedUntilBlock !== 'number' || out.lockedUntilBlock < block.height) {
+      return { valid: false, error: 'Coinbase output invalid lockedUntilBlock' };
+    }
+  }
   return { valid: true };
+}
+
+// ---------------------------------------------------------------------------
+// verifyOrderingBlockPoW
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute the block body hash — the preimage that the PoW nonce is hashed
+ * against.  The body is the CBOR-serialized block with powNonce=0 and
+ * validatorSignature zeroed.
+ */
+export function computeBlockBodyHash(block: OrderingBlock): Buffer {
+  const body = {
+    ...block,
+    powNonce: 0,
+    validatorSignature: new Uint8Array(64),
+    hash: '',                      // not covered — computed AFTER PoW
+  };
+  const bodyBytes = Buffer.from(encodeOrderingBlock(body as OrderingBlock));
+  return createHash('blake2b512').update(bodyBytes).digest().subarray(0, 32);
+}
+
+/**
+ * Verify ordering block PoW.  Hashes bodyHash || nonce (u64 LE) and checks
+ * that the result has at least powTargetBits leading zero bits.
+ */
+export function verifyOrderingBlockPoW(block: OrderingBlock): boolean {
+  const bodyHash = computeBlockBodyHash(block);
+  const nonceBuf = Buffer.alloc(8);
+  nonceBuf.writeBigUInt64LE(BigInt(block.powNonce));
+  const hash = createHash('blake2b512').update(bodyHash).update(nonceBuf).digest().subarray(0, 32);
+  for (let i = 0; i < block.powTargetBits; i++) {
+    const byteIdx = Math.floor(i / 8);
+    const bitIdx = 7 - (i % 8);
+    if ((hash[byteIdx]! & (1 << bitIdx)) !== 0) return false;
+  }
+  return true;
 }
 
 // ---------------------------------------------------------------------------

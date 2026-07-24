@@ -11,7 +11,7 @@ import {
   verifyOrderingBlockStructure,
   verifyBlockChainLink,
 } from '../src/verify.js';
-import { generateKeyPair, getUserId, computePostId, signingHash } from '@dagsocial/types';
+import { generateKeyPair, computePostId, signingHash } from '@dagsocial/types';
 import type { Post, SubBlock, OrderingBlock, UtxoTransaction } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
@@ -53,10 +53,9 @@ describe('verifyPoW', () => {
 describe('verifyPostSignature', () => {
   it('accepts a valid Ed25519 signature', () => {
     const kp = generateKeyPair();
-    const userId = getUserId(kp.publicKey);
     const post: Post = {
       content: 'hello',
-      author: userId,
+      author: kp.publicKey,
       parentRefs: [],
       challenge: new Uint8Array(32),
       powNonce: 0,
@@ -75,7 +74,7 @@ describe('verifyPostSignature', () => {
     const kp2 = generateKeyPair();
     const post: Post = {
       content: 'hello',
-      author: getUserId(kp1.publicKey),
+      author: kp1.publicKey,
       parentRefs: [],
       challenge: new Uint8Array(32),
       powNonce: 0,
@@ -92,7 +91,7 @@ describe('verifyPostSignature', () => {
     const kp = generateKeyPair();
     const post: Post = {
       content: 'hello',
-      author: getUserId(kp.publicKey),
+      author: kp.publicKey,
       parentRefs: [],
       challenge: new Uint8Array(32),
       powNonce: 0,
@@ -302,8 +301,11 @@ describe('verifyOrderingBlockStructure', () => {
     likeBoxIds: [],
     utxoTxIds: [],
     stumpIds: [],
-    validatorId: 'validator1',
+    validatorId: 'validator1' as unknown as Uint8Array,
     validatorSignature: new Uint8Array(64),
+    powNonce: 0,
+    powTargetBits: 12,
+    coinbaseOutputs: [],
     protocolVersion: 1,
     createdAt: Date.now(),
   });
@@ -351,8 +353,11 @@ describe('verifyBlockChainLink', () => {
     likeBoxIds: [],
     utxoTxIds: [],
     stumpIds: [],
-    validatorId: 'validator1',
+    validatorId: 'validator1' as unknown as Uint8Array,
     validatorSignature: new Uint8Array(64),
+    powNonce: 0,
+    powTargetBits: 12,
+    coinbaseOutputs: [],
     protocolVersion: 1,
     createdAt: Date.now(),
   });

@@ -12,6 +12,7 @@ export interface LikeReward {
   likeCount: number;
   authorReward: number;
   likerRefunds: Record<string, number>;  // likerId → net karma refund
+  postLockKarmaUnlocked?: number;         // Karma released from post lock this epoch
 }
 
 // ---------------------------------------------------------------------------
@@ -35,6 +36,17 @@ export interface EpochTally {
 }
 
 // ---------------------------------------------------------------------------
+// Coinbase output (block reward)
+// ---------------------------------------------------------------------------
+
+export interface CoinbaseOutput {
+  owner: UserId;              // 32-byte recipient public key
+  value: number;              // Credits minted
+  lockedUntilBlock: number;   // Height at which credits become spendable
+  isTreasury: boolean;        // Treasury or miner output
+}
+
+// ---------------------------------------------------------------------------
 // Ordering block (validator-produced)
 // ---------------------------------------------------------------------------
 
@@ -48,6 +60,9 @@ export interface OrderingBlock {
   stumpIds: StumpId[];               // Stumps committed in this block
   validatorId: UserId;               // Block producer
   validatorSignature: Uint8Array;    // 64 bytes — Ed25519 over block hash
+  powNonce: number;                  // PoW solution
+  powTargetBits: number;             // Difficulty target for this block
+  coinbaseOutputs: CoinbaseOutput[]; // Block reward distribution
   epochTallyResults?: EpochTally;    // Present if epoch transition triggered
   protocolVersion: number;
   createdAt: number;                 // Unix ms

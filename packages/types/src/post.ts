@@ -6,7 +6,7 @@ export type PostId = string;
 
 export interface Post {
   content: string;              // 1–MAX_CONTENT_BYTES UTF-8
-  author: UserId;
+  author: UserId;               // 32-byte Ed25519 public key
   parentRefs: PostId[];         // 0–MAX_PARENT_REFS
   challenge: Uint8Array;        // 32 bytes — random nonce from node (anti-precomputation)
   powNonce: number;             // PoW solution against challenge
