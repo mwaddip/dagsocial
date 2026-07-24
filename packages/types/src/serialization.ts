@@ -2,7 +2,13 @@ import { encode, decode } from 'cbor-x';
 import type { Post } from './post.js';
 import type { AnyBox, UtxoTransaction } from './utxo.js';
 import type { Stump } from './stump.js';
-import type { SubBlock, OrderingBlock } from './block.js';
+import type {
+  SubBlock,
+  BlockHeader,
+  SubBlockTree,
+  UtxoTxTree,
+  OrderingBlock,
+} from './block.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -63,15 +69,91 @@ export function decodeSubBlock(bytes: Uint8Array): SubBlock {
 }
 
 // ---------------------------------------------------------------------------
-// Ordering block
+// Block header
 // ---------------------------------------------------------------------------
 
-export function encodeOrderingBlock(block: OrderingBlock): Uint8Array {
-  return toBuffer(block);
+export function encodeHeader(h: BlockHeader): Uint8Array {
+  return toBuffer(h);
 }
 
+export function decodeHeader(bytes: Uint8Array): BlockHeader {
+  return fromBuffer<BlockHeader>(bytes);
+}
+
+// ---------------------------------------------------------------------------
+// Sub-block tree
+// ---------------------------------------------------------------------------
+
+export function encodeSubBlockTree(t: SubBlockTree): Uint8Array {
+  return toBuffer(t);
+}
+
+export function decodeSubBlockTree(bytes: Uint8Array): SubBlockTree {
+  return fromBuffer<SubBlockTree>(bytes);
+}
+
+// ---------------------------------------------------------------------------
+// UTXO transaction tree
+// ---------------------------------------------------------------------------
+
+export function encodeUtxoTxTree(t: UtxoTxTree): Uint8Array {
+  return toBuffer(t);
+}
+
+export function decodeUtxoTxTree(bytes: Uint8Array): UtxoTxTree {
+  return fromBuffer<UtxoTxTree>(bytes);
+}
+
+// ---------------------------------------------------------------------------
+// Ordering block — length-prefixed wire format
+// ---------------------------------------------------------------------------
+
+/**
+ * Encode a full ordering block for the wire / on-disk storage.
+ *
+ * Wire format:
+ *   u32BE(headerLen) || headerCbor || u32BE(subTreeLen) || subTreeCbor
+ *   || u32BE(utxoTxTreeLen) || utxoTxTreeCbor || validatorSignature (64 bytes)
+ */
+export function encodeOrderingBlock(block: OrderingBlock): Uint8Array {
+  const headerBytes = Buffer.from(encodeHeader(block.header));
+  const subBytes = Buffer.from(encodeSubBlockTree(block.subBlockTree));
+  const utxoBytes = Buffer.from(encodeUtxoTxTree(block.utxoTxTree));
+
+  const headerLen = Buffer.alloc(4);
+  headerLen.writeUInt32BE(headerBytes.length);
+  const subLen = Buffer.alloc(4);
+  subLen.writeUInt32BE(subBytes.length);
+  const utxoLen = Buffer.alloc(4);
+  utxoLen.writeUInt32BE(utxoBytes.length);
+
+  return new Uint8Array(Buffer.concat([
+    headerLen, headerBytes,
+    subLen, subBytes,
+    utxoLen, utxoBytes,
+    Buffer.from(block.validatorSignature),
+  ]));
+}
+
+/**
+ * Decode a length-prefixed ordering block from the wire.
+ */
 export function decodeOrderingBlock(bytes: Uint8Array): OrderingBlock {
-  return fromBuffer<OrderingBlock>(bytes);
+  const buf = Buffer.from(bytes);
+  let offset = 0;
+
+  const headerLen = buf.readUInt32BE(offset); offset += 4;
+  const header = decodeHeader(buf.subarray(offset, offset + headerLen)); offset += headerLen;
+
+  const subLen = buf.readUInt32BE(offset); offset += 4;
+  const subBlockTree = decodeSubBlockTree(buf.subarray(offset, offset + subLen)); offset += subLen;
+
+  const utxoLen = buf.readUInt32BE(offset); offset += 4;
+  const utxoTxTree = decodeUtxoTxTree(buf.subarray(offset, offset + utxoLen)); offset += utxoLen;
+
+  const validatorSignature = new Uint8Array(buf.subarray(offset, offset + 64));
+
+  return { header, subBlockTree, utxoTxTree, validatorSignature };
 }
 
 // ---------------------------------------------------------------------------
