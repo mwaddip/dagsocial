@@ -88,6 +88,12 @@ export function createApp(config: Config): express.Express {
       castLike,
       removeLike,
       getCurrentHeight: store.getCurrentHeight,
+      getBox: store.getBox,
+      insertBox: store.insertBox,
+      consumeBox: store.consumeBox,
+      getKarmaBox: store.getKarmaBox,
+      getIdentity: store.getIdentity,
+      runInTransaction: (fn: () => void) => getDb().transaction(fn)(),
     }),
   );
 
@@ -98,8 +104,13 @@ export function createApp(config: Config): express.Express {
       createInvite,
       claimInvite,
       cancelInvite,
-      getIdentity: store.getIdentity,
       getCurrentHeight: store.getCurrentHeight,
+      getBox: store.getBox,
+      insertBox: store.insertBox,
+      consumeBox: store.consumeBox,
+      getKarmaBox: store.getKarmaBox,
+      getIdentity: store.getIdentity,
+      runInTransaction: (fn: () => void) => getDb().transaction(fn)(),
     }),
   );
 
