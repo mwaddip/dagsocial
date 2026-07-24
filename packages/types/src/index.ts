@@ -45,6 +45,9 @@ export type { KeyPair, UserId } from './identity.js';
 // Base58
 export { base58Encode, base58Decode } from './base58.js';
 
+// Merkle tree
+export { leafHash, nodeHash, buildMerkleRoot } from './merkle.js';
+
 // Posts
 export { signingHash, computePostId, getPostDiscriminator, buildProfileContent } from './post.js';
 export type { Post, PostId } from './post.js';
