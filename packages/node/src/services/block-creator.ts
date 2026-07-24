@@ -6,36 +6,49 @@ import {
 } from 'crypto';
 import {
   PROTOCOL_VERSION,
-  computeBoxId,
-  computeTxId,
-  encodeOrderingBlock,
-  decodeSubBlock,
-  decodeTx,
-  EPOCH_BLOCKS,
-  LIKE_THRESHOLD,
-  LIKE_MAX_AUTHOR_REWARD,
-  LIKE_COST,
   CREDIT_FIXED_RATE_BLOCKS,
   CREDIT_INITIAL_REWARD,
   CREDIT_EPOCH_BLOCKS,
   CREDIT_REWARD_REDUCTION,
   CREDIT_TAIL_REWARD,
   CREDIT_MINER_REWARD_DELAY,
+  CREDIT_TREASURY_PCT,
+  ORDERING_BLOCK_POW_TARGET_BITS,
+  LIKE_THRESHOLD,
+  LIKE_MAX_AUTHOR_REWARD,
+  LIKE_COST,
   POST_LOCK_UNLOCK_PER_LIKES,
+  EMPTY_STATE_ROOT,
+  encodeHeader,
+  decodeSubBlock,
+  decodeTx,
+  encodePost,
+  computeBoxId,
+  computeTxId,
+  leafHash,
+  buildMerkleRoot,
 } from '@dagsocial/types';
+import {
+  verifyOrderingBlockPoW,
+  blockHash,
+  computePowHash,
+} from '@dagsocial/validation';
 import type {
   OrderingBlock,
+  BlockHeader,
+  SubBlockTree,
+  UtxoTxTree,
   CoinbaseOutput,
   EpochTally,
   LikeReward,
-  AnyBox,
-  KarmaBox,
+  SubBlock,
+  Post,
+  LikeBox,
   PostLockBox,
   UtxoTransaction,
-  LikeBox,
+  AnyBox,
   UserId,
 } from '@dagsocial/types';
-import { verifyOrderingBlockPoW, computeBlockBodyHash } from '@dagsocial/validation';
 import type { Config } from '../config.js';
 import { getNet } from './net-instance.js';
 import { mintKarma } from './karma.js';
@@ -67,6 +80,42 @@ import {
   getUnspentPostLockBoxes,
   getPostTotalLikes,
 } from '../store/index.js';
+
+// ---------------------------------------------------------------------------
+// Merkle root computation
+// ---------------------------------------------------------------------------
+
+function computeSubBlockRoot(tree: SubBlockTree): string {
+  const leaves = [
+    ...tree.subBlockRefs.map((id) =>
+      leafHash('subblock', Buffer.from(id, 'hex'))),
+    ...tree.stumpIds.map((id) =>
+      leafHash('stump', Buffer.from(id, 'hex'))),
+  ];
+  return Buffer.from(buildMerkleRoot(leaves)).toString('hex');
+}
+
+function computeUtxoTxRoot(tree: UtxoTxTree): string {
+  const leaves: Uint8Array[] = [
+    ...tree.utxoTxIds.map((id) =>
+      leafHash('utxotx', Buffer.from(id, 'hex'))),
+    ...tree.likeBoxIds.map((id) =>
+      leafHash('likebox', Buffer.from(id, 'hex'))),
+    ...tree.coinbaseOutputs.map((o) =>
+      leafHash('coinbase', Buffer.from(JSON.stringify({
+        owner: Array.from(o.owner),
+        value: o.value,
+        lockedUntilBlock: o.lockedUntilBlock,
+        isTreasury: o.isTreasury,
+      })))),
+  ];
+  if (tree.epochTallyResults) {
+    leaves.push(
+      leafHash('epoch', Buffer.from(JSON.stringify(tree.epochTallyResults))),
+    );
+  }
+  return Buffer.from(buildMerkleRoot(leaves)).toString('hex');
+}
 
 // ---------------------------------------------------------------------------
 // Module-level state
@@ -147,37 +196,36 @@ export function clearTemplate(): void {
 export function submitMinedBlock(powNonce: number, submittedHeight: number): string | null {
   const tpl = currentTemplate;
   // Reject if no template, wrong height, or height already mined
-  if (!tpl || tpl.height !== submittedHeight || getCurrentHeight() >= submittedHeight) {
+  if (!tpl || tpl.header.height !== submittedHeight || getCurrentHeight() >= submittedHeight) {
     return null;
   }
 
-  // Build block with the submitted nonce
-  const block: OrderingBlock = {
-    ...tpl,
+  // Build header with the submitted nonce
+  const header: BlockHeader = {
+    ...tpl.header,
     powNonce,
   };
 
-  // Verify PoW
-  if (!verifyOrderingBlockPoW(block)) {
+  // Verify PoW against the header
+  if (!verifyOrderingBlockPoW(header)) {
     return null;
   }
 
-  // Sign the body hash (covers everything except the signature itself)
-  const bodyHash = computeBlockBodyHash(block);
-  const sig = cryptoSign(null, bodyHash, validatorPrivKey);
-  block.validatorSignature = new Uint8Array(sig);
+  // Sign the header hash
+  const hh = blockHash(header);
+  const sig = cryptoSign(null, Buffer.from(hh, 'hex'), validatorPrivKey);
 
-  // Compute final block hash
-  block.hash = createHash('blake2b512')
-    .update(Buffer.from(encodeOrderingBlock(block)))
-    .digest()
-    .subarray(0, 32)
-    .toString('hex');
+  const block: OrderingBlock = {
+    header,
+    subBlockTree: tpl.subBlockTree,
+    utxoTxTree: tpl.utxoTxTree,
+    validatorSignature: new Uint8Array(sig),
+  };
 
   // Finalize and broadcast
   finalizeBlock(block);
 
-  return block.hash;
+  return hh;
 }
 
 // ---------------------------------------------------------------------------
@@ -209,8 +257,8 @@ function initDifficultyWindow(): void {
   if (currentHeight > 0) {
     const lastBlock = getOrderingBlock(currentHeight);
     if (lastBlock) {
-      difficultyWindowStartTarget = lastBlock.powTargetBits;
-      difficultyWindowStartMs = lastBlock.createdAt;
+      difficultyWindowStartTarget = lastBlock.header.powTargetBits;
+      difficultyWindowStartMs = lastBlock.header.createdAt;
     }
   }
   if (difficultyWindowStartTarget === null) {
@@ -409,61 +457,77 @@ export function createOrderingBlock(): OrderingBlock | null {
   // 16. Previous block hash
   const prevBlock = currentHeight > 0 ? getOrderingBlock(currentHeight) : null;
   const prevBlockHash = prevBlock
-    ? prevBlock.hash
+    ? blockHash(prevBlock.header)
     : '0000000000000000000000000000000000000000000000000000000000000000';
 
   const subBlockRefs = subBlocks.map((sb) => sb.subBlockId);
 
-  // 17. Build block template (powNonce=0, empty signature)
-  const template: OrderingBlock = {
-    height: newHeight,
-    hash: '',
-    prevBlockHash,
+  // 17. Build the body trees
+  const subBlockTree: SubBlockTree = {
     subBlockRefs,
-    likeBoxIds: allLikeBoxIds,
-    utxoTxIds,
     stumpIds: [],
+  };
+  const utxoTxTree: UtxoTxTree = {
+    utxoTxIds,
+    likeBoxIds: allLikeBoxIds,
+    coinbaseOutputs,
+  };
+  if (epochTallyResults) {
+    utxoTxTree.epochTallyResults = epochTallyResults;
+  }
+
+  // 18. Compute Merkle roots
+  const subBlockRoot = computeSubBlockRoot(subBlockTree);
+  const utxoTxRoot = computeUtxoTxRoot(utxoTxTree);
+
+  // 19. Build header template (powNonce=0)
+  const headerTemplate: BlockHeader = {
+    protocolVersion: PROTOCOL_VERSION,
+    height: newHeight,
+    prevBlockHash,
+    subBlockRoot,
+    utxoTxRoot,
+    stateRoot: EMPTY_STATE_ROOT,
     validatorId,
-    validatorSignature: new Uint8Array(64),
     powNonce: 0,
     powTargetBits,
-    coinbaseOutputs,
-    protocolVersion: PROTOCOL_VERSION,
     createdAt: Date.now(),
   };
 
-  if (epochTallyResults) {
-    template.epochTallyResults = epochTallyResults;
-  }
-
-  // 18. Internal vs external mining
+  // 20. Internal vs external mining
   if (config.miningMode === 'external') {
-    // Store template for external miners, don't mine
+    // Store the full block template (header + bodies) for external miners
+    const template: OrderingBlock = {
+      header: headerTemplate,
+      subBlockTree,
+      utxoTxTree,
+      validatorSignature: new Uint8Array(64),
+    };
     currentTemplate = template;
     return null; // Block not finalized yet
   }
 
-  // 19. Internal: mine PoW
-  const bodyHash = computeBlockBodyHash(template);
-  const powNonce = solvePoW(bodyHash, powTargetBits);
+  // 21. Internal: mine PoW against the header
+  const powPreimage = computePowHash(headerTemplate);
+  const powNonce = solvePoW(powPreimage, powTargetBits);
 
-  const block: OrderingBlock = {
-    ...template,
+  const header: BlockHeader = {
+    ...headerTemplate,
     powNonce,
   };
 
-  // 20. Sign the body hash
-  const sig = cryptoSign(null, bodyHash, validatorPrivKey);
-  block.validatorSignature = new Uint8Array(sig);
+  // 22. Sign the header hash
+  const hh = blockHash(header);
+  const sig = cryptoSign(null, Buffer.from(hh, 'hex'), validatorPrivKey);
 
-  // 21. Compute final hash
-  block.hash = createHash('blake2b512')
-    .update(Buffer.from(encodeOrderingBlock(block)))
-    .digest()
-    .subarray(0, 32)
-    .toString('hex');
+  const block: OrderingBlock = {
+    header,
+    subBlockTree,
+    utxoTxTree,
+    validatorSignature: new Uint8Array(sig),
+  };
 
-  // 22. Finalize
+  // 23. Finalize
   finalizeBlock(block);
 
   return block;
@@ -478,8 +542,8 @@ function finalizeBlock(block: OrderingBlock): void {
   storeCreateOrderingBlock(block);
 
   // 2. Apply coinbase — mint credits for each output
-  for (const out of block.coinbaseOutputs) {
-    mintCredits(out.owner, out.value, block.height, out.lockedUntilBlock);
+  for (const out of block.utxoTxTree.coinbaseOutputs) {
+    mintCredits(out.owner, out.value, block.header.height, out.lockedUntilBlock);
   }
 
   // 3. Broadcast
@@ -491,8 +555,8 @@ function finalizeBlock(block: OrderingBlock): void {
   }
 
   // 4. Confirm sub-blocks and their posts
-  for (const sbId of block.subBlockRefs) {
-    confirmPost(sbId, block.height);
+  for (const sbId of block.subBlockTree.subBlockRefs) {
+    confirmPost(sbId, block.header.height);
   }
 
   // 4b. Apply UTXO transactions locally (so we don't rely on gossip loopback)
@@ -521,16 +585,16 @@ function finalizeBlock(block: OrderingBlock): void {
     const entry = allEntries.find((e) => e.rowid === rowid);
     if (!entry || entry.entryType !== 'utxo_tx' || !entry.utxoTxCbor) continue;
     const tx = decodeTx(entry.utxoTxCbor);
-    const revalResult = revalidateTxInContext(utxoDeps, tx, block.height);
+    const revalResult = revalidateTxInContext(utxoDeps, tx, block.header.height);
     if (!revalResult.valid) {
-      console.warn(`UTXO tx revalidation failed at block ${block.height}: ${revalResult.error}`);
+      console.warn(`UTXO tx revalidation failed at block ${block.header.height}: ${revalResult.error}`);
       continue;
     }
     const outputsWithIds = tx.outputs.map((box) => ({
       ...box,
       id: computeBoxId(box),
     }));
-    applyTx(utxoDeps, tx, outputsWithIds, block.height);
+    applyTx(utxoDeps, tx, outputsWithIds, block.header.height);
   }
 
   // 5. Remove confirmed entries from mempool
