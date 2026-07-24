@@ -365,19 +365,9 @@ export function createOrderingBlock(): OrderingBlock | null {
   const isEpochBoundary =
     currentHeight > 0 && currentHeight % config.epochBlocks === 0;
 
-  // 11. Guard: nothing to confirm.
-  //     In external mode, always allow empty blocks so miners have a template.
-  //     In internal mode, only produce blocks when there's work or it's genesis.
-  if (
-    subBlocks.length === 0 &&
-    filteredStandaloneLikes.length === 0 &&
-    utxoTxIds.length === 0 &&
-    !isEpochBoundary &&
-    config.miningMode !== 'external' &&
-    currentHeight > 0
-  ) {
-    return null;
-  }
+  // 11. Always produce a block — miners need coinbase rewards even when
+  //     there is no user work.  The block will be empty but still carries
+  //     credit emission and (at epoch boundaries) an epoch tally.
 
   // 12. Track confirmed rowids for finalizeBlock cleanup
   confirmedRowids = new Set<number>();

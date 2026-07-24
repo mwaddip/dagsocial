@@ -300,14 +300,19 @@ describe('block-creator', () => {
   // 1. Null return when nothing pending
   // -----------------------------------------------------------------------
 
-  it('createOrderingBlock returns null when nothing pending', async () => {
+  it('createOrderingBlock produces genesis block even with nothing pending', async () => {
     const db = await importDb();
     db.initDb(':memory:');
     const bc = await importBlockCreator();
     bc.startBlockCreator(testConfig);
 
     const block = bc.createOrderingBlock();
-    expect(block).toBeNull();
+    // Empty blocks are always mined — miners need coinbase rewards.
+    // At genesis (height 0→1), this produces a block with coinbase outputs.
+    expect(block).not.toBeNull();
+    expect(block!.height).toBe(1);
+    expect(block!.subBlockRefs).toEqual([]);
+    expect(block!.coinbaseOutputs.length).toBeGreaterThan(0);
   });
 
   // -----------------------------------------------------------------------
