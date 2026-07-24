@@ -74,7 +74,17 @@ export { computeStumpId } from './stump.js';
 export type { PruneIntent, KarmaDelta, Stump, StumpId } from './stump.js';
 
 // Blocks
-export type { SubBlock, OrderingBlock, CoinbaseOutput, EpochTally, LikeReward } from './block.js';
+export { EMPTY_STATE_ROOT } from './block.js';
+export type {
+  SubBlock,
+  OrderingBlock,
+  BlockHeader,
+  SubBlockTree,
+  UtxoTxTree,
+  CoinbaseOutput,
+  EpochTally,
+  LikeReward,
+} from './block.js';
 
 // Serialization
 export {
