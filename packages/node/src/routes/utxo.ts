@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, Response } from 'express';
 import type { KarmaBox, CreditBox, InviteBox, BondBox } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
@@ -7,12 +7,12 @@ import type { KarmaBox, CreditBox, InviteBox, BondBox } from '@dagsocial/types';
 
 export interface UtxoDeps {
   getIdentity(
-    userId: string,
-  ): { userId: string; publicKey: Uint8Array; createdAt: number } | null;
+    userId: Uint8Array,
+  ): { userId: Uint8Array; publicKey: Uint8Array; createdAt: number } | null;
   getKarmaBox(owner: Uint8Array): KarmaBox | null;
   getCreditBox(owner: Uint8Array): CreditBox | null;
-  getPendingInvites(inviterId: string): InviteBox[];
-  getBondBoxes(inviterId: string): BondBox[];
+  getPendingInvites(inviterId: Uint8Array): InviteBox[];
+  getBondBoxes(inviterId: Uint8Array): BondBox[];
 }
 
 // ---------------------------------------------------------------------------
@@ -22,9 +22,26 @@ export interface UtxoDeps {
 export function createRouter(deps: UtxoDeps): Router {
   const router = Router();
 
+  // Helper: parse hex userId from URL param, return Uint8Array
+  function parseUserId(param: string, res: Response): Uint8Array | null {
+    if (!param || typeof param !== 'string' || param.length !== 64) {
+      res.status(400).json({ error: 'userId must be a 64-character hex string' });
+      return null;
+    }
+    try {
+      return new Uint8Array(Buffer.from(param, 'hex'));
+    } catch {
+      res.status(400).json({ error: 'userId must be a hex string' });
+      return null;
+    }
+  }
+
   // GET /karma/:userId — get karma balance for a user
   router.get('/karma/:userId', (req, res) => {
-    const identity = deps.getIdentity(req.params['userId']!);
+    const userIdBytes = parseUserId(req.params['userId']!, res);
+    if (!userIdBytes) return;
+
+    const identity = deps.getIdentity(userIdBytes);
     if (!identity) {
       res.status(404).json({ error: 'Identity not found' });
       return;
@@ -46,7 +63,10 @@ export function createRouter(deps: UtxoDeps): Router {
 
   // GET /credits/:userId — get credit balance for a user
   router.get('/credits/:userId', (req, res) => {
-    const identity = deps.getIdentity(req.params['userId']!);
+    const userIdBytes = parseUserId(req.params['userId']!, res);
+    if (!userIdBytes) return;
+
+    const identity = deps.getIdentity(userIdBytes);
     if (!identity) {
       res.status(404).json({ error: 'Identity not found' });
       return;
@@ -67,10 +87,11 @@ export function createRouter(deps: UtxoDeps): Router {
 
   // GET /invites/:userId — get pending invites and bonds for a user
   router.get('/invites/:userId', (req, res) => {
-    const userId = req.params['userId']!;
-    // invites are looked up by inviterId (userId), identity check is optional
-    const pending = deps.getPendingInvites(userId);
-    const bonds = deps.getBondBoxes(userId);
+    const userIdBytes = parseUserId(req.params['userId']!, res);
+    if (!userIdBytes) return;
+
+    const pending = deps.getPendingInvites(userIdBytes);
+    const bonds = deps.getBondBoxes(userIdBytes);
 
     res.json({
       pending: pending.map((inv) => ({
@@ -78,14 +99,14 @@ export function createRouter(deps: UtxoDeps): Router {
         value: inv.value,
         createdAtBlock: inv.createdAtBlock,
         secretHash: Buffer.from(inv.secretHash).toString('hex'),
-        inviterId: inv.inviterId,
+        inviterId: Buffer.from(inv.inviterId).toString('hex'),
         guard: inv.guard,
       })),
       bonds: bonds.map((b) => ({
         id: b.id,
         value: b.value,
         createdAtBlock: b.createdAtBlock,
-        inviterId: b.inviterId,
+        inviterId: Buffer.from(b.inviterId).toString('hex'),
         inviteePublicKey:
           b.inviteePublicKey.length > 0
             ? Buffer.from(b.inviteePublicKey).toString('hex')

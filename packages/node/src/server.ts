@@ -18,6 +18,7 @@ import { createInvite, claimInvite, cancelInvite } from './services/invites.js';
 import { createPruneIntent, executePrune } from './services/stump-engine.js';
 import { computeStumpId, encodePost } from '@dagsocial/types';
 import { getDb } from './store/db.js';
+import { validateTx } from './services/utxo-engine.js';
 import type { Config } from './config.js';
 
 // ---------------------------------------------------------------------------
@@ -34,6 +35,17 @@ export function createApp(config: Config): express.Express {
   // Demo UI
   const publicDir = new URL('../public', import.meta.url).pathname;
   app.use(express.static(publicDir));
+
+  // ---- Shared UTXO engine deps (curried into validateTx for routes) ----
+
+  const utxoEngineDeps = {
+    getBox: store.getBox,
+    insertBox: store.insertBox,
+    consumeBox: store.consumeBox,
+    getKarmaBox: store.getKarmaBox,
+    getIdentity: store.getIdentity,
+    runInTransaction: (fn: () => void) => getDb().transaction(fn)(),
+  };
 
   // ---- Routes ----
 
@@ -78,6 +90,9 @@ export function createApp(config: Config): express.Express {
       insertMempoolSubBlock: store.insertMempoolSubBlock,
       insertUtxoTx: store.insertUtxoTx,
       onSubBlockReceived,
+      validateTx: (tx, currentBlockHeight) =>
+        validateTx(utxoEngineDeps, tx, currentBlockHeight),
+      getBox: store.getBox,
     }),
   );
 
@@ -121,8 +136,6 @@ export function createApp(config: Config): express.Express {
       faucetRoutes({
         getIdentity: store.getIdentity,
         getKarmaBox: store.getKarmaBox,
-        insertBox: store.insertBox,
-        consumeBox: store.consumeBox,
         getCurrentHeight: store.getCurrentHeight,
       }),
     );
