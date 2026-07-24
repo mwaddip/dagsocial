@@ -1056,4 +1056,56 @@ describe('block-creator', () => {
     const remaining = mempool.getPendingEntries(100);
     expect(remaining).toHaveLength(0);
   });
+
+  // -----------------------------------------------------------------------
+  // 13. Batch-linked UTXO transactions appear in utxoTxIds
+  // -----------------------------------------------------------------------
+
+  it('batch-linked UTXO transactions appear in utxoTxIds', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+    const ids = await importIdentities();
+    const posts = await importPosts();
+    const utxo = await importUtxo();
+    const mempool = await importMempoolFresh();
+    const bc = await importBlockCreator();
+
+    // Set up identity
+    const author = makeTestIdentity();
+    ids.insertIdentity(author.userId, author.publicKey);
+
+    // Create and insert a post
+    const post = makePost(author.userId, 'batch UTXO test');
+    const postId = computePostId(post);
+    const { encodePost, computeTxId } = await import('@dagsocial/types');
+    posts.insertPost(post, encodePost(post));
+
+    // Insert sub-block with batch_id "batch1"
+    const sb: SubBlock = {
+      subBlockId: postId,
+      post,
+      likeBoxes: [],
+      producerId: author.userId,
+      protocolVersion: PROTOCOL_VERSION,
+    };
+    mempool.insertSubBlock(sb, 1000, 'batch1');
+
+    // Create a UTXO transaction with batch_id "batch1"
+    const karmaBox = makeKarmaBox(100, author.userId, 0);
+    utxo.insertBox(karmaBox);
+    const likeTx = makeLikeTx(karmaBox, 'unrelated_post_id');
+    mempool.insertUtxoTx(likeTx, 'batch1', 1000);
+
+    bc.startBlockCreator(testConfig);
+    const block = bc.createOrderingBlock();
+
+    expect(block).not.toBeNull();
+    // The batch-linked UTXO tx ID should be in utxoTxIds
+    expect(block!.utxoTxIds).toContain(computeTxId(likeTx));
+    // The sub-block should be referenced
+    expect(block!.subBlockRefs).toContain(postId);
+    // Mempool should be empty (both confirmed)
+    const remaining = mempool.getPendingEntries(100);
+    expect(remaining).toHaveLength(0);
+  });
 });

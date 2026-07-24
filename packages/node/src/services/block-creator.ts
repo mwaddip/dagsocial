@@ -338,6 +338,17 @@ export function createOrderingBlock(): OrderingBlock | null {
     return computeTxId(tx);
   });
 
+  // 7b. Batch-linked UTXO entries → utxoTxIds
+  // These were grouped by batch_id in step 5 but never decoded/added to the block.
+  for (const [, batchEntries] of batchMap) {
+    for (const entry of batchEntries) {
+      if (entry.entryType === 'utxo_tx' && entry.utxoTxCbor) {
+        const tx = decodeTx(entry.utxoTxCbor);
+        utxoTxIds.push(computeTxId(tx));
+      }
+    }
+  }
+
   // 8. Collect standalone unprocessed locked like boxes
   const standaloneLikes = getUnprocessedLockedLikeBoxes();
 
