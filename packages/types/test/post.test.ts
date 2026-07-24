@@ -22,7 +22,15 @@ import {
   GENESIS_KARMA_PER_MEMBER,
   GENESIS_CREDITS_PER_MEMBER,
   BOOTSTRAP_PERIOD_BLOCKS,
-  ORDERING_BLOCK_REWARD_CREDITS,
+  CREDIT_FIXED_RATE_BLOCKS,
+  CREDIT_INITIAL_REWARD,
+  CREDIT_EPOCH_BLOCKS,
+  CREDIT_REWARD_REDUCTION,
+  CREDIT_TAIL_REWARD,
+  CREDIT_MINER_REWARD_DELAY,
+  CREDIT_TREASURY_PCT,
+  ORDERING_BLOCK_POW_TARGET_BITS,
+  ORDERING_BLOCK_POW_TARGET_FLOOR,
 } from '../src/constants.js';
 import type { Post } from '../src/post.js';
 
@@ -166,7 +174,7 @@ describe('constants', () => {
 
   it('invite constants are defined', () => {
     expect(MAX_PENDING_INVITES).toBe(5);
-    expect(INVITE_BOND_KARMA).toBe(10);
+    expect(INVITE_BOND_KARMA).toBe(25);
     expect(INVITE_PROBATION_BLOCKS).toBe(1000);
     expect(INVITE_KARMA_THRESHOLD).toBe(20);
   });
@@ -179,6 +187,14 @@ describe('constants', () => {
   });
 
   it('validator constants are defined', () => {
-    expect(ORDERING_BLOCK_REWARD_CREDITS).toBe(100);
+    expect(ORDERING_BLOCK_POW_TARGET_BITS).toBe(12);
+    expect(CREDIT_INITIAL_REWARD).toBe(100);
+    expect(CREDIT_FIXED_RATE_BLOCKS).toBe(1_051_200);
+    expect(CREDIT_EPOCH_BLOCKS).toBe(129_600);
+    expect(CREDIT_REWARD_REDUCTION).toBe(2);
+    expect(CREDIT_TAIL_REWARD).toBe(2);
+    expect(CREDIT_MINER_REWARD_DELAY).toBe(720);
+    expect(CREDIT_TREASURY_PCT).toBe(10);
+    expect(ORDERING_BLOCK_POW_TARGET_FLOOR).toBe(4);
   });
 });

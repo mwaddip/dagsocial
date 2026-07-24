@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { computeBoxId, computeTxId } from '../src/utxo.js';
-import type { KarmaBox, CreditBox, LikeBox, InviteBox, BondBox, UtxoTransaction } from '../src/utxo.js';
+import { computeBoxId, computeTxId, INVITE_KARMA_AMOUNT, INVITE_BOND_KARMA } from '../src/index.js';
+import type { KarmaBox, CreditBox, LikeBox, InviteBox, BondBox, UtxoTransaction } from '../src/index.js';
 
 const owner = new Uint8Array(32).fill(0xaa);
 
@@ -158,6 +158,66 @@ describe('transactions', () => {
       };
       const id2 = computeTxId(tx2);
       expect(id1).toBe(id2);
+    });
+  });
+
+  describe('computeTxId with preimages', () => {
+    it('includes preimages in tx hash', () => {
+      const tx: UtxoTransaction = {
+        inputs: ['box1'],
+        outputs: [],
+        signatures: {},
+        preimages: { 'box1': new Uint8Array([1, 2, 3]) },
+        protocolVersion: 1,
+      };
+      const id1 = computeTxId(tx);
+
+      const tx2: UtxoTransaction = {
+        ...tx,
+        preimages: { 'box1': new Uint8Array([4, 5, 6]) },
+      };
+      const id2 = computeTxId(tx2);
+
+      expect(id1).not.toBe(id2);
+    });
+
+    it('sorts preimage keys for determinism', () => {
+      const tx: UtxoTransaction = {
+        inputs: ['box_b', 'box_a'],
+        outputs: [],
+        signatures: {},
+        preimages: {
+          'box_b': new Uint8Array([2]),
+          'box_a': new Uint8Array([1]),
+        },
+        protocolVersion: 1,
+      };
+      // Should not throw; determinism means consistent output
+      const id1 = computeTxId(tx);
+      const id2 = computeTxId(tx);
+      expect(id1).toBe(id2);
+    });
+
+    it('omits preimages from hash when undefined', () => {
+      const tx: UtxoTransaction = {
+        inputs: ['box1'],
+        outputs: [],
+        signatures: {},
+        protocolVersion: 1,
+      };
+      const id = computeTxId(tx);
+      expect(typeof id).toBe('string');
+      expect(id.length).toBe(64);
+    });
+  });
+
+  describe('INVITE constants', () => {
+    it('INVITE_KARMA_AMOUNT is 25', () => {
+      expect(INVITE_KARMA_AMOUNT).toBe(25);
+    });
+
+    it('INVITE_BOND_KARMA is 25', () => {
+      expect(INVITE_BOND_KARMA).toBe(25);
     });
   });
 });

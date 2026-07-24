@@ -33,7 +33,7 @@ export type BoxGuard = 'owner_signature' | 'epoch_tally' | 'hash_preimage' | 'in
 
 export interface BoxBase {
   id?: BoxId;           // Computed via computeBoxId; optional during construction
-  boxType: 'karma' | 'credit' | 'like' | 'invite' | 'bond';
+  boxType: 'karma' | 'credit' | 'like' | 'invite' | 'bond' | 'post_lock';
   value: number;
   createdAtBlock: number;
 }
@@ -55,6 +55,7 @@ export interface CreditBox extends BoxBase {
   owner: Uint8Array;          // 32 raw bytes
   guard: 'owner_signature';
   proofSource: number;        // Ordering block height that minted these credits
+  lockedUntilBlock?: number;  // Block height before which credits cannot be spent
 }
 
 // --- Like ---
@@ -89,11 +90,22 @@ export interface BondBox extends BoxBase {
   guard: 'inviter_signature';     // Only inviter may reclaim
 }
 
+// --- Post Lock ---
+
+export interface PostLockBox extends BoxBase {
+  boxType: 'post_lock';
+  value: number;              // Current locked karma (decreases each epoch as likes accumulate)
+  originalValue: number;      // Initial lock amount (POST_LOCK_THREAD_COST or POST_LOCK_REPLY_COST)
+  owner: Uint8Array;          // 32 raw bytes — post author's Ed25519 public key
+  targetPostId: PostId;       // The post this lock secures
+  guard: 'epoch_tally';       // Only consumable by epoch processing
+}
+
 // ---------------------------------------------------------------------------
 // Union type
 // ---------------------------------------------------------------------------
 
-export type AnyBox = KarmaBox | CreditBox | LikeBox | InviteBox | BondBox;
+export type AnyBox = KarmaBox | CreditBox | LikeBox | InviteBox | BondBox | PostLockBox;
 
 // ---------------------------------------------------------------------------
 // UTXO transaction
@@ -104,7 +116,8 @@ export type TxId = string;
 export interface UtxoTransaction {
   inputs: BoxId[];
   outputs: AnyBox[];
-  signatures: Record<string, Uint8Array>;  // publicKey (hex) → Ed25519 sig (64 bytes)
+  signatures: Record<string, Uint8Array>;  // publicKey (hex) → Ed25519 sig (64 bytes) over txId
+  preimages?: Record<string, Uint8Array>;  // boxId → hash preimage for hash_preimage guards
   protocolVersion: number;
 }
 
@@ -121,6 +134,14 @@ export function computeTxId(tx: UtxoTransaction): TxId {
     // Exclude id from output hashing (it's computed from the output itself)
     const { id, ...rest } = output;
     h.update(encodeForHash(rest));
+  }
+  // Include preimages in tx identity for hash_preimage guard validation
+  if (tx.preimages) {
+    const sortedKeys = Object.keys(tx.preimages).sort();
+    for (const boxId of sortedKeys) {
+      h.update(boxId);
+      h.update(tx.preimages[boxId]!);
+    }
   }
   h.update(String(tx.protocolVersion));
   return h.digest().subarray(0, 32).toString('hex');

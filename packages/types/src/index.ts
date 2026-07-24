@@ -9,6 +9,9 @@ export {
   KARMA_DECAY_RATE,
   KARMA_DECAY_GRACE_BLOCKS,
   KARMA_FLOOR,
+  POST_LOCK_THREAD_COST,
+  POST_LOCK_REPLY_COST,
+  POST_LOCK_UNLOCK_PER_LIKES,
   LIKE_COST,
   LIKE_THRESHOLD,
   LIKE_MAX_AUTHOR_REWARD,
@@ -16,6 +19,7 @@ export {
   EPOCH_BLOCKS,
   MAX_PENDING_INVITES,
   INVITE_MIN_KARMA,
+  INVITE_KARMA_AMOUNT,
   INVITE_BOND_KARMA,
   INVITE_PROBATION_BLOCKS,
   INVITE_KARMA_THRESHOLD,
@@ -23,11 +27,19 @@ export {
   GENESIS_KARMA_PER_MEMBER,
   GENESIS_CREDITS_PER_MEMBER,
   BOOTSTRAP_PERIOD_BLOCKS,
-  ORDERING_BLOCK_REWARD_CREDITS,
+  CREDIT_FIXED_RATE_BLOCKS,
+  CREDIT_INITIAL_REWARD,
+  CREDIT_EPOCH_BLOCKS,
+  CREDIT_REWARD_REDUCTION,
+  CREDIT_TAIL_REWARD,
+  CREDIT_MINER_REWARD_DELAY,
+  CREDIT_TREASURY_PCT,
+  ORDERING_BLOCK_POW_TARGET_BITS,
+  ORDERING_BLOCK_POW_TARGET_FLOOR,
 } from './constants.js';
 
 // Identity
-export { generateKeyPair, getUserId } from './identity.js';
+export { generateKeyPair } from './identity.js';
 export type { KeyPair, UserId } from './identity.js';
 
 // Base58
@@ -48,6 +60,7 @@ export type {
   LikeBox,
   InviteBox,
   BondBox,
+  PostLockBox,
   AnyBox,
   UtxoTransaction,
   TxId,
@@ -58,7 +71,7 @@ export { computeStumpId } from './stump.js';
 export type { PruneIntent, KarmaDelta, Stump, StumpId } from './stump.js';
 
 // Blocks
-export type { SubBlock, OrderingBlock, EpochTally, LikeReward } from './block.js';
+export type { SubBlock, OrderingBlock, CoinbaseOutput, EpochTally, LikeReward } from './block.js';
 
 // Serialization
 export {
