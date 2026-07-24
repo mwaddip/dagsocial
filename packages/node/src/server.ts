@@ -8,10 +8,11 @@ import { createRouter as faucetRoutes } from './routes/faucet.js';
 import { createRouter as pruningRoutes } from './routes/pruning.js';
 import { createRouter as utxoRoutes } from './routes/utxo.js';
 import { createRouter as blockRoutes } from './routes/blocks.js';
+import { createRouter as miningRoutes } from './routes/mining.js';
 import * as store from './store/index.js';
 import { generateChallenge } from './services/pow.js';
 import { verifyPost } from './services/verifier.js';
-import { onSubBlockReceived } from './services/block-creator.js';
+import { onSubBlockReceived, getCurrentTemplate, submitMinedBlock } from './services/block-creator.js';
 import { castLike, removeLike } from './services/likes.js';
 import { createInvite, claimInvite, cancelInvite } from './services/invites.js';
 import { createPruneIntent, executePrune } from './services/stump-engine.js';
@@ -74,7 +75,8 @@ export function createApp(config: Config): express.Express {
       getKarmaBox: store.getKarmaBox,
       getCurrentHeight: store.getCurrentHeight,
       getLikeCount: store.getLikeCount,
-      insertSubBlock: store.insertSubBlock,
+      insertMempoolSubBlock: store.insertMempoolSubBlock,
+      insertUtxoTx: store.insertUtxoTx,
       onSubBlockReceived,
     }),
   );
@@ -139,6 +141,17 @@ export function createApp(config: Config): express.Express {
       getBondBoxes: store.getBondBoxes,
     }),
   );
+
+  // Mining — /mining (miner role only)
+  if (config.nodeRole === 'miner') {
+    app.use(
+      '/mining',
+      miningRoutes({
+        getCurrentTemplate,
+        submitMinedBlock,
+      }),
+    );
+  }
 
   // Blocks + Status — mounts at /, routes include /blocks/current, /blocks/:height, /status
   const db = getDb();

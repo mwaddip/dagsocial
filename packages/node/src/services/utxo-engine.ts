@@ -120,14 +120,15 @@ function checkTransitions(
       const inviteOutputs = outputs.filter((o) => o.boxType === 'invite');
       const bondOutputs = outputs.filter((o) => o.boxType === 'bond');
       const likeOutputs = outputs.filter((o) => o.boxType === 'like');
+      const postLockOutputs = outputs.filter((o) => o.boxType === 'post_lock');
 
       const totalOutputs =
-        karmaOutputs.length + inviteOutputs.length + bondOutputs.length + likeOutputs.length;
+        karmaOutputs.length + inviteOutputs.length + bondOutputs.length + likeOutputs.length + postLockOutputs.length;
 
       if (totalOutputs !== outputs.length) {
         return {
           valid: false,
-          error: `Illegal karma transition: outputs contain non-karma/invite/bond/like boxes`,
+          error: `Illegal karma transition: outputs contain non-karma/invite/bond/like/post_lock boxes`,
         };
       }
 
@@ -153,10 +154,18 @@ function checkTransitions(
 
       if (likeOutputs.length > 0) {
         // karma → karma + like
-        if (likeOutputs.length !== 1 || inviteOutputs.length > 0 || bondOutputs.length > 0) {
+        if (likeOutputs.length !== 1 || inviteOutputs.length > 0 || bondOutputs.length > 0 || postLockOutputs.length > 0) {
           return {
             valid: false,
             error: `Invalid like transition: exactly 1 karma + 1 like output expected`,
+          };
+        }
+      } else if (postLockOutputs.length > 0) {
+        // karma → karma + post_lock (post creation lock)
+        if (postLockOutputs.length !== 1 || inviteOutputs.length > 0 || bondOutputs.length > 0 || likeOutputs.length > 0) {
+          return {
+            valid: false,
+            error: `Invalid post-lock transition: exactly 1 karma + 1 post_lock output expected`,
           };
         }
       } else if (inviteOutputs.length > 0 || bondOutputs.length > 0) {
@@ -228,6 +237,16 @@ function checkTransitions(
       return {
         valid: false,
         error: `LikeBox can only be consumed by epoch tally (not user transactions)`,
+      };
+    }
+
+    // ------------------------------------------------------------------
+    // PostLockBox — consumed by epoch only, rejected in guard check
+    // ------------------------------------------------------------------
+    case 'post_lock': {
+      return {
+        valid: false,
+        error: `PostLockBox can only be consumed by epoch tally (not user transactions)`,
       };
     }
 
@@ -363,9 +382,12 @@ function checkKarmaDecay(
   const likeOutputValue = outputs
     .filter((o) => o.boxType === 'like')
     .reduce((sum, o) => sum + o.value, 0);
+  const postLockOutputValue = outputs
+    .filter((o) => o.boxType === 'post_lock')
+    .reduce((sum, o) => sum + o.value, 0);
 
   const totalSplit =
-    karmaOutputValue + inviteOutputValue + bondOutputValue + likeOutputValue;
+    karmaOutputValue + inviteOutputValue + bondOutputValue + likeOutputValue + postLockOutputValue;
 
   if (totalSplit > totalEffective) {
     return {

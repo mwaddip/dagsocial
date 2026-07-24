@@ -1,3 +1,4 @@
+import { uid } from '../helpers.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import express from 'express';
 import http from 'http';
@@ -6,14 +7,17 @@ import { insertIdentity, getIdentity } from '../../src/store/identities.js';
 import { insertPost, getPost, queryPosts } from '../../src/store/posts.js';
 import { consumeChallenge, getActiveChallenge } from '../../src/store/challenges.js';
 import { getCurrentHeight } from '../../src/store/ordering.js';
-import { getKarmaBox } from '../../src/store/utxo.js';
+import { getKarmaBox, insertBox } from '../../src/store/utxo.js';
 import { getLikeCount } from '../../src/store/likes.js';
+import { insertSubBlock as insertMempoolSubBlock, insertUtxoTx, getPendingEntries } from '../../src/store/mempool.js';
 import { verifyPost } from '../../src/services/verifier.js';
 import {
   encodePost,
   generateKeyPair,
-  getUserId,
+  PROTOCOL_VERSION,
+  computeBoxId,
 } from '@dagsocial/types';
+import type { KarmaBox } from '@dagsocial/types';
 import { createRouter } from '../../src/routes/posts.js';
 import { unlinkSync } from 'fs';
 
@@ -27,6 +31,9 @@ async function request(
   path: string,
   method: string,
   body?: unknown,
+  overrides?: {
+    verifyPost?: typeof import('../../src/services/verifier.js').verifyPost;
+  },
 ): Promise<{ status: number; data: unknown }> {
   return new Promise((resolve) => {
     const deps = {
@@ -35,13 +42,14 @@ async function request(
       getPost,
       queryPosts,
       encodePost,
-      verifyPost,
+      verifyPost: overrides?.verifyPost ?? verifyPost,
       getActiveChallenge,
       getIdentity,
       getKarmaBox,
       getLikeCount,
       getCurrentHeight,
-      insertSubBlock: () => {},
+      insertMempoolSubBlock,
+      insertUtxoTx,
       onSubBlockReceived: () => {},
     };
     const app = express();
@@ -87,6 +95,10 @@ describe('posts routes', () => {
     try { unlinkSync(TEST_DB); } catch { /* ignore */ }
   });
 
+  // -----------------------------------------------------------------------
+  // Error cases
+  // -----------------------------------------------------------------------
+
   it('POST /posts with missing fields returns 400', async () => {
     const res = await request('/', 'POST', {});
     expect(res.status).toBe(400);
@@ -95,7 +107,7 @@ describe('posts routes', () => {
   it('POST /posts with invalid hex returns 400', async () => {
     const res = await request('/', 'POST', {
       content: 'test',
-      author: 'someone',
+      author: uid('someone'),
       parentRefs: [],
       challenge: 'not-hex!!@@',
       powNonce: 0,
@@ -109,7 +121,7 @@ describe('posts routes', () => {
   it('POST /posts with no challenge returns 400', async () => {
     // Create identity but no challenge
     const kp = generateKeyPair();
-    const userId = getUserId(kp.publicKey);
+    const userId = kp.publicKey;
     insertIdentity(userId, kp.publicKey);
 
     const res = await request('/', 'POST', {
@@ -124,6 +136,79 @@ describe('posts routes', () => {
     });
     expect(res.status).toBe(400);
   });
+
+  // -----------------------------------------------------------------------
+  // Success case: post → mempool batch
+  // -----------------------------------------------------------------------
+
+  it('POST /posts with valid post inserts batch into mempool', async () => {
+    const kp = generateKeyPair();
+    const userId = kp.publicKey;
+    const userIdHex = Buffer.from(userId).toString('hex');
+
+    // Setup: identity
+    insertIdentity(userId, kp.publicKey);
+
+    // Setup: karma box
+    const karmaBox: KarmaBox = {
+      boxType: 'karma',
+      value: 100,
+      createdAtBlock: 1,
+      owner: userId,
+      guard: 'owner_signature',
+      proofSource: 'genesis',
+      lastTouchBlock: 1,
+    };
+    const karmaBoxId = computeBoxId(karmaBox);
+    const karmaBoxWithId: KarmaBox = { ...karmaBox, id: karmaBoxId };
+    insertBox(karmaBoxWithId);
+
+    // Setup: challenge
+    const challengeBytes = new Uint8Array(Buffer.from('cc'.repeat(32), 'hex'));
+    const { createChallenge } = await import('../../src/store/challenges.js');
+    createChallenge(userId, challengeBytes, 9999);
+
+    const timestamp = Date.now();
+
+    // Mock verifyPost to return valid
+    const mockVerify = () => ({ valid: true as const });
+
+    const res = await request('/', 'POST', {
+      content: 'hello mempool',
+      author: userIdHex,
+      parentRefs: [],
+      challenge: Buffer.from(challengeBytes).toString('hex'),
+      powNonce: 42,
+      protocolVersion: PROTOCOL_VERSION,
+      timestamp,
+      signature: 'dd'.repeat(64),
+    }, { verifyPost: mockVerify as typeof verifyPost });
+
+    expect(res.status).toBe(200);
+
+    const body = res.data as Record<string, unknown>;
+    expect(body).toHaveProperty('postId');
+    expect(body.status).toBe('pending');
+    expect(body).toHaveProperty('expiresAtHeight');
+    expect(typeof body.expiresAtHeight).toBe('number');
+
+    // Verify mempool has both entries with matching batchId
+    const entries = getPendingEntries(100);
+    const subBlockEntry = entries.find((e) => e.entryType === 'subblock');
+    const utxoEntry = entries.find((e) => e.entryType === 'utxo_tx');
+
+    expect(subBlockEntry).toBeDefined();
+    expect(utxoEntry).toBeDefined();
+    expect(subBlockEntry!.batchId).toBe(body.postId);
+    expect(utxoEntry!.batchId).toBe(body.postId);
+    expect(subBlockEntry!.batchId).toBe(utxoEntry!.batchId);
+    expect(subBlockEntry!.expiresAtHeight).toBe(body.expiresAtHeight);
+    expect(utxoEntry!.expiresAtHeight).toBe(body.expiresAtHeight);
+  });
+
+  // -----------------------------------------------------------------------
+  // GET tests
+  // -----------------------------------------------------------------------
 
   it('GET /posts/:id returns 404 for unknown post', async () => {
     const res = await request('/nonexistent-post-id', 'GET');

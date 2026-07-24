@@ -1,13 +1,13 @@
 import { Router } from 'express';
 import {
   computePostId,
-  encodePost,
   MAX_CONTENT_BYTES,
   POST_LOCK_THREAD_COST,
   POST_LOCK_REPLY_COST,
   computeBoxId,
+  PROTOCOL_VERSION,
 } from '@dagsocial/types';
-import type { Post, KarmaBox, PostLockBox } from '@dagsocial/types';
+import type { Post, KarmaBox, PostLockBox, UtxoTransaction } from '@dagsocial/types';
 import type { VerifierDeps, VerificationResult } from '../services/verifier.js';
 import { getNet } from '../services/net-instance.js';
 
@@ -17,10 +17,10 @@ import { getNet } from '../services/net-instance.js';
 
 export interface PostsDeps extends VerifierDeps {
   insertPost(post: Post, rawCbor: Uint8Array): void;
-  consumeChallenge(userId: string, challenge: Uint8Array): void;
+  consumeChallenge(userId: Uint8Array, challenge: Uint8Array): void;
   getPost(id: string): unknown | null;
   queryPosts(opts: {
-    author?: string;
+    author?: Uint8Array;
     limit?: number;
     offset?: number;
   }): Post[];
@@ -32,11 +32,9 @@ export interface PostsDeps extends VerifierDeps {
   ): VerificationResult;
   getCurrentHeight(): number;
   getLikeCount(postId: string): { locked: number; free: number };
-  insertSubBlock(subBlock: { subBlockId: string; post: Post; likeBoxes: unknown[]; producerId: string; protocolVersion: number }): void;
+  insertMempoolSubBlock(subBlock: { subBlockId: string; post: Post; likeBoxes: unknown[]; producerId: Uint8Array; protocolVersion: number }, expiresAtHeight: number, batchId: string | null): number;
+  insertUtxoTx(tx: UtxoTransaction, batchId: string | null, expiresAtHeight: number): number;
   onSubBlockReceived(): void;
-  // UTXO mutations for post karma locking
-  insertBox(box: Record<string, unknown>): void;
-  consumeBox(boxId: string, consumedAtBlock: number): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -47,26 +45,33 @@ export function createRouter(deps: PostsDeps): Router {
   const router = Router();
 
   /**
-   * Convert hex strings in request body to Uint8Array for the Post type.
-   * Only `challenge` and `signature` are binary; the rest are primitives.
+   * Convert hex strings in request body to binary for the Post type.
+   * `author`, `challenge`, and `signature` are binary (hex on wire).
    */
   function hexToPost(body: Record<string, unknown>): Post {
+    const authorHex = body.author as string;
     const challengeHex = body.challenge as string;
     const signatureHex = body.signature as string;
 
+    let author: Uint8Array;
     let challenge: Uint8Array;
     let signature: Uint8Array;
 
     try {
+      author = new Uint8Array(Buffer.from(authorHex, 'hex'));
       challenge = new Uint8Array(Buffer.from(challengeHex, 'hex'));
       signature = new Uint8Array(Buffer.from(signatureHex, 'hex'));
     } catch {
-      throw new Error('Invalid hex encoding in challenge or signature');
+      throw new Error('Invalid hex encoding in author, challenge, or signature');
+    }
+
+    if (author.length !== 32) {
+      throw new Error('author must be 32 bytes (64 hex chars) — Ed25519 public key');
     }
 
     return {
       content: body.content as string,
-      author: body.author as string,
+      author,
       parentRefs: (body.parentRefs ?? []) as string[],
       challenge,
       powNonce: body.powNonce as number,
@@ -85,7 +90,7 @@ export function createRouter(deps: PostsDeps): Router {
     const counts = deps.getLikeCount(postId);
     return {
       content: post.content,
-      author: post.author,
+      author: Buffer.from(post.author).toString('hex'),
       parentRefs: post.parentRefs,
       challenge: Buffer.from(post.challenge).toString('hex'),
       powNonce: post.powNonce,
@@ -140,8 +145,8 @@ export function createRouter(deps: PostsDeps): Router {
 
     // Lock karma via UTXO transaction.
     // Verification already confirmed the karma box exists with sufficient value.
-    const identity = deps.getIdentity(post.author)!;
-    const karmaBox = deps.getKarmaBox(identity.publicKey)!;
+    // post.author IS the public key.
+    const karmaBox = deps.getKarmaBox(post.author)!;
     const lockAmount = post.parentRefs.length === 0
       ? POST_LOCK_THREAD_COST
       : POST_LOCK_REPLY_COST;
@@ -152,7 +157,7 @@ export function createRouter(deps: PostsDeps): Router {
       boxType: 'karma',
       value: remainingKarma,
       createdAtBlock: currentHeight,
-      owner: identity.publicKey,
+      owner: post.author,
       guard: 'owner_signature',
       proofSource: `post-lock:${postId}`,
       lastTouchBlock: currentHeight,
@@ -164,15 +169,22 @@ export function createRouter(deps: PostsDeps): Router {
       value: lockAmount,
       originalValue: lockAmount,
       createdAtBlock: currentHeight,
-      owner: identity.publicKey,
+      owner: post.author,
       targetPostId: postId,
       guard: 'epoch_tally',
     };
 
-    // Apply UTXO changes
-    deps.consumeBox(karmaBox.id!, currentHeight);
-    deps.insertBox({ ...newKarmaBox, id: computeBoxId(newKarmaBox) } as Record<string, unknown>);
-    deps.insertBox({ ...postLockBox, id: computeBoxId(postLockBox) } as Record<string, unknown>);
+    // Build karma-lock UTXO transaction
+    const pubKeyHex = Buffer.from(post.author).toString('hex');
+    const karmaLockTx: UtxoTransaction = {
+      inputs: [karmaBox.id!],
+      outputs: [
+        { ...newKarmaBox, id: computeBoxId(newKarmaBox) },
+        { ...postLockBox, id: computeBoxId(postLockBox) },
+      ],
+      signatures: { [pubKeyHex]: post.signature },
+      protocolVersion: PROTOCOL_VERSION,
+    };
 
     // Consume the challenge
     deps.consumeChallenge(post.author, post.challenge);
@@ -185,20 +197,32 @@ export function createRouter(deps: PostsDeps): Router {
       producerId: post.author,
       protocolVersion: post.protocolVersion,
     };
-    deps.insertSubBlock(subBlock);
 
-    // Broadcast sub-block to peers (fire-and-forget)
+    // Insert both as a batch into the mempool (same batchId = postId)
+    const batchId = postId;
+    const expiresAtHeight = currentHeight + 720;
+    deps.insertMempoolSubBlock(subBlock, expiresAtHeight, batchId);
+    deps.insertUtxoTx(karmaLockTx, batchId, expiresAtHeight);
+
+    // Broadcast sub-block and UTXO transaction to peers (fire-and-forget)
     const net = getNet();
     if (net) {
       net.broadcastSubBlock(subBlock).catch((err: Error) => {
         console.warn(`Failed to broadcast sub-block: ${err.message}`);
+      });
+      net.broadcastTx(karmaLockTx).catch((err: Error) => {
+        console.warn(`Failed to broadcast karma-lock tx: ${err.message}`);
       });
     }
 
     // Signal the block creator to pick up this sub-block
     deps.onSubBlockReceived();
 
-    res.status(201).json({ id: postId, status: 'pending' });
+    res.status(200).json({
+      postId,
+      status: 'pending',
+      expiresAtHeight,
+    });
   });
 
   // GET /posts/:id — retrieve a specific post
@@ -233,7 +257,8 @@ export function createRouter(deps: PostsDeps): Router {
       (req.query['offset'] as string) ?? '0',
       10,
     );
-    const author = req.query['author'] as string | undefined;
+    const authorHex = req.query['author'] as string | undefined;
+    const author = authorHex ? new Uint8Array(Buffer.from(authorHex, 'hex')) : undefined;
 
     const posts = deps.queryPosts({ author, limit, offset });
     res.json(posts.map(postToJson));
