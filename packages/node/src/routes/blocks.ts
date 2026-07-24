@@ -1,4 +1,6 @@
 import { Router } from 'express';
+import { Buffer } from 'buffer';
+import { blockHash } from '@dagsocial/validation';
 import type { OrderingBlock } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
@@ -22,32 +24,40 @@ export interface BlocksDeps {
 
 /**
  * Convert an OrderingBlock to a JSON-safe shape.
- * BLOB fields → hex, JSON string fields → parsed arrays.
+ * Returns the nested header/subBlockTree/utxoTxTree structure.
  */
 function blockToJson(block: OrderingBlock): Record<string, unknown> {
   return {
-    height: block.height,
-    hash: block.hash,
-    prevBlockHash: block.prevBlockHash,
-    subBlockRefs: block.subBlockRefs,
-    likeBoxIds: block.likeBoxIds,
-    utxoTxIds: block.utxoTxIds,
-    stumpIds: block.stumpIds,
-    validatorId: Buffer.from(block.validatorId).toString('hex'),
+    header: {
+      protocolVersion: block.header.protocolVersion,
+      height: block.header.height,
+      prevBlockHash: block.header.prevBlockHash,
+      subBlockRoot: block.header.subBlockRoot,
+      utxoTxRoot: block.header.utxoTxRoot,
+      stateRoot: block.header.stateRoot,
+      validatorId: Buffer.from(block.header.validatorId).toString('hex'),
+      powNonce: block.header.powNonce,
+      powTargetBits: block.header.powTargetBits,
+      createdAt: block.header.createdAt,
+    },
+    subBlockTree: {
+      subBlockRefs: block.subBlockTree.subBlockRefs,
+      stumpIds: block.subBlockTree.stumpIds,
+    },
+    utxoTxTree: {
+      utxoTxIds: block.utxoTxTree.utxoTxIds,
+      likeBoxIds: block.utxoTxTree.likeBoxIds,
+      coinbaseOutputs: block.utxoTxTree.coinbaseOutputs.map((o) => ({
+        owner: Buffer.from(o.owner).toString('hex'),
+        value: o.value,
+        lockedUntilBlock: o.lockedUntilBlock,
+        isTreasury: o.isTreasury,
+      })),
+      ...(block.utxoTxTree.epochTallyResults
+        ? { epochTallyResults: block.utxoTxTree.epochTallyResults }
+        : {}),
+    },
     validatorSignature: Buffer.from(block.validatorSignature).toString('hex'),
-    powNonce: block.powNonce,
-    powTargetBits: block.powTargetBits,
-    coinbaseOutputs: block.coinbaseOutputs.map((o) => ({
-      owner: Buffer.from(o.owner).toString('hex'),
-      value: o.value,
-      lockedUntilBlock: o.lockedUntilBlock,
-      isTreasury: o.isTreasury,
-    })),
-    protocolVersion: block.protocolVersion,
-    createdAt: block.createdAt,
-    ...(block.epochTallyResults
-      ? { epochTallyResults: block.epochTallyResults }
-      : {}),
   };
 }
 
@@ -69,7 +79,7 @@ export function createRouter(deps: BlocksDeps): Router {
     const block = deps.getOrderingBlock(height);
     res.json({
       height,
-      hash: block?.hash ?? null,
+      hash: block ? blockHash(block.header) : null,
     });
   });
 

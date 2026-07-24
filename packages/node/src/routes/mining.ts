@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { Buffer } from 'buffer';
-import { computeBlockBodyHash } from '@dagsocial/validation';
+import { blockHash, computePowHash } from '@dagsocial/validation';
 import type { OrderingBlock } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
@@ -27,26 +27,32 @@ export function createRouter(deps: MiningDeps): Router {
       return;
     }
 
-    // Compute bodyHash for the miner (covers everything except powNonce and signature)
-    const bodyHash = computeBlockBodyHash(tpl);
+    // Compute PoW preimage from the header
+    const powPreimage = computePowHash(tpl.header);
 
     res.json({
-      height: tpl.height,
-      prevBlockHash: tpl.prevBlockHash,
-      subBlockRefs: tpl.subBlockRefs,
-      likeBoxIds: tpl.likeBoxIds,
-      utxoTxIds: tpl.utxoTxIds,
-      stumpIds: tpl.stumpIds,
-      coinbaseOutputs: tpl.coinbaseOutputs.map((o) => ({
+      header: {
+        protocolVersion: tpl.header.protocolVersion,
+        height: tpl.header.height,
+        prevBlockHash: tpl.header.prevBlockHash,
+        subBlockRoot: tpl.header.subBlockRoot,
+        utxoTxRoot: tpl.header.utxoTxRoot,
+        stateRoot: tpl.header.stateRoot,
+        validatorId: Buffer.from(tpl.header.validatorId).toString('hex'),
+        powTargetBits: tpl.header.powTargetBits,
+        createdAt: tpl.header.createdAt,
+      },
+      subBlockRefs: tpl.subBlockTree.subBlockRefs,
+      likeBoxIds: tpl.utxoTxTree.likeBoxIds,
+      utxoTxIds: tpl.utxoTxTree.utxoTxIds,
+      stumpIds: tpl.subBlockTree.stumpIds,
+      coinbaseOutputs: tpl.utxoTxTree.coinbaseOutputs.map((o) => ({
         owner: Buffer.from(o.owner).toString('hex'),
         value: o.value,
         lockedUntilBlock: o.lockedUntilBlock,
         isTreasury: o.isTreasury,
       })),
-      powTargetBits: tpl.powTargetBits,
-      protocolVersion: tpl.protocolVersion,
-      createdAt: tpl.createdAt,
-      bodyHash: bodyHash.toString('hex'),
+      bodyHash: powPreimage.toString('hex'),  // keep 'bodyHash' name for miner compat
     });
   });
 
