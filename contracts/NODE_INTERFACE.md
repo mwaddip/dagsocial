@@ -74,8 +74,8 @@ previous is submitted or expired returns 409. Challenge expires at
 | Method | Path | Request | Response | Errors |
 |--------|------|---------|----------|--------|
 | `POST` | `/posts` | Post object (JSON, hex fields) | `{ postId, status: "pending", expiresAtHeight }` (200) | 400 on validation failure |
-| `GET` | `/posts/:id` | — | Post object (with `likeCount`) or Stump object | 404 |
-| `GET` | `/posts` | `?author=hex&limit=50&offset=0` | Post[] (with `likeCount`, live only, no stumps) | — |
+| `GET` | `/posts/:id` | — | Post object (`id`, `status`, `likeCount`) or Stump object | 404 |
+| `GET` | `/posts` | `?author=hex&limit=50&offset=0` | Post[] (`id`, `status`, `likeCount`, live only, no stumps) | — |
 
 **Post submission flow (mempool-based):**
 
@@ -411,8 +411,8 @@ use `effectiveValue` as the source. Decayed karma is destroyed (net deflation).
     is included only once via the sub-block)
 11. Check epoch boundary — if `currentHeight > 0 && currentHeight % epochBlocks === 0`,
     run epoch tally
-12. Guard: if nothing to confirm and not epoch boundary and not external mode
-    and not genesis, return null
+12. Always produce a block — miners need coinbase rewards even when there
+    is no user work.  Empty blocks carry credit emission and epoch tallies.
 13. Track confirmed mempool rowids for cleanup
 14. Build coinbase outputs (credit emission with Ergo-style decay,
     treasury split if configured)
@@ -428,8 +428,12 @@ use `effectiveValue` as the source. Decayed karma is destroyed (net deflation).
 2. Apply coinbase — mint credits for each output
 3. Broadcast ordering block to peers
 4. Confirm sub-blocks and their posts (`confirmPost`)
-5. Remove confirmed entries from mempool (`removeEntry` for each confirmed rowid)
-6. Reset pending counter and template
+5. Apply UTXO transactions — for each confirmed UTXO tx, re-validate
+   in context (`revalidateTxInContext`) then apply (`applyTx`).
+   Idempotent: skips boxes already inserted or spent (survives gossip
+   loopback where the same tx arrives via both local mining and relay).
+6. Remove confirmed entries from mempool (`removeEntry` for each confirmed rowid)
+7. Reset pending counter and template
 
 ### Mining modes
 
