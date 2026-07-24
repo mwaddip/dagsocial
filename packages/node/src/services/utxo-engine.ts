@@ -103,6 +103,12 @@ function checkTransitions(
     if (hasKarma && hasInvite && hasBond) {
       const karmaOuts = outputs.filter((o) => o.boxType === 'karma');
       if (karmaOuts.length === 1 && outputs.length === 1) {
+        // Verify output karma goes to the same owner as the consumed karma
+        const karmaIn = inputs.find((b) => b.boxType === 'karma') as KarmaBox;
+        const karmaOut = karmaOuts[0] as KarmaBox;
+        if (Buffer.from(karmaIn.owner).toString('hex') !== Buffer.from(karmaOut.owner).toString('hex')) {
+          return { valid: false, error: 'Cancel output karma must go to same owner' };
+        }
         return { valid: true };
       }
       return {
@@ -430,7 +436,8 @@ function checkKarmaDecay(
   currentBlockHeight: number,
 ): UtxoResult {
   if (inputBoxes.length === 0) return { valid: true };
-  if (inputBoxes[0]!.boxType !== 'karma') return { valid: true };
+  const hasKarmaInput = inputBoxes.some((b) => b.boxType === 'karma');
+  if (!hasKarmaInput) return { valid: true };
 
   // Compute effective karma from consumed boxes (after decay).
   // Non-karma inputs (invite, bond, like) contribute their face value, which

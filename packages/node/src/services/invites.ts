@@ -271,6 +271,27 @@ export function cancelInvite(
     throw new Error('Inviter mismatch: karma box owner does not match invite box inviterId');
   }
 
+  // ---- 3.5. Verify bond box is unclaimed ----
+  let bondBoxId: string | undefined;
+  for (const inputId of tx.inputs) {
+    const box = deps.getBox(inputId);
+    if (box?.boxType === 'bond') {
+      bondBoxId = inputId;
+      break;
+    }
+  }
+  if (!bondBoxId) {
+    throw new Error('Transaction does not consume a BondBox');
+  }
+  const bondBox = deps.getBox(bondBoxId);
+  if (!bondBox || bondBox.boxType !== 'bond') {
+    throw new Error(`Bond box not found: ${bondBoxId}`);
+  }
+  const bond = bondBox as BondBox;
+  if (bond.inviteePublicKey && bond.inviteePublicKey.length > 0) {
+    throw new Error('Invite already claimed');
+  }
+
   // ---- 4. Validate transaction (guards, transitions, decay) ----
   // This checks owner_signature on the karma box, inviter_signature on the
   // bond box, and the cancel transition.
