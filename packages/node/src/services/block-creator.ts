@@ -28,6 +28,7 @@ import type {
   CoinbaseOutput,
   EpochTally,
   LikeReward,
+  AnyBox,
   KarmaBox,
   PostLockBox,
   UtxoTransaction,
@@ -39,6 +40,8 @@ import type { Config } from '../config.js';
 import { getNet } from './net-instance.js';
 import { mintKarma } from './karma.js';
 import { mintCredits } from './credits.js';
+import { revalidateTxInContext, applyTx } from './utxo-engine.js';
+import { getDb } from '../store/db.js';
 import {
   getPendingEntries,
   purgeExpired,
@@ -57,6 +60,7 @@ import {
   markFreeLikesProcessed,
   insertBox,
   consumeBox,
+  getBox,
   getKarmaBox,
   getPost,
   getIdentity,
@@ -489,6 +493,44 @@ function finalizeBlock(block: OrderingBlock): void {
   // 4. Confirm sub-blocks and their posts
   for (const sbId of block.subBlockRefs) {
     confirmPost(sbId, block.height);
+  }
+
+  // 4b. Apply UTXO transactions locally (so we don't rely on gossip loopback)
+  // This applies txs that were confirmed in this block.  If a tx was already
+  // applied by a relayed block from the other node, skip it (idempotent).
+  const utxoDeps = {
+    getBox,
+    insertBox: (box: AnyBox) => {
+      // Skip if already exists (may have been applied via relayed block)
+      if (getBox(box.id!)) return;
+      insertBox(box);
+    },
+    consumeBox: (id: string, atBlock: number) => {
+      // Only consume if still unspent
+      if (!getBox(id)) return;
+      consumeBox(id, atBlock);
+    },
+    getKarmaBox,
+    getIdentity,
+    runInTransaction: (fn: () => void) => {
+      getDb().transaction(fn)();
+    },
+  };
+  const allEntries = getPendingEntries(1000);
+  for (const rowid of confirmedRowids) {
+    const entry = allEntries.find((e) => e.rowid === rowid);
+    if (!entry || entry.entryType !== 'utxo_tx' || !entry.utxoTxCbor) continue;
+    const tx = decodeTx(entry.utxoTxCbor);
+    const revalResult = revalidateTxInContext(utxoDeps, tx, block.height);
+    if (!revalResult.valid) {
+      console.warn(`UTXO tx revalidation failed at block ${block.height}: ${revalResult.error}`);
+      continue;
+    }
+    const outputsWithIds = tx.outputs.map((box) => ({
+      ...box,
+      id: computeBoxId(box),
+    }));
+    applyTx(utxoDeps, tx, outputsWithIds, block.height);
   }
 
   // 5. Remove confirmed entries from mempool

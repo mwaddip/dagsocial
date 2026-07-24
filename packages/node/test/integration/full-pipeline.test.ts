@@ -1,13 +1,10 @@
 /**
- * Full-pipeline integration tests: validate → mempool → mine → apply → confirm.
+ * Full-pipeline integration tests: validate → mempool → mine → confirm.
  *
  * These tests exercise the complete lifecycle of UTXO transactions (likes,
- * invites) through validation, mempool insertion, block mining, UTXO
- * application, and state confirmation.
- *
- * Block creation stores utxoTxIds in the block but does NOT apply them —
- * that happens during block ingestion (verifier → revalidateTxInContext →
- * applyTx).  These tests replicate the ingestion step manually.
+ * invites) through validation, mempool insertion, block mining, and state
+ * confirmation.  The block creator applies UTXO transactions during
+ * finalizeBlock, so no manual ingestion step is needed.
  */
 import { rawPublicKey, signTransaction } from '../helpers.js';
 import {
@@ -158,24 +155,6 @@ async function importInvitesService(): Promise<InvitesService> {
   return (await import('../../src/services/invites.js')) as unknown as InvitesService;
 }
 
-type UtxoEngine = {
-  revalidateTxInContext: (
-    deps: unknown,
-    tx: UtxoTransaction,
-    currentBlockHeight: number,
-  ) => { valid: boolean; error?: string; computedOutputs?: AnyBox[] };
-  applyTx: (
-    deps: unknown,
-    tx: UtxoTransaction,
-    computedOutputs: AnyBox[],
-    currentBlockHeight: number,
-  ) => void;
-};
-
-async function importUtxoEngine(): Promise<UtxoEngine> {
-  return (await import('../../src/services/utxo-engine.js')) as unknown as UtxoEngine;
-}
-
 // ---------------------------------------------------------------------------
 // Test data
 // ---------------------------------------------------------------------------
@@ -262,25 +241,6 @@ function makeEngineDeps(
  * re-validate in context, then apply the state transition.
  * Returns true if applied successfully, false if revalidation failed.
  */
-async function ingestTx(
-  deps: EngineDeps,
-  tx: UtxoTransaction,
-  blockHeight: number,
-): Promise<boolean> {
-  const utxoEngine = await importUtxoEngine();
-  const revalResult = utxoEngine.revalidateTxInContext(deps, tx, blockHeight);
-  if (!revalResult.valid) return false;
-  // revalidateTxInContext only checks liveness + karma decay — it doesn't
-  // compute output IDs.  We must compute them ourselves (matching what the
-  // production block ingestion code does in index.ts).
-  const outputsWithIds = tx.outputs.map((box) => ({
-    ...box,
-    id: computeBoxId(box),
-  })) as AnyBox[];
-  utxoEngine.applyTx(deps, tx, outputsWithIds, blockHeight);
-  return true;
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -371,11 +331,7 @@ describe('full-pipeline', () => {
     const blockHeight = block!.height as number;
     expect(blockHeight).toBe(1);
 
-    // ---- Step 3: Apply UTXO tx (simulates block ingestion by verifier) ----
-    const applied = await ingestTx(deps, likeTx, blockHeight);
-    expect(applied).toBe(true);
-
-    // ---- Step 4: Verify confirmed state ----
+    // ---- Step 3: Verify confirmed state (UTXO txs applied by block creator) ----
     // Like box exists
     const likeBoxes = utxo.getUnprocessedLockedLikeBoxes();
     const found = likeBoxes.find(
@@ -472,10 +428,6 @@ describe('full-pipeline', () => {
     const block = bc.createOrderingBlock() as Record<string, unknown> | null;
     expect(block).not.toBeNull();
     const blockHeight = block!.height as number;
-
-    // ---- Apply UTXO tx (simulates block ingestion by verifier) ----
-    const applied = await ingestTx(deps, likeTx, blockHeight);
-    expect(applied).toBe(true);
 
     // ---- Verify ----
     // Post confirmed (sub-block path)
@@ -576,11 +528,7 @@ describe('full-pipeline', () => {
     expect(block).not.toBeNull();
     const blockHeight = block!.height as number;
 
-    // ---- Step 3: Apply UTXO tx (simulates block ingestion by verifier) ----
-    const applied = await ingestTx(deps, inviteTx, blockHeight);
-    expect(applied).toBe(true);
-
-    // ---- Step 4: Verify confirmed state ----
+    // ---- Step 3: Verify confirmed state (UTXO txs applied by block creator) ----
     // Old karma consumed (check via deps, which filters by spent_at_block)
     expect(deps.getBox(karmaBox.id!)).toBeNull();
 
