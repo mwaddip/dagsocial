@@ -9,5 +9,6 @@ export {
   verifyOrderingBlockStructure,
   verifyBlockChainLink,
   verifyOrderingBlockPoW,
-  computeBlockBodyHash,
+  blockHash,
+  computePowHash,
 } from './verify.js';

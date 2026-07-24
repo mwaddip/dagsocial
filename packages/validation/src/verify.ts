@@ -6,8 +6,8 @@ import {
   ORDERING_BLOCK_POW_TARGET_FLOOR,
 } from '@dagsocial/types';
 import { signingHash } from '@dagsocial/types';
-import { encodeOrderingBlock } from '@dagsocial/types';
-import type { Post, SubBlock, OrderingBlock, UtxoTransaction } from '@dagsocial/types';
+import { encodeHeader } from '@dagsocial/types';
+import type { Post, SubBlock, BlockHeader, OrderingBlock, UtxoTransaction } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
 // SPKI wrapper (same as node's verifier)
@@ -120,71 +120,93 @@ export function verifyTxStructure(tx: UtxoTransaction): { valid: boolean; error?
 export function verifyOrderingBlockStructure(
   block: OrderingBlock,
 ): { valid: boolean; error?: string } {
-  if (!block.prevBlockHash) return { valid: false, error: 'Ordering block missing prevBlockHash' };
-  if (!Array.isArray(block.subBlockRefs)) return { valid: false, error: 'Ordering block missing subBlockRefs' };
+  const h = block.header;
+  if (!h) return { valid: false, error: 'Ordering block missing header' };
+  if (!h.prevBlockHash || h.prevBlockHash.length !== 64) {
+    return { valid: false, error: 'Ordering block header missing or invalid prevBlockHash' };
+  }
+  if (!Array.isArray(block.subBlockTree?.subBlockRefs)) {
+    return { valid: false, error: 'Ordering block missing subBlockTree.subBlockRefs' };
+  }
   if (!block.validatorSignature || block.validatorSignature.length !== 64) {
     return { valid: false, error: 'Ordering block missing or invalid validatorSignature' };
   }
-  if (typeof block.height !== 'number' || block.height < 1) {
+  if (typeof h.height !== 'number' || h.height < 1) {
     return { valid: false, error: 'Ordering block invalid height' };
   }
-  if (typeof block.protocolVersion !== 'number') {
-    return { valid: false, error: 'Ordering block missing protocolVersion' };
+  if (typeof h.protocolVersion !== 'number') {
+    return { valid: false, error: 'Ordering block header missing protocolVersion' };
   }
-  if (!block.hash) return { valid: false, error: 'Ordering block missing hash' };
-  if (typeof block.powNonce !== 'number' || block.powNonce < 0) {
+  if (typeof h.powNonce !== 'number' || h.powNonce < 0) {
     return { valid: false, error: 'Ordering block missing or invalid powNonce' };
   }
-  if (typeof block.powTargetBits !== 'number' || block.powTargetBits < ORDERING_BLOCK_POW_TARGET_FLOOR) {
+  if (typeof h.powTargetBits !== 'number' || h.powTargetBits < ORDERING_BLOCK_POW_TARGET_FLOOR) {
     return { valid: false, error: 'Ordering block missing or invalid powTargetBits' };
   }
-  if (!Array.isArray(block.coinbaseOutputs)) {
-    return { valid: false, error: 'Ordering block missing coinbaseOutputs' };
+  if (!Array.isArray(block.utxoTxTree?.coinbaseOutputs)) {
+    return { valid: false, error: 'Ordering block missing utxoTxTree.coinbaseOutputs' };
   }
-  for (const out of block.coinbaseOutputs) {
+  for (const out of block.utxoTxTree.coinbaseOutputs) {
     if (!out.owner || out.owner.length !== 32) {
       return { valid: false, error: 'Coinbase output missing or invalid owner' };
     }
     if (typeof out.value !== 'number' || out.value < 0) {
       return { valid: false, error: 'Coinbase output invalid value' };
     }
-    if (typeof out.lockedUntilBlock !== 'number' || out.lockedUntilBlock < block.height) {
+    if (typeof out.lockedUntilBlock !== 'number' || out.lockedUntilBlock < h.height) {
       return { valid: false, error: 'Coinbase output invalid lockedUntilBlock' };
     }
   }
+  if (!h.subBlockRoot || h.subBlockRoot.length !== 64) {
+    return { valid: false, error: 'Ordering block header missing subBlockRoot' };
+  }
+  if (!h.utxoTxRoot || h.utxoTxRoot.length !== 64) {
+    return { valid: false, error: 'Ordering block header missing utxoTxRoot' };
+  }
   return { valid: true };
+}
+
+// ---------------------------------------------------------------------------
+// Block hash
+// ---------------------------------------------------------------------------
+
+/**
+ * The block hash IS the hash of the serialized header.
+ */
+export function blockHash(header: BlockHeader): string {
+  return createHash('blake2b512')
+    .update(Buffer.from(encodeHeader(header)))
+    .digest()
+    .subarray(0, 32)
+    .toString('hex');
+}
+
+/**
+ * Compute the PoW preimage — the serialized header with powNonce=0.
+ * The miner hashes this against candidate nonces.
+ */
+export function computePowHash(header: BlockHeader): Buffer {
+  const template = { ...header, powNonce: 0 };
+  return createHash('blake2b512')
+    .update(Buffer.from(encodeHeader(template)))
+    .digest()
+    .subarray(0, 32);
 }
 
 // ---------------------------------------------------------------------------
 // verifyOrderingBlockPoW
 // ---------------------------------------------------------------------------
 
-/**
- * Compute the block body hash — the preimage that the PoW nonce is hashed
- * against.  The body is the CBOR-serialized block with powNonce=0 and
- * validatorSignature zeroed.
- */
-export function computeBlockBodyHash(block: OrderingBlock): Buffer {
-  const body = {
-    ...block,
-    powNonce: 0,
-    validatorSignature: new Uint8Array(64),
-    hash: '',                      // not covered — computed AFTER PoW
-  };
-  const bodyBytes = Buffer.from(encodeOrderingBlock(body as OrderingBlock));
-  return createHash('blake2b512').update(bodyBytes).digest().subarray(0, 32);
-}
-
-/**
- * Verify ordering block PoW.  Hashes bodyHash || nonce (u64 LE) and checks
- * that the result has at least powTargetBits leading zero bits.
- */
-export function verifyOrderingBlockPoW(block: OrderingBlock): boolean {
-  const bodyHash = computeBlockBodyHash(block);
+export function verifyOrderingBlockPoW(header: BlockHeader): boolean {
+  const preimage = computePowHash(header);
   const nonceBuf = Buffer.alloc(8);
-  nonceBuf.writeBigUInt64LE(BigInt(block.powNonce));
-  const hash = createHash('blake2b512').update(bodyHash).update(nonceBuf).digest().subarray(0, 32);
-  for (let i = 0; i < block.powTargetBits; i++) {
+  nonceBuf.writeBigUInt64LE(BigInt(header.powNonce));
+  const hash = createHash('blake2b512')
+    .update(preimage)
+    .update(nonceBuf)
+    .digest()
+    .subarray(0, 32);
+  for (let i = 0; i < header.powTargetBits; i++) {
     const byteIdx = Math.floor(i / 8);
     const bitIdx = 7 - (i % 8);
     if ((hash[byteIdx]! & (1 << bitIdx)) !== 0) return false;
@@ -200,5 +222,8 @@ export function verifyBlockChainLink(
   block: OrderingBlock,
   prevBlock: OrderingBlock,
 ): boolean {
-  return block.prevBlockHash === prevBlock.hash && block.height === prevBlock.height + 1;
+  return (
+    block.header.prevBlockHash === blockHash(prevBlock.header) &&
+    block.header.height === prevBlock.header.height + 1
+  );
 }
