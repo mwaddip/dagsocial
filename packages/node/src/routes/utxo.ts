@@ -4,6 +4,7 @@ import {
   computeBoxId,
   computeTxId,
   PROTOCOL_VERSION,
+  MEMPOOL_EXPIRY_BLOCKS,
 } from '@dagsocial/types';
 import type { KarmaBox, CreditBox, InviteBox, BondBox, UtxoTransaction } from '@dagsocial/types';
 import { sendCredits } from '../services/credits.js';
@@ -24,9 +25,6 @@ import { config } from '../config.js';
 // ---------------------------------------------------------------------------
 
 export interface UtxoDeps {
-  getIdentity(
-    userId: Uint8Array,
-  ): { userId: Uint8Array; publicKey: Uint8Array; createdAt: number } | null;
   getKarmaBox(owner: Uint8Array): KarmaBox | null;
   getKarmaBoxes(owner: Uint8Array): KarmaBox[];
   getCreditBox(owner: Uint8Array): CreditBox | null;
@@ -63,13 +61,7 @@ export function createRouter(deps: UtxoDeps): Router {
     const userIdBytes = parseUserId(req.params['userId']!, res);
     if (!userIdBytes) return;
 
-    const identity = deps.getIdentity(userIdBytes);
-    if (!identity) {
-      res.status(404).json({ error: 'Identity not found' });
-      return;
-    }
-
-    const karmaBoxes = deps.getKarmaBoxes(identity.publicKey);
+    const karmaBoxes = deps.getKarmaBoxes(userIdBytes);
     if (karmaBoxes.length === 0) {
       res.status(404).json({ error: 'No karma box found' });
       return;
@@ -93,13 +85,7 @@ export function createRouter(deps: UtxoDeps): Router {
     const userIdBytes = parseUserId(req.params['userId']!, res);
     if (!userIdBytes) return;
 
-    const identity = deps.getIdentity(userIdBytes);
-    if (!identity) {
-      res.status(404).json({ error: 'Identity not found' });
-      return;
-    }
-
-    const creditBoxes = deps.getCreditBoxes(identity.publicKey);
+    const creditBoxes = deps.getCreditBoxes(userIdBytes);
     if (creditBoxes.length === 0) {
       res.status(404).json({ error: 'No credit box found' });
       return;
@@ -157,12 +143,8 @@ export function createRouter(deps: UtxoDeps): Router {
       return;
     }
 
-    if (!deps.getIdentity(fromBytes)) {
-      res.status(404).json({ error: 'Sender identity not found' });
-      return;
-    }
-    if (!deps.getIdentity(toBytes)) {
-      res.status(404).json({ error: 'Recipient identity not found' });
+    if (!deps.getKarmaBox(fromBytes) && !deps.getCreditBoxes(fromBytes).length) {
+      res.status(404).json({ error: 'Sender has no boxes' });
       return;
     }
 
@@ -202,11 +184,6 @@ export function createRouter(deps: UtxoDeps): Router {
       toBytes = new Uint8Array(Buffer.from(body.to, 'hex'));
     } catch {
       res.status(400).json({ error: 'invalid to encoding' });
-      return;
-    }
-
-    if (!deps.getIdentity(toBytes)) {
-      res.status(404).json({ error: 'Recipient identity not found' });
       return;
     }
 
@@ -265,7 +242,7 @@ export function createRouter(deps: UtxoDeps): Router {
     }
 
     // Insert into mempool
-    const expiresAtHeight = currentHeight + 720;
+    const expiresAtHeight = currentHeight + MEMPOOL_EXPIRY_BLOCKS;
     insertUtxoTx(tx, null, expiresAtHeight);
 
     // Broadcast (best-effort)

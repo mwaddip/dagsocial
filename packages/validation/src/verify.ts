@@ -4,19 +4,29 @@ import {
   MAX_CONTENT_BYTES,
   MAX_PARENT_REFS,
   ORDERING_BLOCK_POW_TARGET_FLOOR,
+  ED25519_SPKI_PREFIX,
 } from '@dagsocial/types';
 import { signingHash } from '@dagsocial/types';
 import { encodeHeader } from '@dagsocial/types';
 import type { Post, SubBlock, BlockHeader, OrderingBlock, UtxoTransaction } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
-// SPKI wrapper (same as node's verifier)
+// Ed25519 SPKI helpers
 // ---------------------------------------------------------------------------
 
-const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
+const ED25519_SPKI_BUF = Buffer.from(ED25519_SPKI_PREFIX, 'hex');
 
 function wrapSpki(raw: Uint8Array): Buffer {
-  return Buffer.concat([ED25519_SPKI_PREFIX, Buffer.from(raw)]);
+  return Buffer.concat([ED25519_SPKI_BUF, Buffer.from(raw)]);
+}
+
+/** Wrap a raw 32-byte Ed25519 public key as an SPKI DER KeyObject. */
+export function ed25519PublicKeyToKeyObject(rawKey: Uint8Array): ReturnType<typeof createPublicKey> {
+  return createPublicKey({
+    key: wrapSpki(rawKey),
+    format: 'der',
+    type: 'spki',
+  });
 }
 
 // ---------------------------------------------------------------------------

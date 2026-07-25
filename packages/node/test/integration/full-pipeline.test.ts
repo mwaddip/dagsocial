@@ -88,12 +88,6 @@ async function importBlockCreator() {
   };
 }
 
-async function importIdentities() {
-  return (await import('../../src/store/identities.js')) as {
-    insertIdentity: (userId: Uint8Array, publicKey: Uint8Array) => void;
-  };
-}
-
 async function importPosts() {
   return (await import('../../src/store/posts.js')) as {
     insertPost: (post: Post, rawCbor: Uint8Array) => void;
@@ -207,7 +201,6 @@ interface EngineDeps {
   insertBox: (box: AnyBox) => void;
   consumeBox: (id: string, atBlock: number) => void;
   getKarmaBox: (owner: Uint8Array) => KarmaBox | null;
-  getIdentity: (userId: Uint8Array) => { publicKey: Uint8Array } | null;
   runInTransaction: (fn: () => void) => void;
 }
 
@@ -229,7 +222,6 @@ function makeEngineDeps(
       db.prepare('UPDATE utxo_boxes SET spent_at_block = ? WHERE id = ?').run(atBlock, id);
     },
     getKarmaBox: (owner: Uint8Array) => utxoModule.getKarmaBox(owner),
-    getIdentity: (userId: Uint8Array) => ({ publicKey: userId }),
     runInTransaction: (fn: () => void) => {
       (db.transaction(fn) as () => void)();
     },
@@ -273,9 +265,6 @@ describe('full-pipeline', () => {
     const author = makeTestIdentity();
     const liker = makeTestIdentity();
 
-    const identities = await importIdentities();
-    identities.insertIdentity(author.userId, author.publicKey);
-    identities.insertIdentity(liker.userId, liker.publicKey);
 
     const utxo = await importUtxo();
     const karmaBox = makeKarmaBox(100, liker.userId, 0);
@@ -364,9 +353,6 @@ describe('full-pipeline', () => {
     const author = makeTestIdentity();
     const liker = makeTestIdentity();
 
-    const identities = await importIdentities();
-    identities.insertIdentity(author.userId, author.publicKey);
-    identities.insertIdentity(liker.userId, liker.publicKey);
 
     const utxo = await importUtxo();
     const karmaBox = makeKarmaBox(100, liker.userId, 0);
@@ -465,9 +451,6 @@ describe('full-pipeline', () => {
     const inviter = makeTestIdentity();
     const invitee = makeTestIdentity();
 
-    const identities = await importIdentities();
-    identities.insertIdentity(inviter.userId, inviter.publicKey);
-    identities.insertIdentity(invitee.userId, invitee.publicKey);
 
     const utxo = await importUtxo();
     const karmaBox = makeKarmaBox(100, inviter.userId, 0);

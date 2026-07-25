@@ -21,7 +21,6 @@ import {
   getDb,
   insertPost,
   getPost as storeGetPost,
-  insertIdentity,
   insertBox,
 } from '../../src/store/index.js';
 import { createPruneIntent, executePrune } from '../../src/services/stump-engine.js';
@@ -116,13 +115,11 @@ describe('stump-engine', () => {
     authorPubKey = rawPublicKey(authorKeys.publicKey);
     authorPrivKey = authorKeys.privateKey;
     authorId = authorPubKey;
-    insertIdentity(authorId, authorPubKey);
 
     // Generate another keypair (for wrong-author tests)
     const otherKeys = generateKeyPairSync('ed25519');
     otherPubKey = rawPublicKey(otherKeys.publicKey);
     otherId = otherPubKey;
-    insertIdentity(otherId, otherPubKey);
   });
 
   afterEach(() => {

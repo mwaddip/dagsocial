@@ -3,7 +3,6 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import express from 'express';
 import http from 'http';
 import { initDb, closeDb } from '../../src/store/db.js';
-import { insertIdentity } from '../../src/store/identities.js';
 import { insertPost, getPost } from '../../src/store/posts.js';
 import { executePrune } from '../../src/services/stump-engine.js';
 import {
@@ -89,7 +88,6 @@ describe('pruning routes', () => {
     // Create an author
     const kp = generateKeyPair();
     authorId = kp.publicKey;
-    insertIdentity(authorId, kp.publicKey);
 
     // Create a root post (empty parentRefs)
     const rootPost = makePost(authorId, []);
@@ -131,7 +129,6 @@ describe('pruning routes', () => {
     // Create another root post by a different author
     const kp2 = generateKeyPair();
     const author2 = kp2.publicKey;
-    insertIdentity(author2, kp2.publicKey);
 
     const otherRoot = makePost(author2, []);
     const otherRootId = computePostId(otherRoot);

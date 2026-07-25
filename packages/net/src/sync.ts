@@ -1,21 +1,11 @@
-import { decodeSubBlock } from '@dagsocial/types';
+import { decodeSubBlock, encodeSubBlock } from '@dagsocial/types';
 import type { SubBlock } from '@dagsocial/types';
 import type { Libp2p } from 'libp2p';
 import type { Stream } from '@libp2p/interface';
 import type { NetConfig } from './types.js';
+import { mergeUint8Arrays } from './util.js';
 
 export const SYNC_PROTOCOL = '/dagsocial/sync/1';
-
-function mergeUint8Arrays(chunks: Uint8Array[]): Uint8Array {
-  const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
-  const result = new Uint8Array(totalLength);
-  let offset = 0;
-  for (const chunk of chunks) {
-    result.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return result;
-}
 
 /**
  * Request a specific sub-block from a peer via a direct stream.
@@ -99,7 +89,6 @@ export function registerSyncHandler(
         return;
       }
 
-      const { encodeSubBlock } = await import('@dagsocial/types');
       await stream.sink([encodeSubBlock(subBlock)]);
     } catch {
       await stream.sink([new Uint8Array([0x00])]);

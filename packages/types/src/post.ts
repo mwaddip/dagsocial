@@ -16,23 +16,40 @@ export interface Post {
 }
 
 /**
- * Hash that the author signs. Covers content, author, parentRefs, challenge,
- * protocolVersion, timestamp. Excludes powNonce (author signs before finding
- * the PoW nonce) and signature (not yet set).
- *
- * Uses blake2b512 truncated to 32 bytes (Node.js v22 lacks blake2b256).
+ * Build the deterministic PoW preimage for a post.
+ * Includes content, author, parentRefs, challenge, protocolVersion, and
+ * timestamp. Excludes powNonce (the miner varies this) and signature (not
+ * yet set). Used both for PoW verification and signing hash.
+ */
+export function postPowPreimage(post: Post): Uint8Array {
+  const encoder = new TextEncoder();
+  const parts: Uint8Array[] = [
+    encoder.encode(post.content),
+    post.author,
+    ...post.parentRefs.map((r) => encoder.encode(r)),
+    post.challenge,
+    encoder.encode(String(post.protocolVersion)),
+    encoder.encode(String(post.timestamp)),
+  ];
+  const totalLen = parts.reduce((s, p) => s + p.length, 0);
+  const result = new Uint8Array(totalLen);
+  let offset = 0;
+  for (const p of parts) {
+    result.set(p, offset);
+    offset += p.length;
+  }
+  return result;
+}
+
+/**
+ * Hash that the author signs. Equivalent to blake2b512(postPowPreimage(post))
+ * truncated to 32 bytes. Uses blake2b512 (Node.js v22 lacks blake2b256).
  */
 export function signingHash(post: Post): Buffer {
-  const h = createHash('blake2b512');
-  h.update(post.content);
-  h.update(post.author);
-  for (const ref of post.parentRefs) {
-    h.update(ref);
-  }
-  h.update(post.challenge);
-  h.update(String(post.protocolVersion));
-  h.update(String(post.timestamp));
-  return h.digest().subarray(0, 32);
+  return createHash('blake2b512')
+    .update(postPowPreimage(post))
+    .digest()
+    .subarray(0, 32);
 }
 
 /**

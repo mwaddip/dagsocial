@@ -4,7 +4,6 @@ import express from 'express';
 import http from 'http';
 import { createHash, generateKeyPairSync, createPrivateKey } from 'crypto';
 import { initDb, closeDb, getDb } from '../../src/store/db.js';
-import { insertIdentity, getIdentity } from '../../src/store/identities.js';
 import { insertPost, getPost, queryPosts } from '../../src/store/posts.js';
 import { consumeChallenge, getActiveChallenge } from '../../src/store/challenges.js';
 import { getCurrentHeight } from '../../src/store/ordering.js';
@@ -48,7 +47,6 @@ async function request(
       encodePost,
       verifyPost: overrides?.verifyPost ?? verifyPost,
       getActiveChallenge,
-      getIdentity,
       getKarmaBox,
       getLikeCount,
       getCurrentHeight,
@@ -71,7 +69,6 @@ async function request(
               db.prepare('UPDATE utxo_boxes SET spent_at_block = ? WHERE id = ?').run(atBlock, id);
             },
             getKarmaBox: (owner: Uint8Array) => getKarmaBox(owner),
-            getIdentity: (userId: Uint8Array) => getIdentity(userId),
             runInTransaction: (fn: () => void) => {
               (db.transaction(fn) as () => void)();
             },
@@ -157,7 +154,6 @@ describe('posts routes', () => {
     // Create identity but no challenge
     const kp = generateKeyPair();
     const userId = kp.publicKey;
-    insertIdentity(userId, kp.publicKey);
 
     const res = await request('/', 'POST', {
       content: 'test',
@@ -187,7 +183,6 @@ describe('posts routes', () => {
     });
 
     // Setup: identity
-    insertIdentity(userId, kp.publicKey);
 
     // Setup: karma box
     const karmaBox: KarmaBox = {

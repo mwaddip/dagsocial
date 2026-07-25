@@ -4,13 +4,11 @@ import express from 'express';
 import http from 'http';
 import { createHash, generateKeyPairSync, createPrivateKey, sign as cryptoSign } from 'crypto';
 import { initDb, closeDb, getDb } from '../../src/store/db.js';
-import { insertIdentity } from '../../src/store/identities.js';
 import { insertPost } from '../../src/store/posts.js';
 import { insertBox, getKarmaBox, getBox as storeGetBox } from '../../src/store/utxo.js';
 import { insertLike } from '../../src/store/likes.js';
 import { getCurrentHeight } from '../../src/store/ordering.js';
 import { castLike, removeLike } from '../../src/services/likes.js';
-import { getIdentity as storeGetIdentity } from '../../src/store/identities.js';
 import {
   generateKeyPair,
   computeBoxId,
@@ -52,7 +50,6 @@ async function request(
         db.prepare('UPDATE utxo_boxes SET spent_at_block = ? WHERE id = ?').run(atBlock, id);
       },
       getKarmaBox: (owner: Uint8Array) => getKarmaBox(owner),
-      getIdentity: (userId: Uint8Array) => storeGetIdentity(userId),
       runInTransaction: (fn: () => void) => {
         (db.transaction(fn) as () => void)();
       },
@@ -158,7 +155,6 @@ describe('likes routes', () => {
     // Create a post author (needed for post insertion)
     const authorKp = generateKeyPair();
     const authorId = authorKp.publicKey;
-    insertIdentity(authorId, authorKp.publicKey);
 
     // Create the target post
     const post: Post = {
@@ -177,7 +173,6 @@ describe('likes routes', () => {
     // Create a liker with sufficient karma
     likerKp = generateKeyPair();
     likerId = likerKp.publicKey;
-    insertIdentity(likerId, likerKp.publicKey);
     likerPrivKey = createPrivateKey({
       key: Buffer.from(likerKp.secretKey),
       format: 'der',
@@ -218,7 +213,6 @@ describe('likes routes', () => {
     // Free liker with karma
     freeLikerKp = generateKeyPair();
     freeLikerId = freeLikerKp.publicKey;
-    insertIdentity(freeLikerId, freeLikerKp.publicKey);
     freeLikerPrivKey = createPrivateKey({
       key: Buffer.from(freeLikerKp.secretKey),
       format: 'der',

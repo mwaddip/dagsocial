@@ -84,12 +84,6 @@ async function importBlockCreator(): Promise<BlockCreatorModule> {
 }
 
 async function importIdentities() {
-  return (await import('../../src/store/identities.js')) as {
-    insertIdentity: (userId: Uint8Array, publicKey: Uint8Array) => void;
-    getIdentity: (
-      userId: Uint8Array,
-    ) => { userId: Uint8Array; publicKey: Uint8Array; createdAt: number } | null;
-  };
 }
 
 async function importPosts() {
@@ -367,7 +361,6 @@ describe('extendsOurTip', () => {
 
     const author = makeTestIdentity();
     const ids = await importIdentities();
-    ids.insertIdentity(author.userId, author.publicKey);
 
     const post = makePost(author.userId, 'genesis');
     const postId = computePostId(post);
@@ -425,7 +418,6 @@ describe('extendsOurTip', () => {
 
     const author = makeTestIdentity();
     const ids = await importIdentities();
-    ids.insertIdentity(author.userId, author.publicKey);
 
     const post = makePost(author.userId, 'genesis');
     const postId = computePostId(post);
@@ -513,7 +505,6 @@ describe('findForkPoint', () => {
 
     const author = makeTestIdentity();
     const ids = await importIdentities();
-    ids.insertIdentity(author.userId, author.publicKey);
 
     const { encodePost } = await import('@dagsocial/types');
     const posts = await importPosts();
@@ -572,7 +563,6 @@ describe('findForkPoint', () => {
 
     const author = makeTestIdentity();
     const ids = await importIdentities();
-    ids.insertIdentity(author.userId, author.publicKey);
 
     const { encodePost } = await import('@dagsocial/types');
     const posts = await importPosts();
@@ -624,7 +614,6 @@ describe('findForkPoint', () => {
     // Build a deep chain (more than MAX_REORG_DEPTH) via block-creator
     const author = makeTestIdentity();
     const ids = await importIdentities();
-    ids.insertIdentity(author.userId, author.publicKey);
 
     const { encodePost } = await import('@dagsocial/types');
     const posts = await importPosts();
@@ -718,7 +707,6 @@ describe('revertBlock', () => {
 
     const author = makeTestIdentity();
     const ids = await importIdentities();
-    ids.insertIdentity(author.userId, author.publicKey);
 
     const post = makePost(author.userId, 'unconfirm me');
     const postId = computePostId(post);
@@ -771,7 +759,6 @@ describe('revertBlock', () => {
     const bc = await importBlockCreator();
 
     const author = makeTestIdentity();
-    ids.insertIdentity(author.userId, author.publicKey);
 
     const post = makePost(author.userId, 'utxo revert test');
     const postId = computePostId(post);
@@ -826,7 +813,6 @@ describe('revertBlock', () => {
 
     // Create identity with a karma box at block 0 (ancient)
     const identity = makeTestIdentity();
-    ids.insertIdentity(identity.userId, identity.publicKey);
     const oldBox = makeKarmaBox(100, identity.userId, 0);
     utxo.insertBox(oldBox);
     const oldBoxId = oldBox.id!;
@@ -916,7 +902,6 @@ describe('reorg', () => {
 
     const author = makeTestIdentity();
     const ids = await importIdentities();
-    ids.insertIdentity(author.userId, author.publicKey);
 
     const { encodePost } = await import('@dagsocial/types');
     const posts = await importPosts();
@@ -969,7 +954,6 @@ describe('reorg', () => {
 
     const author = makeTestIdentity();
     const ids = await importIdentities();
-    ids.insertIdentity(author.userId, author.publicKey);
 
     const { encodePost } = await import('@dagsocial/types');
     const posts = await importPosts();
@@ -1021,7 +1005,6 @@ describe('reorg', () => {
 
     const author = makeTestIdentity();
     const ids = await importIdentities();
-    ids.insertIdentity(author.userId, author.publicKey);
 
     const { encodePost } = await import('@dagsocial/types');
     const posts = await importPosts();

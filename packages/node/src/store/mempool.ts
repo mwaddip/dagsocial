@@ -86,8 +86,3 @@ export function removeEntry(rowid: number): void {
   const db = getDb();
   db.prepare('DELETE FROM mempool WHERE rowid = ?').run(rowid);
 }
-
-export function removeBatch(batchId: string): void {
-  const db = getDb();
-  db.prepare('DELETE FROM mempool WHERE batch_id = ?').run(batchId);
-}

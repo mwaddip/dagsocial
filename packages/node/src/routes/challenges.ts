@@ -14,9 +14,6 @@ export interface ChallengeStore {
   getActiveChallenge(
     userId: Uint8Array,
   ): { challenge: Uint8Array; expiresAtBlock: number } | null;
-  getIdentity(
-    userId: Uint8Array,
-  ): { userId: Uint8Array; publicKey: Uint8Array; createdAt: number } | null;
   getCurrentHeight(): number;
   challengeWindowBlocks: number;
   postPowTargetBits: number;
@@ -45,13 +42,6 @@ export function createRouter(deps: ChallengeStore): Router {
     }
     if (userIdBytes.length !== 32) {
       res.status(400).json({ error: 'userId must be 32 bytes (64 hex chars)' });
-      return;
-    }
-
-    // Check identity exists
-    const identity = deps.getIdentity(userIdBytes);
-    if (!identity) {
-      res.status(400).json({ error: 'Identity not found' });
       return;
     }
 

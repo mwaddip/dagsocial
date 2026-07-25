@@ -4,7 +4,6 @@ import express from 'express';
 import http from 'http';
 import { createHash, generateKeyPairSync, createPrivateKey } from 'crypto';
 import { initDb, closeDb, getDb } from '../../src/store/db.js';
-import { insertIdentity, getIdentity as storeGetIdentity } from '../../src/store/identities.js';
 import { getKarmaBox, getBox as storeGetBox, insertBox as storeInsertBox } from '../../src/store/utxo.js';
 import { getCurrentHeight } from '../../src/store/ordering.js';
 import {
@@ -46,7 +45,6 @@ async function request(
         db.prepare('UPDATE utxo_boxes SET spent_at_block = ? WHERE id = ?').run(atBlock, id);
       },
       getKarmaBox: (owner: Uint8Array) => getKarmaBox(owner),
-      getIdentity: (userId: Uint8Array) => storeGetIdentity(userId),
       runInTransaction: (fn: () => void) => { (db.transaction(fn) as () => void)(); },
       createInvite,
       claimInvite,
@@ -98,7 +96,6 @@ describe('invites routes', () => {
     inviterKp = generateKeyPair();
     inviterId = inviterKp.publicKey;
     inviterPubKeyHex = Buffer.from(inviterId).toString('hex');
-    insertIdentity(inviterId, inviterKp.publicKey);
     inviterPrivKeyObj = createPrivateKey({
       key: Buffer.from(inviterKp.secretKey),
       format: 'der',
@@ -218,7 +215,6 @@ describe('invites routes', () => {
 
     const newKp = generateKeyPair();
     const inviteePubKey = newKp.publicKey;
-    insertIdentity(inviteePubKey, inviteePubKey);
 
     const karmaOut: KarmaBox = {
       boxType: 'karma',
@@ -369,7 +365,6 @@ describe('invites routes', () => {
     const wrongKp = generateKeyPair();
     const wrongPubKey = wrongKp.publicKey;
     const wrongPubKeyHex = Buffer.from(wrongPubKey).toString('hex');
-    insertIdentity(wrongPubKey, wrongPubKey);
     const wrongPrivKeyObj = createPrivateKey({
       key: Buffer.from(wrongKp.secretKey),
       format: 'der',

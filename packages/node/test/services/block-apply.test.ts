@@ -85,12 +85,6 @@ async function importBlockCreator(): Promise<BlockCreatorModule> {
 }
 
 async function importIdentities() {
-  return (await import('../../src/store/identities.js')) as {
-    insertIdentity: (userId: Uint8Array, publicKey: Uint8Array) => void;
-    getIdentity: (
-      userId: Uint8Array,
-    ) => { userId: Uint8Array; publicKey: Uint8Array; createdAt: number } | null;
-  };
 }
 
 async function importPosts() {
@@ -327,7 +321,6 @@ describe('block-apply journal recording', () => {
 
     const author = makeTestIdentity();
     const ids = await importIdentities();
-    ids.insertIdentity(author.userId, author.publicKey);
 
     const post = makePost(author.userId, 'journal test post');
     const postId = computePostId(post);
@@ -369,7 +362,6 @@ describe('block-apply journal recording', () => {
 
     const author = makeTestIdentity();
     const ids = await importIdentities();
-    ids.insertIdentity(author.userId, author.publicKey);
 
     const { encodePost } = await import('@dagsocial/types');
     const utxo = await importUtxo();
@@ -385,7 +377,6 @@ describe('block-apply journal recording', () => {
 
     // Create a standalone like box (not attached to sub-block)
     const liker = makeTestIdentity();
-    ids.insertIdentity(liker.userId, liker.publicKey);
     utxo.insertBox(makeKarmaBox(10, liker.publicKey, 0));
     const likeBox = makeLikeBox(liker.userId, postId, 0);
     utxo.insertBox(likeBox);
@@ -423,7 +414,6 @@ describe('block-apply journal recording', () => {
 
     const author = makeTestIdentity();
     const ids = await importIdentities();
-    ids.insertIdentity(author.userId, author.publicKey);
 
     const { encodePost } = await import('@dagsocial/types');
     const utxo = await importUtxo();
@@ -440,7 +430,6 @@ describe('block-apply journal recording', () => {
     // Create 6 locked likes (enough for 1 author reward: floor(6/5)=1)
     for (let i = 0; i < 6; i++) {
       const liker = makeTestIdentity();
-      ids.insertIdentity(liker.userId, liker.publicKey);
       utxo.insertBox(makeKarmaBox(10, liker.publicKey, 0));
       const likeBox = makeLikeBox(liker.userId, postId, 0);
       utxo.insertBox(likeBox);
@@ -508,7 +497,6 @@ describe('block-apply journal recording', () => {
     const bc = await importBlockCreator();
 
     const author = makeTestIdentity();
-    ids.insertIdentity(author.userId, author.publicKey);
 
     const post = makePost(author.userId, 'utxo journal test');
     const postId = computePostId(post);
@@ -741,7 +729,6 @@ describe('block-apply journal recording', () => {
 
     // Create an identity with a karma box at block 0 (ancient)
     const identity = makeTestIdentity();
-    ids.insertIdentity(identity.userId, identity.publicKey);
     const oldBox = makeKarmaBox(100, identity.userId, 0);
     utxo.insertBox(oldBox);
 

@@ -20,7 +20,6 @@ interface MockStore {
 function createMockDeps(store: MockStore): VerifierDeps {
   return {
     getActiveChallenge: (userId: Uint8Array) => store.challenges.get(userId) ?? null,
-    getIdentity: (userId: Uint8Array) => store.identities.get(userId) ?? null,
     getKarmaBoxes: (owner: Uint8Array) => {
       const hex = Buffer.from(owner).toString('hex');
       return store.karmaBoxes.get(hex) ?? [];

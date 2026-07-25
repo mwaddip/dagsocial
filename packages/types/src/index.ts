@@ -34,9 +34,11 @@ export {
   CREDIT_REWARD_REDUCTION,
   CREDIT_TAIL_REWARD,
   CREDIT_MINER_REWARD_DELAY,
+  MEMPOOL_EXPIRY_BLOCKS,
   CREDIT_TREASURY_PCT,
   ORDERING_BLOCK_POW_TARGET_BITS,
   ORDERING_BLOCK_POW_TARGET_FLOOR,
+  ED25519_SPKI_PREFIX,
 } from './constants.js';
 
 // Identity
@@ -50,7 +52,7 @@ export { base58Encode, base58Decode } from './base58.js';
 export { leafHash, nodeHash, buildMerkleRoot, hexToBuf } from './merkle.js';
 
 // Posts
-export { signingHash, computePostId, getPostDiscriminator, buildProfileContent } from './post.js';
+export { signingHash, computePostId, getPostDiscriminator, buildProfileContent, postPowPreimage } from './post.js';
 export type { Post, PostId } from './post.js';
 
 // UTXO

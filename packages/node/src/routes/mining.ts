@@ -1,5 +1,4 @@
 import { Router } from 'express';
-import { Buffer } from 'buffer';
 import { blockHash, computePowHash } from '@dagsocial/validation';
 import type { OrderingBlock } from '@dagsocial/types';
 

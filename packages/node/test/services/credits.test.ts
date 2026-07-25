@@ -3,7 +3,6 @@ import { generateKeyPairSync, sign as cryptoSign } from 'crypto';
 import { computeBoxId, computeTxId, selectBoxes, PROTOCOL_VERSION } from '@dagsocial/types';
 import type { CreditBox, UtxoTransaction } from '@dagsocial/types';
 import { initDb, closeDb } from '../../src/store/db.js';
-import { insertIdentity } from '../../src/store/identities.js';
 import { insertBox, getCreditBoxes, getUnlockedCreditBoxes } from '../../src/store/utxo.js';
 import { sendCredits } from '../../src/services/credits.js';
 
@@ -34,8 +33,6 @@ describe('sendCredits', () => {
     bob = generateKeyPairSync('ed25519');
     alicePubKey = rawPublicKey(alice.publicKey);
     bobPubKey = rawPublicKey(bob.publicKey);
-    insertIdentity(alicePubKey, alicePubKey);
-    insertIdentity(bobPubKey, bobPubKey);
   });
 
   afterEach(() => {

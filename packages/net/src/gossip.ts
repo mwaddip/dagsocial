@@ -1,4 +1,4 @@
-import { decodeSubBlock, decodeOrderingBlock, decodeTx, POST_POW_TARGET_BITS } from '@dagsocial/types';
+import { decodeSubBlock, decodeOrderingBlock, decodeTx, POST_POW_TARGET_BITS, postPowPreimage } from '@dagsocial/types';
 import { encodeSubBlock, encodeOrderingBlock, encodeTx } from '@dagsocial/types';
 import {
   verifyContentLimits,
@@ -174,22 +174,7 @@ function runStage1SubBlock(
     return { valid: false, error: 'Unsupported protocol version' };
   }
 
-  const encoder = new TextEncoder();
-  const parts: Uint8Array[] = [
-    encoder.encode(post.content),
-    post.author,  // raw 32-byte Ed25519 public key
-    ...post.parentRefs.map((r) => encoder.encode(r)),
-    post.challenge,
-    encoder.encode(String(post.protocolVersion)),
-    encoder.encode(String(post.timestamp)),
-  ];
-  const totalLen = parts.reduce((s, p) => s + p.length, 0);
-  const powInput = new Uint8Array(totalLen);
-  let offset = 0;
-  for (const p of parts) {
-    powInput.set(p, offset);
-    offset += p.length;
-  }
+  const powInput = postPowPreimage(post);
   if (!v.verifyPoW(powInput, post.powNonce, POST_POW_TARGET_BITS)) {
     return { valid: false, error: 'Proof of Work invalid' };
   }

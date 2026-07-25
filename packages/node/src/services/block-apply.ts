@@ -7,7 +7,6 @@ import { config } from '../config.js';
 import { computeBlockReward, computeSubBlockRoot, computeUtxoTxRoot, clearTemplate } from './block-creator.js';
 import { revalidateTxInContext, applyTx } from './utxo-engine.js';
 import {
-  getIdentity,
   getKarmaBox,
   getKarmaBoxes,
   getPost,
@@ -236,7 +235,6 @@ export function applyOrderingBlock(block: OrderingBlock): boolean {
     insertBox,
     consumeBox,
     getKarmaBox,
-    getIdentity,
     runInTransaction: (fn: () => void) => {
       getDb().transaction(fn)();
     },

@@ -1,6 +1,6 @@
 import { blockHash } from '@dagsocial/validation';
 import type { BlockHeader, OrderingBlock, BlockJournal } from '@dagsocial/types';
-import { decodeTx, decodeSubBlock } from '@dagsocial/types';
+import { decodeTx, decodeSubBlock, MEMPOOL_EXPIRY_BLOCKS } from '@dagsocial/types';
 import {
   getOrderingBlock,
   getCurrentHeight,
@@ -132,7 +132,7 @@ export function reorg(forkHeight: number, newBlocks: OrderingBlock[]): void {
 
   // Phase 2: re-insert reverted txs and sub-blocks to mempool
   const newTipHeight = forkHeight + newBlocks.length;
-  const mempoolExpiry = newTipHeight + 720;
+  const mempoolExpiry = newTipHeight + MEMPOOL_EXPIRY_BLOCKS;
   for (const journal of revertedJournals) {
     // Re-insert UTXO txs
     for (const txRecord of journal.appliedUtxoTxs) {

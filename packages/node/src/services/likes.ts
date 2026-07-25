@@ -2,6 +2,7 @@ import {
   computeTxId,
   LIKE_THRESHOLD,
   LIKE_FREE_THRESHOLD,
+  MEMPOOL_EXPIRY_BLOCKS,
 } from '@dagsocial/types';
 import type { LikeBox, UtxoTransaction } from '@dagsocial/types';
 import {
@@ -111,7 +112,7 @@ export function castLike(
   }
 
   // ---- 6. Insert into mempool ----
-  const expiresAtHeight = currentBlockHeight + 720;
+  const expiresAtHeight = currentBlockHeight + MEMPOOL_EXPIRY_BLOCKS;
   insertUtxoTx(tx, null, expiresAtHeight);
 
   // ---- 7. Return pending result ----
@@ -179,7 +180,7 @@ export function removeLike(
   }
 
   // ---- 4. Insert into mempool ----
-  const expiresAtHeight = currentBlockHeight + 720;
+  const expiresAtHeight = currentBlockHeight + MEMPOOL_EXPIRY_BLOCKS;
   insertUtxoTx(tx, null, expiresAtHeight);
 
   // ---- 5. Return pending result ----

@@ -15,7 +15,6 @@ async function importFresh() {
 }
 
 const EXPECTED_TABLES = [
-  'identities',
   'challenges',
   'dag_posts',
   'dag_parent_refs',
@@ -24,6 +23,8 @@ const EXPECTED_TABLES = [
   'dag_likes',
   'mempool',
   'ordering_blocks',
+  'block_journal',
+  'system_config',
 ];
 
 describe('db lifecycle', () => {
@@ -101,14 +102,11 @@ describe('db lifecycle', () => {
 
     // Spot-check a few tables for key columns
 
-    // identities
-    const identityCols = db.pragma('table_info(identities)') as Array<{ name: string }>;
-    const identityNames = identityCols.map((c) => c.name);
-    expect(identityNames).toContain('user_id');
-    expect(identityNames).toContain('public_key');
-    expect(identityNames).toContain('created_at');
-    // Phase 2 schema must NOT have secret_key
-    expect(identityNames).not.toContain('secret_key');
+    // system_config
+    const sysCols = db.pragma('table_info(system_config)') as Array<{ name: string }>;
+    const sysNames = sysCols.map((c) => c.name);
+    expect(sysNames).toContain('key');
+    expect(sysNames).toContain('value');
 
     // challenges
     const challengeCols = db.pragma('table_info(challenges)') as Array<{ name: string }>;

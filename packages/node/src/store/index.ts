@@ -1,5 +1,4 @@
 export { initDb, getDb, closeDb } from './db.js';
-export { insertIdentity, getIdentity } from './identities.js';
 export {
   createChallenge,
   getActiveChallenge,
@@ -19,7 +18,6 @@ export {
 
 export {
   getBox,
-  getUnspentBoxes,
   getKarmaBox,
   getKarmaBoxes,
   getCreditBox,
@@ -28,7 +26,6 @@ export {
   getPendingInvites,
   getPendingInviteCount,
   getBondBoxes,
-  getUnspentLikeForLiker,
   getLockedLikeBoxes,
   getUnprocessedLockedLikeBoxes,
   getUnspentPostLockBoxes,
@@ -75,7 +72,6 @@ export {
   getPendingEntries,
   purgeExpired,
   removeEntry,
-  removeBatch,
 } from './mempool.js';
 export type { PoolEntry } from './mempool.js';
 

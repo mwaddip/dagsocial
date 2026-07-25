@@ -3,19 +3,12 @@ import { encode, decode } from 'cbor-x';
 import type { Libp2p } from 'libp2p';
 import type { Stream } from '@libp2p/interface';
 import type { NetConfig } from './types.js';
+import { mergeUint8Arrays } from './util.js';
 
 export const HEADERS_PROTOCOL = '/dagsocial/headers/1';
 
-export function mergeUint8Arrays(chunks: Uint8Array[]): Uint8Array {
-  const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
-  const result = new Uint8Array(totalLength);
-  let offset = 0;
-  for (const chunk of chunks) {
-    result.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return result;
-}
+// Re-export for tests that import from headers.ts
+export { mergeUint8Arrays };
 
 /**
  * Request headers from a peer, starting at startHeight and going down.

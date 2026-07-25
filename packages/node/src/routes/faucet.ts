@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { computeTxId, computeBoxId, PROTOCOL_VERSION } from '@dagsocial/types';
+import { computeTxId, computeBoxId, PROTOCOL_VERSION, MEMPOOL_EXPIRY_BLOCKS } from '@dagsocial/types';
 import type { KarmaBox, UtxoTransaction } from '@dagsocial/types';
 import { insertUtxoTx } from '../store/mempool.js';
 import { getSystemKeypair, ensureSystemKarmaBox, signWithSystemKey } from '../store/system.js';
@@ -18,7 +18,7 @@ const FAUCET_AMOUNT = 100;
 // ---------------------------------------------------------------------------
 
 export interface FaucetDeps extends UtxoEngineDeps {
-  // Inherits: getBox, insertBox, consumeBox, getKarmaBox, getIdentity,
+  // Inherits: getBox, insertBox, consumeBox, getKarmaBox,
   //           runInTransaction, isSystemBox (optional)
   getCurrentHeight(): number;
 }
@@ -54,14 +54,7 @@ export function createRouter(deps: FaucetDeps): Router {
       return;
     }
 
-    // ---- 2. Verify identity exists ----
-    const identity = deps.getIdentity(userIdBytes);
-    if (!identity) {
-      res.status(404).json({ error: 'Identity not found' });
-      return;
-    }
-
-    // ---- 3. Get system keypair and karma box ----
+    // ---- 2. Get system keypair and karma box ----
     const sysKeypair = getSystemKeypair();
     if (!sysKeypair) {
       res.status(500).json({ error: 'System keypair not initialized' });
@@ -124,7 +117,7 @@ export function createRouter(deps: FaucetDeps): Router {
     }
 
     // ---- 7. Insert into mempool ----
-    const expiresAtHeight = currentHeight + 720;
+    const expiresAtHeight = currentHeight + MEMPOOL_EXPIRY_BLOCKS;
     insertUtxoTx(tx, null, expiresAtHeight);
 
     // ---- 8. Broadcast ----

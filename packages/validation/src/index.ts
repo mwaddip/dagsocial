@@ -11,4 +11,5 @@ export {
   verifyOrderingBlockPoW,
   blockHash,
   computePowHash,
+  ed25519PublicKeyToKeyObject,
 } from './verify.js';

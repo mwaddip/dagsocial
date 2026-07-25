@@ -14,14 +14,6 @@ const MIGRATIONS = [
   'DROP TABLE IF EXISTS ordering_blocks',
   'DROP TABLE IF EXISTS utxo_boxes',
   'DROP TABLE IF EXISTS block_journal',
-  // Identity (Phase 2 — no secret_key).
-  // user_id IS the 32-byte Ed25519 public key (BLOB).
-  `CREATE TABLE IF NOT EXISTS identities (
-    user_id BLOB PRIMARY KEY,
-    public_key BLOB NOT NULL,
-    created_at INTEGER NOT NULL DEFAULT (unixepoch())
-  )`,
-
   // Challenges
   `CREATE TABLE IF NOT EXISTS challenges (
     user_id BLOB PRIMARY KEY,

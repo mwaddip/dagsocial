@@ -51,8 +51,13 @@ export const CREDIT_EPOCH_BLOCKS = 129_600;            // ~90 days — reward re
 export const CREDIT_REWARD_REDUCTION = 2;              // Credits reduced per epoch
 export const CREDIT_TAIL_REWARD = 2;                   // Flat reward after emission ends
 export const CREDIT_MINER_REWARD_DELAY = 720;          // Blocks before coinbase is spendable (~12h)
+export const MEMPOOL_EXPIRY_BLOCKS = 720;               // Blocks before mempool entries expire (~12h)
 export const CREDIT_TREASURY_PCT = 10;                 // Percent of each reward to treasury
 
 // Ordering block PoW
 export const ORDERING_BLOCK_POW_TARGET_BITS = 12;       // Initial difficulty (12 bits = ~4K hashes)
 export const ORDERING_BLOCK_POW_TARGET_FLOOR = 4;       // Sanity floor
+
+// Crypto
+/** DER-encoded SPKI prefix for raw Ed25519 32-byte public keys (RFC 8410). */
+export const ED25519_SPKI_PREFIX = '302a300506032b6570032100';

@@ -8,7 +8,6 @@ import {
   getCurrentHeight,
   createOrderingBlock,
 } from '../../src/store/ordering.js';
-import { insertIdentity } from '../../src/store/identities.js';
 import { createRouter } from '../../src/routes/blocks.js';
 import { generateKeyPair, PROTOCOL_VERSION } from '@dagsocial/types';
 import type { OrderingBlock } from '@dagsocial/types';
@@ -73,12 +72,6 @@ async function request(
               "SELECT COUNT(*) AS c FROM dag_posts WHERE status = 'pending'",
             )
             .get() as { c: number }
-        ).c,
-      getIdentityCount: () =>
-        (
-          db.prepare('SELECT COUNT(*) AS c FROM identities').get() as {
-            c: number;
-          }
         ).c,
       getTotalKarma: () => {
         const row = db
@@ -146,7 +139,6 @@ describe('blocks routes', () => {
     // Create an identity
     const kp = generateKeyPair();
     const userId = kp.publicKey;
-    insertIdentity(userId, kp.publicKey);
   });
 
   afterAll(() => {
@@ -189,10 +181,8 @@ describe('blocks routes', () => {
     expect(typeof body.blockHeight).toBe('number');
     expect(typeof body.postCount).toBe('number');
     expect(typeof body.pendingPosts).toBe('number');
-    expect(typeof body.identityCount).toBe('number');
     expect(typeof body.totalKarma).toBe('number');
     expect(typeof body.totalCredits).toBe('number');
     expect(body.networkMode).toBe('testnet');
-    expect(body.identityCount).toBeGreaterThanOrEqual(1);
   });
 });

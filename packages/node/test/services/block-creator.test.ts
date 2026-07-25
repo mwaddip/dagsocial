@@ -86,12 +86,6 @@ async function importBlockCreator(): Promise<BlockCreatorModule> {
 }
 
 async function importIdentities() {
-  return (await import('../../src/store/identities.js')) as {
-    insertIdentity: (userId: Uint8Array, publicKey: Uint8Array) => void;
-    getIdentity: (
-      userId: Uint8Array,
-    ) => { userId: Uint8Array; publicKey: Uint8Array; createdAt: number } | null;
-  };
 }
 
 async function importPosts() {
@@ -134,7 +128,6 @@ async function importMempoolFresh() {
     }>;
     purgeExpired: (currentHeight: number) => number;
     removeEntry: (rowid: number) => void;
-    removeBatch: (batchId: string) => void;
   };
 }
 
@@ -327,7 +320,6 @@ describe('block-creator', () => {
     // Set up identity
     const author = makeTestIdentity();
     const ids = await importIdentities();
-    ids.insertIdentity(author.userId, author.publicKey);
 
     // Create and insert post
     const post = makePost(author.userId, 'hello world');
@@ -369,7 +361,6 @@ describe('block-creator', () => {
 
     const author = makeTestIdentity();
     const ids = await importIdentities();
-    ids.insertIdentity(author.userId, author.publicKey);
 
     const post = makePost(author.userId, 'post one');
     const postId = computePostId(post);
@@ -411,7 +402,6 @@ describe('block-creator', () => {
 
     const author = makeTestIdentity();
     const ids = await importIdentities();
-    ids.insertIdentity(author.userId, author.publicKey);
 
     const post = makePost(author.userId, 'confirm me');
     const postId = computePostId(post);
@@ -455,7 +445,6 @@ describe('block-creator', () => {
 
     const author = makeTestIdentity();
     const ids = await importIdentities();
-    ids.insertIdentity(author.userId, author.publicKey);
 
     const { encodePost } = await import('@dagsocial/types');
     const posts = await importPosts();
@@ -528,7 +517,6 @@ describe('block-creator', () => {
 
     const author = makeTestIdentity();
     const ids = await importIdentities();
-    ids.insertIdentity(author.userId, author.publicKey);
 
     // Give author some initial karma
     const { encodePost } = await import('@dagsocial/types');
@@ -546,7 +534,6 @@ describe('block-creator', () => {
     const likers: TestIdentity[] = [];
     for (let i = 0; i < 6; i++) {
       const liker = makeTestIdentity();
-      ids.insertIdentity(liker.userId, liker.publicKey);
       // Give liker karma
       utxo.insertBox(makeKarmaBox(10, liker.publicKey, 0));
       // Create like box
@@ -557,7 +544,6 @@ describe('block-creator', () => {
 
     // Add one free like
     const freeLiker = makeTestIdentity();
-    ids.insertIdentity(freeLiker.userId, freeLiker.publicKey);
     utxo.insertBox(makeKarmaBox(10, freeLiker.publicKey, 0));
     const likesStore = await importLikes();
     likesStore.insertLike(postId, freeLiker.userId);
@@ -634,7 +620,6 @@ describe('block-creator', () => {
 
     const author = makeTestIdentity();
     const ids = await importIdentities();
-    ids.insertIdentity(author.userId, author.publicKey);
 
     const { encodePost } = await import('@dagsocial/types');
     const utxo = await importUtxo();
@@ -652,7 +637,6 @@ describe('block-creator', () => {
     const likersA: TestIdentity[] = [];
     for (let i = 0; i < 3; i++) {
       const liker = makeTestIdentity();
-      ids.insertIdentity(liker.userId, liker.publicKey);
       utxo.insertBox(makeKarmaBox(10, liker.publicKey, 0));
       const likeBox = makeLikeBox(liker.userId, postAId, 0);
       utxo.insertBox(likeBox);
@@ -666,7 +650,6 @@ describe('block-creator', () => {
     const likersB: TestIdentity[] = [];
     for (let i = 0; i < 7; i++) {
       const liker = makeTestIdentity();
-      ids.insertIdentity(liker.userId, liker.publicKey);
       utxo.insertBox(makeKarmaBox(10, liker.publicKey, 0));
       const likeBox = makeLikeBox(liker.userId, postBId, 0);
       utxo.insertBox(likeBox);
@@ -680,7 +663,6 @@ describe('block-creator', () => {
     const likersC: TestIdentity[] = [];
     for (let i = 0; i < 12; i++) {
       const liker = makeTestIdentity();
-      ids.insertIdentity(liker.userId, liker.publicKey);
       utxo.insertBox(makeKarmaBox(10, liker.publicKey, 0));
       const likeBox = makeLikeBox(liker.userId, postCId, 0);
       utxo.insertBox(likeBox);
@@ -761,7 +743,6 @@ describe('block-creator', () => {
 
     const author = makeTestIdentity();
     const ids = await importIdentities();
-    ids.insertIdentity(author.userId, author.publicKey);
 
     const { encodePost } = await import('@dagsocial/types');
     const utxo = await importUtxo();
@@ -776,7 +757,6 @@ describe('block-creator', () => {
     const lockedLikers: TestIdentity[] = [];
     for (let i = 0; i < 12; i++) {
       const liker = makeTestIdentity();
-      ids.insertIdentity(liker.userId, liker.publicKey);
       utxo.insertBox(makeKarmaBox(10, liker.publicKey, 0));
       const likeBox = makeLikeBox(liker.userId, postId, 0);
       utxo.insertBox(likeBox);
@@ -787,7 +767,6 @@ describe('block-creator', () => {
     const likesStore = await importLikes();
     for (let i = 0; i < 5; i++) {
       const freeLiker = makeTestIdentity();
-      ids.insertIdentity(freeLiker.userId, freeLiker.publicKey);
       utxo.insertBox(makeKarmaBox(10, freeLiker.publicKey, 0));
       likesStore.insertLike(postId, freeLiker.userId);
     }
@@ -850,7 +829,6 @@ describe('block-creator', () => {
 
     const author = makeTestIdentity();
     const ids = await importIdentities();
-    ids.insertIdentity(author.userId, author.publicKey);
 
     const { encodePost } = await import('@dagsocial/types');
     const utxo = await importUtxo();
@@ -863,13 +841,11 @@ describe('block-creator', () => {
 
     // Create 2 like boxes
     const liker1 = makeTestIdentity();
-    ids.insertIdentity(liker1.userId, liker1.publicKey);
     utxo.insertBox(makeKarmaBox(10, liker1.publicKey, 0));
     const likeBox1 = makeLikeBox(liker1.userId, postId, 0);
     utxo.insertBox(likeBox1);
 
     const liker2 = makeTestIdentity();
-    ids.insertIdentity(liker2.userId, liker2.publicKey);
     utxo.insertBox(makeKarmaBox(10, liker2.publicKey, 0));
     const likeBox2 = makeLikeBox(liker2.userId, postId, 0);
     utxo.insertBox(likeBox2);
@@ -908,7 +884,6 @@ describe('block-creator', () => {
 
     const author = makeTestIdentity();
     const ids = await importIdentities();
-    ids.insertIdentity(author.userId, author.publicKey);
 
     const { encodePost } = await import('@dagsocial/types');
 
@@ -967,7 +942,6 @@ describe('block-creator', () => {
 
     // Set up identity
     const author = makeTestIdentity();
-    ids.insertIdentity(author.userId, author.publicKey);
 
     // Create and insert a post
     const post = makePost(author.userId, 'utxoTxIds test');
@@ -1019,7 +993,6 @@ describe('block-creator', () => {
 
     // Set up identity
     const author = makeTestIdentity();
-    ids.insertIdentity(author.userId, author.publicKey);
 
     // Create and insert a post
     const post = makePost(author.userId, 'like attachment test');
@@ -1079,7 +1052,6 @@ describe('block-creator', () => {
 
     // Set up identity
     const author = makeTestIdentity();
-    ids.insertIdentity(author.userId, author.publicKey);
 
     // Create and insert a post
     const post = makePost(author.userId, 'batch UTXO test');

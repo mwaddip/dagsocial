@@ -29,7 +29,6 @@ async function importUtxoFresh() {
   const mod = await import('../../src/store/utxo.js');
   return mod as {
     getBox: (boxId: string) => AnyBox | null;
-    getUnspentBoxes: (owner: Uint8Array) => AnyBox[];
     getKarmaBox: (owner: Uint8Array) => KarmaBox | null;
     getKarmaBoxes: (owner: Uint8Array) => KarmaBox[];
     getCreditBox: (owner: Uint8Array) => CreditBox | null;
@@ -287,43 +286,6 @@ describe('utxo store', () => {
     expect(result).toBeNull();
   });
 
-  // --- getUnspentBoxes filters by owner, excludes spent ---------------------
-
-  it('getUnspentBoxes filters by owner and excludes spent boxes', async () => {
-    const { initDb } = await importDbFresh();
-    const { insertBox, getUnspentBoxes, consumeBox } = await importUtxoFresh();
-    const { computeBoxId } = await importTypes();
-
-    initDb(':memory:');
-
-    // Insert two karma boxes for owner A
-    const boxA1 = makeKarmaBox({ value: 100, owner: OWNER_A });
-    boxA1.id = computeBoxId(boxA1);
-    insertBox(boxA1);
-
-    const boxA2 = makeKarmaBox({ value: 200, owner: OWNER_A });
-    boxA2.id = computeBoxId(boxA2);
-    insertBox(boxA2);
-
-    // Insert a karma box for owner B
-    const boxB = makeKarmaBox({ value: 300, owner: OWNER_B });
-    boxB.id = computeBoxId(boxB);
-    insertBox(boxB);
-
-    // Consume boxA2
-    consumeBox(boxA2.id!, 5);
-
-    // Only boxA1 should be returned for owner A (unspent)
-    const results = getUnspentBoxes(OWNER_A);
-    expect(results).toHaveLength(1);
-    const karma = results[0] as KarmaBox;
-    expect(karma.value).toBe(100);
-
-    // Owner B still has boxB
-    const resultsB = getUnspentBoxes(OWNER_B);
-    expect(resultsB).toHaveLength(1);
-    expect((resultsB[0] as KarmaBox).value).toBe(300);
-  });
 
   // --- getKarmaBox returns single unspent karma box -------------------------
 

@@ -2,7 +2,6 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import express from 'express';
 import http from 'http';
 import { initDb, closeDb, getDb } from '../../src/store/db.js';
-import { insertIdentity, getIdentity } from '../../src/store/identities.js';
 import { getCurrentHeight } from '../../src/store/ordering.js';
 import {
   getKarmaBox,
@@ -30,7 +29,6 @@ function hex(u: Uint8Array): string {
 
 function buildDeps(): FaucetDeps {
   return {
-    getIdentity,
     getKarmaBox,
     getCurrentHeight,
     getBox,
@@ -116,7 +114,6 @@ describe('faucet route', () => {
     const kp = generateKeyPair();
     publicKey = kp.publicKey;
     userId = publicKey;
-    insertIdentity(userId, publicKey);
 
     deps = buildDeps();
   });
@@ -138,7 +135,6 @@ describe('faucet route', () => {
     const kp = generateKeyPair();
     const pk = kp.publicKey;
     const pkHex = hex(pk);
-    insertIdentity(pk, pk);
 
     const app = buildApp(deps);
     const res = await request(app, '/faucet', 'POST', {
@@ -180,7 +176,6 @@ describe('faucet route', () => {
   it('handles multiple faucet grants from the same system box', async () => {
     const kp = generateKeyPair();
     const pk = kp.publicKey;
-    insertIdentity(pk, pk);
 
     const app = buildApp(deps);
 
@@ -199,17 +194,17 @@ describe('faucet route', () => {
   });
 
   // -----------------------------------------------------------------------
-  // Test 3: Unknown userId → 404
+  // Test 3: Unknown userId → succeeds (no registration needed)
   // -----------------------------------------------------------------------
 
-  it('returns 404 for unknown userId', async () => {
-    const app = buildApp(deps);
+  it('grants karma to any valid userId', async () => {
+    const app = buildApp({ ...deps, runInTransaction: (fn: () => void) => fn() });
     const res = await request(app, '/faucet', 'POST', {
       userId: '00'.repeat(32),
     });
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(200);
     const body = res.data as Record<string, unknown>;
-    expect(body.error).toBe('Identity not found');
+    expect(body.status).toBe('pending');
   });
 
   // -----------------------------------------------------------------------

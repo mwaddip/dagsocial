@@ -5,6 +5,7 @@ import {
   INVITE_KARMA_AMOUNT,
   INVITE_BOND_KARMA,
   decodeTx,
+  MEMPOOL_EXPIRY_BLOCKS,
 } from '@dagsocial/types';
 import type { InviteBox, BondBox, KarmaBox, UtxoTransaction } from '@dagsocial/types';
 import {
@@ -120,7 +121,7 @@ export function createInvite(
   }
 
   // ---- 6. Insert into mempool ----
-  const expiresAtHeight = currentBlockHeight + 720;
+  const expiresAtHeight = currentBlockHeight + MEMPOOL_EXPIRY_BLOCKS;
   insertUtxoTx(tx, null, expiresAtHeight);
 
   // ---- 7. Return result ----
@@ -202,7 +203,7 @@ export function claimInvite(
   }
 
   // ---- 5. Insert into mempool ----
-  const expiresAtHeight = currentBlockHeight + 720;
+  const expiresAtHeight = currentBlockHeight + MEMPOOL_EXPIRY_BLOCKS;
   insertUtxoTx(tx, null, expiresAtHeight);
 
   // ---- 6. Return result ----
@@ -301,7 +302,7 @@ export function cancelInvite(
   }
 
   // ---- 5. Insert into mempool ----
-  const expiresAtHeight = currentBlockHeight + 720;
+  const expiresAtHeight = currentBlockHeight + MEMPOOL_EXPIRY_BLOCKS;
   insertUtxoTx(tx, null, expiresAtHeight);
 
   // ---- 6. Return result ----

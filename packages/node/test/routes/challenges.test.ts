@@ -3,7 +3,6 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import express from 'express';
 import http from 'http';
 import { initDb, closeDb } from '../../src/store/db.js';
-import { insertIdentity, getIdentity } from '../../src/store/identities.js';
 import { createChallenge, getActiveChallenge } from '../../src/store/challenges.js';
 import { getCurrentHeight } from '../../src/store/ordering.js';
 import { generateChallenge } from '../../src/services/pow.js';
@@ -30,7 +29,6 @@ async function request(
       generateChallenge,
       createChallenge,
       getActiveChallenge,
-      getIdentity,
       getCurrentHeight,
       challengeWindowBlocks: CHALLENGE_WINDOW_BLOCKS,
       postPowTargetBits: POST_POW_TARGET_BITS,
@@ -88,7 +86,6 @@ describe('challenges routes', () => {
     // Use a fresh identity to avoid conflicts with other tests
     const kp = generateKeyPair();
     const freshUserId = kp.publicKey;
-    insertIdentity(freshUserId, kp.publicKey);
 
     const res = await request('/', 'POST', { userId: Buffer.from(freshUserId).toString('hex') });
     expect(res.status).toBe(201);
@@ -103,7 +100,6 @@ describe('challenges routes', () => {
     // Use a fresh identity so the first request is guaranteed to succeed
     const kp = generateKeyPair();
     const freshUserId = kp.publicKey;
-    insertIdentity(freshUserId, kp.publicKey);
 
     // First request succeeds (201)
     const first = await request('/', 'POST', { userId: hex(freshUserId) });
@@ -117,18 +113,17 @@ describe('challenges routes', () => {
     expect(secondChallenge).not.toBe(firstChallenge);
   });
 
-  it('POST /challenge with unknown userId returns 400', async () => {
+  it('POST /challenge with any valid userId returns 201', async () => {
     const res = await request('/', 'POST', {
-      userId: uid('nonexistent-user-id'),
+      userId: uid('any-user-id'),
     });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(201);
   });
 
   it('POST /challenge computes expiresAtBlock correctly', async () => {
     // Use a fresh identity so no existing challenge
     const kp = generateKeyPair();
     const freshUserId = kp.publicKey;
-    insertIdentity(freshUserId, kp.publicKey);
 
     const res = await request('/', 'POST', { userId: Buffer.from(freshUserId).toString('hex') });
     expect(res.status).toBe(201);

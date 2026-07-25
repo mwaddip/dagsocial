@@ -1,4 +1,4 @@
-import { createHash, createPublicKey, verify as cryptoVerify } from 'crypto';
+import { createHash, verify as cryptoVerify } from 'crypto';
 import { Encoder } from 'cbor-x';
 const hashEncoder = new Encoder({ tagUint8Array: false, useRecords: false, mapsAsObjects: true });
 function cborEncodeLocal(data: unknown): Uint8Array {
@@ -31,22 +31,7 @@ function computeTxIdLocal(tx: UtxoTransaction): string {
   return h.digest().subarray(0, 32).toString('hex');
 }
 
-// ---------------------------------------------------------------------------
-// Ed25519 SPKI prefix for raw 32-byte public keys
-// ---------------------------------------------------------------------------
-
-const ED25519_SPKI_PREFIX = Buffer.from(
-  '302a300506032b6570032100',
-  'hex',
-);
-
-function publicKeyToKeyObject(pubKey: Uint8Array): ReturnType<typeof createPublicKey> {
-  return createPublicKey({
-    key: Buffer.concat([ED25519_SPKI_PREFIX, Buffer.from(pubKey)]),
-    format: 'der',
-    type: 'spki',
-  });
-}
+import { ed25519PublicKeyToKeyObject } from '@dagsocial/validation';
 
 // ---------------------------------------------------------------------------
 // Dependency interface
@@ -58,8 +43,6 @@ export interface UtxoEngineDeps {
   insertBox: (box: AnyBox) => void;
   consumeBox: (id: string, atBlock: number) => void;
   getKarmaBox: (owner: Uint8Array) => KarmaBox | null;
-  /** Return identity info containing at least the publicKey. */
-  getIdentity: (userId: Uint8Array) => { publicKey: Uint8Array } | null;
   /** Wrap fn in a better-sqlite3 transaction. */
   runInTransaction: (fn: () => void) => void;
   /** Return true if the box is the system karma box (faucet source). */
@@ -94,7 +77,7 @@ function verifyGuardSignature(
   const signature = tx.signatures[hexKey];
   if (!signature) return false;
   try {
-    const keyObj = publicKeyToKeyObject(pubKey);
+    const keyObj = ed25519PublicKeyToKeyObject(pubKey);
     return Boolean(cryptoVerify(null, txHash, keyObj, Buffer.from(signature)));
   } catch {
     return false;
@@ -435,14 +418,8 @@ function checkGuards(
 
       case 'inviter_signature': {
         const bondBox = box as BondBox;
-        const identity = deps.getIdentity(bondBox.inviterId);
-        if (!identity) {
-          return {
-            valid: false,
-            error: `Inviter identity not found: ${bondBox.inviterId}`,
-          };
-        }
-        if (!verifyGuardSignature(tx, txHash, identity.publicKey)) {
+        // inviterId IS the 32-byte Ed25519 public key — no identity lookup needed
+        if (!verifyGuardSignature(tx, txHash, bondBox.inviterId)) {
           return {
             valid: false,
             error: `Missing or invalid inviter signature for box ${box.id}`,
@@ -602,20 +579,3 @@ export function applyTx(
   });
 }
 
-/**
- * Validate AND apply a transaction in one call (convenience wrapper).
- *
- * Preserved for backward compatibility during the mempool migration.
- * Delegates to validateTx + applyTx. For new code, prefer the split functions.
- */
-export function validateAndApplyTx(
-  deps: UtxoEngineDeps,
-  tx: UtxoTransaction,
-  currentBlockHeight: number,
-): UtxoResult {
-  const result = validateTx(deps, tx, currentBlockHeight);
-  if (!result.valid) return result;
-
-  applyTx(deps, tx, result.computedOutputs!, currentBlockHeight);
-  return result;
-}

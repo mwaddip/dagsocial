@@ -22,11 +22,23 @@ import {
   getKarmaBox,
   insertBox as storeInsertBox,
   consumeBox as storeConsumeBox,
-  insertIdentity,
-  getIdentity as storeGetIdentity,
 } from '../../src/store/index.js';
-import { validateAndApplyTx, validateTx } from '../../src/services/utxo-engine.js';
-import type { UtxoEngineDeps } from '../../src/services/utxo-engine.js';
+import { validateTx, applyTx } from '../../src/services/utxo-engine.js';
+import type { UtxoEngineDeps, UtxoResult } from '../../src/services/utxo-engine.js';
+
+/**
+ * Local convenience wrapper that replaces the removed validateAndApplyTx.
+ */
+function validateAndApplyTx(
+  deps: UtxoEngineDeps,
+  tx: UtxoTransaction,
+  currentBlockHeight: number,
+): UtxoResult {
+  const result = validateTx(deps, tx, currentBlockHeight);
+  if (!result.valid) return result;
+  applyTx(deps, tx, result.computedOutputs!, currentBlockHeight);
+  return result;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -77,7 +89,6 @@ describe('validateAndApplyTx', () => {
       insertBox: (box: AnyBox) => storeInsertBox(box),
       consumeBox: (id: string, atBlock: number) => storeConsumeBox(id, atBlock),
       getKarmaBox: (owner: Uint8Array) => getKarmaBox(owner),
-      getIdentity: (userId: Uint8Array) => storeGetIdentity(userId),
       runInTransaction: (fn: () => void) => {
         (db.transaction(fn) as () => void)();
       },
@@ -97,8 +108,6 @@ describe('validateAndApplyTx', () => {
     ownerPrivKey = privateKey;
     ownerUserId = ownerPubKey;
 
-    // Register identity so getIdentity works
-    insertIdentity(ownerUserId, ownerPubKey);
 
     deps = makeDeps();
   });
@@ -512,7 +521,6 @@ describe('validateAndApplyTx', () => {
       const keys = generateKeyPairSync('ed25519');
       inviterPubKey = rawPublicKey(keys.publicKey);
       inviterPrivKey = keys.privateKey;
-      insertIdentity(inviterPubKey, inviterPubKey);
 
       secret = new Uint8Array(Buffer.from('a'.repeat(64), 'hex'));
       secretHash = createHash('blake2b512').update(Buffer.from(secret)).digest().subarray(0, 32);
@@ -623,8 +631,6 @@ describe('validateAndApplyTx', () => {
       const inviteeKeys = generateKeyPairSync('ed25519');
       inviteePubKey = rawPublicKey(inviteeKeys.publicKey);
 
-      insertIdentity(inviterPubKey, inviterPubKey);
-      insertIdentity(inviteePubKey, inviteePubKey);
 
       secret = new Uint8Array(Buffer.from('a'.repeat(64), 'hex'));
       secretHash = createHash('blake2b512').update(Buffer.from(secret)).digest().subarray(0, 32);

@@ -22,8 +22,6 @@ import {
   getDb,
   getKarmaBox,
   insertBox as storeInsertBox,
-  insertIdentity,
-  getIdentity as storeGetIdentity,
   getBox as storeGetBox,
   consumeBox as storeConsumeBox,
   getPendingEntries,
@@ -128,7 +126,6 @@ describe('invites service', () => {
       insertBox: (box: AnyBox) => storeInsertBox(box),
       consumeBox: (id: string, atBlock: number) => storeConsumeBox(id, atBlock),
       getKarmaBox: (owner: Uint8Array) => getKarmaBox(owner),
-      getIdentity: (userId: Uint8Array) => storeGetIdentity(userId),
       runInTransaction: (fn: () => void) => {
         (db.transaction(fn) as () => void)();
       },
@@ -147,14 +144,12 @@ describe('invites service', () => {
     inviterPrivKey = inviterKeys.privateKey;
     inviterPubKeyHex = Buffer.from(inviterPubKey).toString('hex');
     inviterId = inviterPubKey;
-    insertIdentity(inviterId, inviterPubKey);
 
     // Generate invitee keypair
     const inviteeKeys = generateKeyPairSync('ed25519');
     inviteePubKey = rawPublicKey(inviteeKeys.publicKey);
     inviteePrivKey = inviteeKeys.privateKey;
     inviteePubKeyHex = Buffer.from(inviteePubKey).toString('hex');
-    insertIdentity(inviteePubKey, inviteePubKey);
 
     deps = makeDeps();
   });

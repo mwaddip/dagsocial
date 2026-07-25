@@ -23,7 +23,6 @@ import {
   getKarmaBox,
   insertBox,
   insertPost,
-  insertIdentity,
   getBox as storeGetBox,
   getPendingEntries,
 } from '../../src/store/index.js';
@@ -126,12 +125,6 @@ describe('likes service', () => {
         db.prepare('UPDATE utxo_boxes SET spent_at_block = ? WHERE id = ?').run(atBlock, id);
       },
       getKarmaBox: (owner: Uint8Array) => getKarmaBox(owner),
-      getIdentity: (userId: Uint8Array) => {
-        const stmt = db.prepare('SELECT * FROM identities WHERE user_id = ?');
-        const row = stmt.get(Buffer.from(userId)) as Record<string, unknown> | undefined;
-        if (!row) return null;
-        return { publicKey: new Uint8Array(row.public_key as Buffer) };
-      },
       runInTransaction: (fn: () => void) => {
         (db.transaction(fn) as () => void)();
       },
@@ -149,8 +142,6 @@ describe('likes service', () => {
     likerPrivKey = likerKeys.privateKey;
     likerPubKeyHex = Buffer.from(likerPubKey).toString('hex');
     likerId = likerPubKey;
-    insertIdentity(likerId, likerPubKey);
-
     deps = makeDeps();
   });
 

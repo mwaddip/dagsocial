@@ -5,7 +5,7 @@ import {
   PROTOCOL_VERSION,
 } from '@dagsocial/types';
 import type { CreditBox, UtxoTransaction } from '@dagsocial/types';
-import { createPublicKey, verify as cryptoVerify } from 'crypto';
+import { verify as cryptoVerify } from 'crypto';
 import {
   getCreditBoxes,
   getUnlockedCreditBoxes,
@@ -13,19 +13,7 @@ import {
   consumeBox,
 } from '../store/index.js';
 
-// Ed25519 SPKI DER prefix — prepended to raw 32-byte public key for createPublicKey
-const ED25519_SPKI_PREFIX = Buffer.from(
-  '302a300506032b6570032100',
-  'hex',
-);
-
-function publicKeyToKeyObject(pubKey: Uint8Array): ReturnType<typeof createPublicKey> {
-  return createPublicKey({
-    key: Buffer.concat([ED25519_SPKI_PREFIX, Buffer.from(pubKey)]),
-    format: 'der',
-    type: 'spki',
-  });
-}
+import { ed25519PublicKeyToKeyObject } from '@dagsocial/validation';
 
 // ---------------------------------------------------------------------------
 // Mint (coinbase emission)
@@ -151,7 +139,7 @@ export function sendCredits(
   const txId = computeTxId(tx);
 
   // 4. Verify signature
-  const keyObj = publicKeyToKeyObject(from);
+  const keyObj = ed25519PublicKeyToKeyObject(from);
   const txIdBytes = Buffer.from(txId, 'hex');
   const ok = cryptoVerify(null, txIdBytes, keyObj, Buffer.from(signature));
   if (!ok) {

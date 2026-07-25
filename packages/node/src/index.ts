@@ -11,7 +11,6 @@ import { setNet } from './services/net-instance.js';
 import { applyOrderingBlock } from './services/block-apply.js';
 import { extendsOurTip, findForkPoint, reorg, MAX_REORG_DEPTH } from './services/fork-resolution.js';
 import {
-  getIdentity,
   getKarmaBox,
   getKarmaBoxes,
   getPost,
@@ -23,7 +22,7 @@ import {
   getPendingEntries,
   getOrderingBlock,
 } from './store/index.js';
-import { encodePost, decodeSubBlock, cumulativeWork } from '@dagsocial/types';
+import { encodePost, decodeSubBlock, cumulativeWork, MEMPOOL_EXPIRY_BLOCKS } from '@dagsocial/types';
 import type { BlockHeader } from '@dagsocial/types';
 
 const config = loadConfig();
@@ -66,7 +65,6 @@ net.onSubBlock((sb) => {
   const result = verifyPostForRelay(
     {
       getActiveChallenge: () => null, // challenges are node-local to origin
-      getIdentity,
       getKarmaBoxes,
       getPost,
     },
@@ -79,7 +77,7 @@ net.onSubBlock((sb) => {
   }
   insertPost(sb.post, encodePost(sb.post));
   const currentHeight = getCurrentHeight();
-  insertMempoolSubBlock(sb, currentHeight + 720);
+  insertMempoolSubBlock(sb, currentHeight + MEMPOOL_EXPIRY_BLOCKS);
   console.log(`Relayed sub-block queued in mempool: ${sb.subBlockId}`);
 });
 
@@ -193,7 +191,6 @@ net.onTx((tx) => {
     consumeBox: () => {},
     getKarmaBox,
     getKarmaBoxes,
-    getIdentity,
     runInTransaction: (fn: () => void) => fn(),
   };
   const currentHeight = getCurrentHeight();
@@ -209,7 +206,7 @@ net.onTx((tx) => {
     }
     return;
   }
-  const expiresAtHeight = currentHeight + 720;
+  const expiresAtHeight = currentHeight + MEMPOOL_EXPIRY_BLOCKS;
   insertUtxoTx(tx, null, expiresAtHeight);
   console.log(`Relayed tx queued in mempool: ${result.txId}`);
 });

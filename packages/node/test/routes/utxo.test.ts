@@ -4,7 +4,6 @@ import express from 'express';
 import http from 'http';
 import { createPrivateKey, sign } from 'crypto';
 import { initDb, closeDb } from '../../src/store/db.js';
-import { insertIdentity, getIdentity } from '../../src/store/identities.js';
 import {
   getKarmaBox,
   getKarmaBoxes,
@@ -44,7 +43,6 @@ async function request(
 ): Promise<{ status: number; data: unknown }> {
   return new Promise((resolve) => {
     const deps = {
-      getIdentity,
       getKarmaBox,
       getKarmaBoxes,
       getCreditBox,
@@ -58,7 +56,6 @@ async function request(
         consumeBox,
         getKarmaBox,
         getKarmaBoxes: (owner: Uint8Array) => [getKarmaBox(owner)].filter(Boolean) as KarmaBox[],
-        getIdentity,
         runInTransaction: (fn: () => void) => fn(),
       }),
     };
@@ -116,7 +113,6 @@ describe('UTXO routes', () => {
     const kp1 = generateKeyPair();
     karmaUserId = kp1.publicKey;
     karmaUserIdHex = Buffer.from(karmaUserId).toString('hex');
-    insertIdentity(karmaUserId, kp1.publicKey);
     const karmaBox: KarmaBox = {
       boxType: 'karma',
       value: 42,
@@ -144,7 +140,6 @@ describe('UTXO routes', () => {
     const kp2 = generateKeyPair();
     creditUserId = kp2.publicKey;
     creditUserIdHex = Buffer.from(creditUserId).toString('hex');
-    insertIdentity(creditUserId, kp2.publicKey);
     const creditBox: CreditBox = {
       boxType: 'credit',
       value: 99,
@@ -159,7 +154,6 @@ describe('UTXO routes', () => {
     const kp3 = generateKeyPair();
     inviteUserId = kp3.publicKey;
     inviteUserIdHex = Buffer.from(inviteUserId).toString('hex');
-    insertIdentity(inviteUserId, kp3.publicKey);
     const inviteBox: InviteBox = {
       boxType: 'invite',
       value: 10,
@@ -245,12 +239,10 @@ describe('UTXO routes', () => {
       senderPubKey = sender.publicKey;
       senderPrivKey = sender.secretKey;
       senderHex = Buffer.from(senderPubKey).toString('hex');
-      insertIdentity(senderPubKey, senderPubKey);
 
       const receiver = generateKeyPair();
       receiverPubKey = receiver.publicKey;
       receiverHex = Buffer.from(receiverPubKey).toString('hex');
-      insertIdentity(receiverPubKey, receiverPubKey);
 
       // Seed sender with 200 credits
       const box: CreditBox = {
@@ -407,7 +399,6 @@ describe('UTXO routes', () => {
       const recipient = generateKeyPair();
       const recipientPubKey = recipient.publicKey;
       faucetRecipientHex = Buffer.from(recipientPubKey).toString('hex');
-      insertIdentity(recipientPubKey, recipientPubKey);
     });
 
     it('rejects missing to', async () => {
@@ -423,12 +414,14 @@ describe('UTXO routes', () => {
       expect(res.status).toBe(400);
     });
 
-    it('rejects unknown recipient', async () => {
-      const unknownHex = Buffer.from(new Uint8Array(32).fill(0xdd)).toString('hex');
+    it('grants faucet credits to any valid userId (no registration needed)', async () => {
+      const anyHex = Buffer.from(new Uint8Array(32).fill(0xdd)).toString('hex');
       const res = await request('/credits/faucet', 'POST', {
-        to: unknownHex,
+        to: anyHex,
       });
-      expect(res.status).toBe(404);
+      expect(res.status).toBe(200);
+      const body = res.data as Record<string, unknown>;
+      expect(body.amount).toBe(1000);
     });
 
     it('grants faucet credits to a valid recipient', async () => {

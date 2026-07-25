@@ -20,7 +20,6 @@ async function importMempoolFresh() {
     getPendingEntries: (limit: number) => any[];
     purgeExpired: (currentHeight: number) => number;
     removeEntry: (rowid: number) => void;
-    removeBatch: (batchId: string) => void;
   };
 }
 
@@ -187,23 +186,6 @@ describe('mempool store', () => {
     expect(entries[0].rowid).toBe(rowid1);
   });
 
-  it('removeBatch removes all entries with a given batchId', async () => {
-    const { insertSubBlock, insertUtxoTx, getPendingEntries, removeBatch } =
-      await importMempoolFresh();
-
-    const tx = { inputs: ['box4'], outputs: [], signatures: {}, protocolVersion: 1 };
-
-    insertSubBlock(makeSubBlock({ subBlockId: 'batch_a1' }), 100, 'batch-a');
-    insertUtxoTx(tx as any, 'batch-a', 100);
-    insertSubBlock(makeSubBlock({ subBlockId: 'batch_b1' }), 100, 'batch-b');
-
-    removeBatch('batch-a');
-
-    const entries = getPendingEntries(10);
-    expect(entries).toHaveLength(1);
-    expect(entries[0].batchId).toBe('batch-b');
-  });
-
   it('handles multiple entries of mixed types', async () => {
     const { insertSubBlock, insertUtxoTx, getPendingEntries } = await importMempoolFresh();
     const tx = { inputs: ['box5'], outputs: [], signatures: {}, protocolVersion: 1 };
@@ -243,14 +225,6 @@ describe('mempool store', () => {
     const { insertSubBlock, getPendingEntries, removeEntry } = await importMempoolFresh();
     insertSubBlock(makeSubBlock(), 100);
     removeEntry(9999); // should not throw
-    const entries = getPendingEntries(10);
-    expect(entries).toHaveLength(1);
-  });
-
-  it('removeBatch is a no-op for a non-existent batchId', async () => {
-    const { insertSubBlock, getPendingEntries, removeBatch } = await importMempoolFresh();
-    insertSubBlock(makeSubBlock(), 100);
-    removeBatch('nonexistent'); // should not throw
     const entries = getPendingEntries(10);
     expect(entries).toHaveLength(1);
   });

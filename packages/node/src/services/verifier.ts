@@ -17,9 +17,6 @@ export interface VerifierDeps {
   getActiveChallenge: (
     userId: Uint8Array,
   ) => { challenge: Uint8Array; expiresAtBlock: number; userId: Uint8Array } | null;
-  getIdentity: (
-    userId: Uint8Array,
-  ) => { userId: Uint8Array; publicKey: Uint8Array; createdAt: number } | null;
   getKarmaBoxes: (owner: Uint8Array) => { value: number; id?: string }[];
   getPost: (id: string) => unknown | null;
 }

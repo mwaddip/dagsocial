@@ -1,5 +1,4 @@
 import express from 'express';
-import { createRouter as identityRoutes } from './routes/identity.js';
 import { createRouter as challengeRoutes } from './routes/challenges.js';
 import { createRouter as postRoutes } from './routes/posts.js';
 import { createRouter as likeRoutes } from './routes/likes.js';
@@ -10,7 +9,7 @@ import { createRouter as utxoRoutes } from './routes/utxo.js';
 import { createRouter as blockRoutes } from './routes/blocks.js';
 import { createRouter as miningRoutes } from './routes/mining.js';
 import * as store from './store/index.js';
-import { initSystemKeypair, ensureSystemKarmaBox, getSystemKeypair } from './store/system.js';
+import { getSystemKeypair } from './store/system.js';
 import { generateChallenge } from './services/pow.js';
 import { verifyPost } from './services/verifier.js';
 import { onSubBlockReceived, getCurrentTemplate, submitMinedBlock } from './services/block-creator.js';
@@ -45,7 +44,6 @@ export function createApp(config: Config): express.Express {
     consumeBox: store.consumeBox,
     getKarmaBox: store.getKarmaBox,
     getKarmaBoxes: store.getKarmaBoxes,
-    getIdentity: store.getIdentity,
     runInTransaction: (fn: () => void) => getDb().transaction(fn)(),
     isSystemBox: (boxId: string) => {
       const sysKey = getSystemKeypair();
@@ -60,15 +58,6 @@ export function createApp(config: Config): express.Express {
 
   // ---- Routes ----
 
-  // Identity — /identity
-  app.use(
-    '/identity',
-    identityRoutes({
-      insertIdentity: store.insertIdentity,
-      getIdentity: store.getIdentity,
-    }),
-  );
-
   // Challenges — /challenge
   app.use(
     '/challenge',
@@ -76,7 +65,6 @@ export function createApp(config: Config): express.Express {
       generateChallenge,
       createChallenge: store.createChallenge,
       getActiveChallenge: store.getActiveChallenge,
-      getIdentity: store.getIdentity,
       getCurrentHeight: store.getCurrentHeight,
       challengeWindowBlocks: config.challengeWindowBlocks,
       postPowTargetBits: config.postPowTargetBits,
@@ -94,7 +82,6 @@ export function createApp(config: Config): express.Express {
       getPost: store.getPost,
       queryPosts: store.queryPosts,
       getActiveChallenge: store.getActiveChallenge,
-      getIdentity: store.getIdentity,
       getKarmaBoxes: store.getKarmaBoxes,
       getCurrentHeight: store.getCurrentHeight,
       getLikeCount: store.getLikeCount,
@@ -118,7 +105,6 @@ export function createApp(config: Config): express.Express {
       insertBox: store.insertBox,
       consumeBox: store.consumeBox,
       getKarmaBox: store.getKarmaBox,
-      getIdentity: store.getIdentity,
       runInTransaction: (fn: () => void) => getDb().transaction(fn)(),
     }),
   );
@@ -135,7 +121,6 @@ export function createApp(config: Config): express.Express {
       insertBox: store.insertBox,
       consumeBox: store.consumeBox,
       getKarmaBox: store.getKarmaBox,
-      getIdentity: store.getIdentity,
       runInTransaction: (fn: () => void) => getDb().transaction(fn)(),
     }),
   );
@@ -145,7 +130,6 @@ export function createApp(config: Config): express.Express {
     app.use(
       '/faucet',
       faucetRoutes({
-        getIdentity: store.getIdentity,
         getKarmaBox: store.getKarmaBox,
         getCurrentHeight: store.getCurrentHeight,
         getBox: store.getBox,
@@ -174,7 +158,6 @@ export function createApp(config: Config): express.Express {
   app.use(
     '/',
     utxoRoutes({
-      getIdentity: store.getIdentity,
       getKarmaBox: store.getKarmaBox,
       getKarmaBoxes: store.getKarmaBoxes,
       getCreditBox: store.getCreditBox,
@@ -219,12 +202,6 @@ export function createApp(config: Config): express.Express {
               "SELECT COUNT(*) AS c FROM dag_posts WHERE status = 'pending'",
             )
             .get() as { c: number }
-        ).c,
-      getIdentityCount: () =>
-        (
-          db.prepare('SELECT COUNT(*) AS c FROM identities').get() as {
-            c: number;
-          }
         ).c,
       getTotalKarma: () => {
         const row = db

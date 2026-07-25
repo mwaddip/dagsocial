@@ -1,15 +1,9 @@
 import { Router } from 'express';
 import {
   computePostId,
-  computeTxId,
   MAX_CONTENT_BYTES,
+  MEMPOOL_EXPIRY_BLOCKS,
 } from '@dagsocial/types';
-import { Encoder } from 'cbor-x';
-const hashEncoder = new Encoder({ tagUint8Array: false, useRecords: false, mapsAsObjects: true });
-function cborEncode(data: unknown): Uint8Array {
-  return hashEncoder.encode(data) as unknown as Uint8Array;
-}
-import { createHash } from 'crypto';
 import type { Post, KarmaBox, UtxoTransaction, AnyBox } from '@dagsocial/types';
 import type { VerifierDeps, VerificationResult } from '../services/verifier.js';
 import { getNet } from '../services/net-instance.js';
@@ -104,7 +98,7 @@ export function createRouter(deps: PostsDeps): Router {
       protocolVersion: post.protocolVersion,
       timestamp: post.timestamp,
       signature: Buffer.from(post.signature).toString('hex'),
-      status: (post as any).status ?? 'unknown',
+      status: post.status ?? 'unknown',
       likeCount: counts.locked + counts.free,
     };
   }
@@ -162,16 +156,6 @@ export function createRouter(deps: PostsDeps): Router {
     // Validate the karma-lock tx via the UTXO engine
     const txResult = deps.validateTx(karmaLockTx, currentHeight);
     if (!txResult.valid) {
-      const h = createHash('blake2b512');
-      for (const input of karmaLockTx.inputs) h.update(input);
-      for (const output of karmaLockTx.outputs) {
-        const { id, ...rest } = output;
-        const encoded = Buffer.from(cborEncode(rest));
-        console.warn('[posts] FULL CBOR('+output.boxType+'):', encoded.toString('hex'));
-        h.update(encoded);
-      }
-      h.update(String(karmaLockTx.protocolVersion));
-      console.warn('[posts] serverTxId:', h.digest().subarray(0,32).toString('hex'));
       try { deps.consumeChallenge(post.author, post.challenge); } catch { /* ok */ }
       res.status(400).json({ error: txResult.error });
       return;
@@ -214,7 +198,7 @@ export function createRouter(deps: PostsDeps): Router {
 
     // Insert both as a batch into the mempool (same batchId = postId)
     const batchId = postId;
-    const expiresAtHeight = currentHeight + 720;
+    const expiresAtHeight = currentHeight + MEMPOOL_EXPIRY_BLOCKS;
     deps.insertMempoolSubBlock(subBlock, expiresAtHeight, batchId);
     deps.insertUtxoTx(karmaLockTx, batchId, expiresAtHeight);
 

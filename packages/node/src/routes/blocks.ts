@@ -1,5 +1,4 @@
 import { Router } from 'express';
-import { Buffer } from 'buffer';
 import { blockHash } from '@dagsocial/validation';
 import type { OrderingBlock } from '@dagsocial/types';
 
@@ -12,7 +11,6 @@ export interface BlocksDeps {
   getCurrentHeight(): number;
   getPostCount(): number;
   getPendingPostCount(): number;
-  getIdentityCount(): number;
   getTotalKarma(): number;
   getTotalCredits(): number;
   networkMode: string;
@@ -107,7 +105,6 @@ export function createRouter(deps: BlocksDeps): Router {
       blockHeight: deps.getCurrentHeight(),
       postCount: deps.getPostCount(),
       pendingPosts: deps.getPendingPostCount(),
-      identityCount: deps.getIdentityCount(),
       totalKarma: deps.getTotalKarma(),
       totalCredits: deps.getTotalCredits(),
     });

@@ -335,24 +335,6 @@ function computeTxId(tx) {
 }
 
 // ===========================================================================
-// Base58
-// ===========================================================================
-
-const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-const B58MAP = {}; for (let i = 0; i < 58; i++) B58MAP[B58[i]] = i;
-
-function base58Encode(buf) {
-  let zeros = 0; for (const b of buf) { if (b !== 0) break; zeros++; }
-  const digits = [0];
-  for (const b of buf) {
-    let carry = b;
-    for (let i = 0; i < digits.length; i++) { carry += digits[i] * 256; digits[i] = carry % 58; carry = Math.floor(carry / 58); }
-    while (carry > 0) { digits.push(carry % 58); carry = Math.floor(carry / 58); }
-  }
-  return '1'.repeat(zeros) + digits.reverse().map(d => B58[d]).join('');
-}
-
-// ===========================================================================
 // PoW
 // ===========================================================================
 
@@ -741,11 +723,6 @@ function computePostId(post) {
   return buf2hex(hash);
 }
 
-async function computeUserId(pub) {
-  const hash = blake2b(pub, null, 64).slice(0, 32);
-  return base58Encode(hash);
-}
-
 // ===========================================================================
 // UI helpers
 // ===========================================================================
@@ -760,23 +737,6 @@ function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>
 // ===========================================================================
 // Identity management
 // ===========================================================================
-
-async function importIdentityToServer(pubKeyHex) {
-  try {
-    const res = await fetch(API + '/identity/import', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ publicKey: pubKeyHex }),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      return data.userId;
-    }
-  } catch {
-    // Server might be down
-  }
-  return null;
-}
 
 function refreshIdentityDropdown() {
   const sel = document.getElementById('identitySelect');
@@ -800,17 +760,13 @@ async function activateIdentity(index) {
   const privBytes = Uint8Array.from(atob(ident.privKeyBase64), c => c.charCodeAt(0));
   privKey = await crypto.subtle.importKey('pkcs8', privBytes, 'Ed25519', true, ['sign']);
 
-  // Compute userId
-  userId = await computeUserId(pubKeyRaw);
+  // userId IS the hex-encoded public key
+  userId = ident.pubKeyHex;
 
   // Update UI
   document.getElementById('identitySelect').value = index;
   document.getElementById('currentUserId').textContent = userId;
   document.getElementById('postBtn').disabled = false;
-
-  // Import to server (idempotent)
-  const serverUserId = await importIdentityToServer(ident.pubKeyHex);
-  if (serverUserId) userId = serverUserId;
 
   // Clear per-session liked tracking for this identity
   likedPosts.clear();
@@ -829,9 +785,6 @@ async function createIdentity() {
   const pubKeyHex = buf2hex(new Uint8Array(await crypto.subtle.exportKey('raw', key.publicKey)));
   const privBytes = new Uint8Array(await crypto.subtle.exportKey('pkcs8', key.privateKey));
   const privKeyBase64 = btoa(String.fromCharCode(...privBytes));
-
-  // Import to server
-  await importIdentityToServer(pubKeyHex);
 
   // Save to localStorage
   identities.push({ pubKeyHex, privKeyBase64 });
@@ -877,9 +830,6 @@ function importIdentityFile(file) {
         return;
       }
 
-      // Import to server
-      await importIdentityToServer(data.pubKeyHex);
-
       // Save to localStorage
       identities.push({ pubKeyHex: data.pubKeyHex, privKeyBase64: data.privKeyBase64 });
       localStorage.setItem(STORAGE_KEY, JSON.stringify(identities));
@@ -913,11 +863,6 @@ async function loadIdentities() {
     const privKeyBase64 = btoa(String.fromCharCode(...privBytes));
     identities = [{ pubKeyHex, privKeyBase64 }];
     localStorage.setItem(STORAGE_KEY, JSON.stringify(identities));
-  }
-
-  // Re-import each to server (idempotent)
-  for (const ident of identities) {
-    await importIdentityToServer(ident.pubKeyHex);
   }
 
   // Populate dropdown

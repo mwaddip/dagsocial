@@ -61,7 +61,6 @@ import {
   getPendingEntries,
   purgeExpired,
   removeEntry,
-  removeBatch,
   type PoolEntry,
 } from '../store/mempool.js';
 import {
@@ -78,7 +77,6 @@ import {
   getBox,
   getKarmaBox,
   getPost,
-  getIdentity,
   getUnspentPostLockBoxes,
   getPostTotalLikes,
 } from '../store/index.js';
@@ -741,14 +739,6 @@ function runEpochTally(blockHeight: number): EpochTally {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function getPostAuthorId(postId: string): UserId | null {
-  const post = getPost(postId);
-  if (!post) return null;
-  if ('author' in post) {
-    return post.author as UserId;
-  }
-  return null;
-}
 
 /**
  * Extract the targetPostId from a UTXO transaction if it contains a LikeBox

@@ -204,19 +204,6 @@ export function getBox(boxId: string): AnyBox | null {
 }
 
 /**
- * Return all unspent boxes whose owner matches the given 32-byte public key.
- */
-export function getUnspentBoxes(owner: Uint8Array): AnyBox[] {
-  const db = getDb();
-  const rows = db
-    .prepare(
-      'SELECT * FROM utxo_boxes WHERE owner = ? AND spent_at_block IS NULL',
-    )
-    .all(Buffer.from(owner)) as UtxoRow[];
-  return rows.map(rowToBox);
-}
-
-/**
  * Return the single unspent karma box for the given owner, or null if none.
  */
 export function getKarmaBox(owner: Uint8Array): KarmaBox | null {
@@ -345,28 +332,6 @@ export function getBondBoxes(inviterId: Uint8Array): BondBox[] {
     )
     .all(pubkeyToHex(inviterId)) as UtxoRow[];
   return rows.map((r) => rowToBox(r) as BondBox);
-}
-
-/**
- * Return the unspent locked like box for a specific liker on a specific post,
- * or null if none exists.
- */
-export function getUnspentLikeForLiker(
-  targetPostId: string,
-  likerId: Uint8Array,
-): LikeBox | null {
-  const db = getDb();
-  const row = db
-    .prepare(
-      `SELECT * FROM utxo_boxes
-       WHERE box_type = 'like'
-         AND json_extract(extra_data, '$.targetPostId') = ?
-         AND json_extract(extra_data, '$.likerId') = ?
-         AND spent_at_block IS NULL
-       LIMIT 1`,
-    )
-    .get(targetPostId, pubkeyToHex(likerId)) as UtxoRow | undefined;
-  return row ? (rowToBox(row) as LikeBox) : null;
 }
 
 /**
