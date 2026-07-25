@@ -2,9 +2,6 @@ import { createHash, createPublicKey, verify as cryptoVerify } from 'crypto';
 import {
   computeBoxId,
   computeTxId,
-  KARMA_DECAY_RATE,
-  KARMA_DECAY_GRACE_BLOCKS,
-  KARMA_FLOOR,
 } from '@dagsocial/types';
 import type { UtxoTransaction, AnyBox, KarmaBox, BondBox, InviteBox, LikeBox } from '@dagsocial/types';
 
@@ -57,17 +54,6 @@ export interface UtxoResult {
 // ---------------------------------------------------------------------------
 // Stateless validation helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Compute the effective karma value after decay for a box consumed at
- * currentBlockHeight.
- */
-function effectiveKarmaValue(box: KarmaBox, currentBlockHeight: number): number {
-  const age = currentBlockHeight - box.createdAtBlock;
-  const graceAge = Math.max(0, age - KARMA_DECAY_GRACE_BLOCKS);
-  const decay = Math.floor(box.value * KARMA_DECAY_RATE * graceAge);
-  return Math.max(box.value - decay, KARMA_FLOOR);
-}
 
 /**
  * Verify a signature for a given public key.
@@ -327,7 +313,8 @@ function checkTransitions(
 
 /**
  * Check face-value conservation for non-karma box types.
- * Karma is decay-aware (checked in checkKarmaDecay). Bond burns skip conservation.
+ * Karma and bond burns skip conservation (karma conservation is handled
+ * by the periodic decay engine).
  */
 function checkValueConservation(
   inputBoxes: AnyBox[],
@@ -340,8 +327,8 @@ function checkValueConservation(
   if (inputType === 'bond' && outputs.length === 0) {
     // BondBox burn — no outputs, value deliberately destroyed. Skip conservation.
   } else if (inputType === 'karma' || inputType === 'like') {
-    // Karma conservation is checked in checkKarmaDecay via effective values (decay-aware).
-    // Face values differ legitimately — decay destroys karma, and like/invite
+    // Karma conservation is handled by the periodic decay engine.
+    // Face values differ legitimately — decay burns karma, and like/invite
     // creation splits value across multiple output boxes.
   } else {
     // Credit, non-burn bond, invite: strict face-value conservation
@@ -446,62 +433,6 @@ function checkGuards(
   return { valid: true };
 }
 
-/**
- * Check karma decay: effective value at current height must cover output values.
- * Shared between validateTx and revalidateTxInContext.
- */
-function checkKarmaDecay(
-  inputBoxes: AnyBox[],
-  outputs: AnyBox[],
-  currentBlockHeight: number,
-): UtxoResult {
-  if (inputBoxes.length === 0) return { valid: true };
-  const hasKarmaInput = inputBoxes.some((b) => b.boxType === 'karma');
-  if (!hasKarmaInput) return { valid: true };
-
-  // Compute effective karma from consumed boxes (after decay).
-  // Non-karma inputs (invite, bond, like) contribute their face value, which
-  // handles transitions like invite cancel where invite/bond boxes are consumed
-  // alongside a karma box.
-  let totalEffective = 0;
-  for (const box of inputBoxes) {
-    if (box.boxType === 'karma') {
-      totalEffective += effectiveKarmaValue(box as KarmaBox, currentBlockHeight);
-    } else {
-      totalEffective += box.value;
-    }
-  }
-
-  // Sum up outputs by type
-  const karmaOutputValue = outputs
-    .filter((o) => o.boxType === 'karma')
-    .reduce((sum, o) => sum + o.value, 0);
-  const inviteOutputValue = outputs
-    .filter((o) => o.boxType === 'invite')
-    .reduce((sum, o) => sum + o.value, 0);
-  const bondOutputValue = outputs
-    .filter((o) => o.boxType === 'bond')
-    .reduce((sum, o) => sum + o.value, 0);
-  const likeOutputValue = outputs
-    .filter((o) => o.boxType === 'like')
-    .reduce((sum, o) => sum + o.value, 0);
-  const postLockOutputValue = outputs
-    .filter((o) => o.boxType === 'post_lock')
-    .reduce((sum, o) => sum + o.value, 0);
-
-  const totalSplit =
-    karmaOutputValue + inviteOutputValue + bondOutputValue + likeOutputValue + postLockOutputValue;
-
-  if (totalSplit > totalEffective) {
-    return {
-      valid: false,
-      error: `Insufficient effective karma: need ${totalSplit}, have ${totalEffective} (after decay)`,
-    };
-  }
-
-  return { valid: true };
-}
-
 // ---------------------------------------------------------------------------
 // Public API: validateTx, revalidateTxInContext, applyTx, validateAndApplyTx
 // ---------------------------------------------------------------------------
@@ -509,14 +440,16 @@ function checkKarmaDecay(
 /**
  * Validate a transaction without applying it (read-only).
  *
- * Performs steps 1-7 of the original validateAndApplyTx:
+ * Performs 6 validation steps:
  * 1. No duplicate input IDs
  * 2. All inputs exist and are unspent
  * 3. All inputs have the same boxType
  * 4. Face-value conservation (non-karma types)
  * 5. Guard satisfaction (signatures)
  * 6. Legal box transitions
- * 7. Karma decay check
+ *
+ * Karma decay is handled by the periodic decay engine, not at transaction
+ * validation time.
  *
  * Does NOT call runInTransaction, consumeBox, or insertBox.
  * Returns computedOutputs and txId on success for use by applyTx.
@@ -580,10 +513,6 @@ export function validateTx(
   const transitionCheck = checkTransitions(inputBoxes, tx.outputs, deps);
   if (!transitionCheck.valid) return transitionCheck;
 
-  // ---- 7. Karma decay ----
-  const decayCheck = checkKarmaDecay(inputBoxes, tx.outputs, currentBlockHeight);
-  if (!decayCheck.valid) return decayCheck;
-
   // Compute output IDs for the caller (so applyTx doesn't re-compute)
   const computedOutputs = tx.outputs.map((box) => ({
     ...box,
@@ -602,7 +531,8 @@ export function validateTx(
  *
  * Skips expensive checks (signatures, transitions) and only verifies:
  * - Inputs are still unspent (liveness)
- * - Karma decay hasn't expired at the new height
+ *
+ * Karma decay is handled by the periodic decay engine.
  *
  * Used by the mempool to detect stale transactions.
  */
@@ -618,13 +548,6 @@ export function revalidateTxInContext(
       return { valid: false, error: `Input box not found or already spent: ${id}` };
     }
   }
-
-  // Check karma decay hasn't expired (height-dependent)
-  const inputBoxes = tx.inputs
-    .map((id) => deps.getBox(id)!)
-    .filter(Boolean);
-  const decayCheck = checkKarmaDecay(inputBoxes, tx.outputs, currentBlockHeight);
-  if (!decayCheck.valid) return decayCheck;
 
   return { valid: true };
 }
