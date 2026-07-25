@@ -14,8 +14,8 @@ export function mintCredits(
   amount: number,
   blockHeight: number,
   lockedUntilBlock?: number,
-): void {
-  if (amount <= 0) return;
+): string {
+  if (amount <= 0) return '';
 
   const existingBox = getCreditBox(owner);
 
@@ -56,4 +56,5 @@ export function mintCredits(
   }
 
   insertBox(newBox);
+  return newBox.id!;
 }
