@@ -90,6 +90,22 @@
     </div>
     <div id="faucetResult"></div>
 
+    <h3>Credit Faucet</h3>
+    <div class="row">
+      <button id="creditFaucetBtn" class="small">Get 1000 credits</button>
+    </div>
+    <div id="creditFaucetResult"></div>
+
+    <h3>Credit Transfer</h3>
+    <div class="row">
+      <input id="creditTransferRecipient" placeholder="Recipient user ID (hex)" style="flex:1;font-size:11px">
+    </div>
+    <div class="row" style="margin-top:4px">
+      <input id="creditTransferAmount" type="number" value="10" min="1" style="width:120px">
+      <button id="creditTransferBtn" class="small">Send</button>
+    </div>
+    <div id="creditTransferResult"></div>
+
     <h3>Invites</h3>
     <h4>Create (fixed: 25 karma + 25 bond)</h4>
     <div class="row">
@@ -438,6 +454,17 @@ function selectBoxes(boxes, requiredAmount) {
     throw new Error(`Insufficient total value: need ${requiredAmount}, have ${accumulated}`);
   }
   return selected;
+}
+
+async function fetchCreditBoxes() {
+  if (!userId) return null;
+  try {
+    const res = await fetch(API + '/credits/' + encodeURIComponent(userId));
+    if (!res.ok) return null;
+    return await res.json(); // { userId, total, boxes: [{ boxId, value, lockedUntilBlock? }] }
+  } catch {
+    return null;
+  }
 }
 
 /** Fetch pending invite and bond boxes for the active identity. */
@@ -1296,8 +1323,8 @@ async function loadIdentityStatus() {
     const res = await fetch(API + '/credits/' + encodeURIComponent(userId));
     if (res.ok) {
       const data = await res.json();
-      creditsEl.textContent = data.balance;
-      creditsEl.style.color = data.balance > 0 ? '#3fb950' : '#8b949e';
+      creditsEl.textContent = data.total;
+      creditsEl.style.color = data.total > 0 ? '#3fb950' : '#8b949e';
     } else {
       creditsEl.textContent = '0';
       creditsEl.style.color = '#8b949e';
@@ -1358,6 +1385,136 @@ document.getElementById('faucetBtn').addEventListener('click', async () => {
       loadStatus();
     } else {
       result.innerHTML = `<span class="result-msg err">${esc(data.error || 'faucet failed')}</span>`;
+    }
+  } catch (e) {
+    result.innerHTML = `<span class="result-msg err">${esc(e.message)}</span>`;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ===========================================================================
+// Admin / Debug - Credit Faucet
+// ===========================================================================
+
+document.getElementById('creditFaucetBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('creditFaucetBtn');
+  const result = document.getElementById('creditFaucetResult');
+
+  btn.disabled = true;
+  result.innerHTML = '<span class="result-msg">Requesting...</span>';
+
+  try {
+    const res = await fetch(API + '/credits/faucet', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to: userId }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      result.innerHTML = `<span class="result-msg ok">Granted ${data.amount} credits. TxId: ${(data.txId || '').slice(0, 16)}...</span>`;
+      loadIdentityStatus();
+      loadStatus();
+    } else {
+      result.innerHTML = `<span class="result-msg err">${esc(data.error || 'faucet failed')}</span>`;
+    }
+  } catch (e) {
+    result.innerHTML = `<span class="result-msg err">${esc(e.message)}</span>`;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ===========================================================================
+// Admin / Debug - Credit Transfer
+// ===========================================================================
+
+function buildCreditTransferTx(creditBoxes, recipientHex, amount) {
+  const now = currentBlockHeight;
+  const selected = selectBoxes(creditBoxes.boxes, amount);
+  const selectedTotal = selected.reduce((sum, b) => sum + b.value, 0);
+  const change = selectedTotal - amount;
+
+  const outputs = [{
+    boxType: 'credit',
+    value: amount,
+    createdAtBlock: now,
+    owner: recipientHex,
+    guard: 'owner_signature',
+    proofSource: -1,
+  }];
+  if (change > 0) {
+    outputs.push({
+      boxType: 'credit',
+      value: change,
+      createdAtBlock: now,
+      owner: buf2hex(pubKeyRaw),
+      guard: 'owner_signature',
+      proofSource: -1,
+    });
+  }
+
+  return {
+    inputs: selected.map(b => b.boxId),
+    outputs,
+    signatures: {},
+    protocolVersion: PROTOCOL_VERSION,
+  };
+}
+
+document.getElementById('creditTransferBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('creditTransferBtn');
+  const result = document.getElementById('creditTransferResult');
+  const recipient = document.getElementById('creditTransferRecipient').value.trim();
+  const amount = parseInt(document.getElementById('creditTransferAmount').value) || 0;
+
+  if (!recipient || recipient.length !== 64) {
+    result.innerHTML = '<span class="result-msg err">Recipient must be a 64-character hex user ID</span>';
+    return;
+  }
+  if (amount < 1) {
+    result.innerHTML = '<span class="result-msg err">Amount must be at least 1</span>';
+    return;
+  }
+
+  btn.disabled = true;
+  result.innerHTML = '<span class="result-msg">Building transaction...</span>';
+
+  try {
+    const creditBoxes = await fetchCreditBoxes();
+    if (!creditBoxes || creditBoxes.total < amount) {
+      result.innerHTML = `<span class="result-msg err">Insufficient credits: have ${creditBoxes?.total || 0}, need ${amount}</span>`;
+      btn.disabled = false;
+      return;
+    }
+
+    const tx = buildCreditTransferTx(creditBoxes, recipient, amount);
+    const { signature } = await signTxId(tx);
+    const pubKeyHex = buf2hex(pubKeyRaw);
+    tx.signatures[pubKeyHex] = signature;
+
+    // Convert hex signature to base64 for the API
+    const sigBytes = hex2buf(signature);
+    const sigBase64 = btoa(String.fromCharCode(...sigBytes));
+
+    const res = await fetch(API + '/credits/transfer', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: userId,
+        to: recipient,
+        amount,
+        signature: sigBase64,
+      }),
+    });
+
+    const data = await res.json();
+    if (res.ok) {
+      result.innerHTML = `<span class="result-msg ok">Sent ${data.sent} credits${data.change > 0 ? ' (change: ' + data.change + ')' : ''}. TxId: ${(data.txId || '').slice(0, 16)}...</span>`;
+      loadIdentityStatus();
+      loadStatus();
+    } else {
+      result.innerHTML = `<span class="result-msg err">${esc(data.error || 'transfer failed')}</span>`;
     }
   } catch (e) {
     result.innerHTML = `<span class="result-msg err">${esc(e.message)}</span>`;
