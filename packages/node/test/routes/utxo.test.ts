@@ -101,6 +101,18 @@ describe('UTXO routes', () => {
     };
     insertBox({ ...karmaBox, id: computeBoxId(karmaBox) });
 
+    // Second karma box for same user — multi-box total must sum across all boxes
+    const karmaBox2: KarmaBox = {
+      boxType: 'karma',
+      value: 58,
+      createdAtBlock: 2,
+      owner: kp1.publicKey,
+      guard: 'owner_signature',
+      proofSource: 'test',
+      lastTouchBlock: 2,
+    };
+    insertBox({ ...karmaBox2, id: computeBoxId(karmaBox2) });
+
     // User with credits
     const kp2 = generateKeyPair();
     creditUserId = kp2.publicKey;
@@ -153,13 +165,15 @@ describe('UTXO routes', () => {
     expect(res.status).toBe(200);
     const body = res.data as Record<string, unknown>;
     expect(body.userId).toBe(karmaUserIdHex);
-    expect(body.total).toBe(42);
+    expect(body.total).toBe(42 + 58);
     expect(Array.isArray(body.boxes)).toBe(true);
-    expect(body.boxes).toHaveLength(1);
+    expect(body.boxes).toHaveLength(2);
     expect(typeof (body.boxes as unknown[])[0]).toBe('object');
     const b0 = (body.boxes as unknown[])[0] as Record<string, unknown>;
     expect(typeof b0.boxId).toBe('string');
-    expect(b0.value).toBe(42);
+    // Vary order: ensure both box values exist (avoids assuming query order)
+    const boxValues = (body.boxes as unknown[]).map((b: unknown) => (b as Record<string, unknown>).value);
+    expect(boxValues).toEqual(expect.arrayContaining([42, 58]));
   });
 
   it('GET /credits/:userId returns credit balance', async () => {
