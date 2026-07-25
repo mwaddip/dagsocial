@@ -1,9 +1,35 @@
 import { createHash, createPublicKey, verify as cryptoVerify } from 'crypto';
+import { Encoder } from 'cbor-x';
+const hashEncoder = new Encoder({ tagUint8Array: false, useRecords: false, mapsAsObjects: true });
+function cborEncodeLocal(data: unknown): Uint8Array {
+  return hashEncoder.encode(data) as unknown as Uint8Array;
+}
 import {
   computeBoxId,
-  computeTxId,
 } from '@dagsocial/types';
 import type { UtxoTransaction, AnyBox, KarmaBox, BondBox, InviteBox, LikeBox } from '@dagsocial/types';
+
+/**
+ * Compute txId using THIS package's cbor-x, avoiding module-resolution
+ * drift between the types dist and the node runtime.
+ */
+function computeTxIdLocal(tx: UtxoTransaction): string {
+  const h = createHash('blake2b512');
+  for (const input of tx.inputs) h.update(input);
+  for (const output of tx.outputs) {
+    const { id, ...rest } = output;
+    h.update(cborEncodeLocal(rest));
+  }
+  if (tx.preimages) {
+    const sorted = Object.keys(tx.preimages).sort();
+    for (const boxId of sorted) {
+      h.update(boxId);
+      h.update(tx.preimages[boxId]!);
+    }
+  }
+  h.update(String(tx.protocolVersion));
+  return h.digest().subarray(0, 32).toString('hex');
+}
 
 // ---------------------------------------------------------------------------
 // Ed25519 SPKI prefix for raw 32-byte public keys
@@ -351,7 +377,7 @@ function checkGuards(
   tx: UtxoTransaction,
   inputBoxes: AnyBox[],
 ): UtxoResult {
-  const txHash = Buffer.from(computeTxId(tx), 'hex');
+  const txHash = Buffer.from(computeTxIdLocal(tx), 'hex');
 
   for (const box of inputBoxes) {
     switch (box.guard) {
@@ -522,7 +548,7 @@ export function validateTx(
   return {
     valid: true,
     computedOutputs,
-    txId: computeTxId(tx),
+    txId: computeTxIdLocal(tx),
   };
 }
 

@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import { Encoder } from 'cbor-x';
-const hashEncoder = new Encoder({ tagUint8Array: false });
+const hashEncoder = new Encoder({ tagUint8Array: false, useRecords: false, mapsAsObjects: true });
 import type { UserId } from './identity.js';
 import type { PostId } from './post.js';
 import { PROTOCOL_VERSION } from './constants.js';

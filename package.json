@@ -5,5 +5,8 @@
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck"
+  },
+  "dependencies": {
+    "better-sqlite3": "11.10.0"
   }
 }

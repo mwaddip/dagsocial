@@ -991,6 +991,8 @@ document.getElementById('postBtn').addEventListener('click', async () => {
     setStatus('building karma-lock tx...', 'busy');
     const pubKeyHex = buf2hex(pubKeyRaw);
     const karmaLockTx = buildKarmaLockTx(karmaBox, lockAmount, postId, pubKeyHex);
+    const clientTxId = computeTxId(karmaLockTx);
+    console.log('[client] txId:', clientTxId);
     const { signature: txSig } = await signTxId(karmaLockTx);
     karmaLockTx.signatures[pubKeyHex] = txSig;
 

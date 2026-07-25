@@ -201,7 +201,7 @@ net.onTx((tx) => {
     // Boxes referenced by relayed txs may not have arrived yet via header sync.
     // The tx will be included in the ordering block that carries the boxes.
     // Only log at debug level — this is expected during normal operation.
-    if (result.error?.includes('Missing or invalid owner signature') || result.error?.includes('Box not found')) {
+    if (result.error?.includes('Missing or invalid owner signature') || result.error?.includes('not found')) {
       // silently skip — tx will arrive via block sync
     } else {
       console.warn(`Relayed tx rejected: ${result.error}`);
