@@ -44,6 +44,7 @@ export function createApp(config: Config): express.Express {
     insertBox: store.insertBox,
     consumeBox: store.consumeBox,
     getKarmaBox: store.getKarmaBox,
+    getKarmaBoxes: store.getKarmaBoxes,
     getIdentity: store.getIdentity,
     runInTransaction: (fn: () => void) => getDb().transaction(fn)(),
     isSystemBox: (boxId: string) => {
@@ -94,7 +95,7 @@ export function createApp(config: Config): express.Express {
       queryPosts: store.queryPosts,
       getActiveChallenge: store.getActiveChallenge,
       getIdentity: store.getIdentity,
-      getKarmaBox: store.getKarmaBox,
+      getKarmaBoxes: store.getKarmaBoxes,
       getCurrentHeight: store.getCurrentHeight,
       getLikeCount: store.getLikeCount,
       insertMempoolSubBlock: store.insertMempoolSubBlock,
@@ -175,6 +176,7 @@ export function createApp(config: Config): express.Express {
     utxoRoutes({
       getIdentity: store.getIdentity,
       getKarmaBox: store.getKarmaBox,
+      getKarmaBoxes: store.getKarmaBoxes,
       getCreditBox: store.getCreditBox,
       getPendingInvites: store.getPendingInvites,
       getBondBoxes: store.getBondBoxes,

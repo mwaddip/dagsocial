@@ -13,6 +13,9 @@ import { extendsOurTip, findForkPoint, reorg, MAX_REORG_DEPTH } from './services
 import {
   getIdentity,
   getKarmaBox,
+  getKarmaBoxes,
+  getCreditBox,
+  getCreditBoxes,
   getPost,
   insertPost,
   getBox,
@@ -65,7 +68,7 @@ net.onSubBlock((sb) => {
     {
       getActiveChallenge: () => null, // challenges are node-local to origin
       getIdentity,
-      getKarmaBox,
+      getKarmaBoxes,
       getPost,
     },
     sb.post,
@@ -165,6 +168,16 @@ net.onOrderingBlock(async (block) => {
       peerId,
     );
 
+    // Re-check tip — our chain may have advanced during the async requests
+    const heightNow = getCurrentHeight();
+    if (heightNow !== currentHeight) {
+      console.warn(
+        `Tip changed during fork resolution ` +
+        `(was ${currentHeight}, now ${heightNow}), aborting reorg`,
+      );
+      return;
+    }
+
     reorg(forkHeight, newBlocks);
     console.log(
       `Reorg complete: new tip at height=${forkHeight + newBlocks.length}`,
@@ -180,6 +193,7 @@ net.onTx((tx) => {
     insertBox: () => {},
     consumeBox: () => {},
     getKarmaBox,
+    getKarmaBoxes,
     getIdentity,
     runInTransaction: (fn: () => void) => fn(),
   };
