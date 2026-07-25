@@ -107,6 +107,14 @@ describe('boxes', () => {
       expect(() => computeBoxId(makeInviteBox())).not.toThrow();
       expect(() => computeBoxId(makeBondBox())).not.toThrow();
     });
+
+    it('computeBoxId differs when decayBurn differs', () => {
+      const box1 = makeKarmaBox({ value: 100 });
+      const box2 = makeKarmaBox({ value: 100, decayBurn: true });
+      const id1 = computeBoxId(box1);
+      const id2 = computeBoxId(box2);
+      expect(id1).not.toBe(id2);
+    });
   });
 });
 

@@ -9,11 +9,17 @@ export const MAX_PARENT_REFS = 8;
 export const POST_POW_TARGET_BITS = 20;
 export const CHALLENGE_WINDOW_BLOCKS = 10;
 
-// Karma
+// Karma (old — replaced by periodic decay)
+// export const KARMA_DECAY_RATE = 0.0001;       // removed
+// export const KARMA_DECAY_GRACE_BLOCKS = 100;  // removed
+// export const KARMA_FLOOR = 0;                 // removed
+
+// Karma decay (periodic burn model)
 export const KARMA_POSTING_MINIMUM = 1;
-export const KARMA_DECAY_RATE = 0.0001;
-export const KARMA_DECAY_GRACE_BLOCKS = 100;
-export const KARMA_FLOOR = 0;
+export const KARMA_STALE_THRESHOLD_BLOCKS = 20160; // 28 days at 2m blocks
+export const KARMA_DECAY_INTERVAL_BLOCKS = 720;    // 24 hours at 2m blocks
+export const KARMA_DECAY_AMOUNT = 5;               // karma burned per interval
+export const KARMA_MINIMUM = 10;                   // floor — decay never reduces below this
 
 // Post lock
 export const POST_LOCK_THREAD_COST = 5;   // Karma locked for new threads

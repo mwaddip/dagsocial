@@ -6,9 +6,10 @@ export {
   POST_POW_TARGET_BITS,
   CHALLENGE_WINDOW_BLOCKS,
   KARMA_POSTING_MINIMUM,
-  KARMA_DECAY_RATE,
-  KARMA_DECAY_GRACE_BLOCKS,
-  KARMA_FLOOR,
+  KARMA_STALE_THRESHOLD_BLOCKS,
+  KARMA_DECAY_INTERVAL_BLOCKS,
+  KARMA_DECAY_AMOUNT,
+  KARMA_MINIMUM,
   POST_LOCK_THREAD_COST,
   POST_LOCK_REPLY_COST,
   POST_LOCK_UNLOCK_PER_LIKES,
@@ -87,7 +88,7 @@ export type {
 } from './block.js';
 
 // Journal
-export type { BlockJournal, KarmaMint, AppliedUtxoTx } from './journal.js';
+export type { BlockJournal, KarmaMint, AppliedUtxoTx, DecayJournalEntry } from './journal.js';
 
 // Serialization
 export {

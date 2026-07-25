@@ -7,8 +7,10 @@ import {
   POST_POW_TARGET_BITS,
   CHALLENGE_WINDOW_BLOCKS,
   KARMA_POSTING_MINIMUM,
-  KARMA_DECAY_RATE,
-  KARMA_DECAY_GRACE_BLOCKS,
+  KARMA_STALE_THRESHOLD_BLOCKS,
+  KARMA_DECAY_INTERVAL_BLOCKS,
+  KARMA_DECAY_AMOUNT,
+  KARMA_MINIMUM,
   LIKE_COST,
   LIKE_THRESHOLD,
   LIKE_MAX_AUTHOR_REWARD,
@@ -157,8 +159,10 @@ describe('constants', () => {
 
   it('karma constants are defined', () => {
     expect(KARMA_POSTING_MINIMUM).toBe(1);
-    expect(KARMA_DECAY_RATE).toBe(0.0001);
-    expect(KARMA_DECAY_GRACE_BLOCKS).toBe(100);
+    expect(KARMA_STALE_THRESHOLD_BLOCKS).toBe(20160);
+    expect(KARMA_DECAY_INTERVAL_BLOCKS).toBe(720);
+    expect(KARMA_DECAY_AMOUNT).toBe(5);
+    expect(KARMA_MINIMUM).toBe(10);
   });
 
   it('like constants are defined', () => {

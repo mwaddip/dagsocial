@@ -46,6 +46,7 @@ export interface KarmaBox extends BoxBase {
   guard: 'owner_signature';
   proofSource: string;        // PostId | StumpHash | InviteTxId
   lastTouchBlock: number;     // = createdAtBlock on creation
+  decayBurn?: boolean;
 }
 
 // --- Credit ---
