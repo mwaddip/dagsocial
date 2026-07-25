@@ -33,6 +33,7 @@ interface UtxoRow {
 interface KarmaExtra {
   proofSource: string;
   lastTouchBlock: number;
+  decayBurn?: boolean;
 }
 
 interface CreditExtra {
@@ -91,7 +92,7 @@ function rowToBox(row: UtxoRow): AnyBox {
   switch (row.box_type) {
     case 'karma': {
       const e = extra as KarmaExtra;
-      return {
+      const kb: KarmaBox = {
         id: row.id,
         boxType: 'karma',
         value: row.value,
@@ -100,7 +101,11 @@ function rowToBox(row: UtxoRow): AnyBox {
         guard: 'owner_signature',
         proofSource: e.proofSource,
         lastTouchBlock: e.lastTouchBlock,
-      } satisfies KarmaBox as KarmaBox;
+      };
+      if (e.decayBurn !== undefined) {
+        kb.decayBurn = e.decayBurn;
+      }
+      return kb satisfies KarmaBox as KarmaBox;
     }
 
     case 'credit': {
@@ -426,10 +431,14 @@ export function insertBox(box: AnyBox): void {
   switch (box.boxType) {
     case 'karma': {
       const k = box as KarmaBox;
-      extraData = {
+      const ke: KarmaExtra = {
         proofSource: k.proofSource,
         lastTouchBlock: k.lastTouchBlock,
-      } satisfies KarmaExtra;
+      };
+      if (k.decayBurn !== undefined) {
+        ke.decayBurn = k.decayBurn;
+      }
+      extraData = ke satisfies KarmaExtra;
       owner = Buffer.from(k.owner);
       proofSource = k.proofSource;
       lastTouchBlock = k.lastTouchBlock;

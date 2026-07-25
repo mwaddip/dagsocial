@@ -168,6 +168,22 @@ describe('utxo store', () => {
     expect(result.lastTouchBlock).toBe(7);
   });
 
+  it('insertBox + getBox round-trip preserves decayBurn on KarmaBox', async () => {
+    const { initDb } = await importDbFresh();
+    const { insertBox, getBox } = await importUtxoFresh();
+    const { computeBoxId } = await importTypes();
+
+    initDb(':memory:');
+
+    const box = makeKarmaBox({ value: 100, decayBurn: true });
+    box.id = computeBoxId(box);
+    insertBox(box);
+
+    const result = getBox(box.id!) as KarmaBox;
+    expect(result).not.toBeNull();
+    expect(result.decayBurn).toBe(true);
+  });
+
   it('insertBox + getBox round-trip for CreditBox', async () => {
     const { initDb } = await importDbFresh();
     const { insertBox, getBox } = await importUtxoFresh();
