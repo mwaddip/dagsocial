@@ -1,14 +1,13 @@
 import { computeBoxId } from '@dagsocial/types';
 import type { KarmaBox } from '@dagsocial/types';
-import { getIdentity, getKarmaBox, insertBox, consumeBox } from '../store/index.js';
+import { getKarmaBoxes, insertBox, consumeBox } from '../store/index.js';
 
 /**
  * Mint (or increase) karma for a given user.
  *
- * userId IS the public key — no identity lookup needed. Either creates
- * a new karma box or increases the value of their existing one. The old box
- * is consumed and a new one created (even for top-ups — this resets the decay
- * clock via createdAtBlock).
+ * Consumes ALL existing unspent karma boxes and creates a single new one
+ * with the combined value + amount. This ensures each identity has at most
+ * one unspent karma box after any mint operation.
  *
  * Exported so both the local block creator (miner) and the server's
  * block-application path can use it.
@@ -17,24 +16,21 @@ export function mintKarma(
   userId: Uint8Array,
   amount: number,
   blockHeight: number,
-): void {
-  if (amount <= 0) return;
+): string {
+  if (amount <= 0) return '';
 
-  // userId IS the public key — look up karma box directly
-  const existingBox = getKarmaBox(userId);
+  const existingBoxes = getKarmaBoxes(userId);
+  const existingTotal = existingBoxes.reduce((sum, b) => sum + b.value, 0);
+  const newValue = existingTotal + amount;
 
-  let newValue: number;
-  let proofSource: string;
-  let oldBoxId: string | undefined;
-
-  if (existingBox && existingBox.id) {
-    newValue = existingBox.value + amount;
-    proofSource = existingBox.proofSource ?? `mint-${blockHeight}`;
-    oldBoxId = existingBox.id;
-  } else {
-    newValue = amount;
-    proofSource = `mint-${blockHeight}`;
+  // Consume all existing boxes
+  for (const box of existingBoxes) {
+    if (box.id) consumeBox(box.id, blockHeight);
   }
+
+  const proofSource = existingBoxes.length > 0
+    ? (existingBoxes[0]!.proofSource ?? `mint-${blockHeight}`)
+    : `mint-${blockHeight}`;
 
   const newBox: KarmaBox = {
     boxType: 'karma',
@@ -48,9 +44,6 @@ export function mintKarma(
   const boxId = computeBoxId(newBox);
   newBox.id = boxId;
 
-  if (oldBoxId) {
-    consumeBox(oldBoxId, blockHeight);
-  }
-
   insertBox(newBox);
+  return boxId;
 }

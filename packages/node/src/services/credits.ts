@@ -1,13 +1,12 @@
 import { computeBoxId } from '@dagsocial/types';
 import type { CreditBox } from '@dagsocial/types';
-import { getCreditBox, insertBox, consumeBox } from '../store/index.js';
+import { getCreditBoxes, insertBox, consumeBox } from '../store/index.js';
 
 /**
  * Mint (or increase) credits for a given owner.
  *
- * Same pattern as mintKarma: either creates a new CreditBox or increases the
- * value of the existing one.  The old box is consumed and a new one created.
- * If lockedUntilBlock is set, credits cannot be spent before that block height.
+ * Consumes ALL existing unspent credit boxes and creates a single new one
+ * with the combined value + amount. Same pattern as mintKarma.
  */
 export function mintCredits(
   owner: Uint8Array,
@@ -17,25 +16,24 @@ export function mintCredits(
 ): string {
   if (amount <= 0) return '';
 
-  const existingBox = getCreditBox(owner);
+  const existingBoxes = getCreditBoxes(owner);
+  const existingTotal = existingBoxes.reduce((sum, b) => sum + b.value, 0);
+  const newValue = existingTotal + amount;
 
-  let newValue: number;
-  let oldBoxId: string | undefined;
-  let mergedLockedUntilBlock: number | undefined;
+  // Consume all existing boxes
+  for (const box of existingBoxes) {
+    if (box.id) consumeBox(box.id, blockHeight);
+  }
 
-  if (existingBox && existingBox.id) {
-    newValue = existingBox.value + amount;
-    oldBoxId = existingBox.id;
-    // Keep the further-future lock if both old and new have one
-    if (existingBox.lockedUntilBlock !== undefined || lockedUntilBlock !== undefined) {
+  // Merge lock: keep the furthest-future lock
+  let mergedLockedUntilBlock = lockedUntilBlock;
+  for (const box of existingBoxes) {
+    if (box.lockedUntilBlock !== undefined) {
       mergedLockedUntilBlock = Math.max(
-        existingBox.lockedUntilBlock ?? 0,
-        lockedUntilBlock ?? 0,
+        mergedLockedUntilBlock ?? 0,
+        box.lockedUntilBlock,
       );
     }
-  } else {
-    newValue = amount;
-    mergedLockedUntilBlock = lockedUntilBlock;
   }
 
   const newBox: CreditBox = {
@@ -50,10 +48,6 @@ export function mintCredits(
     newBox.lockedUntilBlock = mergedLockedUntilBlock;
   }
   newBox.id = computeBoxId(newBox);
-
-  if (oldBoxId) {
-    consumeBox(oldBoxId, blockHeight);
-  }
 
   insertBox(newBox);
   return newBox.id!;
