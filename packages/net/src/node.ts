@@ -8,12 +8,13 @@ import { gossipsub } from '@chainsafe/libp2p-gossipsub';
 import { multiaddr } from '@multiformats/multiaddr';
 
 import type { Libp2p } from 'libp2p';
-import type { SubBlock, OrderingBlock, UtxoTransaction } from '@dagsocial/types';
+import type { SubBlock, OrderingBlock, UtxoTransaction, BlockHeader } from '@dagsocial/types';
 import type { NetConfig, NetValidators, Peer } from './types.js';
 import type { Libp2pGossip, GossipHandlers } from './gossip.js';
 import { PeerManager } from './peer-mgr.js';
 import { subscribeTopics, broadcastSubBlock, broadcastOrderingBlock, broadcastTx } from './gossip.js';
 import { requestSubBlock, registerSyncHandler } from './sync.js';
+import { requestHeaders, requestBlocks } from './headers.js';
 
 type SubBlockCallback = (sb: SubBlock) => void;
 type OrderingBlockCallback = (block: OrderingBlock) => void;
@@ -230,6 +231,16 @@ export class NetNode {
   async requestSubBlock(id: string, peerId: string): Promise<SubBlock> {
     if (!this.libp2p) throw new Error('NetNode not started');
     return requestSubBlock(this.libp2p, id, peerId, this.config);
+  }
+
+  async requestHeaders(startHeight: number, maxCount: number, peerId: string): Promise<BlockHeader[]> {
+    if (!this.libp2p) throw new Error('NetNode not started');
+    return requestHeaders(this.libp2p, startHeight, maxCount, peerId, this.config);
+  }
+
+  async requestBlocks(startHeight: number, endHeight: number, peerId: string): Promise<OrderingBlock[]> {
+    if (!this.libp2p) throw new Error('NetNode not started');
+    return requestBlocks(this.libp2p, startHeight, endHeight, peerId, this.config);
   }
 
   /**
