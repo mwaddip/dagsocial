@@ -400,16 +400,44 @@ async function signPost(content, authorBytes, parentRefs, challengeBytes, protoc
 // UTXO state fetching
 // ===========================================================================
 
-/** Fetch the current karma box for the active identity. */
+/**
+ * Fetch all karma boxes for the active identity.
+ * Returns { total, boxes: [{ boxId, value }] } plus backward-compat
+ * .balance (= total) and .boxId (= boxes[0].boxId if any).
+ */
 async function fetchKarmaBox() {
   if (!userId) return null;
   try {
     const res = await fetch(API + '/karma/' + encodeURIComponent(userId));
     if (!res.ok) return null;
-    return await res.json(); // { userId, balance, boxId, createdAtBlock }
+    const data = await res.json(); // { userId, total, boxes: [{ boxId, value }] }
+    // Backward-compat: add .balance and .boxId for older callers
+    data.balance = data.total;
+    data.boxId = data.boxes.length > 0 ? data.boxes[0].boxId : null;
+    return data;
   } catch {
     return null;
   }
+}
+
+/**
+ * Largest-first UTXO selection. Returns boxes whose combined value covers
+ * requiredAmount. Assumes boxes are sorted value descending (server does this).
+ * Throws if total is insufficient.
+ */
+function selectBoxes(boxes, requiredAmount) {
+  if (requiredAmount <= 0) return [];
+  let accumulated = 0;
+  const selected = [];
+  for (const box of boxes) {
+    accumulated += box.value;
+    selected.push(box);
+    if (accumulated >= requiredAmount) break;
+  }
+  if (accumulated < requiredAmount) {
+    throw new Error(`Insufficient total value: need ${requiredAmount}, have ${accumulated}`);
+  }
+  return selected;
 }
 
 /** Fetch pending invite and bond boxes for the active identity. */
@@ -428,10 +456,12 @@ async function fetchInviteState() {
 // Tx construction helpers
 // ===========================================================================
 
-/** Build the karma-lock tx for post creation. */
+/** Build the karma-lock tx for post creation. Uses all boxes needed to cover lockAmount. */
 function buildKarmaLockTx(karmaBox, lockAmount, targetPostId, pubKeyHex) {
   const now = currentBlockHeight;
-  const newKarmaValue = karmaBox.balance - lockAmount;
+  const selected = selectBoxes(karmaBox.boxes, lockAmount);
+  const selectedTotal = selected.reduce((sum, b) => sum + b.value, 0);
+  const newKarmaValue = selectedTotal - lockAmount;
 
   const karmaOutput = {
     boxType: 'karma',
@@ -454,17 +484,19 @@ function buildKarmaLockTx(karmaBox, lockAmount, targetPostId, pubKeyHex) {
   };
 
   return {
-    inputs: [karmaBox.boxId],
+    inputs: selected.map(b => b.boxId),
     outputs: [karmaOutput, postLockOutput],
     signatures: {},
     protocolVersion: PROTOCOL_VERSION,
   };
 }
 
-/** Build a like tx: consumes karma box, produces karma (value - 2) + LikeBox. */
+/** Build a like tx: consumes karma boxes, produces karma (total - 2) + LikeBox. */
 function buildLikeTx(karmaBox, targetPostId, pubKeyHex) {
   const now = currentBlockHeight;
-  const newKarmaValue = karmaBox.balance - LIKE_COST;
+  const selected = selectBoxes(karmaBox.boxes, LIKE_COST);
+  const selectedTotal = selected.reduce((sum, b) => sum + b.value, 0);
+  const newKarmaValue = selectedTotal - LIKE_COST;
 
   const karmaOutput = {
     boxType: 'karma',
@@ -472,7 +504,7 @@ function buildLikeTx(karmaBox, targetPostId, pubKeyHex) {
     createdAtBlock: now,
     owner: pubKeyHex,
     guard: 'owner_signature',
-    proofSource: karmaBox.boxId,
+    proofSource: targetPostId,
     lastTouchBlock: now,
   };
 
@@ -486,7 +518,7 @@ function buildLikeTx(karmaBox, targetPostId, pubKeyHex) {
   };
 
   return {
-    inputs: [karmaBox.boxId],
+    inputs: selected.map(b => b.boxId),
     outputs: [karmaOutput, likeOutput],
     signatures: {},
     protocolVersion: PROTOCOL_VERSION,
@@ -516,11 +548,13 @@ function buildUnlikeTx(likeBoxId, pubKeyHex) {
   };
 }
 
-/** Build an invite-create tx: karma → karma + invite + bond. */
+/** Build an invite-create tx: karma boxes → karma + invite + bond. */
 function buildCreateInviteTx(karmaBox, pubKeyHex, secretHashHex) {
   const now = currentBlockHeight;
   const totalDeducted = INVITE_KARMA_AMOUNT + INVITE_BOND_KARMA;
-  const newKarmaValue = karmaBox.balance - totalDeducted;
+  const selected = selectBoxes(karmaBox.boxes, totalDeducted);
+  const selectedTotal = selected.reduce((sum, b) => sum + b.value, 0);
+  const newKarmaValue = selectedTotal - totalDeducted;
 
   const karmaOutput = {
     boxType: 'karma',
@@ -528,7 +562,7 @@ function buildCreateInviteTx(karmaBox, pubKeyHex, secretHashHex) {
     createdAtBlock: now,
     owner: pubKeyHex,
     guard: 'owner_signature',
-    proofSource: karmaBox.boxId,
+    proofSource: 'invite-create',
     lastTouchBlock: now,
   };
 
@@ -553,7 +587,7 @@ function buildCreateInviteTx(karmaBox, pubKeyHex, secretHashHex) {
   };
 
   return {
-    inputs: [karmaBox.boxId],
+    inputs: selected.map(b => b.boxId),
     outputs: [karmaOutput, inviteOutput, bondOutput],
     signatures: {},
     protocolVersion: PROTOCOL_VERSION,
@@ -602,15 +636,16 @@ function buildClaimInviteTx(inviteBox, bondBox, inviteePubKeyHex, secretHex) {
 
 /**
  * Build an invite-cancel tx: karma + invite + bond → karma (refund to inviter).
- * @param {Object} karmaBox - { boxId, balance }
+ * @param {Object} karmaBox - { total, boxes }
  * @param {Object} inviteBox - { id, value }
  * @param {Object} bondBox - { id, value }
  * @param {string} pubKeyHex - inviter's public key
  */
 function buildCancelInviteTx(karmaBox, inviteBox, bondBox, pubKeyHex) {
   const now = currentBlockHeight;
-  // Refund: current karma + invite value + bond value
-  const totalRefund = karmaBox.balance + inviteBox.value + bondBox.value;
+  // Refund: consolidate all karma boxes + invite value + bond value
+  const allKarmaBoxIds = karmaBox.boxes.map(b => b.boxId);
+  const totalRefund = karmaBox.total + inviteBox.value + bondBox.value;
 
   const karmaOutput = {
     boxType: 'karma',
@@ -623,7 +658,7 @@ function buildCancelInviteTx(karmaBox, inviteBox, bondBox, pubKeyHex) {
   };
 
   return {
-    inputs: [karmaBox.boxId, inviteBox.id, bondBox.id],
+    inputs: [...allKarmaBoxIds, inviteBox.id, bondBox.id],
     outputs: [karmaOutput],
     signatures: {},
     protocolVersion: PROTOCOL_VERSION,
@@ -934,8 +969,8 @@ document.getElementById('postBtn').addEventListener('click', async () => {
 
     // 5. Determine lock amount
     const lockAmount = parentRefs.length === 0 ? POST_LOCK_THREAD_COST : POST_LOCK_REPLY_COST;
-    if (karmaBox.balance < lockAmount) {
-      setStatus(`Insufficient karma: need ${lockAmount}, have ${karmaBox.balance}`, 'error');
+    if (karmaBox.total < lockAmount) {
+      setStatus(`Insufficient karma: need ${lockAmount}, have ${karmaBox.total}`, 'error');
       return;
     }
 
@@ -1004,8 +1039,8 @@ async function doLike(targetPostId) {
       setStatus('No karma box — cannot like', 'error');
       return false;
     }
-    if (karmaBox.balance < LIKE_COST) {
-      setStatus(`Insufficient karma to like: need ${LIKE_COST}, have ${karmaBox.balance}`, 'error');
+    if (karmaBox.total < LIKE_COST) {
+      setStatus(`Insufficient karma to like: need ${LIKE_COST}, have ${karmaBox.total}`, 'error');
       return false;
     }
 
@@ -1244,8 +1279,8 @@ async function loadIdentityStatus() {
     const res = await fetch(API + '/karma/' + encodeURIComponent(userId));
     if (res.ok) {
       const data = await res.json();
-      karmaEl.textContent = data.balance;
-      karmaEl.style.color = data.balance > 0 ? '#3fb950' : '#8b949e';
+      karmaEl.textContent = data.total;
+      karmaEl.style.color = data.total > 0 ? '#3fb950' : '#8b949e';
     } else {
       karmaEl.textContent = '0';
       karmaEl.style.color = '#8b949e';
@@ -1348,8 +1383,8 @@ document.getElementById('createInviteBtn').addEventListener('click', async () =>
       return;
     }
     const totalNeeded = INVITE_KARMA_AMOUNT + INVITE_BOND_KARMA;
-    if (karmaBox.balance < totalNeeded) {
-      result.innerHTML = `<span class="result-msg err">Insufficient karma: need ${totalNeeded}, have ${karmaBox.balance}</span>`;
+    if (karmaBox.total < totalNeeded) {
+      result.innerHTML = `<span class="result-msg err">Insufficient karma: need ${totalNeeded}, have ${karmaBox.total}</span>`;
       return;
     }
 
@@ -1491,7 +1526,7 @@ document.getElementById('cancelInviteBtn').addEventListener('click', async () =>
 
     const pubKeyHex = buf2hex(pubKeyRaw);
     const tx = buildCancelInviteTx(
-      { boxId: karmaBox.boxId, balance: karmaBox.balance },
+      karmaBox,
       { id: invBox.id, value: invBox.value },
       { id: bondBox?.id || '00'.repeat(32), value: bondBox?.value || 0 },
       pubKeyHex,

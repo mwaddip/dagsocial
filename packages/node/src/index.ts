@@ -14,8 +14,6 @@ import {
   getIdentity,
   getKarmaBox,
   getKarmaBoxes,
-  getCreditBox,
-  getCreditBoxes,
   getPost,
   insertPost,
   getBox,
