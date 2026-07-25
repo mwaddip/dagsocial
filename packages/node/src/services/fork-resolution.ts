@@ -16,7 +16,7 @@ import {
 import { getDb } from '../store/db.js';
 import { applyOrderingBlock } from './block-apply.js';
 
-const MAX_REORG_DEPTH = 20;
+export const MAX_REORG_DEPTH = 20;
 
 /**
  * Does this block extend our current canonical tip?

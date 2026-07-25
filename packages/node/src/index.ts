@@ -9,6 +9,7 @@ import { verifyPostForRelay } from './services/verifier.js';
 import { validateTx } from './services/utxo-engine.js';
 import { setNet } from './services/net-instance.js';
 import { applyOrderingBlock } from './services/block-apply.js';
+import { extendsOurTip, findForkPoint, reorg, MAX_REORG_DEPTH } from './services/fork-resolution.js';
 import {
   getIdentity,
   getKarmaBox,
@@ -21,7 +22,8 @@ import {
   getPendingEntries,
   getOrderingBlock,
 } from './store/index.js';
-import { encodePost, decodeSubBlock } from '@dagsocial/types';
+import { encodePost, decodeSubBlock, cumulativeWork } from '@dagsocial/types';
+import type { BlockHeader } from '@dagsocial/types';
 
 const config = loadConfig();
 
@@ -79,8 +81,97 @@ net.onSubBlock((sb) => {
   console.log(`Relayed sub-block queued in mempool: ${sb.subBlockId}`);
 });
 
-net.onOrderingBlock((block) => {
-  applyOrderingBlock(block);
+net.onOrderingBlock(async (block) => {
+  const currentHeight = getCurrentHeight();
+
+  // Genesis or extends our tip: apply normally
+  if (currentHeight === 0 || extendsOurTip(block)) {
+    applyOrderingBlock(block);
+    return;
+  }
+
+  // Fork detected
+  console.log(
+    `Fork detected: our height=${currentHeight}, ` +
+    `competing block height=${block.header.height}`,
+  );
+
+  const peers = net.peers();
+  if (peers.length === 0) {
+    console.warn('Fork resolution failed: no connected peers');
+    return;
+  }
+  const peerId = peers[0]!.id;
+
+  try {
+    // Request headers from competing tip going backward (newest-first)
+    const theirHeaders = await net.requestHeaders(
+      block.header.height,
+      MAX_REORG_DEPTH * 2,
+      peerId,
+    );
+    if (theirHeaders.length === 0) {
+      console.warn('Fork resolution failed: no headers from peer');
+      return;
+    }
+
+    const ourTip = getOrderingBlock(currentHeight);
+    if (!ourTip) {
+      console.warn('Fork resolution failed: cannot retrieve our tip');
+      return;
+    }
+
+    const forkHeight = findForkPoint(ourTip.header, theirHeaders);
+    if (forkHeight === null) {
+      console.warn(
+        `Fork resolution failed: no common ancestor within ${MAX_REORG_DEPTH} blocks`,
+      );
+      return;
+    }
+
+    // Build our chain headers from fork+1 to current tip
+    const ourHeaders: BlockHeader[] = [];
+    for (let h = forkHeight + 1; h <= currentHeight; h++) {
+      const b = getOrderingBlock(h);
+      if (b) ourHeaders.push(b.header);
+    }
+
+    // Extract competing chain headers above fork point (theirHeaders is newest-first)
+    const theirChainHeaders = theirHeaders
+      .filter((h) => h.height > forkHeight)
+      .reverse(); // chronological order for cumulativeWork
+
+    const ourWork = cumulativeWork(ourHeaders);
+    const theirWork = cumulativeWork(theirChainHeaders);
+
+    if (theirWork <= ourWork) {
+      console.log(
+        `Fork resolution: our chain has more or equal work ` +
+        `(ours=${ourWork}, theirs=${theirWork}), ignoring`,
+      );
+      return;
+    }
+
+    console.log(
+      `Fork resolution: competing chain has more work ` +
+      `(ours=${ourWork}, theirs=${theirWork}), reorging...`,
+    );
+
+    // Request blocks from fork+1 to competing tip
+    const theirTipHeight = theirHeaders[0]!.height;
+    const newBlocks = await net.requestBlocks(
+      forkHeight + 1,
+      theirTipHeight,
+      peerId,
+    );
+
+    reorg(forkHeight, newBlocks);
+    console.log(
+      `Reorg complete: new tip at height=${forkHeight + newBlocks.length}`,
+    );
+  } catch (err) {
+    console.warn(`Fork resolution error: ${String(err)}`);
+  }
 });
 
 net.onTx((tx) => {
