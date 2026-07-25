@@ -9,9 +9,6 @@ import {
 import {
   computeBoxId,
   computeTxId,
-  KARMA_DECAY_RATE,
-  KARMA_DECAY_GRACE_BLOCKS,
-  KARMA_FLOOR,
   LIKE_COST,
 } from '@dagsocial/types';
 import type { AnyBox, KarmaBox, LikeBox, InviteBox, BondBox, UtxoTransaction } from '@dagsocial/types';
@@ -303,12 +300,13 @@ describe('validateAndApplyTx', () => {
   });
 
   // -------------------------------------------------------------------------
-  // 5. Rejects value non-conservation
+  // 5. Karma value non-conservation allowed (periodic decay handles it)
   // -------------------------------------------------------------------------
-  it('rejects value non-conservation', () => {
+  it('allows karma value non-conservation (decay is periodic)', () => {
     const karma = createAndInsertKarma(ownerPubKey, 100, 1);
 
-    // Output claims 120 but only 100 was consumed
+    // Output claims 120 from 100 input — conservation check is skipped for
+    // karma since periodic decay now handles value enforcement.
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: 120,
@@ -322,8 +320,8 @@ describe('validateAndApplyTx', () => {
     const tx = buildSignedTx([karma.id!], [newKarma], ownerPrivKey, ownerPubKey);
     const result = validateAndApplyTx(deps, tx, 10);
 
-    expect(result.valid).toBe(false);
-    expect(result.error).toMatch(/value|Value|Insufficient effective karma/);
+    expect(result.valid).toBe(true);
+    expect(result.error).toBeUndefined();
   });
 
   // -------------------------------------------------------------------------
@@ -383,95 +381,7 @@ describe('validateAndApplyTx', () => {
   });
 
   // -------------------------------------------------------------------------
-  // 8. Karma decay applied at consumption (create old box, consume, check)
-  // -------------------------------------------------------------------------
-  it('applies karma decay at consumption', () => {
-    // Box created at block 1, consumed at block 1001
-    // age = 1000, graceAge = 1000 - 100 = 900
-    // decay = floor(100 * 0.0001 * 900) = floor(9) = 9
-    // effective = max(100 - 9, 0) = 91
-    const karma = createAndInsertKarma(ownerPubKey, 100, 1);
-
-    // Request 95 karma — more than effective (91), so should fail
-    const newKarma: KarmaBox = {
-      boxType: 'karma',
-      value: 95,
-      createdAtBlock: 1001,
-      owner: ownerPubKey,
-      guard: 'owner_signature',
-      proofSource: 'test',
-      lastTouchBlock: 1001,
-    };
-
-    const tx = buildSignedTx([karma.id!], [newKarma], ownerPrivKey, ownerPubKey);
-    const result = validateAndApplyTx(deps, tx, 1001);
-
-    expect(result.valid).toBe(false);
-    expect(result.error).toContain('Insufficient effective karma');
-  });
-
-  // -------------------------------------------------------------------------
-  // 9. Karma decay with grace period (young box not decayed)
-  // -------------------------------------------------------------------------
-  it('karma decay with grace period (young box not decayed)', () => {
-    // Box created at block 1, consumed at block 50
-    // age = 49, graceAge = max(0, 49 - 100) = 0
-    // decay = floor(100 * 0.0001 * 0) = 0
-    // effective = 100 — no decay within grace period
-    const karma = createAndInsertKarma(ownerPubKey, 100, 1);
-
-    const newKarma: KarmaBox = {
-      boxType: 'karma',
-      value: 100,
-      createdAtBlock: 50,
-      owner: ownerPubKey,
-      guard: 'owner_signature',
-      proofSource: 'test',
-      lastTouchBlock: 50,
-    };
-
-    const tx = buildSignedTx([karma.id!], [newKarma], ownerPrivKey, ownerPubKey);
-    const result = validateAndApplyTx(deps, tx, 50);
-
-    // Should pass — no decay within grace period
-    expect(result.valid).toBe(true);
-    expect(result.error).toBeUndefined();
-  });
-
-  // -------------------------------------------------------------------------
-  // 10. Karma decay floor (doesn't go below 0)
-  // -------------------------------------------------------------------------
-  it('karma decay floor (doesn\'t go below KARMA_FLOOR)', () => {
-    // Box created long ago with tiny value; massive decay should floor at 0
-    const karma = createAndInsertKarma(ownerPubKey, 5, 1);
-
-    // Need at least 1 karma output to be valid
-    // effectiveKarma = max(5 - floor(5 * 0.0001 * max(0, 20000 - 100)), 0)
-    //                = max(5 - floor(5 * 0.0001 * 19900), 0)
-    //                = max(5 - floor(9.95), 0)
-    //                = max(5 - 9, 0)
-    //                = max(-4, 0)
-    //                = 0
-    // So any output > 0 should fail (even 1)
-    const newKarma: KarmaBox = {
-      boxType: 'karma',
-      value: 1,
-      createdAtBlock: 20001,
-      owner: ownerPubKey,
-      guard: 'owner_signature',
-      proofSource: 'test',
-      lastTouchBlock: 20001,
-    };
-
-    const tx = buildSignedTx([karma.id!], [newKarma], ownerPrivKey, ownerPubKey);
-    const result = validateAndApplyTx(deps, tx, 20001);
-
-    expect(result.valid).toBe(false);
-    expect(result.error).toContain('Insufficient effective karma');
-  });
-
-  // -------------------------------------------------------------------------
-  // 11. Transaction atomic: partial failure rolls back all changes
+  // 8. Transaction atomic: partial failure rolls back all changes
   // -------------------------------------------------------------------------
   it('transaction atomic: partial failure rolls back all changes', () => {
     const karma = createAndInsertKarma(ownerPubKey, 100, 1);
@@ -511,7 +421,7 @@ describe('validateAndApplyTx', () => {
   });
 
   // -------------------------------------------------------------------------
-  // 12. computeBoxId called for each output, IDs assigned
+  // 9. computeBoxId called for each output, IDs assigned
   // -------------------------------------------------------------------------
   it('computeBoxId called for each output, IDs assigned', () => {
     const karma = createAndInsertKarma(ownerPubKey, 100, 1);
@@ -555,7 +465,7 @@ describe('validateAndApplyTx', () => {
   });
 
   // -------------------------------------------------------------------------
-  // 13. validateTx checks guards and transitions but does not mutate state
+  // 10. validateTx checks guards and transitions but does not mutate state
   // -------------------------------------------------------------------------
   it('validateTx checks guards and transitions but does not mutate state', () => {
     const karma = createAndInsertKarma(ownerPubKey, 100, 1);
@@ -589,7 +499,7 @@ describe('validateAndApplyTx', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 14. hash_preimage guard
+  // 11. hash_preimage guard
   // ---------------------------------------------------------------------------
   describe('hash_preimage guard', () => {
     let inviterPubKey: Uint8Array;
@@ -694,7 +604,7 @@ describe('validateAndApplyTx', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 15. invite+bond claim transition
+  // 12. invite+bond claim transition
   // ---------------------------------------------------------------------------
   describe('invite+bond claim transition', () => {
     let inviterPubKey: Uint8Array;

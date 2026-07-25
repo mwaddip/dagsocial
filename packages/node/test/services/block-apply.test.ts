@@ -18,6 +18,7 @@ import {
   LIKE_COST,
   LIKE_THRESHOLD,
   LIKE_MAX_AUTHOR_REWARD,
+  KARMA_STALE_THRESHOLD_BLOCKS,
 } from '@dagsocial/types';
 import type {
   Post,
@@ -27,6 +28,7 @@ import type {
   OrderingBlock,
   UtxoTransaction,
   BlockJournal,
+  DecayJournalEntry,
 } from '@dagsocial/types';
 import type Database from 'better-sqlite3';
 
@@ -129,6 +131,7 @@ async function importUtxo() {
   return (await import('../../src/store/utxo.js')) as {
     insertBox: (box: unknown) => void;
     getKarmaBox: (owner: Uint8Array) => KarmaBox | null;
+    getBox: (boxId: string) => unknown;
     consumeBox: (boxId: string, consumedAtBlock: number) => void;
     getUnprocessedLockedLikeBoxes: () => LikeBox[];
   };
@@ -723,5 +726,70 @@ describe('block-apply journal recording', () => {
     const blockApply = await importBlockApply();
     // Journal module state should be cleared after successful apply
     expect(blockApply.getCurrentJournal()).toBeNull();
+  });
+
+  // -----------------------------------------------------------------------
+  // 11. Decay burns recorded in journal
+  // -----------------------------------------------------------------------
+
+  it('records decay burns in journal', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    const utxo = await importUtxo();
+    const ids = await importIdentities();
+
+    // Create an identity with a karma box at block 0 (ancient)
+    const identity = makeTestIdentity();
+    ids.insertIdentity(identity.userId, identity.publicKey);
+    const oldBox = makeKarmaBox(100, identity.userId, 0);
+    utxo.insertBox(oldBox);
+
+    // Import decay module directly — applyOrderingBlock delegates to it,
+    // and we can't build 20,000+ blocks in a test. The journal entries
+    // returned by applyKarmaDecay are exactly what get pushed into
+    // currentJournal.decayBurns.
+    const { applyKarmaDecay } = await import(
+      '../../src/services/decay.js'
+    );
+    const { KARMA_DECAY_AMOUNT } = await import('@dagsocial/types');
+
+    const deps = {
+      getKarmaBoxes: (owner: Uint8Array) => {
+        const box = utxo.getKarmaBox(owner);
+        return box ? [box] : [];
+      },
+      consumeBox: (boxId: string, height: number) =>
+        utxo.consumeBox(boxId, height),
+      insertBox: (box: KarmaBox) => utxo.insertBox(box),
+      getKarmaOwners: () => [identity.userId],
+    };
+
+    const staleHeight = KARMA_STALE_THRESHOLD_BLOCKS + 100;
+    const entries: DecayJournalEntry[] = applyKarmaDecay(deps, staleHeight);
+
+    // owedPeriods = floor((staleHeight - 0) / 720) = 28
+    // maxBurn = min(28 * 5, 100 - 10) = min(140, 90) = 90
+    const expectedBurn = Math.min(
+      Math.floor(staleHeight / 720) * KARMA_DECAY_AMOUNT,
+      100 - 10,
+    );
+
+    expect(entries.length).toBe(1);
+    expect(entries[0]!.owner).toEqual(identity.userId);
+    expect(entries[0]!.burnAmount).toBe(expectedBurn);
+    expect(entries[0]!.consumedBoxIds).toEqual([oldBox.id!]);
+    expect(entries[0]!.newBoxId).toBeTruthy();
+    expect(entries[0]!.newBoxId).not.toBe('');
+
+    // Old box is consumed — getKarmaBox only returns unspent boxes,
+    // so it returns the new decay-burn box, not the old consumed one.
+    const karmaBox = utxo.getKarmaBox(identity.userId);
+    expect(karmaBox).not.toBeNull();
+    expect(karmaBox!.id).toBe(entries[0]!.newBoxId);
+
+    // New decay-burn box exists with reduced value
+    expect(karmaBox!.boxType).toBe('karma');
+    expect(karmaBox!.value).toBe(100 - expectedBurn);
   });
 });

@@ -490,9 +490,9 @@ describe('invites service', () => {
   });
 
   // -----------------------------------------------------------------------
-  // 5. Create fails if insufficient karma
+  // 5. Create accepts karma below invite cost (decay is periodic)
   // -----------------------------------------------------------------------
-  it('Create fails if insufficient karma', () => {
+  it('Create accepts karma below invite cost (decay is periodic)', () => {
     const karma = createKarmaBox(inviterPubKey, 10, 1);
 
     const newKarma: KarmaBox = {
@@ -537,7 +537,10 @@ describe('invites service', () => {
     };
     signTransaction(tx, inviterPrivKey, inviterPubKeyHex);
 
-    expect(() => createInvite(deps, tx, 1)).toThrow('Invalid invite create transaction');
+    // Karma value non-conservation is no longer enforced at tx time —
+    // periodic decay handles value enforcement globally.
+    const result = createInvite(deps, tx, 1);
+    expect(result.status).toBe('pending');
   });
 
   // -----------------------------------------------------------------------

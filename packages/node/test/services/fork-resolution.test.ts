@@ -816,6 +816,72 @@ describe('revertBlock', () => {
     expect(ordering.getOrderingBlock(1)).toBeNull();
     expect(journalStore.getBlockJournal(1)).toBeNull();
   });
+
+  it('rolls back decay burns', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    const utxo = await importUtxo();
+    const ids = await importIdentities();
+
+    // Create identity with a karma box at block 0 (ancient)
+    const identity = makeTestIdentity();
+    ids.insertIdentity(identity.userId, identity.publicKey);
+    const oldBox = makeKarmaBox(100, identity.userId, 0);
+    utxo.insertBox(oldBox);
+    const oldBoxId = oldBox.id!;
+
+    // Apply decay manually (simulates what block application does)
+    const { applyKarmaDecay } = await import(
+      '../../src/services/decay.js'
+    );
+    const { KARMA_STALE_THRESHOLD_BLOCKS } =
+      await import('@dagsocial/types');
+
+    // Use real store functions for getKarmaBoxes (returns all boxes)
+    const { getKarmaBoxes } = await import('../../src/store/utxo.js');
+
+    const deps = {
+      getKarmaBoxes,
+      consumeBox: utxo.consumeBox,
+      insertBox: utxo.insertBox,
+      getKarmaOwners: () => [identity.userId],
+    };
+
+    const entries = applyKarmaDecay(
+      deps,
+      KARMA_STALE_THRESHOLD_BLOCKS + 100,
+    );
+
+    expect(entries.length).toBe(1);
+    const newBoxId = entries[0]!.newBoxId;
+
+    // Verify old box consumed (not returned by getKarmaBox which filters spent)
+    const afterDecayBox = utxo.getKarmaBox(identity.userId);
+    expect(afterDecayBox).not.toBeNull();
+    expect(afterDecayBox!.id).toBe(newBoxId); // only unspent box is the new one
+
+    // Reverse: delete new box, unconsume old boxes
+    // (same logic as revertBlock step 2b in fork-resolution.ts)
+    const { deleteBox, unconsumeBox } = await import(
+      '../../src/store/utxo.js'
+    );
+    for (const entry of entries) {
+      deleteBox(entry.newBoxId);
+      for (const boxId of entry.consumedBoxIds) {
+        unconsumeBox(boxId);
+      }
+    }
+
+    // Old box restored (unspent), new box gone
+    const restoredBox = utxo.getKarmaBox(identity.userId);
+    expect(restoredBox).not.toBeNull();
+    expect(restoredBox!.boxType).toBe('karma');
+    expect(restoredBox!.value).toBe(100);
+    expect(restoredBox!.id).toBe(oldBoxId);
+
+    expect(utxo.getBox(newBoxId)).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------

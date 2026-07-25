@@ -454,9 +454,9 @@ describe('likes service', () => {
   });
 
   // -----------------------------------------------------------------------
-  // 7. castLike fails if insufficient karma (locked)
+  // 7. castLike accepts karma below like cost (decay is periodic)
   // -----------------------------------------------------------------------
-  it('castLike fails if insufficient karma (locked)', () => {
+  it('castLike accepts karma below like cost (decay is periodic)', () => {
     const karma = createKarmaBox(likerPubKey, 1, 1); // Only 1 karma, need 2+ for like cost
     const postId = createTestPost(likerId);
 
@@ -492,7 +492,10 @@ describe('likes service', () => {
 
     signTransaction(tx, likerPrivKey, likerPubKeyHex);
 
-    expect(() => castLike(deps, tx, 5)).toThrow('Invalid like transaction');
+    // Karma value non-conservation is no longer enforced at tx time —
+    // periodic decay handles value enforcement globally.
+    const result = castLike(deps, tx, 5);
+    expect(result.castLikeResult).toBe('pending');
   });
 
   // -----------------------------------------------------------------------
