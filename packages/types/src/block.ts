@@ -66,6 +66,11 @@ export interface BlockHeader {
 /** 33 zero bytes — placeholder for future AVL+ state root. */
 export const EMPTY_STATE_ROOT = '00'.repeat(33);
 
+/** Sum of expected hashes over a chain segment = sum(2^targetBits). */
+export function cumulativeWork(headers: BlockHeader[]): bigint {
+  return headers.reduce((sum, h) => sum + (1n << BigInt(h.powTargetBits)), 0n);
+}
+
 // ---------------------------------------------------------------------------
 // Body sections (independently requestable)
 // ---------------------------------------------------------------------------

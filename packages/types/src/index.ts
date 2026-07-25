@@ -46,7 +46,7 @@ export type { KeyPair, UserId } from './identity.js';
 export { base58Encode, base58Decode } from './base58.js';
 
 // Merkle tree
-export { leafHash, nodeHash, buildMerkleRoot } from './merkle.js';
+export { leafHash, nodeHash, buildMerkleRoot, hexToBuf } from './merkle.js';
 
 // Posts
 export { signingHash, computePostId, getPostDiscriminator, buildProfileContent } from './post.js';
@@ -74,7 +74,7 @@ export { computeStumpId } from './stump.js';
 export type { PruneIntent, KarmaDelta, Stump, StumpId } from './stump.js';
 
 // Blocks
-export { EMPTY_STATE_ROOT } from './block.js';
+export { EMPTY_STATE_ROOT, cumulativeWork } from './block.js';
 export type {
   SubBlock,
   OrderingBlock,
@@ -85,6 +85,9 @@ export type {
   EpochTally,
   LikeReward,
 } from './block.js';
+
+// Journal
+export type { BlockJournal, KarmaMint, AppliedUtxoTx } from './journal.js';
 
 // Serialization
 export {
