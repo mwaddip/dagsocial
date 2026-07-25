@@ -31,15 +31,15 @@ function encodeLE64(n) {
   return buf;
 }
 
-function solvePoW(bodyHashHex, targetBits) {
-  const bodyHash = Buffer.from(bodyHashHex, 'hex');
+function solvePoW(powPreimageHex, targetBits) {
+  const powPreimage = Buffer.from(powPreimageHex, 'hex');
   let nonce = 0;
   const start = performance.now();
 
   while (true) {
     const nonceBuf = encodeLE64(nonce);
     const hash = createHash('blake2b512')
-      .update(bodyHash)
+      .update(powPreimage)
       .update(nonceBuf)
       .digest()
       .subarray(0, 32);
@@ -99,9 +99,9 @@ while (true) {
     }
 
     console.log(`\n[height=${tpl.height}] Mining with targetBits=${tpl.powTargetBits}...`);
-    console.log(`  bodyHash: ${tpl.bodyHash.slice(0, 24)}...`);
+    console.log(`  powPreimage: ${tpl.powPreimage.slice(0, 24)}...`);
 
-    const { nonce, elapsed, rate } = solvePoW(tpl.bodyHash, tpl.powTargetBits);
+    const { nonce, elapsed, rate } = solvePoW(tpl.powPreimage, tpl.powTargetBits);
     console.log(`  Found nonce=${nonce} in ${elapsed}s (${rate} H/s)`);
 
     // Submit

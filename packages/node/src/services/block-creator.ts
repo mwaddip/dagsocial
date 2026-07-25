@@ -27,6 +27,7 @@ import {
   computeTxId,
   leafHash,
   buildMerkleRoot,
+  hexToBuf,
 } from '@dagsocial/types';
 import {
   verifyOrderingBlockPoW,
@@ -85,22 +86,22 @@ import {
 // Merkle root computation
 // ---------------------------------------------------------------------------
 
-function computeSubBlockRoot(tree: SubBlockTree): string {
+export function computeSubBlockRoot(tree: SubBlockTree): string {
   const leaves = [
     ...tree.subBlockRefs.map((id) =>
-      leafHash('subblock', Buffer.from(id, 'hex'))),
+      leafHash('subblock', hexToBuf(id))),
     ...tree.stumpIds.map((id) =>
-      leafHash('stump', Buffer.from(id, 'hex'))),
+      leafHash('stump', hexToBuf(id))),
   ];
   return Buffer.from(buildMerkleRoot(leaves)).toString('hex');
 }
 
-function computeUtxoTxRoot(tree: UtxoTxTree): string {
+export function computeUtxoTxRoot(tree: UtxoTxTree): string {
   const leaves: Uint8Array[] = [
     ...tree.utxoTxIds.map((id) =>
-      leafHash('utxotx', Buffer.from(id, 'hex'))),
+      leafHash('utxotx', hexToBuf(id))),
     ...tree.likeBoxIds.map((id) =>
-      leafHash('likebox', Buffer.from(id, 'hex'))),
+      leafHash('likebox', hexToBuf(id))),
     ...tree.coinbaseOutputs.map((o) =>
       leafHash('coinbase', Buffer.from(JSON.stringify({
         owner: Array.from(o.owner),
@@ -309,12 +310,12 @@ function encodeLE64(n: number): Buffer {
   return buf;
 }
 
-function solvePoW(bodyHash: Buffer, targetBits: number): number {
+function solvePoW(powPreimage: Buffer, targetBits: number): number {
   let nonce = 0;
   while (true) {
     const nonceBuf = encodeLE64(nonce);
     const hash = createHash('blake2b512')
-      .update(bodyHash)
+      .update(powPreimage)
       .update(nonceBuf)
       .digest()
       .subarray(0, 32);

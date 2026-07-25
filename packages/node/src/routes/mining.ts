@@ -52,7 +52,7 @@ export function createRouter(deps: MiningDeps): Router {
         lockedUntilBlock: o.lockedUntilBlock,
         isTreasury: o.isTreasury,
       })),
-      bodyHash: powPreimage.toString('hex'),  // keep 'bodyHash' name for miner compat
+      powPreimage: powPreimage.toString('hex'),
     });
   });
 

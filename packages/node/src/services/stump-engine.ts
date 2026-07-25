@@ -4,6 +4,7 @@ import {
   leafHash,
   nodeHash,
   buildMerkleRoot,
+  hexToBuf,
 } from '@dagsocial/types';
 import type { Stump, PruneIntent, KarmaDelta, Post, LikeBox, UserId } from '@dagsocial/types';
 import {
@@ -101,7 +102,7 @@ export function executePrune(
 
   const karmaDeltas: KarmaDelta[] = [];
   for (const [hexUserId, delta] of karmaMap) {
-    karmaDeltas.push({ userId: new Uint8Array(Buffer.from(hexUserId, 'hex')), delta });
+    karmaDeltas.push({ userId: new Uint8Array(hexToBuf(hexUserId)), delta });
   }
 
   // ---- 6. Compute subtree Merkle root ----
@@ -109,7 +110,7 @@ export function executePrune(
   const leafHashes: Uint8Array[] = [];
   for (const subtreePost of subtreePosts) {
     const postId = computePostId(subtreePost);
-    leafHashes.push(leafHash('stump', Buffer.from(postId, 'hex')));
+    leafHashes.push(leafHash('stump', hexToBuf(postId)));
   }
 
   const merkleRoot = buildMerkleRoot(leafHashes);
