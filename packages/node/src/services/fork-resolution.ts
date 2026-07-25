@@ -1,5 +1,4 @@
 import { blockHash } from '@dagsocial/validation';
-import { cumulativeWork } from '@dagsocial/types';
 import type { BlockHeader, OrderingBlock, BlockJournal } from '@dagsocial/types';
 import { decodeTx, decodeSubBlock } from '@dagsocial/types';
 import {
@@ -40,6 +39,9 @@ export function findForkPoint(
   // Collect our chain hashes: height -> hash
   const ourHashes = new Map<string, number>();
   let cursor = getOrderingBlock(ourTip.height);
+  if (!cursor || blockHash(cursor.header) !== blockHash(ourTip)) {
+    return null; // ourTip is stale — a reorg happened since caller fetched it
+  }
   let depth = 0;
   while (cursor && depth < MAX_REORG_DEPTH) {
     ourHashes.set(blockHash(cursor.header), cursor.header.height);
@@ -78,7 +80,7 @@ export function revertBlock(height: number): void {
   }
 
   // 2. Burn minted karma (delete karma boxes created by mints at this height)
-  for (const _mint of journal.karmaMints) {
+  if (journal.karmaMints.length > 0) {
     // mintKarma creates karma boxes with proofSource = `block:${height}`.
     // Delete any karma box created by this block — avoids needing to
     // reverse-engineer the mintKarma logic.
