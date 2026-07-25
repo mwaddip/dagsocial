@@ -47,21 +47,17 @@ purely a visibility improvement. The server provides the full picture.
 ```typescript
 /**
  * Largest-first UTXO selection. Returns the minimal subset of boxes whose
- * combined effective value covers `requiredAmount`. Throws if total is
- * insufficient.
+ * combined value covers `requiredAmount`. Throws if total is insufficient.
  *
  * Assumes boxes are pre-sorted by value descending.
  */
 function selectBoxes<T extends { value: number }>(
   boxes: T[],
   requiredAmount: number,
-  effectiveValue?: (box: T) => number
 ): T[]
 ```
 
 - Generic over any box-like type with a `value` field.
-- `effectiveValue` is optional — for karma boxes it's the decay-adjusted value
-  via `effectiveKarmaValue`. Defaults to `box.value`.
 - Largest-first minimizes UTXO count per spend.
 - Throws on insufficient total.
 
@@ -101,12 +97,13 @@ Paths affected:
 
 ### Decay interaction
 
-`effectiveKarmaValue` adjusts each box's spendable value based on age.
-Largest-first selection works correctly with decay because the effective
-value is used for coverage checks, not the nominal value. A large box near
-expiry may have less effective value than a smaller fresh box — that's fine,
-sorting stays nominal (value desc) and the effective value drives the
-coverage calculation.
+Karma decay is checked server-side at transaction validation time
+(`checkKarmaDecay` in the UTXO engine). `selectBoxes` operates on nominal
+box values — the client selects boxes to cover the required amount by
+nominal value. If decay causes the effective value to fall short, the
+server rejects the transaction. This is acceptable because decay only
+becomes significant for very old boxes (100+ blocks of grace period), and
+each spend creates a fresh box that resets the clock.
 
 The output box always gets `createdAtBlock` set to the current block height,
 resetting the decay clock on the consolidated balance.
