@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
-import { encode } from 'cbor-x';
+import { Encoder } from 'cbor-x';
+const hashEncoder = new Encoder({ tagUint8Array: false });
 import type { UserId } from './identity.js';
 import type { PostId } from './post.js';
 import { PROTOCOL_VERSION } from './constants.js';
@@ -16,7 +17,7 @@ export type BoxId = string;
  */
 /** cbor-x returns Buffer; cast to Uint8Array for hash.update compatibility. */
 function encodeForHash(data: unknown): Uint8Array {
-  return encode(data) as unknown as Uint8Array;
+  return hashEncoder.encode(data) as unknown as Uint8Array;
 }
 
 export function computeBoxId(box: Omit<BoxBase, 'id'>): BoxId {
