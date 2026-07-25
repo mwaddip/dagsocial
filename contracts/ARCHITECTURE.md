@@ -170,30 +170,30 @@ non-tradeable. An account's karma box can be consumed only to:
 - Create invite boxes
 - Create like boxes (spending karma to vote)
 - Create a new karma box for the same owner (after earning/burning, resetting
-  the decay clock)
+  the activity clock)
 
-#### Karma decay (storage rent)
+#### Karma decay (periodic burn)
 
-Karma decays based on box age, applied at consumption time:
+After 28 days of inactivity, karma is burned periodically at block application
+time:
 
-```
-age = currentBlock - box.createdAtBlock
-graceAge = max(0, age - KARMA_DECAY_GRACE_BLOCKS)
-decay = box.value * KARMA_DECAY_RATE * graceAge
-effectiveKarma = max(box.value - decay, KARMA_FLOOR)
-```
+- **Staleness check:** An identity is stale if it has NO unspent karma box
+  without `decayBurn` that was created within `KARMA_STALE_THRESHOLD_BLOCKS`
+- **Decay execution:** At each ordering block, stale identities have their karma
+  boxes consumed and replaced with a single consolidated box with value reduced
+  by `KARMA_DECAY_AMOUNT` per `KARMA_DECAY_INTERVAL_BLOCKS` elapsed
+- **Floor:** Decay never reduces karma below `KARMA_MINIMUM`
+- **Provenance:** Decay-created boxes are marked with `decayBurn: true` so they
+  don't reset the staleness clock. Normal user activity (post, like, invite)
+  creates boxes without this flag, resetting the clock.
+- **Rollback:** Decay burns are journaled and reversed during fork rollback
 
-- Active accounts regularly consume and recreate their karma box (via likes,
-  invites, earning), resetting the `createdAtBlock` clock
-- Dormant accounts experience decay when they eventually touch their box
-- `KARMA_FLOOR` guarantees a minimum regardless of inactivity
-- All parameters are protocol constants, governable in the future
-
-| Parameter | Description |
-|-----------|-------------|
-| `KARMA_DECAY_RATE` | Fraction of box value lost per block after grace period |
-| `KARMA_DECAY_GRACE_BLOCKS` | Blocks before decay begins |
-| `KARMA_FLOOR` | Minimum karma retained regardless of inactivity |
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `KARMA_STALE_THRESHOLD_BLOCKS` | 20160 | Grace period (~28 days at 2m blocks) |
+| `KARMA_DECAY_INTERVAL_BLOCKS` | 720 | Decay period (~24 hours) |
+| `KARMA_DECAY_AMOUNT` | 5 | Karma burned per period |
+| `KARMA_MINIMUM` | 10 | Floor — decay never reduces below this |
 
 #### Credit boxes
 
@@ -705,11 +705,11 @@ forever. A node rejects objects with an unsupported protocol version.
 
 ### UTXO conservation
 
-- Total karma supply = genesis + like rewards (minted) - decay - invite bond burns
+- Total karma supply = genesis + like rewards (minted) - decay burns - invite bond burns
 - Total credit supply = genesis + ordering block rewards - future sinks
 - Every UTXO transaction conserves value except mint and burn
 - A box can only be consumed if its guard script evaluates to true
-- Karma decay applied at consumption time based on box age
+- Karma decay applied periodically at block application time (not at spend time)
 
 ### Sub-blocks and ordering
 

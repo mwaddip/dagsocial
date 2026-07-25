@@ -123,7 +123,7 @@ KarmaBox extends BoxBase {
 Karma boxes are non-tradeable. They can only be consumed by the owner to:
 - Create invite boxes
 - Create like boxes
-- Create a new karma box for the same owner (balance change, resets decay clock)
+- Create a new karma box for the same owner (balance change, resets activity clock)
 - Create a post lock box (when posting)
 
 ### CreditBox
@@ -396,10 +396,11 @@ export const CHALLENGE_WINDOW_BLOCKS = 10;     // Blocks before challenge expire
 ### Karma
 
 ```typescript
-export const KARMA_POSTING_MINIMUM = 1;         // Minimum karma to post
-export const KARMA_DECAY_RATE = 0.0001;         // Fraction per block after grace
-export const KARMA_DECAY_GRACE_BLOCKS = 100;     // Blocks before decay starts
-export const KARMA_FLOOR = 0;                   // Minimum retained (0 = no floor)
+export const KARMA_POSTING_MINIMUM = 1;              // Minimum karma to post
+export const KARMA_STALE_THRESHOLD_BLOCKS = 20160;   // 28d grace period at 2m blocks
+export const KARMA_DECAY_INTERVAL_BLOCKS = 720;      // 24h decay period at 2m blocks
+export const KARMA_DECAY_AMOUNT = 5;                 // Karma burned per interval
+export const KARMA_MINIMUM = 10;                     // Floor — decay never reduces below
 ```
 
 ### Post lock

@@ -295,8 +295,10 @@ sufficiency, and parent ref existence.
 
 ## UTXO Engine Contract
 
-The UTXO engine manages box lifecycle, transaction validation, karma decay,
-and conservation rules. It is split into three functions:
+The UTXO engine manages box lifecycle, transaction validation, and
+conservation rules. Karma decay is handled separately by the periodic
+decay engine at block application time. The engine is split into three
+functions:
 
 ### validateTx
 
@@ -309,10 +311,10 @@ Full read-only validation. Performs all checks without modifying state:
 1. No duplicate input box IDs
 2. All input boxes exist and are unspent
 3. All inputs have the same boxType
-4. Face-value conservation (non-karma types; karma uses decay-aware check)
+4. Face-value conservation (non-karma types; karma conservation is handled
+   by the periodic decay engine)
 5. Guard satisfaction (signatures verified against tx hash)
 6. Legal box transitions (per the transition table below)
-7. Karma decay check (effective value must cover output values)
 
 Returns `{ valid, error?, computedOutputs?, txId? }`. On success, `computedOutputs`
 contains boxes with pre-computed IDs (for use by `applyTx`), and `txId` is the
@@ -331,7 +333,8 @@ Lightweight re-validation at block application time. Skips expensive checks
 (signatures, transitions) and only verifies:
 
 - Input liveness — are inputs still unspent?
-- Karma decay — has effective value expired at the new height?
+- Karma decay is handled by the periodic decay engine (applied separately
+  during block application, not at individual transaction revalidation)
 
 **Used during block finalization** when applying UTXO transactions from the
 mempool. Signatures and transitions were already verified (either at pool
@@ -360,7 +363,7 @@ New code should prefer the split functions.
 
 | Consumed | Created | Condition |
 |----------|---------|-----------|
-| KarmaBox | KarmaBox | Same owner, balance change (earn/decay) |
+| KarmaBox | KarmaBox | Same owner, balance change (earn/spend) |
 | KarmaBox | KarmaBox + LikeBox | Same owner, value conserved |
 | KarmaBox | KarmaBox + PostLockBox | Same owner, value conserved |
 | KarmaBox | KarmaBox + InviteBox + BondBox | Same owner, value conserved |
@@ -371,17 +374,19 @@ New code should prefer the split functions.
 | LikeBox | — (tallied) | Epoch tally consumption (ordering block only) |
 | PostLockBox | PostLockBox(+KarmaBox) | Epoch processing only (partial/full unlock) |
 
-### Karma decay at consumption
+### Karma decay (periodic burn)
 
-```
-age = currentBlockHeight - box.createdAtBlock
-graceAge = max(0, age - KARMA_DECAY_GRACE_BLOCKS)
-decay = floor(box.value * KARMA_DECAY_RATE * graceAge)
-effectiveValue = max(box.value - decay, KARMA_FLOOR)
-```
+Karma decay is applied at block application time via `applyKarmaDecay()`,
+not at individual transaction consumption time. See `decay.ts` and the
+Architecture document for the full model. Key properties:
 
-Decay is computed at the time a karma box is consumed. The created box(es)
-use `effectiveValue` as the source. Decayed karma is destroyed (net deflation).
+- **Staleness:** An identity must have no normal-activity karma box within
+  `KARMA_STALE_THRESHOLD_BLOCKS` to be eligible
+- **Burn rate:** `KARMA_DECAY_AMOUNT` karma per `KARMA_DECAY_INTERVAL_BLOCKS`
+- **Floor:** Never reduces below `KARMA_MINIMUM`
+- **Provenance:** Decay-created boxes carry `decayBurn: true` so subsequent
+  decay cycles continue burning. Normal activity boxes reset the clock.
+- **Rollback:** Journaled and reversed during fork resolution.
 
 ---
 
@@ -708,7 +713,7 @@ the ordering block is applied.
 - Protocol version checked at verification
 - Consumers call the Store interface, never the backend directly
 - UTXO transactions are atomic — all boxes consumed/created in one commit
-- Karma decay applied at box consumption time
+- Karma decay applied periodically at block application time
 - Sub-block identity IS post identity — they cannot diverge
 - Like deduplication happens at ordering block creation time
 - Challenge one-per-account: creating a new challenge consumes the old one

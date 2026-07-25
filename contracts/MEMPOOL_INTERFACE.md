@@ -268,7 +268,7 @@ When an ordering block is received from gossip:
 
 1. Full validation (structure, chain-link, PoW, signature)
 2. For each `utxoTxId`: decode from mempool or reconstruct, call
-   `revalidateTxInContext` (liveness + decay only), then `applyTx`
+   `revalidateTxInContext` (liveness only), then `applyTx`
 3. Confirm sub-blocks and their posts
 4. Remove confirmed entries from mempool
 
