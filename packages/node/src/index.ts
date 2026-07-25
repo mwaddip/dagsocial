@@ -19,6 +19,7 @@ import {
   insertMempoolSubBlock,
   insertUtxoTx,
   getPendingEntries,
+  getOrderingBlock,
 } from './store/index.js';
 import { encodePost, decodeSubBlock } from '@dagsocial/types';
 
@@ -118,6 +119,9 @@ try {
     }
     return null;
   });
+
+  // Register headers handler for fork resolution sync
+  net.setHeadersHandler(getOrderingBlock);
 } catch (err) {
   console.warn(`Net startup failed (continuing without networking): ${String(err)}`);
 }

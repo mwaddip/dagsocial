@@ -38,7 +38,7 @@ export async function requestHeaders(
     });
 
     const request = { startHeight, maxCount };
-    await stream.sink([Buffer.from(encode(request) as unknown as Uint8Array)]);
+    await stream.sink([Buffer.from(encode(request))] as any);
 
     const chunks: Uint8Array[] = [];
     for await (const chunk of stream.source) {
@@ -72,7 +72,7 @@ export async function requestBlocks(
     });
 
     const request = { startHeight, endHeight, mode: 'blocks' };
-    await stream.sink([Buffer.from(encode(request) as unknown as Uint8Array)]);
+    await stream.sink([Buffer.from(encode(request))] as any);
 
     const chunks: Uint8Array[] = [];
     for await (const chunk of stream.source) {
@@ -119,7 +119,7 @@ export function registerHeadersHandler(
           const block = getOrderingBlock(h);
           if (block) blocks.push(block);
         }
-        await stream.sink([Buffer.from(encode({ blocks }) as unknown as Uint8Array)]);
+        await stream.sink([Buffer.from(encode({ blocks }))] as any);
       } else {
         // Return headers only
         const headers: BlockHeader[] = [];
@@ -128,7 +128,7 @@ export function registerHeadersHandler(
           if (block) headers.push(block.header);
           else break; // gap — stop
         }
-        await stream.sink([Buffer.from(encode(headers) as unknown as Uint8Array)]);
+        await stream.sink([Buffer.from(encode(headers))] as any);
       }
     } catch {
       await stream.sink([new Uint8Array(0)]);

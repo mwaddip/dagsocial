@@ -14,7 +14,7 @@ import type { Libp2pGossip, GossipHandlers } from './gossip.js';
 import { PeerManager } from './peer-mgr.js';
 import { subscribeTopics, broadcastSubBlock, broadcastOrderingBlock, broadcastTx } from './gossip.js';
 import { requestSubBlock, registerSyncHandler } from './sync.js';
-import { requestHeaders, requestBlocks } from './headers.js';
+import { requestHeaders, requestBlocks, registerHeadersHandler } from './headers.js';
 
 type SubBlockCallback = (sb: SubBlock) => void;
 type OrderingBlockCallback = (block: OrderingBlock) => void;
@@ -255,6 +255,11 @@ export class NetNode {
     if (this.syncHandlerRegistered) return; // libp2p rejects duplicate protocol handlers
     registerSyncHandler(this.libp2p, handler);
     this.syncHandlerRegistered = true;
+  }
+
+  setHeadersHandler(getBlock: (height: number) => OrderingBlock | null): void {
+    if (!this.libp2p) throw new Error('NetNode not started');
+    registerHeadersHandler(this.libp2p, getBlock);
   }
 
   // Expose for node to register storage-backed handler
