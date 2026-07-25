@@ -79,14 +79,19 @@ export function revertBlock(height: number): void {
     }
   }
 
-  // 2. Burn minted karma (delete karma boxes created by mints at this height)
-  if (journal.karmaMints.length > 0) {
-    // mintKarma creates karma boxes with proofSource = `block:${height}`.
-    // Delete any karma box created by this block — avoids needing to
-    // reverse-engineer the mintKarma logic.
-    getDb().prepare(
-      `DELETE FROM utxo_boxes WHERE proof_source = ?`,
-    ).run(`block:${height}`);
+  // 2. Burn minted karma (delete karma boxes by box ID from journal)
+  for (const mint of journal.karmaMints) {
+    if (mint.boxId) {
+      deleteBox(mint.boxId);
+    }
+  }
+
+  // 2b. Reverse decay burns (delete new box, unconsume consumed boxes)
+  for (const decay of journal.decayBurns) {
+    deleteBox(decay.newBoxId);
+    for (const boxId of decay.consumedBoxIds) {
+      unconsumeBox(boxId);
+    }
   }
 
   // 3. Unspend tallied like boxes
@@ -114,6 +119,7 @@ export function revertBlock(height: number): void {
  * then apply the competing chain forward.
  */
 export function reorg(forkHeight: number, newBlocks: OrderingBlock[]): void {
+  getDb().transaction(() => {
   const currentHeight = getCurrentHeight();
 
   // Phase 1: revert our blocks, collecting journals for re-insertion
@@ -142,6 +148,9 @@ export function reorg(forkHeight: number, newBlocks: OrderingBlock[]): void {
 
   // Phase 3: apply new chain
   for (const block of newBlocks) {
-    applyOrderingBlock(block);
+    if (!applyOrderingBlock(block)) {
+      throw new Error(`reorg failed: block at height ${block.header.height} rejected`);
+    }
   }
+  })();
 }
