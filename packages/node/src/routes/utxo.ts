@@ -17,6 +17,7 @@ import {
   ensureFaucetCreditBox,
 } from '../store/system.js';
 import { getNet } from '../services/net-instance.js';
+import { config } from '../config.js';
 
 // ---------------------------------------------------------------------------
 // Dependency types
@@ -184,6 +185,11 @@ export function createRouter(deps: UtxoDeps): Router {
 
   // POST /credits/faucet — testnet-only credit faucet
   router.post('/credits/faucet', (req, res) => {
+    if (config.networkMode !== 'testnet') {
+      res.status(403).json({ error: 'faucet disabled in production mode' });
+      return;
+    }
+
     const body = req.body as { to?: string };
 
     if (!body.to || typeof body.to !== 'string' || body.to.length !== 64) {
