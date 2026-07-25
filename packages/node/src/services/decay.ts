@@ -21,6 +21,10 @@ export function isIdentityStale(
   thresholdBlocks: number,
 ): boolean {
   if (boxes.length === 0) return false;
+  // Guard: chain hasn't existed long enough for staleness to apply.
+  // Without this, `currentHeight - thresholdBlocks` wraps negative and
+  // every non-decay-burn box falsely appears "recent".
+  if (currentHeight <= thresholdBlocks) return false;
   const hasRecentActivity = boxes.some(
     (b) =>
       b.decayBurn !== true &&
