@@ -752,7 +752,14 @@ describe('block-apply journal recording', () => {
     const { applyKarmaDecay } = await import(
       '../../src/services/decay.js'
     );
-    const { KARMA_DECAY_AMOUNT } = await import('@dagsocial/types');
+    const { KARMA_DECAY_AMOUNT, KARMA_DECAY_INTERVAL_BLOCKS, KARMA_MINIMUM } = await import('@dagsocial/types');
+
+    const decayCfg = {
+      staleThresholdBlocks: KARMA_STALE_THRESHOLD_BLOCKS,
+      decayIntervalBlocks: KARMA_DECAY_INTERVAL_BLOCKS,
+      decayAmount: KARMA_DECAY_AMOUNT,
+      karmaMinimum: KARMA_MINIMUM,
+    };
 
     const deps = {
       getKarmaBoxes: (owner: Uint8Array) => {
@@ -766,7 +773,7 @@ describe('block-apply journal recording', () => {
     };
 
     const staleHeight = KARMA_STALE_THRESHOLD_BLOCKS + 100;
-    const entries: DecayJournalEntry[] = applyKarmaDecay(deps, staleHeight);
+    const entries: DecayJournalEntry[] = applyKarmaDecay(deps, staleHeight, decayCfg);
 
     // owedPeriods = floor((staleHeight - 0) / 720) = 28
     // maxBurn = min(28 * 5, 100 - 10) = min(140, 90) = 90

@@ -5,6 +5,10 @@ import {
   ORDERING_BLOCK_POW_TARGET_BITS,
   CREDIT_INITIAL_REWARD,
   CREDIT_TREASURY_PCT,
+  KARMA_STALE_THRESHOLD_BLOCKS,
+  KARMA_DECAY_INTERVAL_BLOCKS,
+  KARMA_DECAY_AMOUNT,
+  KARMA_MINIMUM,
 } from '@dagsocial/types';
 
 export interface Config {
@@ -24,6 +28,11 @@ export interface Config {
   creditInitialReward: number;
   creditTreasuryPct: number;
   treasuryPubKey: string;  // hex-encoded 32-byte key, empty = no treasury
+  // Karma decay
+  karmaStaleThresholdBlocks: number;
+  karmaDecayIntervalBlocks: number;
+  karmaDecayAmount: number;
+  karmaMinimum: number;
   // Net settings
   bootstrapPeers: string[];
   listenAddrs: string;
@@ -75,6 +84,23 @@ export function loadConfig(): Readonly<Config> {
       10,
     ),
     treasuryPubKey: process.env['TREASURY_PUBKEY'] ?? '',
+    // Karma decay (overridable for testing)
+    karmaStaleThresholdBlocks: parseInt(
+      process.env['KARMA_STALE_THRESHOLD_BLOCKS'] ?? String(KARMA_STALE_THRESHOLD_BLOCKS),
+      10,
+    ),
+    karmaDecayIntervalBlocks: parseInt(
+      process.env['KARMA_DECAY_INTERVAL_BLOCKS'] ?? String(KARMA_DECAY_INTERVAL_BLOCKS),
+      10,
+    ),
+    karmaDecayAmount: parseInt(
+      process.env['KARMA_DECAY_AMOUNT'] ?? String(KARMA_DECAY_AMOUNT),
+      10,
+    ),
+    karmaMinimum: parseInt(
+      process.env['KARMA_MINIMUM'] ?? String(KARMA_MINIMUM),
+      10,
+    ),
     // Net settings
     bootstrapPeers: parseBootstrapPeers(process.env['BOOTSTRAP_PEERS'] ?? ''),
     listenAddrs: process.env['LISTEN_ADDRS'] ?? '/ip4/0.0.0.0/tcp/0',

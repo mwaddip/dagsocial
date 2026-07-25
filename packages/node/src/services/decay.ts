@@ -1,10 +1,4 @@
-import {
-  KARMA_STALE_THRESHOLD_BLOCKS,
-  KARMA_DECAY_INTERVAL_BLOCKS,
-  KARMA_DECAY_AMOUNT,
-  KARMA_MINIMUM,
-  computeBoxId,
-} from '@dagsocial/types';
+import { computeBoxId } from '@dagsocial/types';
 import type { KarmaBox, DecayJournalEntry } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
@@ -81,6 +75,12 @@ export interface DecayDeps {
 export function applyKarmaDecay(
   deps: DecayDeps,
   currentHeight: number,
+  cfg: {
+    staleThresholdBlocks: number;
+    decayIntervalBlocks: number;
+    decayAmount: number;
+    karmaMinimum: number;
+  },
 ): DecayJournalEntry[] {
   const journal: DecayJournalEntry[] = [];
   const owners = deps.getKarmaOwners();
@@ -89,16 +89,16 @@ export function applyKarmaDecay(
     const boxes = deps.getKarmaBoxes(owner);
     if (boxes.length === 0) continue;
 
-    if (!isIdentityStale(boxes, currentHeight, KARMA_STALE_THRESHOLD_BLOCKS)) {
+    if (!isIdentityStale(boxes, currentHeight, cfg.staleThresholdBlocks)) {
       continue;
     }
 
-    const periods = owedPeriods(boxes, currentHeight, KARMA_DECAY_INTERVAL_BLOCKS);
+    const periods = owedPeriods(boxes, currentHeight, cfg.decayIntervalBlocks);
     if (periods <= 0) continue;
 
     const totalKarma = boxes.reduce((sum, b) => sum + b.value, 0);
-    const maxBurn = Math.max(0, totalKarma - KARMA_MINIMUM);
-    const burnAmount = Math.min(periods * KARMA_DECAY_AMOUNT, maxBurn);
+    const maxBurn = Math.max(0, totalKarma - cfg.karmaMinimum);
+    const burnAmount = Math.min(periods * cfg.decayAmount, maxBurn);
     if (burnAmount <= 0) continue;
 
     const newValue = totalKarma - burnAmount;

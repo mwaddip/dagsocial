@@ -14,6 +14,13 @@ import type { KarmaBox, DecayJournalEntry } from '@dagsocial/types';
 
 const OWNER = new Uint8Array(32).fill(0xaa);
 
+const TEST_CFG = {
+  staleThresholdBlocks: KARMA_STALE_THRESHOLD_BLOCKS,
+  decayIntervalBlocks: KARMA_DECAY_INTERVAL_BLOCKS,
+  decayAmount: KARMA_DECAY_AMOUNT,
+  karmaMinimum: KARMA_MINIMUM,
+};
+
 function makeKarmaBox(overrides: Partial<KarmaBox> = {}): KarmaBox {
   return {
     boxType: 'karma',
@@ -146,7 +153,7 @@ describe('applyKarmaDecay', () => {
     ]);
     const { deps, consumed, inserted } = makeDeps(boxesMap);
 
-    const journal = applyKarmaDecay(deps, 100000);
+    const journal = applyKarmaDecay(deps, 100000, TEST_CFG);
 
     expect(journal).toHaveLength(0);
     expect(consumed).toHaveLength(0);
@@ -163,7 +170,7 @@ describe('applyKarmaDecay', () => {
     ]);
     const { deps } = makeDeps(boxesMap);
 
-    const journal = applyKarmaDecay(deps, 25000);
+    const journal = applyKarmaDecay(deps, 25000, TEST_CFG);
 
     expect(journal).toHaveLength(1);
     const entry = journal[0]!;
@@ -182,7 +189,7 @@ describe('applyKarmaDecay', () => {
     ]);
     const { deps } = makeDeps(boxesMap);
 
-    const journal = applyKarmaDecay(deps, 25000);
+    const journal = applyKarmaDecay(deps, 25000, TEST_CFG);
 
     expect(journal).toHaveLength(1);
     expect(journal[0]!.burnAmount).toBe(2);
@@ -196,7 +203,7 @@ describe('applyKarmaDecay', () => {
     ]);
     const { deps, consumed, inserted } = makeDeps(boxesMap);
 
-    const journal = applyKarmaDecay(deps, 25000);
+    const journal = applyKarmaDecay(deps, 25000, TEST_CFG);
 
     expect(journal).toHaveLength(0);
     expect(consumed).toHaveLength(0);
@@ -212,7 +219,7 @@ describe('applyKarmaDecay', () => {
     ]);
     const { deps, consumed } = makeDeps(boxesMap);
 
-    const journal = applyKarmaDecay(deps, 25000);
+    const journal = applyKarmaDecay(deps, 25000, TEST_CFG);
 
     expect(journal).toHaveLength(1);
     expect(consumed.length).toBe(2); // both old boxes consumed
@@ -227,7 +234,7 @@ describe('applyKarmaDecay', () => {
     ]);
     const { deps, inserted } = makeDeps(boxesMap);
 
-    applyKarmaDecay(deps, 25000);
+    applyKarmaDecay(deps, 25000, TEST_CFG);
 
     expect(inserted).toHaveLength(1);
     expect(inserted[0]!.decayBurn).toBe(true);

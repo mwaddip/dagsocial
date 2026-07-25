@@ -3,6 +3,7 @@ import { mintKarma } from './karma.js';
 import { mintCredits } from './credits.js';
 import { applyKarmaDecay } from './decay.js';
 import type { DecayDeps } from './decay.js';
+import { config } from '../config.js';
 import { computeBlockReward, computeSubBlockRoot, computeUtxoTxRoot, clearTemplate } from './block-creator.js';
 import { revalidateTxInContext, applyTx } from './utxo-engine.js';
 import {
@@ -291,7 +292,12 @@ export function applyOrderingBlock(block: OrderingBlock): boolean {
       return rows.map((r) => new Uint8Array(r.owner));
     },
   };
-  const journalEntries = applyKarmaDecay(decayDeps, block.header.height);
+  const journalEntries = applyKarmaDecay(decayDeps, block.header.height, {
+    staleThresholdBlocks: config.karmaStaleThresholdBlocks,
+    decayIntervalBlocks: config.karmaDecayIntervalBlocks,
+    decayAmount: config.karmaDecayAmount,
+    karmaMinimum: config.karmaMinimum,
+  });
   currentJournal.decayBurns.push(...journalEntries);
 
   // 12. Persist journal and purge old ones

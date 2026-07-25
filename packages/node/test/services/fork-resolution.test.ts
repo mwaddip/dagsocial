@@ -835,11 +835,22 @@ describe('revertBlock', () => {
     const { applyKarmaDecay } = await import(
       '../../src/services/decay.js'
     );
-    const { KARMA_STALE_THRESHOLD_BLOCKS } =
-      await import('@dagsocial/types');
+    const {
+      KARMA_STALE_THRESHOLD_BLOCKS,
+      KARMA_DECAY_INTERVAL_BLOCKS,
+      KARMA_DECAY_AMOUNT,
+      KARMA_MINIMUM,
+    } = await import('@dagsocial/types');
 
     // Use real store functions for getKarmaBoxes (returns all boxes)
     const { getKarmaBoxes } = await import('../../src/store/utxo.js');
+
+    const decayCfg = {
+      staleThresholdBlocks: KARMA_STALE_THRESHOLD_BLOCKS,
+      decayIntervalBlocks: KARMA_DECAY_INTERVAL_BLOCKS,
+      decayAmount: KARMA_DECAY_AMOUNT,
+      karmaMinimum: KARMA_MINIMUM,
+    };
 
     const deps = {
       getKarmaBoxes,
@@ -851,6 +862,7 @@ describe('revertBlock', () => {
     const entries = applyKarmaDecay(
       deps,
       KARMA_STALE_THRESHOLD_BLOCKS + 100,
+      decayCfg,
     );
 
     expect(entries.length).toBe(1);
