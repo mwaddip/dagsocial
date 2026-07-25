@@ -1,6 +1,18 @@
 import { createHash } from 'crypto';
 
 /**
+ * Convert a hex string to a Buffer, validating even length first.
+ * Buffer.from(hex, 'hex') silently truncates odd-length strings by ignoring
+ * the last nibble, which can hide data corruption.
+ */
+export function hexToBuf(hex: string): Buffer {
+  if (hex.length % 2 !== 0) {
+    throw new Error(`hexToBuf: odd hex length (${hex.length}) for "${hex.slice(0, 24)}..."`);
+  }
+  return Buffer.from(hex, 'hex');
+}
+
+/**
  * Domain-separated leaf hash for Merkle trees.
  * Prevents cross-tree collision (a subBlock ID hash can't collide with a
  * UTXO tx ID hash even if the underlying bytes match).

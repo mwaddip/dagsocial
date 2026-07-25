@@ -150,17 +150,23 @@ export function decodeOrderingBlock(bytes: Uint8Array): OrderingBlock {
   const buf = Buffer.from(bytes);
   let offset = 0;
 
+  if (offset + 4 > buf.length) throw new Error('decodeOrderingBlock: truncated at header length');
   const headerLen = buf.readUInt32BE(offset); offset += 4;
+  if (offset + headerLen > buf.length) throw new Error('decodeOrderingBlock: truncated at header body');
   const header = decodeHeader(new Uint8Array(buf.subarray(offset, offset + headerLen))); offset += headerLen;
 
+  if (offset + 4 > buf.length) throw new Error('decodeOrderingBlock: truncated at subBlockTree length');
   const subLen = buf.readUInt32BE(offset); offset += 4;
+  if (offset + subLen > buf.length) throw new Error('decodeOrderingBlock: truncated at subBlockTree body');
   const subBlockTree = decodeSubBlockTree(new Uint8Array(buf.subarray(offset, offset + subLen))); offset += subLen;
 
+  if (offset + 4 > buf.length) throw new Error('decodeOrderingBlock: truncated at utxoTxTree length');
   const utxoLen = buf.readUInt32BE(offset); offset += 4;
+  if (offset + utxoLen > buf.length) throw new Error('decodeOrderingBlock: truncated at utxoTxTree body');
   const utxoTxTree = decodeUtxoTxTree(new Uint8Array(buf.subarray(offset, offset + utxoLen))); offset += utxoLen;
 
+  if (offset + 64 > buf.length) throw new Error('decodeOrderingBlock: truncated at validator signature');
   const validatorSignature = new Uint8Array(buf.subarray(offset, offset + 64));
-  if (validatorSignature.length !== 64) throw new Error('decodeOrderingBlock: truncated validator signature');
 
   return { header, subBlockTree, utxoTxTree, validatorSignature };
 }

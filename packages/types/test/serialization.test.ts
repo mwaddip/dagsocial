@@ -299,7 +299,7 @@ describe('CBOR serialization', () => {
       // Remove last 32 bytes (half the signature)
       const truncated = fullBytes.subarray(0, fullBytes.length - 32);
       expect(() => decodeOrderingBlock(truncated)).toThrow(
-        'decodeOrderingBlock: truncated validator signature',
+        'decodeOrderingBlock: truncated at validator signature',
       );
     });
 
