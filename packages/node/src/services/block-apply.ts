@@ -1,11 +1,14 @@
 import * as validation from '@dagsocial/validation';
 import { mintKarma } from './karma.js';
 import { mintCredits } from './credits.js';
+import { applyKarmaDecay } from './decay.js';
+import type { DecayDeps } from './decay.js';
 import { computeBlockReward, computeSubBlockRoot, computeUtxoTxRoot, clearTemplate } from './block-creator.js';
 import { revalidateTxInContext, applyTx } from './utxo-engine.js';
 import {
   getIdentity,
   getKarmaBox,
+  getKarmaBoxes,
   getPost,
   insertBox,
   getBox,
@@ -48,6 +51,7 @@ export function applyOrderingBlock(block: OrderingBlock): boolean {
     talliedLikeBoxIds: [...block.utxoTxTree.likeBoxIds],
     karmaMints: [],
     appliedUtxoTxs: [],
+    decayBurns: [],
   };
 
   // Populate subBlockCbors from mempool entries
@@ -199,8 +203,8 @@ export function applyOrderingBlock(block: OrderingBlock): boolean {
       if (reward.authorReward > 0) {
         const post = getPost(postId);
         if (post && 'author' in post) {
-          currentJournal.karmaMints.push({ userId: post.author, amount: reward.authorReward });
-          mintKarma(post.author, reward.authorReward, block.header.height);
+          const boxId = mintKarma(post.author, reward.authorReward, block.header.height);
+          currentJournal.karmaMints.push({ userId: post.author, amount: reward.authorReward, boxId });
         }
       }
 
@@ -209,8 +213,8 @@ export function applyOrderingBlock(block: OrderingBlock): boolean {
         const refund = reward.likerRefunds[likerId];
         if (refund !== undefined && refund !== 0) {
           const likerBytes = new Uint8Array(Buffer.from(likerId, "hex"));
-          currentJournal.karmaMints.push({ userId: likerBytes, amount: refund });
-          mintKarma(likerBytes, refund, block.header.height);
+          const boxId = mintKarma(likerBytes, refund, block.header.height);
+          currentJournal.karmaMints.push({ userId: likerBytes, amount: refund, boxId });
         }
       }
 
@@ -218,8 +222,8 @@ export function applyOrderingBlock(block: OrderingBlock): boolean {
       if (reward.postLockKarmaUnlocked && reward.postLockKarmaUnlocked > 0) {
         const post = getPost(postId);
         if (post && 'author' in post) {
-          currentJournal.karmaMints.push({ userId: post.author, amount: reward.postLockKarmaUnlocked });
-          mintKarma(post.author, reward.postLockKarmaUnlocked, block.header.height);
+          const boxId = mintKarma(post.author, reward.postLockKarmaUnlocked, block.header.height);
+          currentJournal.karmaMints.push({ userId: post.author, amount: reward.postLockKarmaUnlocked, boxId });
         }
       }
     }
@@ -271,7 +275,26 @@ export function applyOrderingBlock(block: OrderingBlock): boolean {
     });
   }
 
-  // 11. Persist journal and purge old ones
+  // 11. Apply periodic karma decay
+  const decayDeps: DecayDeps = {
+    getKarmaBoxes: (owner: Uint8Array) => getKarmaBoxes(owner),
+    consumeBox,
+    insertBox,
+    getKarmaOwners: () => {
+      const db = getDb();
+      const rows = db
+        .prepare(
+          `SELECT DISTINCT owner FROM utxo_boxes
+           WHERE box_type = 'karma' AND spent_at_block IS NULL`,
+        )
+        .all() as { owner: Buffer }[];
+      return rows.map((r) => new Uint8Array(r.owner));
+    },
+  };
+  const journalEntries = applyKarmaDecay(decayDeps, block.header.height);
+  currentJournal.decayBurns.push(...journalEntries);
+
+  // 12. Persist journal and purge old ones
   insertBlockJournal(currentJournal);
   purgeOldJournals(block.header.height - 20);
   currentJournal = null;
