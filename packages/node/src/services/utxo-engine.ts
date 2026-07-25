@@ -569,7 +569,9 @@ export function applyTx(
       deps.consumeBox(id, currentBlockHeight);
     }
     for (const box of outputsWithIds) {
-      deps.insertBox(box);
+      // Always set createdAtBlock to the current height — the client may
+      // provide stale or zero values.  The box IS created in this block.
+      deps.insertBox({ ...box, createdAtBlock: currentBlockHeight });
     }
   });
 }
