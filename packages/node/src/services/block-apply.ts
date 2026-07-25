@@ -157,7 +157,7 @@ export function applyOrderingBlock(block: OrderingBlock): boolean {
     }
   }
 
-  // 7. Confirm sub-blocks and their posts
+  // 7. Confirm sub-blocks and their posts, then remove from mempool
   for (const subBlockId of block.subBlockTree.subBlockRefs) {
     try {
       confirmPost(subBlockId, block.header.height);
@@ -165,11 +165,28 @@ export function applyOrderingBlock(block: OrderingBlock): boolean {
       console.warn(`Failed to confirm sub-block ${subBlockId}: ${String(err)}`);
     }
   }
-
-  // 8. Mark standalone like boxes as tallied
-  if (block.utxoTxTree.likeBoxIds.length > 0) {
-    markLikeBoxesTallied(block.utxoTxTree.likeBoxIds);
+  // Remove confirmed sub-block entries from mempool
+  if (block.subBlockTree.subBlockRefs.length > 0) {
+    const entriesAfter = getPendingEntries(1000);
+    for (const subBlockId of block.subBlockTree.subBlockRefs) {
+      const match = entriesAfter.find((e) => {
+        if (e.entryType !== 'subblock' || !e.subblockCbor) return false;
+        try {
+          const sb = decodeSubBlock(e.subblockCbor);
+          return sb.subBlockId === subBlockId;
+        } catch {
+          return false;
+        }
+      });
+      if (match) {
+        removeEntry(match.rowid);
+      }
+    }
   }
+
+  // 8. Standalone like boxes are tallied by runEpochTally at epoch boundaries
+  // (called inside createOrderingBlock before finalizeBlock delegates here).
+  // Only record them in the journal for revert tracking.
 
   // 9. Apply epoch tally results
   if (block.utxoTxTree.epochTallyResults) {

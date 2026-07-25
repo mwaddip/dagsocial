@@ -137,6 +137,9 @@ export function verifyOrderingBlockStructure(
   if (typeof h.protocolVersion !== 'number') {
     return { valid: false, error: 'Ordering block header missing protocolVersion' };
   }
+  if (!h.validatorId || h.validatorId.length !== 32) {
+    return { valid: false, error: 'Ordering block header missing or invalid validatorId' };
+  }
   if (typeof h.powNonce !== 'number' || h.powNonce < 0) {
     return { valid: false, error: 'Ordering block missing or invalid powNonce' };
   }

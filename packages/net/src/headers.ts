@@ -6,7 +6,7 @@ import type { NetConfig } from './types.js';
 
 export const HEADERS_PROTOCOL = '/dagsocial/headers/1';
 
-function mergeUint8Arrays(chunks: Uint8Array[]): Uint8Array {
+export function mergeUint8Arrays(chunks: Uint8Array[]): Uint8Array {
   const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
   const result = new Uint8Array(totalLength);
   let offset = 0;

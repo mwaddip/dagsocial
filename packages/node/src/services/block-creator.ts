@@ -55,6 +55,7 @@ import { getNet } from './net-instance.js';
 import { mintKarma } from './karma.js';
 import { mintCredits } from './credits.js';
 import { revalidateTxInContext, applyTx } from './utxo-engine.js';
+import { applyOrderingBlock } from './block-apply.js';
 import { getDb } from '../store/db.js';
 import {
   getPendingEntries,
@@ -391,6 +392,14 @@ export function createOrderingBlock(): OrderingBlock | null {
     return computeTxId(tx);
   });
 
+  // 7a. Matched UTXO entries (attached to sub-blocks) → also apply them
+  for (const entry of standaloneUtxoTxs) {
+    if (matchedUtxoRowids.has(entry.rowid)) {
+      const tx = decodeTx(entry.utxoTxCbor!);
+      utxoTxIds.push(computeTxId(tx));
+    }
+  }
+
   // 7b. Batch-linked UTXO entries → utxoTxIds
   // These were grouped by batch_id in step 5 but never decoded/added to the block.
   for (const [, batchEntries] of batchMap) {
@@ -539,15 +548,18 @@ export function createOrderingBlock(): OrderingBlock | null {
 // ---------------------------------------------------------------------------
 
 function finalizeBlock(block: OrderingBlock): void {
-  // 1. Store block
-  storeCreateOrderingBlock(block);
+  // applyOrderingBlock handles validation, storage, coinbase, confirmations,
+  // UTXO tx application, journal recording, and basic mempool cleanup
+  applyOrderingBlock(block);
 
-  // 2. Apply coinbase — mint credits for each output
-  for (const out of block.utxoTxTree.coinbaseOutputs) {
-    mintCredits(out.owner, out.value, block.header.height, out.lockedUntilBlock);
+  // Clean up any remaining mempool entries that applyOrderingBlock didn't
+  // remove (e.g. UTXO txs that were attached to sub-blocks and removed
+  // from utxoTxIds). Double-removal is harmless.
+  for (const rowid of confirmedRowids) {
+    removeEntry(rowid);
   }
 
-  // 3. Broadcast
+  // Broadcast (not handled by applyOrderingBlock)
   const net = getNet();
   if (net) {
     net.broadcastOrderingBlock(block).catch((err: Error) => {
@@ -555,55 +567,7 @@ function finalizeBlock(block: OrderingBlock): void {
     });
   }
 
-  // 4. Confirm sub-blocks and their posts
-  for (const sbId of block.subBlockTree.subBlockRefs) {
-    confirmPost(sbId, block.header.height);
-  }
-
-  // 4b. Apply UTXO transactions locally (so we don't rely on gossip loopback)
-  // This applies txs that were confirmed in this block.  If a tx was already
-  // applied by a relayed block from the other node, skip it (idempotent).
-  const utxoDeps = {
-    getBox,
-    insertBox: (box: AnyBox) => {
-      // Skip if already exists (may have been applied via relayed block)
-      if (getBox(box.id!)) return;
-      insertBox(box);
-    },
-    consumeBox: (id: string, atBlock: number) => {
-      // Only consume if still unspent
-      if (!getBox(id)) return;
-      consumeBox(id, atBlock);
-    },
-    getKarmaBox,
-    getIdentity,
-    runInTransaction: (fn: () => void) => {
-      getDb().transaction(fn)();
-    },
-  };
-  const allEntries = getPendingEntries(1000);
-  for (const rowid of confirmedRowids) {
-    const entry = allEntries.find((e) => e.rowid === rowid);
-    if (!entry || entry.entryType !== 'utxo_tx' || !entry.utxoTxCbor) continue;
-    const tx = decodeTx(entry.utxoTxCbor);
-    const revalResult = revalidateTxInContext(utxoDeps, tx, block.header.height);
-    if (!revalResult.valid) {
-      console.warn(`UTXO tx revalidation failed at block ${block.header.height}: ${revalResult.error}`);
-      continue;
-    }
-    const outputsWithIds = tx.outputs.map((box) => ({
-      ...box,
-      id: computeBoxId(box),
-    }));
-    applyTx(utxoDeps, tx, outputsWithIds, block.header.height);
-  }
-
-  // 5. Remove confirmed entries from mempool
-  for (const rowid of confirmedRowids) {
-    removeEntry(rowid);
-  }
-
-  // 6. Reset state
+  // Reset state
   pendingSubBlockCounter = 0;
   currentTemplate = null;
   confirmedRowids = new Set();
@@ -702,16 +666,13 @@ function runEpochTally(blockHeight: number): EpochTally {
     for (const lb of locked) {
       if (thresholdMet) {
         if (lb.id) allLockedBoxIds.push(lb.id);
-        mintKarma(lb.likerId, LIKE_COST, blockHeight);
+        // mintKarma is handled by applyOrderingBlock from epochTallyResults
         likerRefunds[Buffer.from(lb.likerId).toString('hex')] = 0;
       }
     }
 
     if (authorReward > 0) {
-      const authorId = getPostAuthorId(targetPostId);
-      if (authorId) {
-        mintKarma(authorId, authorReward, blockHeight);
-      }
+      // mintKarma is handled by applyOrderingBlock from epochTallyResults
     }
 
     for (const fl of free) {
@@ -759,11 +720,7 @@ function runEpochTally(blockHeight: number): EpochTally {
       insertBox(newPlb);
     }
 
-    const post = getPost(plb.targetPostId);
-    if (post && !('subtreeMerkleRoot' in post)) {
-      const authorId = post.author;
-      mintKarma(authorId, toUnlock, blockHeight);
-    }
+    // mintKarma for post lock unlock is handled by applyOrderingBlock from epochTallyResults
 
     if (!rewards[plb.targetPostId]) {
       rewards[plb.targetPostId] = {

@@ -1053,8 +1053,8 @@ describe('block-creator', () => {
     const block = bc.createOrderingBlock();
 
     expect(block).not.toBeNull();
-    // The matching like should NOT be in utxoTxIds (it was attached to the sub-block)
-    expect(block!.utxoTxTree.utxoTxIds).not.toContain(computeTxId(matchingLikeTx));
+    // The matching like IS in utxoTxIds (it needs to be applied by the UTXO engine)
+    expect(block!.utxoTxTree.utxoTxIds).toContain(computeTxId(matchingLikeTx));
     // The standalone like SHOULD be in utxoTxIds
     expect(block!.utxoTxTree.utxoTxIds).toContain(computeTxId(standaloneLikeTx));
     // The sub-block now has the attached like box
