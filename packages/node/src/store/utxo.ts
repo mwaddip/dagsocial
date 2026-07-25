@@ -227,6 +227,22 @@ export function getKarmaBox(owner: Uint8Array): KarmaBox | null {
 }
 
 /**
+ * Return all unspent karma boxes for the given owner, sorted by value
+ * descending (largest-first for UTXO selection).
+ */
+export function getKarmaBoxes(owner: Uint8Array): KarmaBox[] {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT * FROM utxo_boxes
+       WHERE owner = ? AND box_type = 'karma' AND spent_at_block IS NULL
+       ORDER BY value DESC`,
+    )
+    .all(Buffer.from(owner)) as UtxoRow[];
+  return rows.map(rowToBox) as KarmaBox[];
+}
+
+/**
  * Return the single unspent credit box for the given owner, or null if none.
  */
 export function getCreditBox(owner: Uint8Array): CreditBox | null {
@@ -239,6 +255,22 @@ export function getCreditBox(owner: Uint8Array): CreditBox | null {
     )
     .get(Buffer.from(owner)) as UtxoRow | undefined;
   return row ? (rowToBox(row) as CreditBox) : null;
+}
+
+/**
+ * Return all unspent credit boxes for the given owner, sorted by value
+ * descending (largest-first for UTXO selection).
+ */
+export function getCreditBoxes(owner: Uint8Array): CreditBox[] {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT * FROM utxo_boxes
+       WHERE owner = ? AND box_type = 'credit' AND spent_at_block IS NULL
+       ORDER BY value DESC`,
+    )
+    .all(Buffer.from(owner)) as UtxoRow[];
+  return rows.map(rowToBox) as CreditBox[];
 }
 
 /**

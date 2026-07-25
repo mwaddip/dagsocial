@@ -31,7 +31,9 @@ async function importUtxoFresh() {
     getBox: (boxId: string) => AnyBox | null;
     getUnspentBoxes: (owner: Uint8Array) => AnyBox[];
     getKarmaBox: (owner: Uint8Array) => KarmaBox | null;
+    getKarmaBoxes: (owner: Uint8Array) => KarmaBox[];
     getCreditBox: (owner: Uint8Array) => CreditBox | null;
+    getCreditBoxes: (owner: Uint8Array) => CreditBox[];
     getPendingInvites: (inviterId: Uint8Array) => InviteBox[];
     getPendingInviteCount: (inviterId: Uint8Array) => number;
     getBondBoxes: (inviterId: Uint8Array) => BondBox[];
@@ -577,5 +579,106 @@ describe('utxo store', () => {
 
     // Should not throw
     expect(() => markLikeBoxesTallied([])).not.toThrow();
+  });
+
+  // --- getKarmaBoxes returns all unspent karma boxes sorted by value desc -----
+
+  it('getKarmaBoxes returns all unspent karma boxes sorted value desc', async () => {
+    const { initDb } = await importDbFresh();
+    const { insertBox, getKarmaBoxes, consumeBox } = await importUtxoFresh();
+    const { computeBoxId } = await importTypes();
+
+    initDb(':memory:');
+
+    const owner = bytes(32);
+    const box1 = makeKarmaBox({ value: 100, owner });
+    box1.id = computeBoxId(box1);
+    insertBox(box1);
+
+    const box2 = makeKarmaBox({ value: 200, owner });
+    box2.id = computeBoxId(box2);
+    insertBox(box2);
+
+    const box3 = makeKarmaBox({ value: 50, owner });
+    box3.id = computeBoxId(box3);
+    insertBox(box3);
+
+    // Consume box2 — it should be excluded
+    consumeBox(box2.id!, 5);
+
+    const results = getKarmaBoxes(owner);
+    expect(results).toHaveLength(2);
+    // Sorted value desc: 100, 50
+    expect(results[0]!.value).toBe(100);
+    expect(results[1]!.value).toBe(50);
+  });
+
+  it('getKarmaBoxes returns empty array for unknown owner', async () => {
+    const { initDb } = await importDbFresh();
+    const { getKarmaBoxes } = await importUtxoFresh();
+
+    initDb(':memory:');
+
+    const results = getKarmaBoxes(bytes(32));
+    expect(results).toEqual([]);
+  });
+
+  it('getKarmaBoxes excludes boxes owned by other users', async () => {
+    const { initDb } = await importDbFresh();
+    const { insertBox, getKarmaBoxes } = await importUtxoFresh();
+    const { computeBoxId } = await importTypes();
+
+    initDb(':memory:');
+
+    const alice = bytes(32).fill(0xaa);
+    const bob = bytes(32).fill(0xbb);
+
+    const aliceBox = makeKarmaBox({ value: 100, owner: alice });
+    aliceBox.id = computeBoxId(aliceBox);
+    insertBox(aliceBox);
+
+    const bobBox = makeKarmaBox({ value: 200, owner: bob });
+    bobBox.id = computeBoxId(bobBox);
+    insertBox(bobBox);
+
+    const results = getKarmaBoxes(alice);
+    expect(results).toHaveLength(1);
+    expect(results[0]!.value).toBe(100);
+  });
+
+  // --- getCreditBoxes return all unspent credit boxes sorted by value desc ----
+
+  it('getCreditBoxes returns all unspent credit boxes sorted value desc', async () => {
+    const { initDb } = await importDbFresh();
+    const { insertBox, getCreditBoxes, consumeBox } = await importUtxoFresh();
+    const { computeBoxId } = await importTypes();
+
+    initDb(':memory:');
+
+    const owner = bytes(32);
+    const box1 = makeCreditBox({ value: 300, owner });
+    box1.id = computeBoxId(box1);
+    insertBox(box1);
+
+    const box2 = makeCreditBox({ value: 500, owner });
+    box2.id = computeBoxId(box2);
+    insertBox(box2);
+
+    // Consume box1 — it should be excluded
+    consumeBox(box1.id!, 5);
+
+    const results = getCreditBoxes(owner);
+    expect(results).toHaveLength(1);
+    expect(results[0]!.value).toBe(500);
+  });
+
+  it('getCreditBoxes returns empty array for unknown owner', async () => {
+    const { initDb } = await importDbFresh();
+    const { getCreditBoxes } = await importUtxoFresh();
+
+    initDb(':memory:');
+
+    const results = getCreditBoxes(bytes(32));
+    expect(results).toEqual([]);
   });
 });
