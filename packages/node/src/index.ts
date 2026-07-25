@@ -154,48 +154,48 @@ function applyOrderingBlock(block: import('@dagsocial/types').OrderingBlock): vo
   // 1. Chain-link check
   if (currentHeight === 0) {
     // Genesis: prevBlockHash must be all zeros
-    if (block.prevBlockHash !== '0000000000000000000000000000000000000000000000000000000000000000') {
-      console.warn(`Rejected block height=${block.height}: genesis prevBlockHash mismatch`);
+    if (block.header.prevBlockHash !== '0000000000000000000000000000000000000000000000000000000000000000') {
+      console.warn(`Rejected block height=${block.header.height}: genesis prevBlockHash mismatch`);
       return;
     }
-    if (block.height !== 1) {
-      console.warn(`Rejected block: first block must have height=1, got ${block.height}`);
+    if (block.header.height !== 1) {
+      console.warn(`Rejected block: first block must have height=1, got ${block.header.height}`);
       return;
     }
   } else {
     const prevBlock = getOrderingBlock(currentHeight);
     if (!prevBlock) {
-      console.warn(`Rejected block height=${block.height}: cannot find previous block at height=${currentHeight}`);
+      console.warn(`Rejected block height=${block.header.height}: cannot find previous block at height=${currentHeight}`);
       return;
     }
-    if (block.prevBlockHash !== prevBlock.hash) {
-      console.warn(`Rejected block height=${block.height}: prevBlockHash mismatch`);
+    if (block.header.prevBlockHash !== validation.blockHash(prevBlock.header)) {
+      console.warn(`Rejected block height=${block.header.height}: prevBlockHash mismatch`);
       return;
     }
-    if (block.height !== currentHeight + 1) {
-      console.warn(`Rejected block height=${block.height}: expected ${currentHeight + 1}`);
+    if (block.header.height !== currentHeight + 1) {
+      console.warn(`Rejected block height=${block.header.height}: expected ${currentHeight + 1}`);
       return;
     }
   }
 
   // 2. Protocol version
-  if (block.protocolVersion !== PROTOCOL_VERSION) {
-    console.warn(`Rejected block height=${block.height}: unsupported protocol version ${block.protocolVersion}`);
+  if (block.header.protocolVersion !== PROTOCOL_VERSION) {
+    console.warn(`Rejected block height=${block.header.height}: unsupported protocol version ${block.header.protocolVersion}`);
     return;
   }
 
   // 3. PoW verification
-  if (!validation.verifyOrderingBlockPoW(block)) {
-    console.warn(`Rejected block height=${block.height}: PoW invalid`);
+  if (!validation.verifyOrderingBlockPoW(block.header)) {
+    console.warn(`Rejected block height=${block.header.height}: PoW invalid`);
     return;
   }
 
   // 4. Verify coinbase reward matches emission schedule
-  const expectedReward = computeBlockReward(block.height);
-  const totalCoinbase = block.coinbaseOutputs.reduce((sum, o) => sum + o.value, 0);
+  const expectedReward = computeBlockReward(block.header.height);
+  const totalCoinbase = block.utxoTxTree.coinbaseOutputs.reduce((sum, o) => sum + o.value, 0);
   if (totalCoinbase !== expectedReward) {
     console.warn(
-      `Rejected block height=${block.height}: coinbase value ${totalCoinbase} != expected ${expectedReward}`,
+      `Rejected block height=${block.header.height}: coinbase value ${totalCoinbase} != expected ${expectedReward}`,
     );
     return;
   }
@@ -207,27 +207,27 @@ function applyOrderingBlock(block: import('@dagsocial/types').OrderingBlock): vo
   clearTemplate();
 
   // 7. Apply coinbase — mint credits for each output
-  for (const out of block.coinbaseOutputs) {
-    mintCredits(out.owner, out.value, block.height, out.lockedUntilBlock);
+  for (const out of block.utxoTxTree.coinbaseOutputs) {
+    mintCredits(out.owner, out.value, block.header.height, out.lockedUntilBlock);
   }
 
   // 7. Confirm sub-blocks and their posts
-  for (const subBlockId of block.subBlockRefs) {
+  for (const subBlockId of block.subBlockTree.subBlockRefs) {
     try {
-      confirmPost(subBlockId, block.height);
+      confirmPost(subBlockId, block.header.height);
     } catch (err) {
       console.warn(`Failed to confirm sub-block ${subBlockId}: ${String(err)}`);
     }
   }
 
   // 8. Mark standalone like boxes as tallied
-  if (block.likeBoxIds.length > 0) {
-    markLikeBoxesTallied(block.likeBoxIds);
+  if (block.utxoTxTree.likeBoxIds.length > 0) {
+    markLikeBoxesTallied(block.utxoTxTree.likeBoxIds);
   }
 
   // 9. Apply epoch tally results
-  if (block.epochTallyResults) {
-    const rewards = block.epochTallyResults.rewards;
+  if (block.utxoTxTree.epochTallyResults) {
+    const rewards = block.utxoTxTree.epochTallyResults.rewards;
     for (const postId of Object.keys(rewards)) {
       const reward = rewards[postId];
       if (!reward) continue;
@@ -236,7 +236,7 @@ function applyOrderingBlock(block: import('@dagsocial/types').OrderingBlock): vo
       if (reward.authorReward > 0) {
         const post = getPost(postId);
         if (post && 'author' in post) {
-          mintKarma(post.author, reward.authorReward, block.height);
+          mintKarma(post.author, reward.authorReward, block.header.height);
         }
       }
 
@@ -244,7 +244,7 @@ function applyOrderingBlock(block: import('@dagsocial/types').OrderingBlock): vo
       for (const likerId of Object.keys(reward.likerRefunds)) {
         const refund = reward.likerRefunds[likerId];
         if (refund !== undefined && refund !== 0) {
-          mintKarma(new Uint8Array(Buffer.from(likerId, "hex")), refund, block.height);
+          mintKarma(new Uint8Array(Buffer.from(likerId, "hex")), refund, block.header.height);
         }
       }
 
@@ -252,7 +252,7 @@ function applyOrderingBlock(block: import('@dagsocial/types').OrderingBlock): vo
       if (reward.postLockKarmaUnlocked && reward.postLockKarmaUnlocked > 0) {
         const post = getPost(postId);
         if (post && 'author' in post) {
-          mintKarma(post.author, reward.postLockKarmaUnlocked, block.height);
+          mintKarma(post.author, reward.postLockKarmaUnlocked, block.header.height);
         }
       }
     }
@@ -269,7 +269,7 @@ function applyOrderingBlock(block: import('@dagsocial/types').OrderingBlock): vo
       getDb().transaction(fn)();
     },
   };
-  for (const txId of block.utxoTxIds) {
+  for (const txId of block.utxoTxTree.utxoTxIds) {
     // Look up in local mempool
     const entries = getPendingEntries(1000);
     const entry = entries.find((e) => {
@@ -282,7 +282,7 @@ function applyOrderingBlock(block: import('@dagsocial/types').OrderingBlock): vo
       continue;
     }
     const tx = decodeTx(entry.utxoTxCbor!);
-    const revalResult = revalidateTxInContext(utxoDeps, tx, block.height);
+    const revalResult = revalidateTxInContext(utxoDeps, tx, block.header.height);
     if (!revalResult.valid) {
       console.warn(`UTXO tx ${txId} failed revalidation: ${revalResult.error}`);
       removeEntry(entry.rowid);
@@ -292,11 +292,11 @@ function applyOrderingBlock(block: import('@dagsocial/types').OrderingBlock): vo
       ...box,
       id: computeBoxId(box),
     })) as AnyBox[];
-    applyTx(utxoDeps, tx, computedOutputs, block.height);
+    applyTx(utxoDeps, tx, computedOutputs, block.header.height);
     removeEntry(entry.rowid);
   }
 
-  console.log(`Applied ordering block height=${block.height} hash=${block.hash} (${block.subBlockRefs.length} sub-blocks)`);
+  console.log(`Applied ordering block height=${block.header.height} hash=${validation.blockHash(block.header)} (${block.subBlockTree.subBlockRefs.length} sub-blocks)`);
 }
 
 // 7. Graceful shutdown
