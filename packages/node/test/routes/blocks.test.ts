@@ -21,21 +21,30 @@ const TEST_DB = '/tmp/dagsocial-test-routes-blocks.sqlite';
 // ---------------------------------------------------------------------------
 
 function makeBlock(height: number, hash: string): OrderingBlock {
+  const baseHash = height === 1 ? '0'.repeat(64) : `block-${height - 1}`;
   return {
-    height,
-    hash,
-    prevBlockHash: height === 1 ? '0'.repeat(64) : `block-${height - 1}`,
-    subBlockRefs: [],
-    likeBoxIds: [],
-    utxoTxIds: [],
-    stumpIds: [],
-    validatorId: uid('validator-1'),
+    header: {
+      protocolVersion: PROTOCOL_VERSION,
+      height,
+      prevBlockHash: baseHash,
+      subBlockRoot: '00'.repeat(64),
+      utxoTxRoot: '00'.repeat(64),
+      stateRoot: '00'.repeat(33),
+      validatorId: uid('validator-1'),
+      powNonce: 0,
+      powTargetBits: 12,
+      createdAt: Date.now(),
+    },
+    subBlockTree: {
+      subBlockRefs: [],
+      stumpIds: [],
+    },
+    utxoTxTree: {
+      utxoTxIds: [],
+      likeBoxIds: [],
+      coinbaseOutputs: [],
+    },
     validatorSignature: new Uint8Array(64),
-    powNonce: 0,
-    powTargetBits: 12,
-    coinbaseOutputs: [],
-    protocolVersion: PROTOCOL_VERSION,
-    createdAt: Date.now(),
   };
 }
 
@@ -149,8 +158,9 @@ describe('blocks routes', () => {
     const res = await request('/blocks/1');
     expect(res.status).toBe(200);
     const body = res.data as Record<string, unknown>;
-    expect(body.height).toBe(1);
-    expect(typeof body.hash).toBe('string');
+    const header = body.header as Record<string, unknown>;
+    expect(header.height).toBe(1);
+    expect(typeof body.validatorSignature).toBe('string');
     expect(body.validatorSignature).toBeDefined();
   });
 

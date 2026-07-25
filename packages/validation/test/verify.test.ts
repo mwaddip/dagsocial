@@ -10,8 +10,9 @@ import {
   verifyTxStructure,
   verifyOrderingBlockStructure,
   verifyBlockChainLink,
+  blockHash,
 } from '../src/verify.js';
-import { generateKeyPair, computePostId, signingHash } from '@dagsocial/types';
+import { generateKeyPair, computePostId, signingHash, EMPTY_STATE_ROOT } from '@dagsocial/types';
 import type { Post, SubBlock, OrderingBlock, UtxoTransaction } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
@@ -294,20 +295,28 @@ describe('verifyTxStructure', () => {
 
 describe('verifyOrderingBlockStructure', () => {
   const makeValidBlock = (): OrderingBlock => ({
-    height: 1,
-    hash: 'abc123',
-    prevBlockHash: '0000',
-    subBlockRefs: [],
-    likeBoxIds: [],
-    utxoTxIds: [],
-    stumpIds: [],
-    validatorId: 'validator1' as unknown as Uint8Array,
+    header: {
+      protocolVersion: 1,
+      height: 1,
+      prevBlockHash: '0'.repeat(64),
+      subBlockRoot: '00'.repeat(32),
+      utxoTxRoot: '00'.repeat(32),
+      stateRoot: EMPTY_STATE_ROOT,
+      validatorId: 'validator1' as unknown as Uint8Array,
+      powNonce: 0,
+      powTargetBits: 12,
+      createdAt: Date.now(),
+    },
+    subBlockTree: {
+      subBlockRefs: [],
+      stumpIds: [],
+    },
+    utxoTxTree: {
+      utxoTxIds: [],
+      likeBoxIds: [],
+      coinbaseOutputs: [],
+    },
     validatorSignature: new Uint8Array(64),
-    powNonce: 0,
-    powTargetBits: 12,
-    coinbaseOutputs: [],
-    protocolVersion: 1,
-    createdAt: Date.now(),
   });
 
   it('accepts a valid ordering block', () => {
@@ -315,7 +324,10 @@ describe('verifyOrderingBlockStructure', () => {
   });
 
   it('rejects block missing prevBlockHash', () => {
-    const block = { ...makeValidBlock(), prevBlockHash: '' };
+    const block = {
+      ...makeValidBlock(),
+      header: { ...makeValidBlock().header, prevBlockHash: '' },
+    };
     expect(verifyOrderingBlockStructure(block).valid).toBe(false);
   });
 
@@ -325,17 +337,28 @@ describe('verifyOrderingBlockStructure', () => {
   });
 
   it('rejects block with height 0', () => {
-    const block = { ...makeValidBlock(), height: 0 };
+    const block = {
+      ...makeValidBlock(),
+      header: { ...makeValidBlock().header, height: 0 },
+    };
     expect(verifyOrderingBlockStructure(block).valid).toBe(false);
   });
 
   it('rejects block missing protocolVersion', () => {
-    const block = { ...makeValidBlock(), protocolVersion: undefined } as unknown as OrderingBlock;
+    const block = {
+      ...makeValidBlock(),
+      header: { ...makeValidBlock().header, protocolVersion: undefined },
+    } as unknown as OrderingBlock;
     expect(verifyOrderingBlockStructure(block).valid).toBe(false);
   });
 
   it('rejects block with empty hash', () => {
-    const block = { ...makeValidBlock(), hash: '' };
+    // Block hash is computed from header, not stored. The structure validator
+    // checks for missing header — an empty prevBlockHash triggers that path.
+    const block = {
+      ...makeValidBlock(),
+      header: { ...makeValidBlock().header, prevBlockHash: '', height: 0 },
+    };
     expect(verifyOrderingBlockStructure(block).valid).toBe(false);
   });
 });
@@ -345,38 +368,48 @@ describe('verifyOrderingBlockStructure', () => {
 // ---------------------------------------------------------------------------
 
 describe('verifyBlockChainLink', () => {
-  const makeBlock = (height: number, hash: string, prevHash: string): OrderingBlock => ({
-    height,
-    hash,
-    prevBlockHash: prevHash,
-    subBlockRefs: [],
-    likeBoxIds: [],
-    utxoTxIds: [],
-    stumpIds: [],
-    validatorId: 'validator1' as unknown as Uint8Array,
+  const makeBlock = (height: number, prevHash: string): OrderingBlock => ({
+    header: {
+      protocolVersion: 1,
+      height,
+      prevBlockHash: prevHash,
+      subBlockRoot: '00'.repeat(32),
+      utxoTxRoot: '00'.repeat(32),
+      stateRoot: EMPTY_STATE_ROOT,
+      validatorId: 'validator1' as unknown as Uint8Array,
+      powNonce: 0,
+      powTargetBits: 12,
+      createdAt: Date.now(),
+    },
+    subBlockTree: {
+      subBlockRefs: [],
+      stumpIds: [],
+    },
+    utxoTxTree: {
+      utxoTxIds: [],
+      likeBoxIds: [],
+      coinbaseOutputs: [],
+    },
     validatorSignature: new Uint8Array(64),
-    powNonce: 0,
-    powTargetBits: 12,
-    coinbaseOutputs: [],
-    protocolVersion: 1,
-    createdAt: Date.now(),
   });
 
   it('accepts a valid chain link', () => {
-    const prev = makeBlock(1, 'hash1', '0000');
-    const next = makeBlock(2, 'hash2', 'hash1');
+    const prev = makeBlock(1, '0000');
+    const prevHash = blockHash(prev.header);
+    const next = makeBlock(2, prevHash);
     expect(verifyBlockChainLink(next, prev)).toBe(true);
   });
 
   it('rejects mismatched prevBlockHash', () => {
-    const prev = makeBlock(1, 'hash1', '0000');
-    const next = makeBlock(2, 'hash2', 'wronghash');
+    const prev = makeBlock(1, '0000');
+    const next = makeBlock(2, 'wronghash');
     expect(verifyBlockChainLink(next, prev)).toBe(false);
   });
 
   it('rejects non-sequential height', () => {
-    const prev = makeBlock(1, 'hash1', '0000');
-    const next = makeBlock(3, 'hash2', 'hash1');
+    const prev = makeBlock(1, '0000');
+    const prevHash = blockHash(prev.header);
+    const next = makeBlock(3, prevHash);
     expect(verifyBlockChainLink(next, prev)).toBe(false);
   });
 });

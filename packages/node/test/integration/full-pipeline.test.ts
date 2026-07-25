@@ -328,7 +328,7 @@ describe('full-pipeline', () => {
     bc.startBlockCreator(testConfig);
     const block = bc.createOrderingBlock() as Record<string, unknown> | null;
     expect(block).not.toBeNull();
-    const blockHeight = block!.height as number;
+    const blockHeight = (block!.header as Record<string, unknown>).height as number;
     expect(blockHeight).toBe(1);
 
     // ---- Step 3: Verify confirmed state (UTXO txs applied by block creator) ----
@@ -427,7 +427,7 @@ describe('full-pipeline', () => {
     bc.startBlockCreator(testConfig);
     const block = bc.createOrderingBlock() as Record<string, unknown> | null;
     expect(block).not.toBeNull();
-    const blockHeight = block!.height as number;
+    const blockHeight = (block!.header as Record<string, unknown>).height as number;
 
     // ---- Verify ----
     // Post confirmed (sub-block path)
@@ -526,7 +526,7 @@ describe('full-pipeline', () => {
     bc.startBlockCreator(testConfig);
     const block = bc.createOrderingBlock() as Record<string, unknown> | null;
     expect(block).not.toBeNull();
-    const blockHeight = block!.height as number;
+    const blockHeight = (block!.header as Record<string, unknown>).height as number;
 
     // ---- Step 3: Verify confirmed state (UTXO txs applied by block creator) ----
     // Old karma consumed (check via deps, which filters by spent_at_block)

@@ -20,6 +20,7 @@ import {
   LIKE_THRESHOLD,
   LIKE_MAX_AUTHOR_REWARD,
 } from '@dagsocial/types';
+import { blockHash } from '@dagsocial/validation';
 import type {
   Post,
   SubBlock,
@@ -310,9 +311,9 @@ describe('block-creator', () => {
     // Empty blocks are always mined — miners need coinbase rewards.
     // At genesis (height 0→1), this produces a block with coinbase outputs.
     expect(block).not.toBeNull();
-    expect(block!.height).toBe(1);
-    expect(block!.subBlockRefs).toEqual([]);
-    expect(block!.coinbaseOutputs.length).toBeGreaterThan(0);
+    expect(block!.header.height).toBe(1);
+    expect(block!.subBlockTree.subBlockRefs).toEqual([]);
+    expect(block!.utxoTxTree.coinbaseOutputs.length).toBeGreaterThan(0);
   });
 
   // -----------------------------------------------------------------------
@@ -354,8 +355,8 @@ describe('block-creator', () => {
 
     const block = bc.createOrderingBlock();
     expect(block).not.toBeNull();
-    expect(block!.height).toBe(1);
-    expect(block!.subBlockRefs).toContain(postId);
+    expect(block!.header.height).toBe(1);
+    expect(block!.subBlockTree.subBlockRefs).toContain(postId);
   });
 
   // -----------------------------------------------------------------------
@@ -392,11 +393,12 @@ describe('block-creator', () => {
 
     const block = bc.createOrderingBlock();
     expect(block).not.toBeNull();
-    expect(block!.subBlockRefs).toEqual([postId]);
-    expect(block!.validatorId).toBeTruthy();
+    expect(block!.subBlockTree.subBlockRefs).toEqual([postId]);
+    expect(block!.header.validatorId).toBeTruthy();
     expect(block!.validatorSignature.length).toBe(64);
-    expect(block!.hash).toBeTruthy();
-    expect(block!.hash.length).toBe(64); // 32 bytes hex = 64 chars
+    const h = blockHash(block!.header);
+    expect(h).toBeTruthy();
+    expect(h.length).toBe(64); // 32 bytes hex = 64 chars
   });
 
   // -----------------------------------------------------------------------
@@ -476,8 +478,8 @@ describe('block-creator', () => {
 
     const block1 = bc.createOrderingBlock();
     expect(block1).not.toBeNull();
-    expect(block1!.height).toBe(1);
-    expect(block1!.epochTallyResults).toBeUndefined();
+    expect(block1!.header.height).toBe(1);
+    expect(block1!.utxoTxTree.epochTallyResults).toBeUndefined();
 
     // --- Block 2 (height 2): currentHeight=1, 1 % 2 = 1, not epoch ---
     const post2 = makePost(author.userId, 'block 2');
@@ -493,8 +495,8 @@ describe('block-creator', () => {
 
     const block2 = bc.createOrderingBlock();
     expect(block2).not.toBeNull();
-    expect(block2!.height).toBe(2);
-    expect(block2!.epochTallyResults).toBeUndefined();
+    expect(block2!.header.height).toBe(2);
+    expect(block2!.utxoTxTree.epochTallyResults).toBeUndefined();
 
     // --- Block 3 (height 3): currentHeight=2, 2 % 2 = 0, IS epoch ---
     const post3 = makePost(author.userId, 'block 3');
@@ -510,10 +512,10 @@ describe('block-creator', () => {
 
     const block3 = bc.createOrderingBlock();
     expect(block3).not.toBeNull();
-    expect(block3!.height).toBe(3);
-    expect(block3!.epochTallyResults).toBeDefined();
+    expect(block3!.header.height).toBe(3);
+    expect(block3!.utxoTxTree.epochTallyResults).toBeDefined();
     // Empty tally since no likes
-    expect(block3!.epochTallyResults!.rewards).toEqual({});
+    expect(block3!.utxoTxTree.epochTallyResults!.rewards).toEqual({});
   });
 
   // -----------------------------------------------------------------------
@@ -605,9 +607,9 @@ describe('block-creator', () => {
 
     const block3 = bc.createOrderingBlock();
     expect(block3).not.toBeNull();
-    expect(block3!.epochTallyResults).toBeDefined();
+    expect(block3!.utxoTxTree.epochTallyResults).toBeDefined();
 
-    const rewards = block3!.epochTallyResults!.rewards;
+    const rewards = block3!.utxoTxTree.epochTallyResults!.rewards;
     expect(rewards[postId]).toBeDefined();
     expect(rewards[postId].likeCount).toBe(7); // 6 locked + 1 free
     // authorReward = min(floor(7/5), 10) = min(1, 10) = 1
@@ -718,9 +720,9 @@ describe('block-creator', () => {
 
     const epochBlock = bc.createOrderingBlock();
     expect(epochBlock).not.toBeNull();
-    expect(epochBlock!.epochTallyResults).toBeDefined();
+    expect(epochBlock!.utxoTxTree.epochTallyResults).toBeDefined();
 
-    const rewards = epochBlock!.epochTallyResults!.rewards;
+    const rewards = epochBlock!.utxoTxTree.epochTallyResults!.rewards;
 
     // Post A: 3 likes, below threshold — likes stay locked, no refund
     expect(rewards[postAId]).toBeDefined();
@@ -821,7 +823,7 @@ describe('block-creator', () => {
     }, 1000);
 
     const epochBlock = bc.createOrderingBlock();
-    const rewards = epochBlock!.epochTallyResults!.rewards;
+    const rewards = epochBlock!.utxoTxTree.epochTallyResults!.rewards;
 
     expect(rewards[postId]).toBeDefined();
     expect(rewards[postId].likeCount).toBe(17); // 12 locked + 5 free
@@ -891,9 +893,9 @@ describe('block-creator', () => {
 
     expect(block).not.toBeNull();
     // Standalone likeBoxIds should only contain likeBox2
-    expect(block!.likeBoxIds).not.toContain(likeBox1.id);
-    expect(block!.likeBoxIds).toContain(likeBox2.id);
-    expect(block!.likeBoxIds).toHaveLength(1);
+    expect(block!.utxoTxTree.likeBoxIds).not.toContain(likeBox1.id);
+    expect(block!.utxoTxTree.likeBoxIds).toContain(likeBox2.id);
+    expect(block!.utxoTxTree.likeBoxIds).toHaveLength(1);
   });
 
   // -----------------------------------------------------------------------
@@ -994,9 +996,9 @@ describe('block-creator', () => {
     const block = bc.createOrderingBlock();
 
     expect(block).not.toBeNull();
-    expect(block!.utxoTxIds.length).toBeGreaterThan(0);
+    expect(block!.utxoTxTree.utxoTxIds.length).toBeGreaterThan(0);
     // The standalone like should be in utxoTxIds
-    expect(block!.utxoTxIds).toContain(computeTxId(likeTx));
+    expect(block!.utxoTxTree.utxoTxIds).toContain(computeTxId(likeTx));
     // Confirmed entries removed from mempool
     const remaining = mempool.getPendingEntries(100);
     expect(remaining).toHaveLength(0);
@@ -1052,11 +1054,11 @@ describe('block-creator', () => {
 
     expect(block).not.toBeNull();
     // The matching like should NOT be in utxoTxIds (it was attached to the sub-block)
-    expect(block!.utxoTxIds).not.toContain(computeTxId(matchingLikeTx));
+    expect(block!.utxoTxTree.utxoTxIds).not.toContain(computeTxId(matchingLikeTx));
     // The standalone like SHOULD be in utxoTxIds
-    expect(block!.utxoTxIds).toContain(computeTxId(standaloneLikeTx));
+    expect(block!.utxoTxTree.utxoTxIds).toContain(computeTxId(standaloneLikeTx));
     // The sub-block now has the attached like box
-    expect(block!.subBlockRefs).toContain(postId);
+    expect(block!.subBlockTree.subBlockRefs).toContain(postId);
     // Mempool should be empty
     const remaining = mempool.getPendingEntries(100);
     expect(remaining).toHaveLength(0);
@@ -1106,9 +1108,9 @@ describe('block-creator', () => {
 
     expect(block).not.toBeNull();
     // The batch-linked UTXO tx ID should be in utxoTxIds
-    expect(block!.utxoTxIds).toContain(computeTxId(likeTx));
+    expect(block!.utxoTxTree.utxoTxIds).toContain(computeTxId(likeTx));
     // The sub-block should be referenced
-    expect(block!.subBlockRefs).toContain(postId);
+    expect(block!.subBlockTree.subBlockRefs).toContain(postId);
     // Mempool should be empty (both confirmed)
     const remaining = mempool.getPendingEntries(100);
     expect(remaining).toHaveLength(0);
