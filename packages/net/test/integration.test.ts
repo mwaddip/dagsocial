@@ -189,29 +189,38 @@ describe('Two-node integration', () => {
       receivedBlock = block;
     });
 
+    const validatorId = new Uint8Array(32);
     const block: OrderingBlock = {
-      height: 1,
-      hash: 'test-hash-123',
-      prevBlockHash: '00000000000000000000000000000000',
-      subBlockRefs: [],
-      likeBoxIds: [],
-      utxoTxIds: [],
-      stumpIds: [],
-      validatorId: 'validator-1' as unknown as Uint8Array,
+      header: {
+        protocolVersion: 1,
+        height: 1,
+        prevBlockHash: '00'.repeat(32),
+        subBlockRoot: '00'.repeat(32),
+        utxoTxRoot: '00'.repeat(32),
+        stateRoot: '00'.repeat(33),
+        validatorId,
+        powNonce: 0,
+        powTargetBits: 12,
+        createdAt: Date.now(),
+      },
+      subBlockTree: {
+        subBlockRefs: [],
+        stumpIds: [],
+      },
+      utxoTxTree: {
+        utxoTxIds: [],
+        likeBoxIds: [],
+        coinbaseOutputs: [],
+      },
       validatorSignature: new Uint8Array(64),
-      powNonce: 0,
-      powTargetBits: 12,
-      coinbaseOutputs: [],
-      protocolVersion: 1,
-      createdAt: Date.now(),
     };
 
     await nodeA.broadcastOrderingBlock(block);
     await new Promise((r) => setTimeout(r, 4000));
 
     expect(receivedBlock).not.toBeNull();
-    expect(receivedBlock!.height).toBe(1);
-    expect(receivedBlock!.hash).toBe('test-hash-123');
+    expect(receivedBlock!.header.height).toBe(1);
+    expect(receivedBlock!.header.protocolVersion).toBe(1);
   }, TIMEOUT);
 
   it('invalid sub-block does NOT trigger handler on B', async () => {

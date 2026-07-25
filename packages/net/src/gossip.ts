@@ -87,7 +87,7 @@ export function subscribeTopics(
         peerMgr.recordPenalty('misbehavior', _peer.toString(), 100, vr.error ?? 'invalid ordering block');
         return TopicValidatorResult.Reject;
       }
-      if (!validators.verifyProtocolVersion(block.protocolVersion)) {
+      if (!validators.verifyProtocolVersion(block.header.protocolVersion)) {
         peerMgr.recordPenalty('misbehavior', _peer.toString(), 100, 'unsupported protocol version');
         return TopicValidatorResult.Reject;
       }
