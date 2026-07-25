@@ -1,6 +1,6 @@
 import { loadConfig } from './config.js';
 import { initDb, closeDb } from './store/db.js';
-import { initSystemKeypair, ensureSystemKarmaBox } from './store/system.js';
+import { initSystemKeypair, ensureSystemKarmaBox, ensureFaucetCreditBox } from './store/system.js';
 import { startBlockCreator, stopBlockCreator } from './services/block-creator.js';
 import { createApp } from './server.js';
 import { NetNode } from '@dagsocial/net';
@@ -37,6 +37,7 @@ const systemKeypair = initSystemKeypair();
 if (config.networkMode === 'testnet') {
   const height = getCurrentHeight();
   ensureSystemKarmaBox(systemKeypair.publicKey, height);
+  ensureFaucetCreditBox(systemKeypair.publicKey, height);
   console.log(
     `System keypair: ${Buffer.from(systemKeypair.publicKey).toString('hex').slice(0, 12)}... ` +
     `(faucet source)`,

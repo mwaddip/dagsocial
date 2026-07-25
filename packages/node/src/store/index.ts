@@ -83,6 +83,7 @@ export {
   getSystemKeypair,
   initSystemKeypair,
   ensureSystemKarmaBox,
+  ensureFaucetCreditBox,
   signWithSystemKey,
 } from './system.js';
 export type { SystemKeypair } from './system.js';

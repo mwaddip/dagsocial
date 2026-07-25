@@ -1,8 +1,8 @@
 import { generateKeyPairSync, createPrivateKey, createPublicKey, sign } from 'crypto';
 import { computeBoxId } from '@dagsocial/types';
-import type { KarmaBox } from '@dagsocial/types';
+import type { KarmaBox, CreditBox } from '@dagsocial/types';
 import { getDb } from './db.js';
-import { insertBox, getKarmaBox } from './utxo.js';
+import { insertBox, getKarmaBox, getCreditBoxes } from './utxo.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -89,6 +89,36 @@ export function ensureSystemKarmaBox(systemPubKey: Uint8Array, currentHeight: nu
   box.id = computeBoxId(box);
   insertBox(box);
   return box;
+}
+
+// ---------------------------------------------------------------------------
+// System credit box (faucet)
+// ---------------------------------------------------------------------------
+
+const FAUCET_CREDITS_INITIAL = 100_000;
+
+/**
+ * Ensure the system keypair has a credit box with FAUCET_CREDITS_INITIAL
+ * credits for the testnet faucet. Idempotent — if the system already has
+ * unspent credit boxes, does nothing.
+ */
+export function ensureFaucetCreditBox(
+  systemPubKey: Uint8Array,
+  currentHeight: number,
+): void {
+  const existing = getCreditBoxes(systemPubKey);
+  if (existing.length > 0) return;
+
+  const box: CreditBox = {
+    boxType: 'credit',
+    value: FAUCET_CREDITS_INITIAL,
+    createdAtBlock: currentHeight > 0 ? currentHeight : 1,
+    owner: systemPubKey,
+    guard: 'owner_signature',
+    proofSource: currentHeight > 0 ? currentHeight : 1,
+  };
+  box.id = computeBoxId(box);
+  insertBox(box);
 }
 
 /**

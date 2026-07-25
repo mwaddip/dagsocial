@@ -178,8 +178,11 @@ export function createApp(config: Config): express.Express {
       getKarmaBox: store.getKarmaBox,
       getKarmaBoxes: store.getKarmaBoxes,
       getCreditBox: store.getCreditBox,
+      getCreditBoxes: store.getCreditBoxes,
       getPendingInvites: store.getPendingInvites,
       getBondBoxes: store.getBondBoxes,
+      getCurrentHeight: store.getCurrentHeight,
+      getUtxoEngineDeps: () => utxoEngineDeps,
     }),
   );
 
