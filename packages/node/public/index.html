@@ -234,11 +234,19 @@ function cborEncodeBytes(buf) {
   throw new Error('Bytes too long for CBOR: ' + len);
 }
 
-function cborEncodeUint(n) {
-  if (n <= 23) return new Uint8Array([n]);
-  if (n <= 255) return new Uint8Array([0x18, n]);
-  if (n <= 65535) return new Uint8Array([0x19, (n >> 8) & 0xFF, n & 0xFF]);
-  throw new Error('Number too large for CBOR: ' + n);
+function cborEncodeInt(n) {
+  if (n >= 0) {
+    if (n <= 23) return new Uint8Array([n]);
+    if (n <= 255) return new Uint8Array([0x18, n]);
+    if (n <= 65535) return new Uint8Array([0x19, (n >> 8) & 0xFF, n & 0xFF]);
+    throw new Error('Number too large for CBOR: ' + n);
+  } else {
+    const val = -1 - n;
+    if (val <= 23) return new Uint8Array([0x20 | val]);
+    if (val <= 255) return new Uint8Array([0x38, val]);
+    if (val <= 65535) return new Uint8Array([0x39, (val >> 8) & 0xFF, val & 0xFF]);
+    throw new Error('Number too small for CBOR: ' + n);
+  }
 }
 
 function cborEncodeUndefined() { return new Uint8Array([0xf7]); }
@@ -251,7 +259,7 @@ function cborEncodeMap(obj) {
     parts.push(cborEncodeString(k));
     const v = obj[k];
     if (typeof v === 'string')            parts.push(cborEncodeString(v));
-    else if (typeof v === 'number')       parts.push(cborEncodeUint(v));
+    else if (typeof v === 'number')       parts.push(cborEncodeInt(v));
     else if (typeof v === 'boolean')      parts.push(new Uint8Array([v ? 0xf5 : 0xf4]));
     else if (v === undefined || v === null) parts.push(cborEncodeUndefined());
     else if (v instanceof Uint8Array)     parts.push(cborEncodeBytes(v));
@@ -266,7 +274,7 @@ function cborEncodeMap(obj) {
 
 function cborEncode(value) {
   if (typeof value === 'string')              return cborEncodeString(value);
-  if (typeof value === 'number')              return cborEncodeUint(value);
+  if (typeof value === 'number')              return cborEncodeInt(value);
   if (typeof value === 'boolean')             return new Uint8Array([value ? 0xf5 : 0xf4]);
   if (value === undefined || value === null)  return cborEncodeUndefined();
   if (value instanceof Uint8Array)            return cborEncodeBytes(value);
@@ -1431,7 +1439,10 @@ document.getElementById('creditFaucetBtn').addEventListener('click', async () =>
 
 function buildCreditTransferTx(creditBoxes, recipientHex, amount) {
   const now = currentBlockHeight;
-  const selected = selectBoxes(creditBoxes.boxes, amount);
+  const unlocked = creditBoxes.boxes.filter(b =>
+    !b.lockedUntilBlock || b.lockedUntilBlock <= currentBlockHeight
+  );
+  const selected = selectBoxes(unlocked, amount);
   const selectedTotal = selected.reduce((sum, b) => sum + b.value, 0);
   const change = selectedTotal - amount;
 
