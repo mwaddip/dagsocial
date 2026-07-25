@@ -10,6 +10,7 @@ export interface UtxoDeps {
     userId: Uint8Array,
   ): { userId: Uint8Array; publicKey: Uint8Array; createdAt: number } | null;
   getKarmaBox(owner: Uint8Array): KarmaBox | null;
+  getKarmaBoxes(owner: Uint8Array): KarmaBox[];
   getCreditBox(owner: Uint8Array): CreditBox | null;
   getPendingInvites(inviterId: Uint8Array): InviteBox[];
   getBondBoxes(inviterId: Uint8Array): BondBox[];
@@ -47,17 +48,22 @@ export function createRouter(deps: UtxoDeps): Router {
       return;
     }
 
-    const karmaBox = deps.getKarmaBox(identity.publicKey);
-    if (!karmaBox) {
+    const karmaBoxes = deps.getKarmaBoxes(identity.publicKey);
+    if (karmaBoxes.length === 0) {
       res.status(404).json({ error: 'No karma box found' });
       return;
     }
 
+    const total = karmaBoxes.reduce((sum, b) => sum + b.value, 0);
+    const boxes = karmaBoxes.map(b => ({
+      boxId: b.id!,
+      value: b.value,
+    }));
+
     res.json({
       userId: req.params['userId'],
-      balance: karmaBox.value,
-      boxId: karmaBox.id,
-      createdAtBlock: karmaBox.createdAtBlock,
+      total,
+      boxes,
     });
   });
 

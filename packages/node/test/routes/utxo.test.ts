@@ -6,6 +6,7 @@ import { initDb, closeDb } from '../../src/store/db.js';
 import { insertIdentity, getIdentity } from '../../src/store/identities.js';
 import {
   getKarmaBox,
+  getKarmaBoxes,
   getCreditBox,
   getPendingInvites,
   getBondBoxes,
@@ -32,6 +33,7 @@ async function request(
     const deps = {
       getIdentity,
       getKarmaBox,
+      getKarmaBoxes,
       getCreditBox,
       getPendingInvites,
       getBondBoxes,
@@ -151,9 +153,13 @@ describe('UTXO routes', () => {
     expect(res.status).toBe(200);
     const body = res.data as Record<string, unknown>;
     expect(body.userId).toBe(karmaUserIdHex);
-    expect(body.balance).toBe(42);
-    expect(typeof body.boxId).toBe('string');
-    expect(body.createdAtBlock).toBe(1);
+    expect(body.total).toBe(42);
+    expect(Array.isArray(body.boxes)).toBe(true);
+    expect(body.boxes).toHaveLength(1);
+    expect(typeof (body.boxes as unknown[])[0]).toBe('object');
+    const b0 = (body.boxes as unknown[])[0] as Record<string, unknown>;
+    expect(typeof b0.boxId).toBe('string');
+    expect(b0.value).toBe(42);
   });
 
   it('GET /credits/:userId returns credit balance', async () => {
