@@ -20,7 +20,7 @@ export interface VerifierDeps {
   getIdentity: (
     userId: Uint8Array,
   ) => { userId: Uint8Array; publicKey: Uint8Array; createdAt: number } | null;
-  getKarmaBox: (owner: Uint8Array) => { value: number; id?: string } | null;
+  getKarmaBoxes: (owner: Uint8Array) => { value: number; id?: string }[];
   getPost: (id: string) => unknown | null;
 }
 
@@ -100,18 +100,19 @@ export function verifyPost(
     return { valid: false, error: 'Signature invalid' };
   }
 
-  // 7. Karma: author must have a karma box with sufficient value.
+  // 7. Karma: author must have sufficient karma across all boxes.
   // Look up by public key (post.author).
-  const karmaBox = deps.getKarmaBox(post.author);
-  if (!karmaBox) {
+  const karmaBoxes = deps.getKarmaBoxes(post.author);
+  if (karmaBoxes.length === 0) {
     return { valid: false, error: 'No karma box found' };
   }
+  const totalKarma = karmaBoxes.reduce((sum, b) => sum + b.value, 0);
   const requiredKarma =
     post.parentRefs.length === 0 ? POST_LOCK_THREAD_COST : POST_LOCK_REPLY_COST;
-  if (karmaBox.value < requiredKarma) {
+  if (totalKarma < requiredKarma) {
     return {
       valid: false,
-      error: `Insufficient karma: need ${requiredKarma} (have ${karmaBox.value})`,
+      error: `Insufficient karma: need ${requiredKarma} (have ${totalKarma})`,
     };
   }
 

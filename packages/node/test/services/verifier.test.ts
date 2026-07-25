@@ -70,7 +70,7 @@ function buildPowInput(post: Post): Buffer {
 interface MockStore {
   identities: Map<string, { userId: Uint8Array; publicKey: Uint8Array; createdAt: number }>;
   challenges: Map<string, { challenge: Uint8Array; expiresAtBlock: number; userId: Uint8Array }>;
-  karmaBoxes: Map<string, { value: number }>; // keyed by hex(owner publicKey)
+  karmaBoxes: Map<string, { value: number }[]>; // keyed by hex(owner publicKey), now an array
   posts: Map<string, unknown>;
 }
 
@@ -78,9 +78,9 @@ function createMockDeps(store: MockStore): VerifierDeps {
   return {
     getActiveChallenge: (userId: Uint8Array) => store.challenges.get(userId) ?? null,
     getIdentity: (userId: Uint8Array) => store.identities.get(userId) ?? null,
-    getKarmaBox: (owner: Uint8Array) => {
+    getKarmaBoxes: (owner: Uint8Array) => {
       const hex = Buffer.from(owner).toString('hex');
-      return store.karmaBoxes.get(hex) ?? null;
+      return store.karmaBoxes.get(hex) ?? [];
     },
     getPost: (id: string) => store.posts.get(id) ?? null,
   };
@@ -166,9 +166,9 @@ describe('verifyPost', () => {
         challenge: challengeBytes,
         expiresAtBlock: 100,
       });
-      store.karmaBoxes.set(Buffer.from(pubKeyRaw).toString('hex'), {
-        value: POST_LOCK_THREAD_COST,
-      });
+      store.karmaBoxes.set(Buffer.from(pubKeyRaw).toString('hex'), [
+        { value: POST_LOCK_THREAD_COST },
+      ]);
 
       // Build post and solve PoW
       let post = makePost();
@@ -330,9 +330,9 @@ describe('verifyPost', () => {
         challenge: challengeBytes,
         expiresAtBlock: 100,
       });
-      store.karmaBoxes.set(Buffer.from(pubKeyRaw).toString('hex'), {
-        value: POST_LOCK_THREAD_COST,
-      });
+      store.karmaBoxes.set(Buffer.from(pubKeyRaw).toString('hex'), [
+        { value: POST_LOCK_THREAD_COST },
+      ]);
 
       // Build a valid post, solve PoW, and sign the original content
       let post = makePost({ content: 'original content' });
@@ -375,14 +375,14 @@ describe('verifyPost', () => {
         challenge: challengeBytes,
         expiresAtBlock: 100,
       });
-      store.karmaBoxes.set(Buffer.from(pubKeyRaw).toString('hex'), {
-        value: POST_LOCK_THREAD_COST,
-      });
+      store.karmaBoxes.set(Buffer.from(pubKeyRaw).toString('hex'), [
+        { value: POST_LOCK_THREAD_COST },
+      ]);
 
       // Reference a post that does not exist — reply needs POST_LOCK_REPLY_COST karma
-      store.karmaBoxes.set(Buffer.from(pubKeyRaw).toString('hex'), {
-        value: POST_LOCK_REPLY_COST,
-      });
+      store.karmaBoxes.set(Buffer.from(pubKeyRaw).toString('hex'), [
+        { value: POST_LOCK_REPLY_COST },
+      ]);
       let post = makePost({ parentRefs: ['nonexistent-parent-id'] });
       const powInput = buildPowInput(post);
       const nonce = solvePoW(powInput, 20);
@@ -416,7 +416,7 @@ describe('verifyPost', () => {
         expiresAtBlock: 100,
       });
       // Karma box value = 0, below POST_LOCK_THREAD_COST (5)
-      store.karmaBoxes.set(Buffer.from(pubKeyRaw).toString('hex'), { value: 0 });
+      store.karmaBoxes.set(Buffer.from(pubKeyRaw).toString('hex'), [{ value: 0 }]);
 
       let post = makePost();
       const powInput = buildPowInput(post);
@@ -450,9 +450,9 @@ describe('verifyPost', () => {
         challenge: challengeBytes,
         expiresAtBlock: 100,
       });
-      store.karmaBoxes.set(Buffer.from(pubKeyRaw).toString('hex'), {
-        value: POST_LOCK_THREAD_COST,
-      });
+      store.karmaBoxes.set(Buffer.from(pubKeyRaw).toString('hex'), [
+        { value: POST_LOCK_THREAD_COST },
+      ]);
 
       // Explicitly empty parentRefs
       let post = makePost({ parentRefs: [] });
@@ -467,4 +467,49 @@ describe('verifyPost', () => {
       expect(result.error).toBeUndefined();
     },
   );
+
+  // -----------------------------------------------------------------------
+  // 14. Multi-box karma sufficiency (split across boxes)
+  // -----------------------------------------------------------------------
+  it('accepts post when karma is split across multiple boxes', { timeout: 60_000 }, () => {
+    const store = makeStore();
+    store.identities.set(userId, { userId, publicKey: pubKeyRaw, createdAt: Date.now() });
+    store.challenges.set(userId, { userId, challenge: challengeBytes, expiresAtBlock: 100 });
+    // Two karma boxes: 3 + 2 = 5, enough for thread post
+    store.karmaBoxes.set(Buffer.from(pubKeyRaw).toString('hex'), [
+      { value: 3 },
+      { value: 2 },
+    ]);
+    const deps = createMockDeps(store);
+    let post = makePost();
+    const powInput = buildPowInput(post);
+    const nonce = solvePoW(powInput, 20);
+    post = { ...post, powNonce: nonce };
+    post = signPost(post);
+    const result = verifyPost(deps, post, 50);
+    expect(result.valid).toBe(true);
+  });
+
+  // -----------------------------------------------------------------------
+  // 15. Multi-box karma insufficiency (combined too low)
+  // -----------------------------------------------------------------------
+  it('rejects post when combined karma across boxes is insufficient', { timeout: 60_000 }, () => {
+    const store = makeStore();
+    store.identities.set(userId, { userId, publicKey: pubKeyRaw, createdAt: Date.now() });
+    store.challenges.set(userId, { userId, challenge: challengeBytes, expiresAtBlock: 100 });
+    // Two boxes with 2 + 2 = 4, but thread post costs 5
+    store.karmaBoxes.set(Buffer.from(pubKeyRaw).toString('hex'), [
+      { value: 2 },
+      { value: 2 },
+    ]);
+    const deps = createMockDeps(store);
+    let post = makePost();
+    const powInput = buildPowInput(post);
+    const nonce = solvePoW(powInput, 20);
+    post = { ...post, powNonce: nonce };
+    post = signPost(post);
+    const result = verifyPost(deps, post, 50);
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain('Insufficient karma');
+  });
 });
