@@ -221,3 +221,88 @@ describe('transactions', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// selectBoxes
+// ---------------------------------------------------------------------------
+
+describe('selectBoxes', () => {
+  it('returns single box when value equals required amount', async () => {
+    const { selectBoxes } = await import('../src/index.js');
+    const boxes = [{ value: 5, id: 'a' }];
+    const result = selectBoxes(boxes, 5);
+    expect(result).toEqual([{ value: 5, id: 'a' }]);
+  });
+
+  it('returns single box when value exceeds required amount', async () => {
+    const { selectBoxes } = await import('../src/index.js');
+    const boxes = [{ value: 10, id: 'a' }];
+    const result = selectBoxes(boxes, 5);
+    expect(result).toEqual([{ value: 10, id: 'a' }]);
+  });
+
+  it('selects largest-first to cover required amount', async () => {
+    const { selectBoxes } = await import('../src/index.js');
+    const boxes = [
+      { value: 100, id: 'big' },
+      { value: 50, id: 'med' },
+      { value: 10, id: 'small' },
+    ];
+    // 100 covers 80 alone — largest-first picks just the big one
+    const result = selectBoxes(boxes, 80);
+    expect(result).toEqual([{ value: 100, id: 'big' }]);
+  });
+
+  it('selects multiple boxes when one is insufficient', async () => {
+    const { selectBoxes } = await import('../src/index.js');
+    const boxes = [
+      { value: 100, id: 'big' },
+      { value: 50, id: 'med' },
+      { value: 10, id: 'small' },
+    ];
+    // 150 needs big (100) + med (50)
+    const result = selectBoxes(boxes, 150);
+    expect(result).toEqual([
+      { value: 100, id: 'big' },
+      { value: 50, id: 'med' },
+    ]);
+  });
+
+  it('selects all boxes when needed', async () => {
+    const { selectBoxes } = await import('../src/index.js');
+    const boxes = [
+      { value: 100, id: 'big' },
+      { value: 50, id: 'med' },
+      { value: 10, id: 'small' },
+    ];
+    const result = selectBoxes(boxes, 160);
+    expect(result).toEqual(boxes);
+  });
+
+  it('throws when total is insufficient', async () => {
+    const { selectBoxes } = await import('../src/index.js');
+    const boxes = [
+      { value: 10, id: 'a' },
+      { value: 5, id: 'b' },
+    ];
+    expect(() => selectBoxes(boxes, 20)).toThrow('Insufficient total value');
+  });
+
+  it('throws on empty boxes with positive requiredAmount', async () => {
+    const { selectBoxes } = await import('../src/index.js');
+    expect(() => selectBoxes([], 1)).toThrow('Insufficient total value');
+  });
+
+  it('returns empty array for requiredAmount of 0', async () => {
+    const { selectBoxes } = await import('../src/index.js');
+    const boxes = [{ value: 10, id: 'a' }];
+    const result = selectBoxes(boxes, 0);
+    expect(result).toEqual([]);
+  });
+
+  it('returns empty array for empty boxes and requiredAmount 0', async () => {
+    const { selectBoxes } = await import('../src/index.js');
+    const result = selectBoxes([], 0);
+    expect(result).toEqual([]);
+  });
+});

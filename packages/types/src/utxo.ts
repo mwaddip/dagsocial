@@ -147,3 +147,33 @@ export function computeTxId(tx: UtxoTransaction): TxId {
   h.update(String(tx.protocolVersion));
   return h.digest().subarray(0, 32).toString('hex');
 }
+
+// ---------------------------------------------------------------------------
+// Box selection
+// ---------------------------------------------------------------------------
+
+/**
+ * Largest-first UTXO selection. Returns the minimal subset of boxes whose
+ * combined value covers `requiredAmount`. Assumes boxes are pre-sorted by
+ * value descending. Throws if the total value of all boxes is insufficient.
+ */
+export function selectBoxes<T extends { value: number }>(
+  boxes: T[],
+  requiredAmount: number,
+): T[] {
+  if (requiredAmount <= 0) return [];
+
+  let accumulated = 0;
+  const selected: T[] = [];
+  for (const box of boxes) {
+    accumulated += box.value;
+    selected.push(box);
+    if (accumulated >= requiredAmount) break;
+  }
+
+  if (accumulated < requiredAmount) {
+    throw new Error('Insufficient total value');
+  }
+
+  return selected;
+}

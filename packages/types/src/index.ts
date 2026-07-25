@@ -53,7 +53,7 @@ export { signingHash, computePostId, getPostDiscriminator, buildProfileContent }
 export type { Post, PostId } from './post.js';
 
 // UTXO
-export { computeBoxId, computeTxId } from './utxo.js';
+export { computeBoxId, computeTxId, selectBoxes } from './utxo.js';
 export type {
   BoxId,
   BoxBase,
