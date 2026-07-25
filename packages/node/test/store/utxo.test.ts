@@ -34,6 +34,7 @@ async function importUtxoFresh() {
     getKarmaBoxes: (owner: Uint8Array) => KarmaBox[];
     getCreditBox: (owner: Uint8Array) => CreditBox | null;
     getCreditBoxes: (owner: Uint8Array) => CreditBox[];
+    getUnlockedCreditBoxes: (owner: Uint8Array, blockHeight: number) => CreditBox[];
     getPendingInvites: (inviterId: Uint8Array) => InviteBox[];
     getPendingInviteCount: (inviterId: Uint8Array) => number;
     getBondBoxes: (inviterId: Uint8Array) => BondBox[];
@@ -695,6 +696,70 @@ describe('utxo store', () => {
     initDb(':memory:');
 
     const results = getCreditBoxes(bytes(32));
+    expect(results).toEqual([]);
+  });
+
+  // --- getUnlockedCreditBoxes filters out locked boxes ------------------------
+
+  it('getUnlockedCreditBoxes excludes locked boxes', async () => {
+    const { initDb } = await importDbFresh();
+    const { insertBox, getUnlockedCreditBoxes } = await importUtxoFresh();
+    const { computeBoxId } = await importTypes();
+
+    initDb(':memory:');
+
+    const owner = bytes(32);
+    const currentHeight = 100;
+
+    const box1 = makeCreditBox({ value: 300, owner, proofSource: 1 });
+    box1.id = computeBoxId(box1);
+    insertBox(box1);
+
+    const box2 = makeCreditBox({ value: 500, owner, proofSource: 2 });
+    box2.lockedUntilBlock = 150;
+    box2.id = computeBoxId(box2);
+    insertBox(box2);
+
+    const box3 = makeCreditBox({ value: 200, owner, proofSource: 3 });
+    box3.lockedUntilBlock = 50;
+    box3.id = computeBoxId(box3);
+    insertBox(box3);
+
+    const box4 = makeCreditBox({ value: 100, owner, proofSource: 4 });
+    box4.id = computeBoxId(box4);
+    insertBox(box4);
+
+    const results = getUnlockedCreditBoxes(owner, currentHeight);
+    expect(results).toHaveLength(3);
+    expect(results[0]!.value).toBe(300);
+    expect(results[1]!.value).toBe(200);
+    expect(results[2]!.value).toBe(100);
+  });
+
+  it('getUnlockedCreditBoxes returns empty array when all boxes are locked', async () => {
+    const { initDb } = await importDbFresh();
+    const { insertBox, getUnlockedCreditBoxes } = await importUtxoFresh();
+    const { computeBoxId } = await importTypes();
+
+    initDb(':memory:');
+
+    const owner = bytes(32);
+    const box = makeCreditBox({ value: 500, owner, proofSource: 2 });
+    box.lockedUntilBlock = 200;
+    box.id = computeBoxId(box);
+    insertBox(box);
+
+    const results = getUnlockedCreditBoxes(owner, 100);
+    expect(results).toEqual([]);
+  });
+
+  it('getUnlockedCreditBoxes returns empty array for unknown owner', async () => {
+    const { initDb } = await importDbFresh();
+    const { getUnlockedCreditBoxes } = await importUtxoFresh();
+
+    initDb(':memory:');
+
+    const results = getUnlockedCreditBoxes(bytes(32), 100);
     expect(results).toEqual([]);
   });
 });

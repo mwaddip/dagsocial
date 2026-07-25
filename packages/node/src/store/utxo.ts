@@ -279,6 +279,28 @@ export function getCreditBoxes(owner: Uint8Array): CreditBox[] {
 }
 
 /**
+ * Return all unspent credit boxes for the given owner whose lockedUntilBlock
+ * has passed (or is unset), sorted by value descending. Excludes boxes that
+ * are still locked at the given block height.
+ */
+export function getUnlockedCreditBoxes(
+  owner: Uint8Array,
+  blockHeight: number,
+): CreditBox[] {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT * FROM utxo_boxes
+       WHERE owner = ? AND box_type = 'credit' AND spent_at_block IS NULL
+         AND (json_extract(extra_data, '$.lockedUntilBlock') IS NULL
+              OR json_extract(extra_data, '$.lockedUntilBlock') <= ?)
+       ORDER BY value DESC`,
+    )
+    .all(Buffer.from(owner), blockHeight) as UtxoRow[];
+  return rows.map(rowToBox) as CreditBox[];
+}
+
+/**
  * Return all unclaimed (unspent) invite boxes created by the given inviter.
  */
 export function getPendingInvites(inviterId: Uint8Array): InviteBox[] {

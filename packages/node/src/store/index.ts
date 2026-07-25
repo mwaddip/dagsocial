@@ -24,6 +24,7 @@ export {
   getKarmaBoxes,
   getCreditBox,
   getCreditBoxes,
+  getUnlockedCreditBoxes,
   getPendingInvites,
   getPendingInviteCount,
   getBondBoxes,
