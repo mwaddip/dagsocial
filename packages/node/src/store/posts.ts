@@ -204,6 +204,18 @@ export function confirmPost(postId: string, blockHeight: number): void {
 }
 
 /**
+ * Reverse a confirmPost by setting status back to 'pending'
+ * and clearing block_height.
+ */
+export function unconfirmPost(subBlockId: string): void {
+  getDb()
+    .prepare(
+      "UPDATE dag_posts SET status = 'pending', block_height = NULL WHERE id = ?",
+    )
+    .run(subBlockId);
+}
+
+/**
  * Return the parent IDs for a given post, in insertion order.
  */
 export function getParentRefs(postId: string): string[] {

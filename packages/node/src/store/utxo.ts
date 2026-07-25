@@ -487,6 +487,20 @@ export function consumeBox(boxId: string, consumedAtBlock: number): void {
 }
 
 /**
+ * Reverse a consumeBox by clearing spent_at_block.
+ */
+export function unconsumeBox(boxId: string): void {
+  getDb().prepare('UPDATE utxo_boxes SET spent_at_block = NULL WHERE id = ?').run(boxId);
+}
+
+/**
+ * Delete a box entirely (for rolling back an insertBox).
+ */
+export function deleteBox(boxId: string): void {
+  getDb().prepare('DELETE FROM utxo_boxes WHERE id = ?').run(boxId);
+}
+
+/**
  * Bulk-mark like boxes as tallied (spent) in a single statement.
  *
  * Uses a temporary table-less approach with a variable number of ? placeholders.

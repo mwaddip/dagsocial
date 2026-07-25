@@ -11,6 +11,7 @@ export {
   queryPosts,
   getPendingPosts,
   confirmPost,
+  unconfirmPost,
   getParentRefs,
   getSubtree,
   pruneSubtree,
@@ -31,6 +32,8 @@ export {
   getPostTotalLikes,
   insertBox,
   consumeBox,
+  unconsumeBox,
+  deleteBox,
   markLikeBoxesTallied,
 } from './utxo.js';
 
@@ -48,7 +51,15 @@ export {
   createOrderingBlock,
   getOrderingBlock,
   getCurrentHeight,
+  deleteOrderingBlock,
 } from './ordering.js';
+
+export {
+  insertBlockJournal,
+  getBlockJournal,
+  deleteBlockJournal,
+  purgeOldJournals,
+} from './journal.js';
 
 export {
   insertStump,

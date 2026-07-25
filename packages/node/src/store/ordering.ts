@@ -73,6 +73,13 @@ export function getOrderingBlock(height: number): OrderingBlock | null {
 }
 
 /**
+ * Delete an ordering block at the given height (for rollback).
+ */
+export function deleteOrderingBlock(height: number): void {
+  getDb().prepare('DELETE FROM ordering_blocks WHERE height = ?').run(height);
+}
+
+/**
  * Return the current chain height (max height in ordering_blocks).
  * Returns 0 if no blocks exist yet.
  */

@@ -71,6 +71,9 @@ importers:
       better-sqlite3:
         specifier: ^11.0.0
         version: 11.10.0
+      cbor-x:
+        specifier: ^1.6.0
+        version: 1.6.4
       express:
         specifier: ^4.21.0
         version: 4.22.2

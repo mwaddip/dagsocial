@@ -13,6 +13,7 @@ const MIGRATIONS = [
   'DROP TABLE IF EXISTS dag_likes',
   'DROP TABLE IF EXISTS ordering_blocks',
   'DROP TABLE IF EXISTS utxo_boxes',
+  'DROP TABLE IF EXISTS block_journal',
   // Identity (Phase 2 — no secret_key).
   // user_id IS the 32-byte Ed25519 public key (BLOB).
   `CREATE TABLE IF NOT EXISTS identities (
@@ -115,6 +116,12 @@ const MIGRATIONS = [
     utxotx_tree_cbor BLOB NOT NULL,
     validator_signature BLOB NOT NULL,  -- 64 bytes
     created_at INTEGER NOT NULL
+  )`,
+
+  // Block journal (CBOR-encoded undo data per block)
+  `CREATE TABLE IF NOT EXISTS block_journal (
+    block_height INTEGER PRIMARY KEY,
+    journal_cbor BLOB NOT NULL
   )`,
 ];
 
