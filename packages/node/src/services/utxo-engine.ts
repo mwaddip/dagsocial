@@ -131,12 +131,18 @@ function checkTransitions(
           karmaOuts.length === 1 &&
           outputs.length === 2) {
         const bondOut = bondOuts[0] as BondBox;
+        const karmaOut = karmaOuts[0] as KarmaBox;
         // BondOut must preserve commitment fields from commit step
         if (bondOut.inviteePublicKey.length === 32 &&
             Buffer.from(bondOut.inviteePublicKey).toString('hex') ===
               Buffer.from(bondIn.inviteePublicKey).toString('hex') &&
             bondOut.probationStartBlock === bondIn.probationStartBlock &&
-            bondOut.probationEndBlock === bondIn.probationEndBlock) {
+            bondOut.probationEndBlock === bondIn.probationEndBlock &&
+            bondOut.inviteBoxId === bondIn.inviteBoxId &&
+            Buffer.from(bondOut.inviterId).toString('hex') ===
+              Buffer.from(bondIn.inviterId).toString('hex') &&
+            Buffer.from(karmaOut.owner).toString('hex') ===
+              Buffer.from(bondIn.inviteePublicKey).toString('hex')) {
           return { valid: true };
         }
       }
@@ -266,7 +272,10 @@ function checkTransitions(
             bondIn.inviteePublicKey.length === 0 &&
             bondOut.inviteePublicKey.length === 32 &&
             bondOut.probationStartBlock > 0 &&
-            bondOut.probationEndBlock > bondOut.probationStartBlock) {
+            bondOut.probationEndBlock > bondOut.probationStartBlock &&
+            bondOut.inviteBoxId === bondIn.inviteBoxId &&
+            Buffer.from(bondOut.inviterId).toString('hex') ===
+              Buffer.from(bondIn.inviterId).toString('hex')) {
           return { valid: true };
         }
         return {

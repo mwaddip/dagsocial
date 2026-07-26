@@ -536,7 +536,7 @@ describe('invites service', () => {
     // Invitee signs, but bond is committed to attacker
     signTransaction(tx, inviteePrivKey, inviteePubKeyHex);
 
-    expect(() => claimInvite(deps, tx, 5)).toThrow('Invalid invite claim transaction');
+    expect(() => claimInvite(deps, tx, 5)).toThrow('Karma output owner must match committed invitee public key');
   });
 
   // -----------------------------------------------------------------------

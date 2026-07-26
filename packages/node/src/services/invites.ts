@@ -282,6 +282,11 @@ export function claimInvite(
     throw new Error('Public key already associated with an account');
   }
 
+  // ---- 3.5. Verify karma output owner matches committed bond invitee ----
+  if (!Buffer.from(bondForClaim.inviteePublicKey).equals(karmaOutput.owner)) {
+    throw new Error('Karma output owner must match committed invitee public key');
+  }
+
   // ---- 4. Validate transaction (guards, transitions, decay) ----
   // This verifies the hash_preimage via checkGuards, the bond claim
   // transition, and value conservation.
