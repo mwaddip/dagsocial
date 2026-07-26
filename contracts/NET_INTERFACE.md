@@ -2,18 +2,88 @@
 
 **Component:** `@dagsocial/net`
 **Protocol version:** 2
-**Last updated:** 2026-07-23
+**Last updated:** 2026-07-26
 
 ## Scope
 
-libp2p-based peer-to-peer networking for DAGsocial. Owns: peer discovery,
-sub-block gossip, ordering block gossip, UTXO transaction relay, and
-DAG synchronization. Depends on `@dagsocial/validation` for Stage 1
-(stateless) validation and `@dagsocial/types` for wire types.
+libp2p-based peer-to-peer networking for DAGsocial. Owns: wire framing,
+handshake, header-first historical sync, peer discovery, sub-block gossip,
+ordering block gossip, UTXO transaction relay, and peer penalty management.
 
-Phase 2 scope is deliberately minimal: get sub-blocks and ordering blocks
-flowing between nodes. Advanced features (DAG sync, peer scoring, validator
-peering) are deferred.
+Depends on `@dagsocial/wire` for ByteReader/ByteWriter/VLQ/frame encode-decode
+stream framing, `@dagsocial/validation` for Stage 1 (stateless) validation,
+and `@dagsocial/types` for wire types.
+
+---
+
+## Wire Framing
+
+Every stream message is wrapped in a frame. Gossipsub messages are **not**
+framed — they carry raw CBOR directly on the wire as before.
+
+### Frame Format
+
+```
+[magic:4][version:1][code:VLQ][length:VLQ][checksum:4][body:length]
+```
+
+| Field | Size | Description |
+|-------|------|-------------|
+| magic | 4 bytes | Network identifier |
+| version | 1 byte | Framing version. Independent of app `protocolVersion`. Starts at `1`. |
+| code | VLQ | Message type identifier |
+| length | VLQ | Body length in bytes (0 = empty body) |
+| checksum | 4 bytes | First 4 bytes of `blake2b256(body)` |
+| body | `length` bytes | CBOR-encoded payload |
+
+### Magic Bytes
+
+| Network | Magic | Bytes |
+|---------|-------|-------|
+| mainnet | "MDAG" | `0x4D 0x44 0x41 0x47` |
+| testnet | "TDAG" | `0x54 0x44 0x41 0x47` |
+
+### Version Negotiation
+
+On receiving a frame with an unsupported version:
+- **Major version higher**: close the stream. The peer is using a newer framing
+  protocol. Not a penalty — the peer may support an older version on retry.
+- **Minor version higher**: accept. Forward-compat — unknown fields in the body
+  are ignored.
+
+Version 1 is the baseline. A frame version bump means an incompatible change
+to the envelope structure (not the message bodies).
+
+### Design Decisions
+
+- **Version byte before VLQ fields**: the framing layer can evolve independently
+  (e.g., switch to fixed-width lengths or a different checksum).
+- **Checksum after length**: parser knows the body size before verifying — can
+  allocate once.
+- **VLQ for code**: message type namespace effectively unlimited.
+- **VLQ for length**: handshake (~100 bytes) encodes in 1 byte; block response
+  (~100KB) encodes in 3 bytes.
+- **Body is CBOR**: consistent with existing gossip encoding. No second
+  serialization format.
+- **Checksum via blake2b256**: matches the project's hash standard.
+
+### Message Codes
+
+| Code | Name | Direction | Description |
+|------|------|-----------|-------------|
+| 1 | `Handshake` | both | Exchange after libp2p identify |
+| 2 | `SyncInfo` | both | Chain tip + recent header anchors |
+| 3 | `Inv` | both | "I have these objects" — type + ID list |
+| 4 | `ModifierRequest` | → | "Send me these objects" |
+| 5 | `ModifierResponse` | ← | Serialized objects |
+| 6 | `GetSubBlock` | → | Request sub-block by ID (specific) |
+| 7 | `SubBlockResponse` | ← | Sub-block or not-found |
+| 8 | `GetPeers` | → | Request peer list |
+| 9 | `Peers` | ← | Peer list response |
+
+Codes 6-7 replace the old ad-hoc `/dagsocial/sync/1` stream protocol.
+Codes 2-5 replace the old `/dagsocial/headers/1` protocol. The old protocols
+are deleted.
 
 ---
 
@@ -25,180 +95,308 @@ peering) are deferred.
 | `/dagsocial/ordering-block/1` | OrderingBlock (CBOR) | Critical | Consensus anchors |
 | `/dagsocial/tx/1` | UtxoTransaction (CBOR) | High | Invites, claims, cancellations, credit transfers |
 
-All topics carry CBOR-encoded messages. The topic version (`/1`) matches the
-protocol version for topic naming but is independent — if the wire format
-changes incompatibly, the topic version increments.
+All gossip topics carry CBOR-encoded messages directly — no framing.
+The topic version (`/1`) matches the protocol version for topic naming but
+is independent — if the wire format changes incompatibly, the topic version
+increments.
+
+---
+
+## Handshake (code 1)
+
+After libp2p identify completes, both sides open a stream on
+`/dagsocial/handshake/1` and exchange a framed `Handshake` message:
+
+```
+outbound: connect → identify → open stream → send Handshake → receive Handshake → active
+inbound:  accept → identify → receive stream → receive Handshake → send Handshake → active
+```
+
+### Handshake Body (CBOR)
+
+```typescript
+{
+  agentName: string          // e.g. "dagsocial/1.0.0"
+  protocolVersion: number    // app protocol version the node supports
+  nodeName: string           // operator-configured, human-readable
+  chainHeight: number        // tip height of this node's chain
+  declaredAddress?: string   // optional multiaddr this node advertises
+  capabilities: number[]     // message codes this node can handle
+  sessionMagic: number       // random per-connection uint32
+}
+```
+
+Session magic: each side generates a random `uint32`. The outbound side
+sends its magic; the inbound side echoes it back. Both sides verify the
+magic matches their own network's magic bytes in the frame. Anti-replay,
+validates both sides agree on network.
+
+### Validation
+
+- `protocolVersion` must be one this node supports
+- `chainHeight` is informational — used to decide sync direction
+- Unknown capabilities are preserved, not rejected (forward compat)
+
+Validation failure → stream closed, peer banned permanently.
+
+### Post-Handshake Routing
+
+| Condition | Action |
+|-----------|--------|
+| `theirHeight > ourHeight` | Initiate sync from that peer |
+| `theirHeight < ourHeight` | Offer them headers (serve mode — send Inv) |
+| `theirHeight == ourHeight` | Idle — only gossip flows |
+
+---
+
+## Historical Sync (Header-First)
+
+Sync uses four framed messages multiplexed over `/dagsocial/sync/1`.
+All messages are CBOR-encoded bodies wrapped in frames.
+
+### SyncInfo (code 2)
+
+```typescript
+{
+  tipHeight: number
+  tipBlockId: string              // hex
+  tipCumulativeWork: bigint       // total PoW accumulated (fork choice)
+  anchors: { height: number, blockId: string }[]
+}
+```
+
+Anchors at heights `[tipHeight, tipHeight - 16, tipHeight - 128, tipHeight - 512]`
+(fewer if chain is shorter). They let the receiver find the best common point.
+
+### Inv (code 3)
+
+```typescript
+{
+  typeId: 101 | 102             // 101 = ordering block header, 102 = sub-block
+  ids: string[]                  // hex IDs, max 400 per batch
+}
+```
+
+### ModifierRequest (code 4)
+
+```typescript
+{
+  typeId: 101 | 102
+  ids: string[]
+}
+```
+
+### ModifierResponse (code 5)
+
+```typescript
+{
+  typeId: 101 | 102
+  modifiers: { id: string, data: Uint8Array }[]
+}
+```
+
+### Sync Flow
+
+```
+Late Node (height 0)                      Synced Peer (height 200)
+     │                                            │
+     │── Handshake ──────────────────────────────►│
+     │◄── Handshake (height=200) ─────────────────│
+     │                                            │
+     │ peer ahead → pick as sync peer             │
+     │── SyncInfo (height=0) ────────────────────►│
+     │                                            │
+     │ peer sees us behind → compute continuation │
+     │◄── Inv (type=101, headers from h=1) ──────│
+     │                                            │
+     │── ModifierRequest (those ids) ────────────►│
+     │◄── ModifierResponse (headers 1-200) ──────│
+     │                                            │
+     │ validate headers, build chain to h=200     │
+     │── SyncInfo (height=200) ──────────────────►│
+     │ peer sees equal → no Inv needed            │
+     │                                            │
+     │ sync complete → block body download        │
+     │── ModifierRequest (type=102, missing       │
+     │    sub-block ids from ordering blocks) ───►│
+     │◄── ModifierResponse (sub-blocks) ─────────│
+     │                                            │
+     │ apply blocks to state, now at tip          │
+```
+
+### Serve Side (Peer Behind Us)
+
+When receiving a SyncInfo showing the peer is behind or at genesis:
+1. Compute continuation headers from their best known height + 1
+2. Cap at 400 headers
+3. Send Inv
+
+An empty anchor list means a from-genesis peer — continuation starts at
+height 1. This bidirectional pattern ensures nodes serve peers behind them,
+not just consume.
+
+### Sync State Machine
+
+```
+pick_sync_peer() → sync_from_peer() → synced()
+       ↑                  │
+       └── stall/disconnect ──┘
+```
+
+- **Pick:** handshake reveals peers ahead of us — pick the one with highest
+  chain height
+- **Sync:** send SyncInfo, process Inv → request headers, validate, append
+  to chain, repeat
+- **Stall:** 60s no progress → rotate to different peer, mark current as
+  stalled. On progress, clear stall set.
+- **Peer rotation:** `stalledPeers: Set<PeerId>` — peers that failed to
+  produce progress. On stall, pick next outbound peer not in set. If all
+  stalled, clear set and retry.
+- **Synced:** periodic SyncInfo (30s) to detect new blocks. React to Inv
+  from any peer.
+
+### Watermarks
+
+Three watermarks tracked:
+
+| Watermark | Meaning |
+|-----------|---------|
+| `downloadedHeight` | Highest height with all headers stored |
+| `stateAppliedHeight` | Highest height where ordering blocks applied to UTXO state |
+| `chainHeight` | Best chain tip height |
+
+During header sync, advance `downloadedHeight`. Once caught up, request
+sub-blocks for ordering blocks referencing unknown sub-block IDs, advancing
+`stateAppliedHeight`.
+
+Invariant: `stateAppliedHeight <= downloadedHeight <= chainHeight`.
+
+### Cross-DB Durability
+
+Flush ordering on sync checkpoint:
+
+1. `validator.flush()` — state DB fsync (`Durability::Immediate`)
+2. `store.setValidatedHeight(height)` — modifiers DB chain_meta write
+3. `store.flush()` — modifiers DB fsync
+
+Order is load-bearing. Crash between (1) and (2): state ahead of recorded
+height — startup reconciliation trusts state within a threshold window.
+Crash between (2) and (3): modifiers DB already has validated_height
+durably recorded.
+
+### Block Body Download
+
+After header sync: request sub-blocks for each ordering block whose
+`subBlockIds` are not in the local store. Direct `ModifierRequest` (type 102)
+to the sync peer.
 
 ---
 
 ## Peer Discovery
 
-### Bootstrap
+### PeerDb
 
-A new node connects to one or more bootstrap peers (configured multiaddrs).
-From there it discovers additional peers via:
+In-memory registry backed by persistent storage (`peer_*` tables in the
+store). Entries sourced from:
+1. Our own handshake with a peer (authoritative)
+2. `Peers` messages from other peers (hearsay)
 
-1. **libp2p identify** — learn peer's supported protocols
-2. **libp2p ping** — liveness checks
-3. **Gossipsub mesh** — topic subscription builds the peer mesh organically
-
-No DHT-based peer discovery in Phase 2. Bootstrap list is configured via
-environment variable or config file.
-
-### Bootstrap configuration
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `BOOTSTRAP_PEERS` | `[]` | Comma-separated multiaddrs |
-| `LISTEN_ADDRS` | `/ip4/0.0.0.0/tcp/0` | libp2p listen addresses |
-| `MAX_PEERS` | `50` | Max connected peers |
-
----
-
-## Message Flows
-
-### Sub-block propagation
-
-```
-┌─────────┐                     ┌─────────┐
-│ Node A  │                     │ Node B  │
-│ (origin)│                     │ (peer)  │
-└────┬────┘                     └────┬────┘
-     │                               │
-     │ POST /posts → sub-block       │
-     │ stored locally                │
-     │                               │
-     │─── gossip(subblock) ─────────►│
-     │                               │
-     │                     verify post (challenge? no — challenge was
-     │                     local to A; B verifies PoW against target,
-     │                     signature, parent refs, karma)
-     │                               │
-     │                     if valid: store sub-block, forward to mesh
-     │                     if invalid: ignore, optionally score-down peer
+```typescript
+interface PeerRecord {
+  address: string         // multiaddr, deduplication key
+  lastSeenMs: number      // Unix epoch ms
+  agentName: string
+  nodeName: string
+  protocolVersion: number
+  capabilities: number[]  // message codes, opaque forward-compat
+}
 ```
 
-**Key design point:** The PoW challenge is node-local — peer B only verifies
-that the post's PoW meets the target difficulty, not that the challenge was
-issued by a specific node. This keeps sub-block propagation stateless at
-the network layer.
+Key behaviors:
+- **Soft cap:** 1000 entries (`peerDbCap`). Evict oldest `lastSeenMs` on
+  overflow.
+- **Self-address filter:** entries matching our own listen addresses are
+  silently dropped
+- **Blacklist filter:** banned peers excluded from `recent()` lookups
+- **Persistence:** write-through via `PeerStorage` trait. `put` failures
+  logged and swallowed — in-memory state demotes to ephemeral.
 
-### Ordering block propagation
+### GetPeers (code 8)
 
-```
-┌─────────┐                     ┌─────────┐
-│ Node A  │                     │ Node B  │
-│(miner)  │                     │ (peer)  │
-└────┬────┘                     └────┬────┘
-     │                               │
-     │ ordering block created        │
-     │ signed with validator key     │
-     │                               │
-     │─── gossip(ordering-block) ───►│
-     │                               │
-     │                     verify: PoW meets target, signature
-     │                     valid, prevBlockHash matches, all
-     │                     sub-blocks known (or request missing),
-     │                     epoch tally correct, UTXO txs valid
-     │                               │
-     │                     if valid + extends known chain: apply
-     │                     if valid + extends alternate chain:
-     │                        compare cumulative work, switch if heavier
-     │                     if invalid: ignore
-```
+Body: empty. A peer receiving this queries PeerDb for up to 8 recently-seen
+non-blacklisted, non-self peers (excluding the requester's address) and
+responds with `Peers`.
 
-### UTXO transaction relay
+### Peers (code 9)
 
-```
-┌─────────┐                     ┌─────────┐
-│ Node A  │                     │ Node B  │
-│(origin) │                     │ (peer)  │
-└────┬────┘                     └────┬────┘
-     │                               │
-     │ UTXO tx created (invite,      │
-     │ claim, cancel, transfer)      │
-     │ stored in local mempool       │
-     │                               │
-     │─── gossip(tx) ───────────────►│
-     │                               │
-     │                     verify: inputs unspent (from local
-     │                     UTXO view), guards satisfied, value
-     │                     conserved, box transitions legal
-     │                               │
-     │                     if valid: add to local mempool
-     │                     if invalid: ignore
+```typescript
+{
+  peers: {
+    address: string        // multiaddr
+    agentName: string
+    nodeName: string
+    protocolVersion: number
+    capabilities: number[]
+  }[]
+}
 ```
 
-UTXO transactions in the mempool are picked up by the next ordering block
-creator (whether local or remote). A transaction seen in an ordering block
-is removed from the mempool.
+Max 64 entries per response. Cap is enforced on the receiver — bodies
+declaring more trigger a permanent ban of the sender. Empty selection
+produces `{ peers: [] }`.
 
----
+### Peers Intake
 
-## DAG Synchronization (deferred)
+On receiving `Peers`: for each entry where the address is not blacklisted,
+not bogus, and not self — record into PeerDb with `lastSeenMs = now`.
+Malformed Peers (cap exceeded, truncated body, invalid strings) triggers
+permanent ban of the source. Bogus addresses in a valid body do NOT
+penalize the source — they are silently dropped.
 
-Phase 2 does not include full DAG sync. Sub-blocks propagate in real time
-via gossip. A node that misses sub-blocks can request them from peers by
-sub-block ID. Full catch-up (walking the DAG from genesis) is deferred to
-a future protocol version.
+### Bogus Address Classification
 
-### Missing sub-block request (Phase 2)
+**Always bogus** (any network):
+- IPv4: loopback (127/8), link-local (169.254/16), multicast (224/4),
+  broadcast (255.255.255.255), unspecified (0.0.0.0), benchmark (198.18/15),
+  reserved Class E (240/4)
+- IPv6: loopback (::1), unspecified (::), multicast (ff00::/8),
+  link-local (fe80::/10), IPv4-mapped (::ffff:0:0/96)
 
-| Request | Response |
-|---------|----------|
-| `GET /net/subblock/:id` (custom libp2p protocol) | SubBlock (CBOR) or not-found |
+**Mainnet-only bogus** (valid on testnet/LAN):
+- IPv4: RFC 1918 private (10/8, 172.16/12, 192.168/16), CGN (100.64/10),
+  documentation (192.0.2/24, 198.51.100/24, 203.0.113/24)
+- IPv6: unique-local (fc00::/7), documentation (2001:db8::/32)
 
-A node detecting a gap in a just-received ordering block (unknown sub-block
-IDs) requests them from the peer that sent the ordering block. This is a
-direct request-response, not gossip.
+### Outbound Manager
 
----
+Two phases:
 
-## Validation Architecture
+**Floor phase** (connections < `minPeers`):
+- Dial bootstrap seeds aggressively with retry/backoff
+- PeerDb not consulted — seeds are the bootstrap source
 
-Two-stage validation, modeled after Ergo's modifier processing:
+**Fill phase** (connections >= `minPeers`, < `maxPeers`):
+- Every `outboundFillIntervalMs` (30s), query
+  `PeerDb.recent(N, exclude=connected)` where
+  `N = maxPeers - connectedOutbound`
+- Dial one candidate per tick (most recently seen first)
+- Respect blacklist and redial cooldown (`outboundRedialCooldownMs`, 60s)
+- If PeerDb exhausted, idle until new gossip arrives
 
-### Stage 1 (net package, stateless)
-
-Runs on inbound gossip messages before forwarding to mesh peers. Uses
-`@dagsocial/validation`:
-
-- CBOR structural validity
-- Protocol version check
-- Content limits (1–300 UTF-8 bytes)
-- PoW verification (blake2b512 meets target difficulty)
-- Signature verification (Ed25519)
-- Sub-block, ordering block, and UTXO transaction structural checks
-
-### Stage 2 (node package, stateful)
-
-Runs after Stage 1 passes, via registered `on*` callbacks:
-
-- Parent refs exist (live post or stump)
-- Author has sufficient karma
-- UTXO inputs unspent, guard scripts satisfied
-- Challenge check skipped for relayed posts (challenge was local to origin node)
-
-### Forwarding rule
-
-Forward to mesh peers after Stage 1 passes. If Stage 2 fails later, penalize
-the source peer. This keeps propagation fast while gatekeeping on structure
-and PoW.
-
----
-
-## Missing Sub-Block Sync
-
-Custom libp2p protocol: `/dagsocial/sync/1`. Simple request-response over a
-libp2p stream:
+### Bootstrap Flow (New Node)
 
 ```
-Request:  subBlockId (32 bytes, hex-encoded)
-Response: CBOR-encoded SubBlock, or 0x00 (not found)
+Node start
+  │
+  ├── Load peer records from store → populate PeerDb
+  ├── Dial bootstrap seeds
+  │     │
+  │     ├── Handshake → add to PeerDb, transition to Active
+  │     ├── Send GetPeers → receive Peers → feed PeerDb
+  │     └── If peer ahead → initiate sync
+  │
+  └── Outbound manager fills from PeerDb
 ```
-
-Triggered when a node receives an ordering block referencing unknown sub-block
-IDs. Requested from the peer that sent the ordering block. Timeout: 10s.
 
 ---
 
@@ -211,7 +409,7 @@ IDs. Requested from the peer that sent the ordering block. Timeout: 10s.
 | NonDeliveryPenalty | Missing sub-block request timeout | 75 |
 | PermanentPenalty | Wrong magic bytes, incompatible version | 500 (instant ban) |
 
-Accumulated score ≥ threshold → temporal ban for `temporalBanDuration`.
+Accumulated score >= threshold → temporal ban for `temporalBanDuration`.
 Safe interval cooldown between penalties for the same peer.
 
 | Parameter | Default | Description |
@@ -237,6 +435,57 @@ node operator may choose to link them (same keypair) or keep them separate.
 
 ---
 
+## Stream Protocols
+
+| Protocol | Framing | Purpose |
+|----------|---------|---------|
+| `/dagsocial/handshake/1` | Frame | Post-identify peer handshake |
+| `/dagsocial/sync/1` | Frame | Historical sync + peer discovery (codes 2-9) |
+
+All stream protocols multiplex over the sync stream. The frame `code`
+byte disambiguates message types.
+
+Removed protocols:
+- Old `/dagsocial/sync/1` (individual sub-block request/response) —
+  replaced by framed GetSubBlock/SubBlockResponse (codes 6-7)
+- `/dagsocial/headers/1` — replaced by framed
+  SyncInfo/Inv/ModifierRequest/ModifierResponse (codes 2-5)
+
+---
+
+## Validation Architecture
+
+Two-stage validation, modeled after Ergo's modifier processing:
+
+### Stage 1 (net package, stateless)
+
+Runs on inbound gossip messages before forwarding to mesh peers. Uses
+`@dagsocial/validation`:
+
+- CBOR structural validity
+- Protocol version check
+- Content limits (1-300 UTF-8 bytes)
+- PoW verification (blake2b512 meets target difficulty)
+- Signature verification (Ed25519)
+- Sub-block, ordering block, and UTXO transaction structural checks
+
+### Stage 2 (node package, stateful)
+
+Runs after Stage 1 passes, via registered `on*` callbacks:
+
+- Parent refs exist (live post or stump)
+- Author has sufficient karma
+- UTXO inputs unspent, guard scripts satisfied
+- Challenge check skipped for relayed posts (challenge was local to origin node)
+
+### Forwarding Rule
+
+Forward to mesh peers after Stage 1 passes. If Stage 2 fails later, penalize
+the source peer. This keeps propagation fast while gatekeeping on structure
+and PoW.
+
+---
+
 ## API
 
 ### Node Lifecycle
@@ -247,6 +496,8 @@ node operator may choose to link them (same keypair) or keep them separate.
 | `stop()` | `() => Promise<void>` | Graceful shutdown |
 | `peerId()` | `() => string` | This node's libp2p peer ID |
 | `peers()` | `() => Peer[]` | Connected peers with metadata |
+| `allPeers()` | `() => PeerRecord[]` | All known peers (connected + PeerDb entries) |
+| `connectToPeer(addr)` | `(string) => Promise<void>` | Dial a specific multiaddr and handshake |
 
 ### Gossip
 
@@ -264,18 +515,44 @@ node operator may choose to link them (same keypair) or keep them separate.
 | `onOrderingBlock(callback)` | `((OrderingBlock) => void) => void` | Register handler for inbound ordering blocks |
 | `onTx(callback)` | `((UtxoTransaction) => void) => void` | Register handler for inbound UTXO transactions |
 
-### Sync
+---
 
-| Function | Signature | Description |
-|----------|-----------|-------------|
-| `requestSubBlock(id, peerId)` | `(string, string) => Promise<SubBlock>` | Request a specific sub-block from a peer |
+## Config
+
+```typescript
+interface NetConfig {
+  // Transport
+  bootstrapPeers: string[]
+  listenAddrs: string
+  maxPeers: number
+
+  // Magic bytes
+  magic: number                    // 0x4D444147 (mainnet) or 0x54444147 (testnet)
+
+  // Peer discovery
+  minPeers: number                 // floor for fill phase (default 3)
+  peerDbCap: number                // soft cap on PeerDb entries (default 1000)
+  outboundFillIntervalMs: number   // fill phase tick (default 30000)
+  outboundRedialCooldownMs: number // redial cooldown (default 60000)
+
+  // Syncing
+  syncRequestTimeoutMs: number
+
+  // Penalties
+  penaltyScoreThreshold: number
+  temporalBanDurationMs: number
+  penaltySafeIntervalMs: number
+  peerEvictionIntervalMs: number
+}
+```
 
 ---
 
 ## Preconditions
-- Node.js ≥ 22
-- `@dagsocial/types`, `@dagsocial/validation`, and `@dagsocial/node` packages
-  built and importable
+
+- Node.js >= 22
+- `@dagsocial/wire`, `@dagsocial/types`, `@dagsocial/validation`, and
+  `@dagsocial/node` packages built and importable
 - libp2p dependencies installed (`@libp2p/tcp`, `@chainsafe/libp2p-noise`,
   `@chainsafe/libp2p-yamux`, `@chainsafe/libp2p-gossipsub`, `@libp2p/identify`,
   `@libp2p/ping`)
@@ -283,14 +560,30 @@ node operator may choose to link them (same keypair) or keep them separate.
 - Port available for libp2p listen address
 
 ## Postconditions
+
 - libp2p node running with configured transports and protocols
-- Connected to bootstrap peers and meshed on all subscribed topics
+- Connected to bootstrap peers, handshake exchanged, and meshed on all
+  subscribed gossip topics
+- Handshake validated — wrong-network peers rejected at magic byte level
+- Sync initiated with peers ahead of us; sync served to peers behind us
 - Sub-blocks received from peers are validated and forwarded to local node
   for storage
 - Ordering blocks received from peers are validated and applied
 - Locally-produced sub-blocks and ordering blocks are gossiped to peers
+- PeerDb populated from handshakes and Peers gossip; outbound manager
+  maintaining peer count between minPeers and maxPeers
 
 ## Invariants
+
+- Frame magic bytes reject wrong-network connections at the transport layer
+- Frame checksum catches corruption before body parsing
+- Stream protocols carry framed messages; Gossipsub topics carry raw CBOR
+- Sync is bidirectional — nodes serve peers behind them, not just consume
+- Watermark invariant: `stateAppliedHeight <= downloadedHeight <= chainHeight`
+- Flush ordering: state → validated_height → modifiers (same order every time)
+- Unknown message codes and peer capabilities are preserved, not rejected
+- PeerDb self-address filter prevents self-dial loops
+- Bogus addresses filtered silently; malformed Peers trigger permanent ban
 - Sub-block gossip is stateless — verification depends only on the post's
   PoW target, not on challenge provenance
 - Ordering blocks are verified before application — a block extending an
@@ -300,5 +593,4 @@ node operator may choose to link them (same keypair) or keep them separate.
 - Peer identity (libp2p) is independent of account identity (Ed25519 keypair)
 - Topic names include protocol version — incompatible wire format changes
   get a new topic
-- All wire messages are CBOR-encoded (same codec as local storage)
 - Inbound messages are re-verified before forwarding and storing
