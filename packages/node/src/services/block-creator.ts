@@ -21,7 +21,9 @@ import {
   EMPTY_STATE_ROOT,
   encodeHeader,
   decodeSubBlock,
+  encodeSubBlock,
   decodeTx,
+  encodeTx,
   encodePost,
   computeBoxId,
   computeTxId,
@@ -470,13 +472,43 @@ export function createOrderingBlock(): OrderingBlock | null {
 
   const subBlockRefs = subBlocks.map((sb) => sb.subBlockId);
 
+  // Re-encode sub-blocks for inline storage in the ordering block
+  const subBlockCbors = subBlocks.map((sb) => encodeSubBlock(sb));
+
+  // Collect UTXO tx CBOR for inline storage, matching the utxoTxIds order:
+  // 1. remainingUtxoTxs IDs, 2. matchedUtxoRowids IDs, 3. batch-linked entries
+  const utxoTxCbors: Uint8Array[] = [];
+
+  // Standalone UTXO txs that were not matched to sub-blocks
+  for (const entry of remainingUtxoTxs) {
+    utxoTxCbors.push(entry.utxoTxCbor!);
+  }
+
+  // Matched UTXO entries (attached to sub-blocks)
+  for (const entry of standaloneUtxoTxs) {
+    if (matchedUtxoRowids.has(entry.rowid)) {
+      utxoTxCbors.push(entry.utxoTxCbor!);
+    }
+  }
+
+  // Batch-linked UTXO entries
+  for (const [, batchEntries] of batchMap) {
+    for (const entry of batchEntries) {
+      if (entry.entryType === 'utxo_tx' && entry.utxoTxCbor) {
+        utxoTxCbors.push(entry.utxoTxCbor);
+      }
+    }
+  }
+
   // 17. Build the body trees
   const subBlockTree: SubBlockTree = {
     subBlockRefs,
     stumpIds: [],
+    subBlocks: subBlockCbors,
   };
   const utxoTxTree: UtxoTxTree = {
     utxoTxIds,
+    utxoTxs: utxoTxCbors,
     likeBoxIds: allLikeBoxIds,
     coinbaseOutputs,
   };
