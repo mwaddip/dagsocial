@@ -92,6 +92,7 @@ export function sendCredits(
   amount: number,
   signature: Uint8Array,
   currentHeight: number,
+  expectedHeight?: number,
 ): CreditTransferResult {
   if (amount <= 0) {
     throw new Error('amount must be positive');
@@ -103,13 +104,16 @@ export function sendCredits(
   const totalSelected = selected.reduce((sum, b) => sum + b.value, 0);
   const change = totalSelected - amount;
 
-  // 2. Build outputs
+  // 2. Build outputs — use expectedHeight for createdAtBlock so the txId
+  //    matches what the client signed. Falls back to currentHeight if
+  //    expectedHeight is not provided (backward compat for non-UI callers).
+  const buildHeight = expectedHeight ?? currentHeight;
   const outputs: CreditBox[] = [];
 
   const recipientBox: CreditBox = {
     boxType: 'credit',
     value: amount,
-    createdAtBlock: currentHeight,
+    createdAtBlock: buildHeight,
     owner: to,
     guard: 'owner_signature',
     proofSource: -1, // transfer (not coinbase)
@@ -120,7 +124,7 @@ export function sendCredits(
     const changeBox: CreditBox = {
       boxType: 'credit',
       value: change,
-      createdAtBlock: currentHeight,
+      createdAtBlock: buildHeight,
       owner: from,
       guard: 'owner_signature',
       proofSource: -1,

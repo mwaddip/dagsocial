@@ -198,7 +198,7 @@ function rowToBox(row: UtxoRow): AnyBox {
 export function getBox(boxId: string): AnyBox | null {
   const db = getDb();
   const row = db
-    .prepare('SELECT * FROM utxo_boxes WHERE id = ?')
+    .prepare('SELECT * FROM utxo_boxes WHERE id = ? AND spent_at_block IS NULL')
     .get(boxId) as UtxoRow | undefined;
   return row ? rowToBox(row) : null;
 }

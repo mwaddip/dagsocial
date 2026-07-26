@@ -112,6 +112,7 @@ export function createRouter(deps: UtxoDeps): Router {
       to?: string;
       amount?: number;
       signature?: string;
+      expectedHeight?: number;
     };
 
     if (!body.from || typeof body.from !== 'string' || body.from.length !== 64) {
@@ -130,6 +131,11 @@ export function createRouter(deps: UtxoDeps): Router {
       res.status(400).json({ error: 'signature required (base64)' });
       return;
     }
+
+    const expectedHeight =
+      typeof body.expectedHeight === 'number' && body.expectedHeight >= 0
+        ? body.expectedHeight
+        : undefined;
 
     let fromBytes: Uint8Array;
     let toBytes: Uint8Array;
@@ -151,7 +157,7 @@ export function createRouter(deps: UtxoDeps): Router {
     const currentHeight = deps.getCurrentHeight();
 
     try {
-      const result = sendCredits(fromBytes, toBytes, body.amount, sigBytes, currentHeight);
+      const result = sendCredits(fromBytes, toBytes, body.amount, sigBytes, currentHeight, expectedHeight);
       res.json(result);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'transfer failed';

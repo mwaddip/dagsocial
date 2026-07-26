@@ -114,16 +114,20 @@
     <div id="inviteResult"></div>
 
     <h4>Redeem</h4>
+    <div style="font-size:11px;color:#8b949e;margin:4px 0 2px">Invite Box ID:</div>
     <div class="row">
       <input id="inviteBoxIdInput" placeholder="Invite Box ID" style="flex:1;font-size:11px">
     </div>
-    <div class="row" style="margin-top:4px">
+    <div style="font-size:11px;color:#8b949e;margin:4px 0 2px">Bond Box ID:</div>
+    <div class="row" style="margin-top:2px">
       <input id="bondBoxIdForClaimInput" placeholder="Bond Box ID" style="flex:1;font-size:11px">
     </div>
-    <div class="row" style="margin-top:4px">
+    <div style="font-size:11px;color:#8b949e;margin:4px 0 2px">Inviter ID (hex):</div>
+    <div class="row" style="margin-top:2px">
       <input id="inviterIdForClaimInput" placeholder="Inviter ID (hex)" style="flex:1;font-size:11px">
     </div>
-    <div class="row" style="margin-top:4px">
+    <div style="font-size:11px;color:#8b949e;margin:4px 0 2px">Secret (hex):</div>
+    <div class="row" style="margin-top:2px">
       <input id="inviteSecretInput" placeholder="Secret (hex)" style="flex:1;font-size:11px">
       <button id="redeemInviteBtn" class="small">Redeem</button>
     </div>
@@ -1461,6 +1465,7 @@ document.getElementById('creditTransferBtn').addEventListener('click', async () 
         to: recipient,
         amount,
         signature: sigBase64,
+        expectedHeight: currentBlockHeight,
       }),
     });
 
@@ -1527,12 +1532,14 @@ document.getElementById('createInviteBtn').addEventListener('click', async () =>
         <span class="result-msg ok">Invite created!</span>
         <div style="font-size:11px;color:#8b949e;margin:4px 0">Invite Box ID:</div>
         <pre>${esc(data.inviteBoxId)}</pre>
-        <div style="font-size:11px;color:#8b949e;margin:4px 0">Secret (share with invitee):</div>
-        <pre>${esc(secretHex)}</pre>
-        <div style="font-size:11px;color:#8b949e;margin:4px 0">Secret Hash:</div>
-        <pre>${esc(secretHashHex)}</pre>
         <div style="font-size:11px;color:#8b949e;margin:4px 0">Bond Box ID:</div>
         <pre>${esc(data.bondBoxId)}</pre>
+        <div style="font-size:11px;color:#8b949e;margin:4px 0">Inviter ID:</div>
+        <pre>${esc(pubKeyHex)}</pre>
+        <div style="font-size:11px;color:#8b949e;margin:4px 0">Secret (share with invitee):</div>
+        <pre>${esc(secretHex)}</pre>
+        <div style="font-size:11px;color:#8b949e;margin:4px 0">Secret Hash (for verification):</div>
+        <pre>${esc(secretHashHex)}</pre>
       `;
       loadStatus();
       loadIdentityStatus();
