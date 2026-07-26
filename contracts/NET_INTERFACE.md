@@ -89,6 +89,9 @@ are deleted.
 
 ## Gossip Topics
 
+Sub-block structure, lifecycle, and propagation semantics are defined in
+`SUBBLOCK_INTERFACE.md`.
+
 | Topic | Payload | Priority | Description |
 |-------|---------|----------|-------------|
 | `/dagsocial/subblock/1` | SubBlock (CBOR) | High | User posts + sidecar likes |

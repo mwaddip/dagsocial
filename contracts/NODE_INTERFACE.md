@@ -79,6 +79,9 @@ previous is submitted or expired returns 409. Challenge expires at
 
 **Post submission flow (mempool-based):**
 
+Sub-block assembly, lifecycle, and ordering block integration are defined in
+`SUBBLOCK_INTERFACE.md`.
+
 1. Decode hex fields (`author`, `challenge`, `signature`) to binary
 2. Validate field presence, content length (1–300 bytes)
 3. Run `verifyPost()` — includes challenge check, PoW, signature, parent refs,

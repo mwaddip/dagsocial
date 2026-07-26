@@ -33,7 +33,9 @@ The hybrid preserves the strengths of both.
 
 ### Block architecture: sub-blocks + ordering blocks
 
-Inspired by Ergo's subblock model:
+See `SUBBLOCK_INTERFACE.md` for the full sub-block contract.
+
+Inspired by Ergo's subblock model (EIP-15):
 
 | Block type | Producer | PoW difficulty | Purpose | Interval |
 |------------|----------|----------------|---------|----------|
@@ -725,6 +727,8 @@ forever. A node rejects objects with an unsupported protocol version.
 - Karma decay applied periodically at block application time (not at spend time)
 
 ### Sub-blocks and ordering
+
+See `SUBBLOCK_INTERFACE.md` for the full contract.
 
 - Sub-blocks are user-produced; ordering blocks are validator-produced
 - Sub-blocks carry at most one post plus queued likes as sidecars
