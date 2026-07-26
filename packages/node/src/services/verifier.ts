@@ -7,20 +7,11 @@ import {
   POST_LOCK_REPLY_COST,
 } from '@dagsocial/types';
 import type { Post } from '@dagsocial/types';
-import { createHash } from 'crypto';
-import { verifyPoW, verifyPostSignature, verifyContentCharacters } from '@dagsocial/validation';
+import { verifyPoW, verifyPostSignature, verifyContentCharacters, blake2b32 } from '@dagsocial/validation';
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Parent hash verification
 // ---------------------------------------------------------------------------
-
-/**
- * Recompute the blake2b-512/32 hash of raw bytes.
- * Used for independent parent-hash verification.
- */
-function blake2b32(data: Uint8Array): Uint8Array {
-  return createHash('blake2b512').update(data).digest().subarray(0, 32);
-}
 
 /**
  * Verify that a parentRef matches the hash of the parent post's raw CBOR bytes.

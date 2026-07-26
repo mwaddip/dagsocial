@@ -238,6 +238,44 @@ describe('validate-dont-trust', () => {
     expect(result1.postId).not.toBe(result2.postId);
   });
 
+  // NOTE: The Post type does not carry a client-set `id` field, so there is
+  // no self-reported content hash to reject on mismatch. The post ID is
+  // ALWAYS computed server-authoritatively via computePostId(). The following
+  // test verifies that the server-derived ID is fully determined by post
+  // content — there is no client-controlled ID to spoof.
+
+  it('server-derived postId is deterministic and non-spoofable (no client id field)', () => {
+    const store = makeStore();
+    const tx = makeKarmaLockTx();
+
+    // Create identical posts — they must produce the same postId.
+    // We only vary the fields that affect computePostId (content, parentRefs,
+    // timestamp, powNonce, protocolVersion). Author/challenge/signature are
+    // fixed to match the mock deps defaults so the karma-ownership check passes.
+    const base = {
+      content: 'identical content',
+      parentRefs: [] as string[],
+      timestamp: 1700000000000,
+      powNonce: 42,
+      protocolVersion: PROTOCOL_VERSION,
+    };
+
+    const postA = makePost(base);
+    const postB = makePost(base);
+
+    const resultA = createPost(mockDeps(store), postA, tx);
+    const resultB = createPost(mockDeps(store), postB, tx);
+
+    // Same deterministic fields → same postId. The server computes it; the
+    // client cannot inject a different value.
+    expect(resultA.postId).toBe(resultB.postId);
+
+    // Changing ANY field (even powNonce) produces a different postId.
+    const postC = makePost({ ...base, powNonce: 43 });
+    const resultC = createPost(mockDeps(store), postC, tx);
+    expect(resultC.postId).not.toBe(resultA.postId);
+  });
+
   // -----------------------------------------------------------------------
   // Watermark advancement
   // -----------------------------------------------------------------------

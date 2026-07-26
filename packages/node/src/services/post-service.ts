@@ -1,10 +1,10 @@
-import { createHash } from 'crypto';
 import {
   computePostId,
   MEMPOOL_EXPIRY_BLOCKS,
 } from '@dagsocial/types';
 import type { Post, KarmaBox, UtxoTransaction, AnyBox, SubBlock, LikeBox } from '@dagsocial/types';
 import type { VerifierDeps, VerificationResult } from './verifier.js';
+import { blake2b32 } from '@dagsocial/validation';
 
 // ---------------------------------------------------------------------------
 // Error
@@ -41,15 +41,6 @@ function encodeUint32(n: number): Uint8Array {
 function decodeUint32(bytes: Uint8Array): number {
   if (bytes.length < 4) return 0;
   return new DataView(bytes.buffer, bytes.byteOffset, 4).getUint32(0, true);
-}
-
-/**
- * Recompute the blake2b-512/32 hash of raw bytes.
- * Used for parent-hash verification: the parentRef must match the hash of the
- * parent post's canonical serialization.
- */
-function blake2b32(data: Uint8Array): Uint8Array {
-  return createHash('blake2b512').update(data).digest().subarray(0, 32);
 }
 
 // ---------------------------------------------------------------------------
@@ -191,25 +182,10 @@ export function createPost(
   // ID. The post ID is derived entirely from post fields.
   const postId = computePostId(post);
 
-  // ---- Verify self-consistency: round-trip the post through CBOR ----
-  // If the post serializes and deserializes to a different postId, the post
-  // has internal inconsistency (e.g., CBOR canonicalization changed fields).
+  // ---- Phase 3 complete: store post, then advance indexed watermark ----
   const rawCbor = deps.encodePost(post);
-  const cborHash = blake2b32(rawCbor);
-  const cborHashHex = Buffer.from(cborHash).toString('hex');
-  // The post ID (computePostId) hashes structured fields in a specific order.
-  // The CBOR hash is a separate integrity check: it binds the post to its
-  // canonical serialization. Both must be consistent.
-  // For now, we verify that the raw CBOR round-trips correctly by checking
-  // that re-encoding from the stored raw bytes produces the same postId.
-  // This is enforced by insertPost which recomputes computePostId internally.
-
-  // ---- Phase 3 complete: advance indexed watermark ----
-  // The post bytes are stored and DAG-linked. Increment the indexed sequence.
-  advanceWatermark(deps, 'last_indexed_sequence');
-
-  // ---- Store post in dag_posts ----
   deps.insertPost(post, rawCbor);
+  advanceWatermark(deps, 'last_indexed_sequence');
 
   // ---- Validate the karma-lock tx ----
   const txResult = deps.validateTx(karmaLockTx, currentHeight);
