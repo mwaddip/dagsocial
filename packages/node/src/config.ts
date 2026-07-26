@@ -13,6 +13,8 @@ import {
 
 export interface Config {
   port: number;
+  adminPort: number;
+  adminBindAddress: string;
   dbPath: string;
   networkMode: string;
   nodeRole: 'server' | 'miner';
@@ -42,6 +44,8 @@ export interface Config {
 export function loadConfig(): Readonly<Config> {
   const cfg: Config = {
     port: parseInt(process.env['PORT'] ?? '3000', 10),
+    adminPort: parseInt(process.env['ADMIN_PORT'] ?? '3001', 10),
+    adminBindAddress: process.env['ADMIN_BIND_ADDRESS'] ?? '127.0.0.1',
     dbPath: process.env['DB_PATH'] ?? 'dagsocial.db',
     networkMode: process.env['NETWORK_MODE'] ?? 'testnet',
     nodeRole: parseNodeRole(process.env['NODE_ROLE'] ?? 'server'),

@@ -19,7 +19,32 @@ import { createPruneIntent, executePrune } from './services/stump-engine.js';
 import { computeStumpId, encodePost } from '@dagsocial/types';
 import { getDb } from './store/db.js';
 import { validateTx } from './services/utxo-engine.js';
+import { createAdminRouter } from './routes/admin.js';
 import type { Config } from './config.js';
+import type { Server } from 'http';
+
+// ---------------------------------------------------------------------------
+// createAdminApp
+// ---------------------------------------------------------------------------
+
+export function createAdminApp(config: Config): Server {
+  const adminApp = express();
+  adminApp.use(createAdminRouter());
+
+  // WARN if not loopback
+  if (config.adminBindAddress !== '127.0.0.1' && config.adminBindAddress !== '::1') {
+    console.warn(
+      `Admin listener binding to non-loopback address: ${config.adminBindAddress}:${config.adminPort}. ` +
+      `This exposes internal metrics to the network.`,
+    );
+  }
+
+  const server = adminApp.listen(config.adminPort, config.adminBindAddress, () => {
+    console.log(`Admin listener on ${config.adminBindAddress}:${config.adminPort}`);
+  });
+
+  return server;
+}
 
 // ---------------------------------------------------------------------------
 // createApp

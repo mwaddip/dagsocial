@@ -3,7 +3,7 @@ import { initDb, closeDb } from './store/db.js';
 import { schemaVersion, writeSchemaVersion, CURRENT_SCHEMA_VERSION } from './store/meta.js';
 import { initSystemKeypair, ensureSystemKarmaBox, ensureFaucetCreditBox } from './store/system.js';
 import { startBlockCreator, stopBlockCreator } from './services/block-creator.js';
-import { createApp } from './server.js';
+import { createApp, createAdminApp } from './server.js';
 import {
   initJournal,
   emitServerStarting,
@@ -281,10 +281,11 @@ if (config.nodeRole === 'miner') {
 }
 
 const app = createApp(config);
+const adminServer = createAdminApp(config);
 const server = app.listen(config.port, () => {
   emitServerReady(
     `0.0.0.0:${config.port}`,
-    `127.0.0.1:${config.port + 1}`,
+    `${config.adminBindAddress}:${config.adminPort}`,
     Date.now() - startTime,
   );
   console.log(`DAGsocial node listening on :${config.port}`);
@@ -300,6 +301,7 @@ process.on('SIGINT', () => {
   net.stop().catch((err: unknown) => console.warn(`Net stop error: ${String(err)}`));
   closeDb();
   server.close();
+  adminServer.close();
   emitServerShuttingDown('SIGINT');
   process.exit(0);
 });
@@ -310,6 +312,7 @@ process.on('SIGTERM', () => {
   net.stop().catch((err: unknown) => console.warn(`Net stop error: ${String(err)}`));
   closeDb();
   server.close();
+  adminServer.close();
   emitServerShuttingDown('SIGTERM');
   process.exit(0);
 });
