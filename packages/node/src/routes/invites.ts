@@ -43,6 +43,17 @@ export interface InvitesDeps extends UtxoEngineDeps {
     expiresAtHeight: number;
     tx: UtxoTransaction;
   };
+  commitInvite(
+    deps: UtxoEngineDeps,
+    tx: UtxoTransaction,
+    currentBlockHeight: number,
+  ): {
+    status: 'pending';
+    txId: string;
+    expiresAtHeight: number;
+    bondBoxId: string;
+    tx: UtxoTransaction;
+  };
   getCurrentHeight(): number;
 }
 
@@ -92,6 +103,51 @@ export function createRouter(deps: InvitesDeps): Router {
       });
     } catch (err) {
       res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  // POST /invites/commit — commit to an invite (bind invitee identity to BondBox)
+  router.post('/commit', (req, res) => {
+    const body = req.body as { tx?: Record<string, unknown> };
+
+    if (!body.tx) {
+      res.status(400).json({ error: 'tx required' });
+      return;
+    }
+
+    let tx: UtxoTransaction;
+    try {
+      tx = jsonToTx(body.tx);
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+      return;
+    }
+
+    try {
+      const currentHeight = deps.getCurrentHeight();
+      const result = deps.commitInvite(deps, tx, currentHeight);
+
+      // Broadcast commit tx to peers (fire-and-forget)
+      const net = getNet();
+      if (net) {
+        net.broadcastTx(result.tx).catch((err: Error) => {
+          console.warn(`Failed to broadcast commit tx: ${err.message}`);
+        });
+      }
+
+      res.status(201).json({
+        status: 'pending',
+        txId: result.txId,
+        expiresAtHeight: result.expiresAtHeight,
+        bondBoxId: result.bondBoxId,
+      });
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (msg.includes('already committed')) {
+        res.status(409).json({ error: msg });
+      } else {
+        res.status(400).json({ error: msg });
+      }
     }
   });
 

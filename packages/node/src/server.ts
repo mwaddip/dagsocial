@@ -14,7 +14,7 @@ import { generateChallenge } from './services/pow.js';
 import { verifyPost } from './services/verifier.js';
 import { onSubBlockReceived, getCurrentTemplate, submitMinedBlock } from './services/block-creator.js';
 import { castLike, removeLike } from './services/likes.js';
-import { createInvite, claimInvite, cancelInvite } from './services/invites.js';
+import { createInvite, claimInvite, cancelInvite, commitInvite } from './services/invites.js';
 import { createPruneIntent, executePrune } from './services/stump-engine.js';
 import { computeStumpId, encodePost } from '@dagsocial/types';
 import { getDb } from './store/db.js';
@@ -116,6 +116,7 @@ export function createApp(config: Config): express.Express {
       createInvite,
       claimInvite,
       cancelInvite,
+      commitInvite,
       getCurrentHeight: store.getCurrentHeight,
       getBox: store.getBox,
       insertBox: store.insertBox,
