@@ -558,9 +558,10 @@ describe('block-apply journal recording', () => {
         powTargetBits: 20, // High difficulty — nonce 0 will not satisfy
         createdAt: Date.now(),
       },
-      subBlockTree: { subBlockRefs: [], stumpIds: [] },
+      subBlockTree: { subBlockRefs: [], stumpIds: [], subBlocks: [] },
       utxoTxTree: {
         utxoTxIds: [],
+        utxoTxs: [],
         likeBoxIds: [],
         coinbaseOutputs: [],
       },
@@ -599,9 +600,10 @@ describe('block-apply journal recording', () => {
         powTargetBits: 4,
         createdAt: Date.now(),
       },
-      subBlockTree: { subBlockRefs: [], stumpIds: [] },
+      subBlockTree: { subBlockRefs: [], stumpIds: [], subBlocks: [] },
       utxoTxTree: {
         utxoTxIds: [],
+        utxoTxs: [],
         likeBoxIds: [],
         coinbaseOutputs: [],
       },
@@ -639,9 +641,10 @@ describe('block-apply journal recording', () => {
         powTargetBits: 4,
         createdAt: Date.now(),
       },
-      subBlockTree: { subBlockRefs: [], stumpIds: [] },
+      subBlockTree: { subBlockRefs: [], stumpIds: [], subBlocks: [] },
       utxoTxTree: {
         utxoTxIds: [],
+        utxoTxs: [],
         likeBoxIds: [],
         coinbaseOutputs: [],
       },
@@ -680,9 +683,10 @@ describe('block-apply journal recording', () => {
         powTargetBits: 4,
         createdAt: Date.now(),
       },
-      subBlockTree: { subBlockRefs: [], stumpIds: [] },
+      subBlockTree: { subBlockRefs: [], stumpIds: [], subBlocks: [] },
       utxoTxTree: {
         utxoTxIds: [],
+        utxoTxs: [],
         likeBoxIds: [],
         coinbaseOutputs: [
           { value: 0, owner: new Uint8Array(32), lockedUntilBlock: null },

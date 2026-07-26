@@ -41,9 +41,11 @@ function blockToJson(block: OrderingBlock): Record<string, unknown> {
     subBlockTree: {
       subBlockRefs: block.subBlockTree.subBlockRefs,
       stumpIds: block.subBlockTree.stumpIds,
+      subBlocks: [],
     },
     utxoTxTree: {
       utxoTxIds: block.utxoTxTree.utxoTxIds,
+      utxoTxs: [],
       likeBoxIds: block.utxoTxTree.likeBoxIds,
       coinbaseOutputs: block.utxoTxTree.coinbaseOutputs.map((o) => ({
         owner: Buffer.from(o.owner).toString('hex'),

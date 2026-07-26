@@ -310,9 +310,11 @@ describe('verifyOrderingBlockStructure', () => {
     subBlockTree: {
       subBlockRefs: [],
       stumpIds: [],
+      subBlocks: [],
     },
     utxoTxTree: {
       utxoTxIds: [],
+      utxoTxs: [],
       likeBoxIds: [],
       coinbaseOutputs: [],
     },
@@ -384,9 +386,11 @@ describe('verifyBlockChainLink', () => {
     subBlockTree: {
       subBlockRefs: [],
       stumpIds: [],
+      subBlocks: [],
     },
     utxoTxTree: {
       utxoTxIds: [],
+      utxoTxs: [],
       likeBoxIds: [],
       coinbaseOutputs: [],
     },

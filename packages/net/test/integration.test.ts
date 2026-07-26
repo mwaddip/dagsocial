@@ -206,9 +206,11 @@ describe('Two-node integration', () => {
       subBlockTree: {
         subBlockRefs: [],
         stumpIds: [],
+        subBlocks: [],
       },
       utxoTxTree: {
         utxoTxIds: [],
+        utxoTxs: [],
         likeBoxIds: [],
         coinbaseOutputs: [],
       },

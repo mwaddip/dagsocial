@@ -450,8 +450,8 @@ describe('extendsOurTip', () => {
         powTargetBits: 4,
         createdAt: Date.now(),
       },
-      subBlockTree: { subBlockRefs: [], stumpIds: [] },
-      utxoTxTree: { utxoTxIds: [], likeBoxIds: [], coinbaseOutputs: [] },
+      subBlockTree: { subBlockRefs: [], stumpIds: [], subBlocks: [] },
+      utxoTxTree: { utxoTxIds: [], utxoTxs: [], likeBoxIds: [], coinbaseOutputs: [] },
       validatorSignature: new Uint8Array(64),
     };
 
@@ -476,8 +476,8 @@ describe('extendsOurTip', () => {
         powTargetBits: 4,
         createdAt: Date.now(),
       },
-      subBlockTree: { subBlockRefs: [], stumpIds: [] },
-      utxoTxTree: { utxoTxIds: [], likeBoxIds: [], coinbaseOutputs: [] },
+      subBlockTree: { subBlockRefs: [], stumpIds: [], subBlocks: [] },
+      utxoTxTree: { utxoTxIds: [], utxoTxs: [], likeBoxIds: [], coinbaseOutputs: [] },
       validatorSignature: new Uint8Array(64),
     };
 

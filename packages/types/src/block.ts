@@ -78,10 +78,12 @@ export function cumulativeWork(headers: BlockHeader[]): bigint {
 export interface SubBlockTree {
   subBlockRefs: PostId[];       // sub-blocks anchored in this block
   stumpIds: StumpId[];          // stumps committed in this block
+  subBlocks: Uint8Array[];      // CBOR-encoded SubBlocks (aligned with subBlockRefs)
 }
 
 export interface UtxoTxTree {
   utxoTxIds: TxId[];            // UTXO transactions
+  utxoTxs: Uint8Array[];        // CBOR-encoded UtxoTransactions (aligned with utxoTxIds)
   likeBoxIds: BoxId[];          // standalone likes (no sub-block to ride)
   coinbaseOutputs: CoinbaseOutput[];
   epochTallyResults?: EpochTally;

@@ -37,9 +37,11 @@ function makeBlock(height: number, hash: string): OrderingBlock {
     subBlockTree: {
       subBlockRefs: [],
       stumpIds: [],
+      subBlocks: [],
     },
     utxoTxTree: {
       utxoTxIds: [],
+      utxoTxs: [],
       likeBoxIds: [],
       coinbaseOutputs: [],
     },

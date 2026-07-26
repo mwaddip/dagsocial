@@ -35,9 +35,10 @@ function makeMockOrderingBlock(
 ): OrderingBlock {
   return {
     header: makeMockHeader(height, prevBlockHash),
-    subBlockTree: { subBlockRefs: [], stumpIds: [] },
+    subBlockTree: { subBlockRefs: [], stumpIds: [], subBlocks: [] },
     utxoTxTree: {
       utxoTxIds: [],
+      utxoTxs: [],
       likeBoxIds: [],
       coinbaseOutputs: [
         { value: 100, owner: new Uint8Array(32), lockedUntilBlock: null },
