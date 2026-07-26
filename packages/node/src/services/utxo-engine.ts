@@ -116,7 +116,7 @@ function checkTransitions(
     }
   }
 
-  // Handle invite claim: InviteBox + BondBox → KarmaBox + BondBox (claimed)
+  // Handle invite claim (reveal): InviteBox + BondBox(committed) → KarmaBox + BondBox(probation)
   if (inputs.length === 2) {
     const hasInvite = inputs.some((b) => b.boxType === 'invite');
     const hasBond = inputs.some((b) => b.boxType === 'bond');
@@ -125,22 +125,24 @@ function checkTransitions(
       const karmaOuts = outputs.filter((o) => o.boxType === 'karma');
       const bondOuts = outputs.filter((o) => o.boxType === 'bond');
 
-      // Unclaimed bond → claimed bond transition
-      if (bondIn.inviteePublicKey.length === 0 &&
+      // Bond must already be committed (inviteePublicKey set to 32 bytes)
+      if (bondIn.inviteePublicKey.length === 32 &&
           bondOuts.length === 1 &&
           karmaOuts.length === 1 &&
           outputs.length === 2) {
         const bondOut = bondOuts[0] as BondBox;
-        // inviteePublicKey must be set (32 bytes), probation must be set
+        // BondOut must preserve commitment fields from commit step
         if (bondOut.inviteePublicKey.length === 32 &&
-            bondOut.probationStartBlock > 0 &&
-            bondOut.probationEndBlock > bondOut.probationStartBlock) {
+            Buffer.from(bondOut.inviteePublicKey).toString('hex') ===
+              Buffer.from(bondIn.inviteePublicKey).toString('hex') &&
+            bondOut.probationStartBlock === bondIn.probationStartBlock &&
+            bondOut.probationEndBlock === bondIn.probationEndBlock) {
           return { valid: true };
         }
       }
       return {
         valid: false,
-        error: `Invalid invite claim: expected 1 karma + 1 claimed bond output`,
+        error: `Invalid invite reveal: BondBox must be committed and preservation fields must match`,
       };
     }
   }
@@ -257,6 +259,23 @@ function checkTransitions(
     // BondBox → KarmaBox (to inviter) OR burn (no output)
     // ------------------------------------------------------------------
     case 'bond': {
+      // Bond commit: BondBox(unclaimed) → BondBox(committed)
+      const bondOuts = outputs.filter((o) => o.boxType === 'bond');
+      if (bondOuts.length === 1 && outputs.length === 1) {
+        const bondIn = inputs[0] as BondBox;
+        const bondOut = bondOuts[0] as BondBox;
+        if (bondIn.inviteePublicKey.length === 0 &&
+            bondOut.inviteePublicKey.length === 32 &&
+            bondOut.probationStartBlock > 0 &&
+            bondOut.probationEndBlock > bondOut.probationStartBlock) {
+          return { valid: true };
+        }
+        return {
+          valid: false,
+          error: `Invalid bond commit: inviteePublicKey must go from empty to 32 bytes with probation set`,
+        };
+      }
+      // Existing: burn or bond → karma
       if (outputs.length === 0) {
         // Burn — valid
         return { valid: true };
@@ -265,7 +284,7 @@ function checkTransitions(
       if (karmaOutputs.length !== 1 || outputs.length !== 1) {
         return {
           valid: false,
-          error: `BondBox can only be spent to create exactly 1 KarmaBox or burned`,
+          error: `BondBox can only be spent to create exactly 1 KarmaBox, 1 committed BondBox, or burned`,
         };
       }
       return { valid: true };
@@ -394,7 +413,7 @@ function checkGuards(
         };
       }
 
-      case 'hash_preimage': {
+      case 'hash_preimage_with_bond': {
         const preimage = tx.preimages?.[box.id!];
         if (!preimage) {
           return {
@@ -413,16 +432,69 @@ function checkGuards(
             error: `Hash preimage mismatch for box ${box.id}`,
           };
         }
+        // Cross-box check: a BondBox input in the same tx must be committed
+        // to the tx signer's pubkey
+        const bondInput = inputBoxes.find((b): b is BondBox => b.boxType === 'bond');
+        if (!bondInput) {
+          return {
+            valid: false,
+            error: `Invite claim requires a BondBox input alongside the InviteBox`,
+          };
+        }
+        if (bondInput.inviteePublicKey.length !== 32) {
+          return {
+            valid: false,
+            error: `BondBox must be committed (inviteePublicKey set) before reveal`,
+          };
+        }
+        // The tx must be signed by the committed invitee
+        if (!verifyGuardSignature(tx, txHash, bondInput.inviteePublicKey)) {
+          return {
+            valid: false,
+            error: `Reveal must be signed by the committed invitee`,
+          };
+        }
         break;
       }
 
-      case 'inviter_signature': {
+      case 'bond_dual': {
         const bondBox = box as BondBox;
-        // inviterId IS the 32-byte Ed25519 public key — no identity lookup needed
-        if (!verifyGuardSignature(tx, txHash, bondBox.inviterId)) {
+        // Path 1: inviter_signature — inviter reclaims the bond
+        if (verifyGuardSignature(tx, txHash, bondBox.inviterId)) {
+          break;
+        }
+        // Path 2: hash_preimage — invitee commits their identity
+        const bondPreimage = tx.preimages?.[box.id!];
+        if (!bondPreimage) {
           return {
             valid: false,
-            error: `Missing or invalid inviter signature for box ${box.id}`,
+            error: `Bond box ${box.id} requires inviter signature or preimage for commit`,
+          };
+        }
+        // Look up the paired InviteBox to get the expected secretHash
+        const pairedInviteBox = deps.getBox(bondBox.inviteBoxId);
+        if (!pairedInviteBox || pairedInviteBox.boxType !== 'invite') {
+          return {
+            valid: false,
+            error: `InviteBox ${bondBox.inviteBoxId} not found for bond commit`,
+          };
+        }
+        const expectedHash = (pairedInviteBox as InviteBox).secretHash;
+        const computedHash = createHash('blake2b512')
+          .update(Buffer.from(bondPreimage))
+          .digest()
+          .subarray(0, 32);
+        if (Buffer.from(computedHash).toString('hex') !== Buffer.from(expectedHash).toString('hex')) {
+          return {
+            valid: false,
+            error: `Hash preimage mismatch for bond commit on box ${box.id}`,
+          };
+        }
+        // Must have at least one signature (service layer verifies pubkey match)
+        if (Object.keys(tx.signatures).length === 0) {
+          return {
+            valid: false,
+            error: `Bond commit requires a signature from the invitee`,
           };
         }
         break;
