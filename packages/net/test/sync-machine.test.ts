@@ -161,6 +161,24 @@ describe('SyncMachine', () => {
       expect(sent[0].peerId).toBe('peer1');
     });
 
+    it('re-enters syncing from synced when peer reports higher height', () => {
+      const { machine } = makeMachine({ store: { chainHeight: () => 100 } });
+      // Get to synced
+      machine.onPeerActive('peer1', 200);
+      sendSyncInfo(machine, 'peer1', {
+        tipHeight: 100,
+        tipBlockId: 'abc',
+        tipCumulativeWork: '1000',
+        anchors: [],
+      });
+      expect(machine.getState().phase).toBe('synced');
+
+      // Peer reports a higher height — should re-enter syncing
+      machine.onPeerActive('peer2', 300);
+      expect(machine.getState().phase).toBe('syncing');
+      expect(machine.getState().syncPeerId).toBe('peer2');
+    });
+
     it('does not switch sync peer when already syncing', () => {
       const { machine } = makeMachine({ store: { chainHeight: () => 0 } });
       machine.onPeerActive('peer1', 100);
@@ -248,6 +266,29 @@ describe('SyncMachine', () => {
         anchors: [],
       });
       expect(machine.getState().phase).toBe('idle');
+    });
+
+    it('re-enters syncing from synced when peer reports higher height', () => {
+      const { machine } = makeMachine({ store: { chainHeight: () => 100 } });
+      // Get to synced
+      machine.onPeerActive('peer1', 200);
+      sendSyncInfo(machine, 'peer1', {
+        tipHeight: 100,
+        tipBlockId: 'abc',
+        tipCumulativeWork: '1000',
+        anchors: [],
+      });
+      expect(machine.getState().phase).toBe('synced');
+
+      // A different peer reports higher height via SyncInfo
+      sendSyncInfo(machine, 'peer2', {
+        tipHeight: 300,
+        tipBlockId: 'def',
+        tipCumulativeWork: '2000',
+        anchors: [],
+      });
+      expect(machine.getState().phase).toBe('syncing');
+      expect(machine.getState().syncPeerId).toBe('peer2');
     });
 
     it('removes peer from stalled set on re-engage', () => {
@@ -667,7 +708,7 @@ describe('SyncMachine', () => {
       expect(machine.getState().stalledPeers.has('peer2')).toBe(false);
     });
 
-    it('resets syncPeerId but keeps synced phase on disconnect when synced', () => {
+    it('resets to idle when sync peer disconnects while synced', () => {
       const { machine } = makeMachine({ store: { chainHeight: () => 100 } });
       machine.onPeerActive('peer1', 200);
       sendSyncInfo(machine, 'peer1', {
@@ -679,8 +720,8 @@ describe('SyncMachine', () => {
       expect(machine.getState().phase).toBe('synced');
 
       machine.onPeerDisconnect('peer1');
-      // Phase stays 'synced' (only resets to idle if phase was 'syncing')
-      expect(machine.getState().phase).toBe('synced');
+      // Phase resets to idle so the node can pick a new sync peer
+      expect(machine.getState().phase).toBe('idle');
       expect(machine.getState().syncPeerId).toBeNull();
     });
   });

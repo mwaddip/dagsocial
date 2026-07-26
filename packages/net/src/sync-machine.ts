@@ -114,7 +114,7 @@ export class SyncMachine {
   onPeerActive(peerId: string, peerHeight: number): void {
     const ourHeight = this.store.chainHeight();
 
-    if (peerHeight > ourHeight && this.state.phase === 'idle') {
+    if (peerHeight > ourHeight && (this.state.phase === 'idle' || this.state.phase === 'synced')) {
       this.state.phase = 'syncing';
       this.state.syncPeerId = peerId;
       this.state.stalledPeers.delete(peerId);
@@ -187,7 +187,7 @@ export class SyncMachine {
     if (this.state.syncPeerId === peerId) {
       this.state.stalledPeers.add(peerId);
       this.state.syncPeerId = null;
-      if (this.state.phase === 'syncing') {
+      if (this.state.phase === 'syncing' || this.state.phase === 'synced') {
         this.state.phase = 'idle';
       }
     }
@@ -208,7 +208,7 @@ export class SyncMachine {
     const ourHeight = this.store.chainHeight();
 
     if (info.tipHeight > ourHeight) {
-      if (this.state.phase === 'idle') {
+      if (this.state.phase === 'idle' || this.state.phase === 'synced') {
         this.state.phase = 'syncing';
         this.state.syncPeerId = peerId;
         this.state.stalledPeers.delete(peerId);
