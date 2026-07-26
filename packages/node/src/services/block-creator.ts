@@ -461,7 +461,7 @@ export function createOrderingBlock(): OrderingBlock | null {
   // 15. Epoch tally
   let epochTallyResults: EpochTally | undefined;
   if (isEpochBoundary) {
-    epochTallyResults = runEpochTally(newHeight);
+    epochTallyResults = computeEpochTally(newHeight);
   }
 
   // 16. Previous block hash
@@ -648,7 +648,7 @@ function buildCoinbaseOutputs(height: number): CoinbaseOutput[] {
 // Epoch tally
 // ---------------------------------------------------------------------------
 
-function runEpochTally(blockHeight: number): EpochTally {
+export function computeEpochTally(blockHeight: number): EpochTally {
   const lockedLikes = getUnprocessedLockedLikeBoxes();
   const freeLikes = getUnprocessedFreeLikes();
 
@@ -717,8 +717,13 @@ function runEpochTally(blockHeight: number): EpochTally {
     };
   }
 
-  markLikeBoxesTallied(allLockedBoxIds);
-  markFreeLikesProcessed(allFreeLikeIds);
+  // Side effects deferred to applyOrderingBlock so all nodes (not just
+  // the miner) mark boxes tallied, process free likes, and update post
+  // lock boxes.  The IDs are carried in the EpochTally and committed via
+  // the Merkle root — the receiver verifies by recomputing locally.
+
+  const consumedPostLockBoxIds: string[] = [];
+  const newPostLockBoxes: PostLockBox[] = [];
 
   // Process post lock boxes
   const postLockBoxes = getUnspentPostLockBoxes();
@@ -734,7 +739,7 @@ function runEpochTally(blockHeight: number): EpochTally {
 
     const remainingLocked = plb.value - toUnlock;
 
-    consumeBox(plb.id, blockHeight);
+    consumedPostLockBoxIds.push(plb.id);
 
     if (remainingLocked > 0) {
       const newPlb: PostLockBox = {
@@ -747,7 +752,7 @@ function runEpochTally(blockHeight: number): EpochTally {
         guard: 'epoch_tally',
       };
       newPlb.id = computeBoxId(newPlb);
-      insertBox(newPlb);
+      newPostLockBoxes.push(newPlb);
     }
 
     // mintKarma for post lock unlock is handled by applyOrderingBlock from epochTallyResults
@@ -764,7 +769,13 @@ function runEpochTally(blockHeight: number): EpochTally {
       (rewards[plb.targetPostId]!.postLockKarmaUnlocked ?? 0) + toUnlock;
   }
 
-  return { rewards };
+  return {
+    rewards,
+    talliedLockedLikeBoxIds: allLockedBoxIds,
+    processedFreeLikeIds: allFreeLikeIds,
+    consumedPostLockBoxIds,
+    newPostLockBoxes,
+  };
 }
 
 // ---------------------------------------------------------------------------

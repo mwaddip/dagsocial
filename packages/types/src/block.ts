@@ -1,6 +1,6 @@
 import type { UserId } from './identity.js';
 import type { Post, PostId } from './post.js';
-import type { BoxId, TxId, LikeBox } from './utxo.js';
+import type { BoxId, TxId, LikeBox, PostLockBox } from './utxo.js';
 import type { StumpId } from './stump.js';
 
 // ---------------------------------------------------------------------------
@@ -33,6 +33,14 @@ export interface SubBlock {
 
 export interface EpochTally {
   rewards: Record<PostId, LikeReward>;
+  /** Locked like box IDs to mark as tallied (prevents double-counting). */
+  talliedLockedLikeBoxIds: string[];
+  /** Free like row IDs to mark as processed. */
+  processedFreeLikeIds: string[];
+  /** Post lock box IDs consumed during this epoch tally. */
+  consumedPostLockBoxIds: string[];
+  /** Replacement post lock boxes with reduced locked values (empty if fully unlocked). */
+  newPostLockBoxes: PostLockBox[];
 }
 
 // ---------------------------------------------------------------------------

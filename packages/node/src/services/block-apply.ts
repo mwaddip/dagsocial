@@ -4,7 +4,7 @@ import { mintCredits } from './credits.js';
 import { applyKarmaDecay } from './decay.js';
 import type { DecayDeps } from './decay.js';
 import { config } from '../config.js';
-import { computeBlockReward, computeSubBlockRoot, computeUtxoTxRoot, clearTemplate } from './block-creator.js';
+import { computeBlockReward, computeSubBlockRoot, computeUtxoTxRoot, clearTemplate, computeEpochTally } from './block-creator.js';
 import { revalidateTxInContext, applyTx } from './utxo-engine.js';
 import {
   getKarmaBox,
@@ -16,6 +16,7 @@ import {
   consumeBox,
   confirmPost,
   markLikeBoxesTallied,
+  markFreeLikesProcessed,
   getCurrentHeight,
   createOrderingBlock as storeCreateOrderingBlock,
   getOrderingBlock,
@@ -138,7 +139,25 @@ export function applyOrderingBlock(block: OrderingBlock): boolean {
     return false;
   }
 
-  // 5. Store the block
+  // 5. Verify epoch tally results (before storing the block)
+  // The Merkle root commits to epochTallyResults, so they can't be
+  // fabricated.  But we must also verify the results are correct for
+  // the current UTXO state — a malicious miner could commit to valid
+  // (Merkle-matching) but incorrect (state-divergent) results.
+  if (block.utxoTxTree.epochTallyResults) {
+    const localTally = computeEpochTally(block.header.height);
+    const blockRewards = JSON.stringify(block.utxoTxTree.epochTallyResults.rewards);
+    const localRewards = JSON.stringify(localTally.rewards);
+    if (blockRewards !== localRewards) {
+      console.warn(
+        `Rejected block height=${block.header.height}: epoch tally mismatch`,
+      );
+      currentJournal = null;
+      return false;
+    }
+  }
+
+  // 6. Store the block
   storeCreateOrderingBlock(block);
 
   // 6. Clear the local mining template (this height is taken)
@@ -203,13 +222,15 @@ export function applyOrderingBlock(block: OrderingBlock): boolean {
     }
   }
 
-  // 8. Standalone like boxes are tallied by runEpochTally at epoch boundaries
-  // (called inside createOrderingBlock before finalizeBlock delegates here).
-  // Only record them in the journal for revert tracking.
+  // 8. Standalone like boxes are tallied by computeEpochTally at epoch
+  // boundaries.  The computation was verified before block storage (§5);
+  // here we apply the karma mints and the UTXO/bookkeeping side effects.
 
   // 9. Apply epoch tally results
   if (block.utxoTxTree.epochTallyResults) {
-    const rewards = block.utxoTxTree.epochTallyResults.rewards;
+    const tally = computeEpochTally(block.header.height);
+    const rewards = tally.rewards;
+
     for (const postId of Object.keys(rewards)) {
       const reward = rewards[postId];
       if (!reward) continue;
@@ -241,6 +262,27 @@ export function applyOrderingBlock(block: OrderingBlock): boolean {
           currentJournal.karmaMints.push({ userId: post.author, amount: reward.postLockKarmaUnlocked, boxId });
         }
       }
+    }
+
+    // Apply side effects that were previously only run on the miner's node.
+    // These must run on every node so the UTXO state stays consistent.
+
+    // Mark like boxes as tallied (prevents double-counting in later epochs)
+    if (tally.talliedLockedLikeBoxIds.length > 0) {
+      markLikeBoxesTallied(tally.talliedLockedLikeBoxIds);
+    }
+
+    // Mark free likes as processed
+    if (tally.processedFreeLikeIds.length > 0) {
+      markFreeLikesProcessed(tally.processedFreeLikeIds);
+    }
+
+    // Consume old post lock boxes and insert replacement boxes
+    for (const boxId of tally.consumedPostLockBoxIds) {
+      consumeBox(boxId, block.header.height);
+    }
+    for (const newBox of tally.newPostLockBoxes) {
+      insertBox(newBox);
     }
   }
 
