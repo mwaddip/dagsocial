@@ -20,6 +20,7 @@ import type { SyncInfo, Inv, ModifierRequest } from '../src/sync-types.js';
 function stubStore(overrides: Partial<SyncStore> = {}): SyncStore {
   return {
     getOrderingBlock: () => null,
+    serializeOrderingBlock: () => null,
     getOrderingBlockHeader: () => null,
     getOrderingBlockId: () => null,
     hasOrderingBlockHeader: () => false,
@@ -832,6 +833,7 @@ describe('SyncMachine', () => {
           chainHeight: () => 5,
           getOrderingBlockId: (h: number) => `block_${h}`,
           getOrderingBlock: () => ({ header: { height: 3 } }),
+          serializeOrderingBlock: () => new Uint8Array([1, 2, 3]),
         },
       });
 

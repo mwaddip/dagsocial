@@ -27,6 +27,8 @@ import {
 export interface SyncStore {
   /** Full ordering block by height, or null if not available. */
   getOrderingBlock(height: number): unknown | null;
+  /** CBOR-serialized ordering block bytes for a given height, or null. */
+  serializeOrderingBlock(height: number): Uint8Array | null;
   /** Block header by height, or null if not available. */
   getOrderingBlockHeader(height: number): unknown | null;
   /** Block ID (hash) for a given height, or null if not available. */
@@ -269,7 +271,10 @@ export class SyncMachine {
             if (block) {
               // The block data is serialized by the store layer. For now,
               // pass the structured block — the codec will CBOR-encode it.
-              modifiers.push({ id, data: new Uint8Array() }); // placeholder
+              const data = this.store.serializeOrderingBlock(h);
+              if (data) {
+                modifiers.push({ id, data });
+              }
             }
             break;
           }
