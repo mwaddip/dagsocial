@@ -423,6 +423,46 @@ Safe interval cooldown between penalties for the same peer.
 
 ---
 
+## Biased Event Loop
+
+The sync/gossip event loop MUST prioritize:
+1. Control events (reorg notification, peer disconnect, new peer) —
+   unbounded channel, never dropped
+2. Data events (post received, post acknowledged) — bounded channel, lossy
+3. Timer ticks — fallback
+
+## Local-Serve-Before-Relay
+
+Incoming content requests MUST check local storage before relaying to
+other peers. Serve and relay are mutually exclusive per request ID —
+never both.
+
+## Penalty Attribution
+
+Every incoming message carries `sourcePeerId`. Validation failures are
+attributed to the sending peer. Three penalty tiers:
+- **Transient failure** (timeout, slow response): cooldown, not a ban
+- **Protocol violation** (malformed message, invalid encoding): permanent
+  ban, peer removed from PeerDb
+- **Bogus addresses in valid gossip**: silently dropped, sender NOT
+  penalized (NAT'd peers sending private addresses is normal)
+
+## Peer State Machine
+
+States: `Connecting → Handshaking → Active → Disconnected | Failed`
+
+Invariant: No events leak from non-Active peers. Messages from peers not
+in `Active` state are rejected before reaching the router.
+
+## Stall Detection
+
+Track peers that fail to deliver requested content within a timeout. On
+stall: mark peer, rotate to next outbound peer not in stalled set. On
+successful receipt from any peer: clear the stalled set. All peers stalled:
+clear and retry.
+
+---
+
 ## libp2p Stack
 
 | Layer | Choice |

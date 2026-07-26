@@ -179,6 +179,45 @@ not verify PoW, signatures, or UTXO state transitions.
 
 ---
 
+## Phased Validation Pipeline
+
+Validation runs in order of increasing cost. A post failing phase N is
+rejected before phase N+1 executes.
+
+**Phase 1 — Structural (cheapest):**
+- Post deserializes without error
+- All required fields present
+- `protocolVersion` is supported
+- `content.length` within [1, MAX_CONTENT_BYTES]
+- `parentRefs.length` within [0, MAX_PARENT_REFS]
+
+**Phase 2 — Cryptographic (cheap):**
+- `verifyPostSignature(post)` passes
+- `verifyPoW(post, targetBits)` passes
+
+**Phase 3 — DAG integrity (moderate):**
+- Every `parentRefs[i]` exists in local DAG or unconfirmed pool
+- Parent linkage consistent with canonical branch at that depth
+- No duplicate post in local DAG (idempotent — treated as no-op, not error)
+
+**Phase 4 — Content (variable cost, deferrable):**
+- `verifyContentCharacters(content)` passes (no Unicode category C except \n)
+- Content-specific validation (future: homoglyph detection, media checks)
+
+**Watermarks:**
+- `post_indexed_height`: advanced after Phase 3
+- `post_validated_height`: advanced after Phase 4
+
+Invariant: `post_validated_height <= post_indexed_height <= dag_tip_height`.
+External queries serve only up to `post_validated_height`.
+
+**Protocol vs. local-policy rules:**
+- Phases 1-3 are protocol rules — all nodes must enforce identically
+- Phase 4 may include local-policy rules — configurable, non-consensus
+- Local-policy rules are explicitly documented as such
+
+---
+
 ## Usage in the Validation Pipeline
 
 ```

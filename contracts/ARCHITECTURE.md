@@ -738,6 +738,47 @@ See `SUBBLOCK_INTERFACE.md` for the full contract.
 
 ---
 
+## Ergo-Adopted Invariants
+
+These invariants are adopted from production-grade Ergo Rust node practices:
+
+### Validation boundaries
+- **No method panics on untrusted input** — every deserialization and
+  signature-verification function returns a `Result<T, Error>` equivalent.
+  No `unwrap()`, no `as` casts that truncate, no OOM on adversarial input.
+- **Validate, don't trust** — independently recompute every self-reported
+  claim. A post's parent hash, PoW solution, and signature MUST be verified
+  by the local node before the post enters the store.
+- **Never add checks the reference lacks** — extra validation rules beyond
+  the protocol spec create fork surfaces. Every rule is either
+  protocol-spec or explicitly local-policy-only.
+
+### Storage guarantees
+- **Single-transaction atomic writes** — every post insertion that touches
+  multiple tables (posts, dag_edges, indexes, scores) MUST happen in a
+  single SQLite transaction. No partial writes.
+- **Best DAG is a view, not structural** — all alternative-branch posts are
+  stored permanently. The canonical ordering is derived from cumulative
+  PoW. Switching branches is a view update — posts are never deleted.
+- **Sort-order determinism** — any operation feeding a Merkle tree or
+  content hash MUST have a documented, identical sort order across all
+  implementations.
+
+### Package boundaries
+- **No dependencies above the package's abstraction level** — the storage
+  layer depends only on DB bindings and hashing. It MUST NOT import post
+  content types, networking code, or UI code.
+- **"Does NOT own" on every package** — each package explicitly lists what
+  it is NOT responsible for. Prevents scope creep.
+
+### Data integrity
+- **Timestamps are untrusted** — timing-sensitive logic uses DAG depth or
+  local wall clock, never a remote post's self-reported timestamp.
+- **Precondition/postcondition documentation** on every public function in
+  the store and service layers.
+
+---
+
 ## Store Architecture
 
 Phase 2 uses a fresh SQLite database with namespaced tables:

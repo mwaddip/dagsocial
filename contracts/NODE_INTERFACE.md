@@ -617,6 +617,197 @@ See `MEMPOOL_INTERFACE.md` for the full mempool contract.
 | `insertStump(stump)` | `(Stump) => void` |
 | `getStump(stumpId)` | `(string) => Stump \| null` |
 
+### dag_meta Table
+
+A key-value metadata table stored alongside post data. Used for schema
+versioning, migration sentinels, watermarks, and operational state.
+
+**Schema:**
+```sql
+CREATE TABLE dag_meta (
+    key   TEXT PRIMARY KEY,
+    value BLOB NOT NULL
+);
+```
+
+**Required keys and their invariants:**
+
+| Key | Value encoding | Invariant |
+|-----|---------------|-----------|
+| `schema_version` | u32 LE | Must equal the version compiled into the binary at startup. Higher = refuse with diagnostic. Lower = run idempotent migrations. |
+| `dag_tip_hash` | 32 bytes | Updated atomically with every canonical DAG advance. |
+| `last_validated_sequence` | u32 LE | Must never exceed the DAG tip. Reset to fork point on reorg. |
+| `last_indexed_sequence` | u32 LE | `last_validated_sequence <= last_indexed_sequence <= dag_tip_height`. External queries serve only up to `last_validated_sequence`. |
+
+**Startup contract:**
+1. Read `schema_version`. If missing, write current version.
+2. If stored > expected: exit with diagnostic `"Database schema version is X but this build expects Y. Downgrade is not supported."`
+3. If stored < expected: run idempotent migrations in order, each guarded by a sentinel key in dag_meta.
+4. Read `dag_tip_hash` and watermarks to rebuild in-memory DAG view.
+
+### PostStore Interface
+
+The store layer is backend-agnostic. All storage access goes through the
+`PostStore` interface. The SQLite implementation is the default; PostgreSQL
+is a deferred alternative.
+
+**Design principle:** The store sees opaque `(typeId, id, sequence, data)`
+tuples. It does NOT parse post content, verify signatures, or validate the
+DAG structure. Domain semantics live in the service layer above.
+
+```typescript
+interface PostStore {
+  putBatch(entries: StoreEntry[]): Promise<void>;
+  put(entry: StoreEntry): Promise<void>;
+  get(typeId: number, id: Uint8Array): Promise<Uint8Array | null>;
+  has(typeId: number, id: Uint8Array): Promise<boolean>;
+  bestPostAt(sequence: number): Promise<Uint8Array | null>;
+  canonicalBranchEntries(): Promise<Array<{ sequence: number; postId: Uint8Array }>>;
+  metaGet(key: string): Promise<Uint8Array | null>;
+  metaPut(key: string, value: Uint8Array): Promise<void>;
+  listPeers(): Promise<PeerRecord[]>;
+  putPeer(peer: PeerRecord): Promise<void>;
+  deletePeer(peerId: string): Promise<void>;
+  pruneBelowHorizon(horizon: number, typeIds: number[]): Promise<void>;
+  minSequencePresent(typeId: number): Promise<number>;
+  schemaVersion(): Promise<number>;
+  close(): Promise<void>;
+}
+
+interface StoreEntry {
+  typeId: number;
+  id: Uint8Array;       // 32-byte blake2b hash
+  sequence: number;      // caller-provided; store never derives it
+  data: Uint8Array;      // opaque serialized bytes
+}
+```
+
+**Invariants:**
+- `putBatch` is atomic — all entries commit or none do.
+- `put` is idempotent — duplicate `(typeId, id)` with same data is a no-op.
+- `bestPostAt(n)` returns null, not an error, for non-existent sequences.
+- `canonicalBranchEntries()` reads sequentially, not via N point lookups.
+- `pruneBelowHorizon` never touches structural types (post metadata, DAG
+  edges, scores).
+
+---
+
+## Service Layer Architecture
+
+Express route handlers are thin facades with zero business logic. Every
+handler: validates input shape → delegates to a service → serializes the
+result. An `if` that makes a domain decision belongs in the service, not
+the handler.
+
+**Service modules and their responsibilities:**
+
+| Service | Responsibility | Does NOT own |
+|---------|---------------|--------------|
+| `post-service.ts` | Create, verify (sig, PoW, DAG linkage, content), store | Networking, block assembly |
+| `feed-service.ts` | Query canonical DAG, paginate, assemble feed views | Post creation, auth |
+| `identity-service.ts` | Key management, identity verification | Post storage, networking |
+| `credit-service.ts` | Credit transfer validation and execution | UTXO engine internals |
+| `invite-service.ts` | Invite lifecycle (create, commit, redeem, cancel) | Bond box internals |
+| `faucet-service.ts` | Faucet allocation with rate limiting | Credit system design |
+| `block-service.ts` | Block creation, validation, application | Post validation, DAG structure |
+
+**Validation pipeline (phased, increasing cost):**
+1. Signature verification (cheap — Ed25519 verify)
+2. PoW verification (cheap — blake2b + difficulty check)
+3. DAG linkage / parent-hash integrity (moderate)
+4. Content type/size/schema validation (variable, may be I/O-bound)
+
+A post failing Phase N is rejected before Phase N+1 runs.
+
+**Validation watermarks:**
+- `post_indexed_height` — bytes stored, hash verified, DAG-linked
+- `post_validated_height` — full content checks passed, safe for queries
+
+Invariant: `post_validated_height <= post_indexed_height <= dag_tip_height`.
+External queries serve only up to `post_validated_height`.
+
+---
+
+## Canonical DAG (Best DAG as a View)
+
+**Design principle:** All posts from all branches are stored permanently.
+The canonical DAG is a view derived from cumulative PoW. Switching branches
+is a view update — posts are never deleted.
+
+**Tables:**
+```sql
+CREATE TABLE canonical_branch (
+    depth    INTEGER PRIMARY KEY,
+    post_id  TEXT NOT NULL
+);
+
+CREATE TABLE post_scores (
+    post_id           TEXT PRIMARY KEY,
+    cumulative_score  INTEGER NOT NULL
+);
+```
+
+**Fork-choice rule:** Strictly greater cumulative score wins. Equal score
+= no reorg (first-seen wins on ties). No timestamps or content hashes
+in fork resolution.
+
+**Atomic reorg:** Switching canonical branches updates both the in-memory
+DAG view and the `canonical_branch` table in a single transaction. If the
+store transaction fails, the in-memory view is rolled back.
+
+**Reorg floor:** If the node started from a snapshot at depth D, reorgs to
+depths < D are rejected (`dag_meta` stores the floor depth).
+
+**Reorg event:** Emit `dag_reorg` with `fork_point`, `demoted` count,
+`old_tip`, and `new_tip`.
+
+---
+
+## Admin Listener
+
+A second Express server on `127.0.0.1:ADMIN_PORT` (default 3001). Never
+binds to a non-loopback address — a non-loopback bind logs a WARN at
+startup.
+
+**Endpoints:**
+
+`GET /health` — in-memory metrics only. Never queries the database.
+Always returns 200. Response shape:
+```json
+{
+  "status": "ok",
+  "dag_tip_height": 12345,
+  "validated_height": 12344,
+  "indexed_height": 12345,
+  "peers_connected": 8,
+  "last_post_received_ms_ago": 234,
+  "syncing": false,
+  "uptime_seconds": 84200,
+  "apiVersion": "1.0",
+  "journalEventsVersion": "1.0"
+}
+```
+
+`GET /stats` — cumulative counters with `since` (process start):
+```json
+{
+  "since": 1751400000,
+  "statsVersion": "1.0",
+  "counters": {
+    "posts_created_total": 5432,
+    "posts_validated_total": 5430,
+    "pow_verifications_total": 6100,
+    "pow_verification_failures_total": 2,
+    "peer_messages_in_total": 89000,
+    "peer_messages_out_total": 92000,
+    "peer_bytes_in_total": 125000000,
+    "peer_bytes_out_total": 131000000,
+    "http_requests_total": 12000,
+    "unknown_message_types_total": 0
+  }
+}
+```
+
 ---
 
 ## Configuration

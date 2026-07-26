@@ -469,6 +469,60 @@ export const ORDERING_BLOCK_POW_TARGET_FLOOR = 4;        // Sanity floor
 
 ---
 
+## PostStore Interface Types
+
+`StoreEntry`:
+```
+{
+  typeId: uint8,
+  id: bytes[32],
+  sequence: uint32,
+  data: bytes
+}
+```
+
+`PeerRecord`:
+```
+{
+  peerId: string,
+  lastSeenMs: uint64,
+  addresses: string[],
+  features: bytes
+}
+```
+
+## Journal Event Types
+
+`JournalEvent`:
+```
+{
+  event: string,        // stable marker identifier
+  level: "INFO" | "WARN" | "ERROR",
+  timestamp: string,    // ISO 8601
+  ...fields             // event-specific fields per JOURNAL_EVENTS.md
+}
+```
+
+## DAG Structural Types
+
+`CanonicalBranchEntry`:
+```
+{
+  depth: uint32,
+  postId: bytes[32]
+}
+```
+
+`PostScore`:
+```
+{
+  postId: bytes[32],
+  cumulativeScore: uint64
+}
+```
+
+---
+
 ## Preconditions
 - Node.js ≥ 22
 - `cbor-x` installed
