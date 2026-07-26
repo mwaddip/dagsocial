@@ -138,6 +138,84 @@ export function createInvite(
 }
 
 /**
+ * Commit to an invite by spending the BondBox to lock in the invitee's identity.
+ *
+ * The invitee builds a tx spending only the BondBox. The bond_dual guard's
+ * hash_preimage path verifies that the preimage matches the InviteBox's
+ * secretHash. The transition records the invitee's public key and starts
+ * probation timers.
+ *
+ * The commit is **pending** until the next ordering block is confirmed.
+ * Once committed, the invitee must reveal (claimInvite) to get their karma.
+ */
+export function commitInvite(
+  deps: UtxoEngineDeps,
+  tx: UtxoTransaction,
+  currentBlockHeight: number,
+): {
+  status: 'pending';
+  txId: string;
+  expiresAtHeight: number;
+  bondBoxId: string;
+  tx: UtxoTransaction;
+} {
+  // ---- 1. Extract BondBox from inputs ----
+  if (tx.inputs.length !== 1) {
+    throw new Error('Commit transaction must have exactly one input (BondBox)');
+  }
+  const bondBoxId = tx.inputs[0]!;
+  const bondBoxInput = deps.getBox(bondBoxId);
+  if (!bondBoxInput || bondBoxInput.boxType !== 'bond') {
+    throw new Error(`Bond box not found: ${bondBoxId}`);
+  }
+  const bondIn = bondBoxInput as BondBox;
+
+  // ---- 2. Verify BondBox is unclaimed ----
+  if (bondIn.inviteePublicKey.length > 0) {
+    throw new Error('BondBox already committed');
+  }
+
+  // ---- 3. Verify exactly 1 BondBox output ----
+  const bondOutputs = tx.outputs.filter((o) => o.boxType === 'bond');
+  if (tx.outputs.length !== 1 || bondOutputs.length !== 1) {
+    throw new Error('Commit transaction must produce exactly 1 BondBox output');
+  }
+  const bondOut = bondOutputs[0] as BondBox;
+
+  // ---- 4. Verify output BondBox has valid commitment shape ----
+  if (bondOut.inviteePublicKey.length !== 32) {
+    throw new Error('Commit output BondBox must have 32-byte inviteePublicKey');
+  }
+
+  // ---- 5. Verify tx is signed by the invitee (bond output pubkey) ----
+  const inviteePubKeyHex = Buffer.from(bondOut.inviteePublicKey).toString('hex');
+  if (!tx.signatures[inviteePubKeyHex]) {
+    throw new Error('Commit transaction must be signed by the invitee');
+  }
+
+  // ---- 6. Validate transaction (guards, transitions) ----
+  const result = validateTx(deps, tx, currentBlockHeight);
+  if (!result.valid) {
+    throw new Error(`Invalid commit transaction: ${result.error}`);
+  }
+
+  // ---- 7. Insert into mempool ----
+  const expiresAtHeight = currentBlockHeight + MEMPOOL_EXPIRY_BLOCKS;
+  insertUtxoTx(tx, null, expiresAtHeight);
+
+  // ---- 8. Return result ----
+  const txId = computeTxId(tx);
+
+  return {
+    status: 'pending',
+    txId,
+    expiresAtHeight,
+    bondBoxId,
+    tx,
+  };
+}
+
+/**
  * Claim an invite using a signed UtxoTransaction that includes the preimage
  * secret in `tx.preimages`.
  *
@@ -180,6 +258,16 @@ export function claimInvite(
   const inviteBox = deps.getBox(inviteBoxId);
   if (!inviteBox || inviteBox.boxType !== 'invite') {
     throw new Error(`Invite box not found: ${inviteBoxId}`);
+  }
+
+  // ---- 2.5. Verify bond box is committed ----
+  const bondBoxForClaim = deps.getBox(bondBoxId);
+  if (!bondBoxForClaim || bondBoxForClaim.boxType !== 'bond') {
+    throw new Error(`Bond box not found: ${bondBoxId}`);
+  }
+  const bondForClaim = bondBoxForClaim as BondBox;
+  if (bondForClaim.inviteePublicKey.length !== 32) {
+    throw new Error('BondBox must be committed before reveal');
   }
 
   // ---- 3. Verify invitee public key is not already an account ----
@@ -272,7 +360,7 @@ export function cancelInvite(
     throw new Error('Inviter mismatch: karma box owner does not match invite box inviterId');
   }
 
-  // ---- 3.5. Verify bond box is unclaimed ----
+  // ---- 3.5. Verify bond box exists ----
   let bondBoxId: string | undefined;
   for (const inputId of tx.inputs) {
     const box = deps.getBox(inputId);
@@ -288,10 +376,9 @@ export function cancelInvite(
   if (!bondBox || bondBox.boxType !== 'bond') {
     throw new Error(`Bond box not found: ${bondBoxId}`);
   }
-  const bond = bondBox as BondBox;
-  if (bond.inviteePublicKey && bond.inviteePublicKey.length > 0) {
-    throw new Error('Invite already claimed');
-  }
+  // Cancel works on both unclaimed and committed BondBoxes.
+  // The inviter_signature path on bond_dual allows the inviter to reclaim
+  // regardless of commit state.
 
   // ---- 4. Validate transaction (guards, transitions, decay) ----
   // This checks owner_signature on the karma box, inviter_signature on the
