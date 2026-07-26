@@ -111,7 +111,7 @@ function makeInviteBox(overrides: Partial<InviteBox> = {}): InviteBox {
     createdAtBlock: 3,
     secretHash: bytes(32),
     inviterId: uid('alice-inviter'),
-    guard: 'hash_preimage',
+    guard: 'hash_preimage_with_bond',
     ...overrides,
   };
 }
@@ -123,10 +123,11 @@ function makeBondBox(overrides: Partial<BondBox> = {}): BondBox {
     value: 10,
     createdAtBlock: 3,
     inviterId: uid('alice-inviter'),
+    inviteBoxId: '',
     inviteePublicKey: new Uint8Array(0),
     probationStartBlock: 0,
     probationEndBlock: 0,
-    guard: 'inviter_signature',
+    guard: 'bond_dual',
     ...overrides,
   };
 }
@@ -242,7 +243,7 @@ describe('utxo store', () => {
     expect(result.value).toBe(30);
     expect(result.secretHash).toEqual(secretHash);
     expect(result.inviterId).toEqual(uid('inviter-alice'));
-    expect(result.guard).toBe('hash_preimage');
+    expect(result.guard).toBe('hash_preimage_with_bond');
   });
 
   it('insertBox + getBox round-trip for BondBox', async () => {
@@ -271,7 +272,7 @@ describe('utxo store', () => {
     expect(result.inviteePublicKey).toEqual(inviteePk);
     expect(result.probationStartBlock).toBe(100);
     expect(result.probationEndBlock).toBe(1100);
-    expect(result.guard).toBe('inviter_signature');
+    expect(result.guard).toBe('bond_dual');
   });
 
   // --- getBox returns null for unknown id -----------------------------------
