@@ -4,6 +4,13 @@ import { schemaVersion, writeSchemaVersion, CURRENT_SCHEMA_VERSION } from './sto
 import { initSystemKeypair, ensureSystemKarmaBox, ensureFaucetCreditBox } from './store/system.js';
 import { startBlockCreator, stopBlockCreator } from './services/block-creator.js';
 import { createApp } from './server.js';
+import {
+  initJournal,
+  emitServerStarting,
+  emitServerReady,
+  emitShutdownSignalReceived,
+  emitServerShuttingDown,
+} from './journal.js';
 import { NetNode } from '@dagsocial/net';
 import * as validation from '@dagsocial/validation';
 import { verifyPostForRelay } from './services/verifier.js';
@@ -27,6 +34,11 @@ import { encodePost, decodeSubBlock, cumulativeWork, MEMPOOL_EXPIRY_BLOCKS } fro
 import type { BlockHeader } from '@dagsocial/types';
 
 const config = loadConfig();
+const startTime = Date.now();
+
+// 0. Journal
+initJournal();
+emitServerStarting('1.0.0', config.networkMode);
 
 // 1. Init DB
 initDb(config.dbPath);
@@ -270,6 +282,11 @@ if (config.nodeRole === 'miner') {
 
 const app = createApp(config);
 const server = app.listen(config.port, () => {
+  emitServerReady(
+    `0.0.0.0:${config.port}`,
+    `127.0.0.1:${config.port + 1}`,
+    Date.now() - startTime,
+  );
   console.log(`DAGsocial node listening on :${config.port}`);
 });
 
@@ -278,17 +295,21 @@ const server = app.listen(config.port, () => {
 
 // 7. Graceful shutdown
 process.on('SIGINT', () => {
+  emitShutdownSignalReceived('SIGINT');
   stopBlockCreator();
   net.stop().catch((err: unknown) => console.warn(`Net stop error: ${String(err)}`));
   closeDb();
   server.close();
+  emitServerShuttingDown('SIGINT');
   process.exit(0);
 });
 
 process.on('SIGTERM', () => {
+  emitShutdownSignalReceived('SIGTERM');
   stopBlockCreator();
   net.stop().catch((err: unknown) => console.warn(`Net stop error: ${String(err)}`));
   closeDb();
   server.close();
+  emitServerShuttingDown('SIGTERM');
   process.exit(0);
 });
