@@ -343,6 +343,10 @@ describe('block-apply journal recording', () => {
     bc.startBlockCreator(testConfig);
     bc.createOrderingBlock();
 
+    // Verify post was confirmed (sub-block decoded from block CBOR)
+    const confirmedPost = posts.getPost(postId);
+    expect(confirmedPost).not.toBeNull();
+
     const journal = await importJournalStore();
     const saved = journal.getBlockJournal(1);
     expect(saved).not.toBeNull();
@@ -520,7 +524,18 @@ describe('block-apply journal recording', () => {
     mempool.insertUtxoTx(likeTx, null, 1000);
 
     bc.startBlockCreator(testConfig);
-    bc.createOrderingBlock();
+    const block = bc.createOrderingBlock();
+
+    // Verify UTXO tx was decoded from block CBOR and applied
+    const { decodeTx } = await import('@dagsocial/types');
+    expect(block!.utxoTxTree.utxoTxs).toBeDefined();
+    expect(block!.utxoTxTree.utxoTxs.length).toBe(
+      block!.utxoTxTree.utxoTxIds.length,
+    );
+    for (let i = 0; i < block!.utxoTxTree.utxoTxs.length; i++) {
+      const tx = decodeTx(block!.utxoTxTree.utxoTxs[i]);
+      expect(computeTxId(tx)).toBe(block!.utxoTxTree.utxoTxIds[i]);
+    }
 
     const journal = await importJournalStore();
     const saved = journal.getBlockJournal(1);

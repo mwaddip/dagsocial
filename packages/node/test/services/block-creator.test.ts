@@ -349,6 +349,17 @@ describe('block-creator', () => {
     expect(block).not.toBeNull();
     expect(block!.header.height).toBe(1);
     expect(block!.subBlockTree.subBlockRefs).toContain(postId);
+
+    // Verify inline CBOR sub-block fields
+    const { decodeSubBlock } = await import('@dagsocial/types');
+    expect(block.subBlockTree.subBlocks).toBeDefined();
+    expect(block.subBlockTree.subBlocks.length).toBe(
+      block.subBlockTree.subBlockRefs.length,
+    );
+    for (let i = 0; i < block.subBlockTree.subBlocks.length; i++) {
+      const sb = decodeSubBlock(block.subBlockTree.subBlocks[i]);
+      expect(sb.subBlockId).toBe(block.subBlockTree.subBlockRefs[i]);
+    }
   });
 
   // -----------------------------------------------------------------------
@@ -973,6 +984,18 @@ describe('block-creator', () => {
     expect(block!.utxoTxTree.utxoTxIds.length).toBeGreaterThan(0);
     // The standalone like should be in utxoTxIds
     expect(block!.utxoTxTree.utxoTxIds).toContain(computeTxId(likeTx));
+
+    // Verify inline CBOR UTXO tx fields
+    const { decodeTx } = await import('@dagsocial/types');
+    expect(block.utxoTxTree.utxoTxs).toBeDefined();
+    expect(block.utxoTxTree.utxoTxs.length).toBe(
+      block.utxoTxTree.utxoTxIds.length,
+    );
+    for (let i = 0; i < block.utxoTxTree.utxoTxs.length; i++) {
+      const tx = decodeTx(block.utxoTxTree.utxoTxs[i]);
+      expect(computeTxId(tx)).toBe(block.utxoTxTree.utxoTxIds[i]);
+    }
+
     // Confirmed entries removed from mempool
     const remaining = mempool.getPendingEntries(100);
     expect(remaining).toHaveLength(0);
