@@ -54,6 +54,14 @@ export function validateHandshake(
       peerCapabilities: [],
     };
   }
+  if (!Number.isInteger(msg.sessionMagic) || msg.sessionMagic < 0) {
+    return {
+      ok: false,
+      error: 'missing or invalid sessionMagic',
+      peerHeight: 0,
+      peerCapabilities: [],
+    };
+  }
   return {
     ok: true,
     peerHeight: msg.chainHeight,

@@ -10,7 +10,8 @@ import { encode, decode } from 'cbor-x';
 
 import type { Libp2p } from 'libp2p';
 import type { SubBlock, OrderingBlock, UtxoTransaction, BlockHeader } from '@dagsocial/types';
-import { PROTOCOL_VERSION, encodeSubBlock, decodeSubBlock } from '@dagsocial/types';
+import { PROTOCOL_VERSION, encodeSubBlock, decodeSubBlock, encodeOrderingBlock } from '@dagsocial/types';
+import { ReaderError } from '@dagsocial/wire';
 import type { NetConfig, NetValidators, Peer, PeerRecord } from './types.js';
 import type { Libp2pGossip, GossipHandlers } from './gossip.js';
 import { PeerManager } from './peer-mgr.js';
@@ -67,6 +68,12 @@ class LazySyncStore implements SyncStore {
 
   getOrderingBlock(height: number): unknown | null {
     return this._getOrderingBlock?.(height) ?? null;
+  }
+
+  serializeOrderingBlock(height: number): Uint8Array | null {
+    const block = this._getOrderingBlock?.(height);
+    if (!block) return null;
+    return encodeOrderingBlock(block as import('@dagsocial/types').OrderingBlock);
   }
 
   getOrderingBlockHeader(height: number): unknown | null {
@@ -133,21 +140,16 @@ class LazySyncStore implements SyncStore {
 
   getAnchors(): { height: number; blockId: string }[] {
     if (!this._getOrderingBlock) return [];
-    const anchors: { height: number; blockId: string }[] = [];
     const h = this.chainHeight();
-    // Produce anchors at genesis, midpoints, and tip
-    if (h >= 1) {
-      const id = this.getOrderingBlockId(1);
-      if (id) anchors.push({ height: 1, blockId: id });
-    }
-    if (h >= 2) {
-      const mid = Math.floor(h / 2);
-      const id = this.getOrderingBlockId(mid);
-      if (id) anchors.push({ height: mid, blockId: id });
-    }
-    if (h >= 1) {
-      const id = this.getOrderingBlockId(h);
-      if (id) anchors.push({ height: h, blockId: id });
+    if (h < 1) return [];
+    const anchors: { height: number; blockId: string }[] = [];
+    const seen = new Set<number>();
+    for (const candidate of [h, h - 16, h - 128, h - 512]) {
+      if (candidate < 1) continue;
+      if (seen.has(candidate)) continue;
+      seen.add(candidate);
+      const id = this.getOrderingBlockId(candidate);
+      if (id) anchors.push({ height: candidate, blockId: id });
     }
     return anchors;
   }
@@ -422,7 +424,12 @@ export class NetNode {
         try {
           const framed = decodeFrame(magic, data);
           body = framed.body;
-        } catch {
+        } catch (err) {
+          if (err instanceof ReaderError && err.message.includes('wrong magic')) {
+            // Wrong network — reject, don't fall through to raw CBOR
+            await stream.sink([new Uint8Array(0)]);
+            return;
+          }
           // Older peers may send raw CBOR without frame
           body = data;
         }
@@ -538,7 +545,7 @@ export class NetNode {
       chainHeight: this.syncStore.chainHeight(),
       declaredAddress: listenAddrs[0]?.toString(),
       capabilities: [],
-      sessionMagic: this.config.magic ?? MAGIC_MAINNET,
+      sessionMagic: Math.floor(Math.random() * 0x100000000),
     };
   }
 
