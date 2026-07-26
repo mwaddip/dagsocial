@@ -24,7 +24,7 @@ describe('OutboundManager', () => {
 
   beforeEach(() => {
     db = new PeerDb(null, 100, []);
-    mgr = new OutboundManager(testConfig, db, async () => {});
+    mgr = new OutboundManager(testConfig, db);
   });
 
   it('returns null when below minPeers (floor phase — caller dials seeds)', () => {

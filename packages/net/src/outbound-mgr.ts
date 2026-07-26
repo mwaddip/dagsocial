@@ -9,7 +9,6 @@ export class OutboundManager {
   constructor(
     private config: NetConfig,
     private peerDb: PeerDb,
-    private dialFn: (addr: string) => Promise<void>,
   ) {
     this.redialCooldownMs = config.outboundRedialCooldownMs ?? 60_000;
     this.minPeers = config.minPeers ?? 3;
@@ -25,16 +24,16 @@ export class OutboundManager {
   }
 
   /** Get the next peer to dial, or null if none available. */
-  pickCandidate(connectedCount: number): string | null {
+  pickCandidate(connectedOutbound: number): string | null {
     // Floor phase: don't use PeerDb when below minPeers
     // (caller handles bootstrap seed dialing separately)
-    if (connectedCount < this.minPeers) return null;
+    if (connectedOutbound < this.minPeers) return null;
 
     // Fill phase
-    if (connectedCount >= this.config.maxPeers) return null;
+    if (connectedOutbound >= this.config.maxPeers) return null;
 
     const now = Date.now();
-    const need = this.config.maxPeers - connectedCount;
+    const need = this.config.maxPeers - connectedOutbound;
     const exclude = new Set<string>();
     // Exclude addresses in cooldown
     for (const [addr, until] of this.cooldowns) {
