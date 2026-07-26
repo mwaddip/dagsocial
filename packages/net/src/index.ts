@@ -23,6 +23,8 @@ export {
   MODIFIER_ORDERING_BLOCK,
   MODIFIER_SUB_BLOCK,
 } from './types.js';
+export { buildHandshakeFrame, parseHandshakeBody, validateHandshake } from './handshake.js';
+export type { HandshakeMsg, HandshakeResult } from './handshake.js';
 export type {
   NetConfig,
   NetValidators,
