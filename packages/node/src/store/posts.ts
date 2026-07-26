@@ -79,35 +79,43 @@ function rowToStump(row: StumpRow): Stump {
 /**
  * Insert a new post into dag_posts with status='pending', and insert a row
  * into dag_parent_refs for each parentId in post.parentRefs.
+ *
+ * Both writes are wrapped in a single transaction so a crash after the
+ * dag_posts insert but before the parent_ref inserts completes leaves no
+ * orphaned row.
  */
 export function insertPost(post: Post, rawCbor: Uint8Array): void {
   const db = getDb();
   const postId = computePostId(post);
 
-  db.prepare(
+  const insertPostStmt = db.prepare(
     `INSERT INTO dag_posts
        (id, content, author, parent_refs, challenge, pow_nonce,
         protocol_version, timestamp, signature, raw_cbor, status)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
-  ).run(
-    postId,
-    post.content,
-    Buffer.from(post.author),
-    JSON.stringify(post.parentRefs),
-    Buffer.from(post.challenge),
-    post.powNonce,
-    post.protocolVersion,
-    post.timestamp,
-    Buffer.from(post.signature),
-    Buffer.from(rawCbor),
   );
-
   const insertRef = db.prepare(
     'INSERT OR IGNORE INTO dag_parent_refs (post_id, parent_id) VALUES (?, ?)',
   );
-  for (const parentId of post.parentRefs) {
-    insertRef.run(postId, parentId);
-  }
+
+  db.transaction(() => {
+    insertPostStmt.run(
+      postId,
+      post.content,
+      Buffer.from(post.author),
+      JSON.stringify(post.parentRefs),
+      Buffer.from(post.challenge),
+      post.powNonce,
+      post.protocolVersion,
+      post.timestamp,
+      Buffer.from(post.signature),
+      Buffer.from(rawCbor),
+    );
+
+    for (const parentId of post.parentRefs) {
+      insertRef.run(postId, parentId);
+    }
+  })();
 }
 
 /**
@@ -253,11 +261,16 @@ export function getSubtree(postId: string): Post[] {
 /**
  * Mark the entire reply subtree (including the root) as pruned, and insert
  * the stump into dag_stumps.
+ *
+ * Both the dag_posts status updates and the dag_stumps insert are wrapped in
+ * a single transaction.  A crash mid-prune leaves neither partial status
+ * changes nor an orphaned stump.
  */
 export function pruneSubtree(rootPostId: string, stump: Stump): void {
   const db = getDb();
 
-  // Collect all post IDs in the subtree (root + descendants)
+  // Collect all post IDs in the subtree (root + descendants) — this is a
+  // read, so it does not need to be inside the write transaction.
   const rows = db
     .prepare(
       `WITH RECURSIVE subtree AS (
@@ -273,34 +286,35 @@ export function pruneSubtree(rootPostId: string, stump: Stump): void {
     )
     .all(rootPostId) as Array<{ id: string }>;
 
-  // Mark all posts in the subtree as pruned
   const markPruned = db.prepare(
     "UPDATE dag_posts SET status = 'pruned' WHERE id = ?",
   );
-  for (const { id } of rows) {
-    markPruned.run(id);
-  }
-
-  // Insert the stump
   const stumpId = computeStumpId(stump);
-  db.prepare(
+  const insertStump = db.prepare(
     `INSERT INTO dag_stumps
        (id, root_post_hash, subtree_merkle_root, author_id, prune_signature,
         karma_deltas, reply_count, upvote_count, trigger, protocol_version,
         compacted_at_block_height, raw_cbor)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    stumpId,
-    stump.rootPostHash,
-    Buffer.from(stump.subtreeMerkleRoot),
-    Buffer.from(stump.authorId),
-    Buffer.from(stump.pruneSignature),
-    JSON.stringify(stump.karmaDeltas),
-    stump.replyCount,
-    stump.upvoteCount,
-    stump.trigger,
-    stump.protocolVersion,
-    stump.compactedAtBlockHeight,
-    Buffer.from(encodeStump(stump)),
   );
+
+  db.transaction(() => {
+    for (const { id } of rows) {
+      markPruned.run(id);
+    }
+    insertStump.run(
+      stumpId,
+      stump.rootPostHash,
+      Buffer.from(stump.subtreeMerkleRoot),
+      Buffer.from(stump.authorId),
+      Buffer.from(stump.pruneSignature),
+      JSON.stringify(stump.karmaDeltas),
+      stump.replyCount,
+      stump.upvoteCount,
+      stump.trigger,
+      stump.protocolVersion,
+      stump.compactedAtBlockHeight,
+      Buffer.from(encodeStump(stump)),
+    );
+  })();
 }
