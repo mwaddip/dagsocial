@@ -30,7 +30,7 @@ export function computeBoxId(box: Omit<BoxBase, 'id'>): BoxId {
 // Box types
 // ---------------------------------------------------------------------------
 
-export type BoxGuard = 'owner_signature' | 'epoch_tally' | 'hash_preimage' | 'inviter_signature';
+export type BoxGuard = 'owner_signature' | 'epoch_tally' | 'hash_preimage' | 'inviter_signature' | 'bond_dual' | 'hash_preimage_with_bond';
 
 export interface BoxBase {
   id?: BoxId;           // Computed via computeBoxId; optional during construction
@@ -74,10 +74,10 @@ export interface LikeBox extends BoxBase {
 
 export interface InviteBox extends BoxBase {
   boxType: 'invite';
-  value: number;              // N karma transferred
-  secretHash: Uint8Array;     // 32 bytes — H(s) = blake2b512(s).subarray(0,32)
+  value: number;                    // N karma transferred
+  secretHash: Uint8Array;           // 32 bytes — H(s) = blake2b512(s).subarray(0,32)
   inviterId: UserId;
-  guard: 'hash_preimage';     // Unlocked by preimage + publicKey not in ledger
+  guard: 'hash_preimage_with_bond'; // Unlocked by preimage + committed BondBox
 }
 
 // --- Bond ---
@@ -86,10 +86,11 @@ export interface BondBox extends BoxBase {
   boxType: 'bond';
   value: number;                    // D karma deposited
   inviterId: UserId;               // Owner — the inviter
-  inviteePublicKey: Uint8Array;    // 32 raw bytes — set when invite is claimed
-  probationStartBlock: number;     // Set when invite is claimed
+  inviteBoxId: BoxId;              // Which InviteBox this pairs with (for commit secret lookup)
+  inviteePublicKey: Uint8Array;    // 32 raw bytes — set during commit
+  probationStartBlock: number;     // Set during commit
   probationEndBlock: number;       // probationStartBlock + INVITE_PROBATION_BLOCKS
-  guard: 'inviter_signature';     // Only inviter may reclaim
+  guard: 'bond_dual';              // inviter_signature (reclaim) OR hash_preimage (commit)
 }
 
 // --- Post Lock ---
