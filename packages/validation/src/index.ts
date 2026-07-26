@@ -1,4 +1,5 @@
 export {
+  blake2b32,
   verifyPoW,
   verifyPostSignature,
   verifyProtocolVersion,

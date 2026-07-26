@@ -4,11 +4,12 @@ import express from 'express';
 import http from 'http';
 import { createHash, generateKeyPairSync, createPrivateKey } from 'crypto';
 import { initDb, closeDb, getDb } from '../../src/store/db.js';
-import { insertPost, getPost, queryPosts } from '../../src/store/posts.js';
+import { insertPost, getPost, getPostRaw, queryPosts } from '../../src/store/posts.js';
 import { consumeChallenge, getActiveChallenge } from '../../src/store/challenges.js';
 import { getCurrentHeight } from '../../src/store/ordering.js';
-import { getKarmaBox, insertBox, getBox as storeGetBox } from '../../src/store/utxo.js';
+import { getKarmaBox, getKarmaBoxes, insertBox, getBox as storeGetBox } from '../../src/store/utxo.js';
 import { getLikeCount } from '../../src/store/likes.js';
+import { metaPut, metaGet } from '../../src/store/meta.js';
 import { insertSubBlock as insertMempoolSubBlock, insertUtxoTx, getPendingEntries } from '../../src/store/mempool.js';
 import { verifyPost } from '../../src/services/verifier.js';
 import { validateTx } from '../../src/services/utxo-engine.js';
@@ -43,16 +44,20 @@ async function request(
       insertPost,
       consumeChallenge,
       getPost,
+      getPostRaw,
       queryPosts,
       encodePost,
       verifyPost: overrides?.verifyPost ?? verifyPost,
       getActiveChallenge,
+      getKarmaBoxes,
       getKarmaBox,
       getLikeCount,
       getCurrentHeight,
       insertMempoolSubBlock,
       insertUtxoTx,
       onSubBlockReceived: () => {},
+      metaPut,
+      metaGet,
       validateTx: (tx: UtxoTransaction, height: number) => {
         return validateTx(
           {

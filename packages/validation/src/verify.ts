@@ -11,6 +11,22 @@ import { encodeHeader } from '@dagsocial/types';
 import type { Post, SubBlock, BlockHeader, OrderingBlock, UtxoTransaction } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
+// Hashing
+// ---------------------------------------------------------------------------
+
+/**
+ * Standard blake2b-512/32 hash. Returns the first 32 bytes of blake2b512(data).
+ * Used for content-addressed storage: every post, stump, box ID, and Merkle
+ * node derives from this function or a structured-field variant.
+ *
+ * Node.js v22 lacks blake2b256; blake2b-512 with truncation is the project
+ * standard for all 32-byte outputs.
+ */
+export function blake2b32(data: Uint8Array): Uint8Array {
+  return createHash('blake2b512').update(data).digest().subarray(0, 32);
+}
+
+// ---------------------------------------------------------------------------
 // Ed25519 SPKI helpers
 // ---------------------------------------------------------------------------
 

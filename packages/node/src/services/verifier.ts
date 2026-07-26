@@ -7,7 +7,49 @@ import {
   POST_LOCK_REPLY_COST,
 } from '@dagsocial/types';
 import type { Post } from '@dagsocial/types';
+import { createHash } from 'crypto';
 import { verifyPoW, verifyPostSignature, verifyContentCharacters } from '@dagsocial/validation';
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Recompute the blake2b-512/32 hash of raw bytes.
+ * Used for independent parent-hash verification.
+ */
+function blake2b32(data: Uint8Array): Uint8Array {
+  return createHash('blake2b512').update(data).digest().subarray(0, 32);
+}
+
+/**
+ * Verify that a parentRef matches the hash of the parent post's raw CBOR bytes.
+ * This is the "validate, don't trust" check — we independently recompute the
+ * hash rather than trusting the lookup key.
+ *
+ * If `getPostRaw` is not available (e.g., in unit tests that don't provide
+ * raw bytes), the check falls back to existence-only validation.
+ */
+function verifyParentHash(
+  deps: VerifierDeps,
+  parentId: string,
+): { valid: boolean; error?: string } {
+  const parentRaw = deps.getPostRaw?.(parentId);
+  if (!parentRaw) {
+    // getPostRaw not available — fall back to existence check (already
+    // verified by the caller). This is a soft-path for tests.
+    return { valid: true };
+  }
+  const recomputed = blake2b32(parentRaw);
+  const recomputedHex = Buffer.from(recomputed).toString('hex');
+  if (recomputedHex !== parentId) {
+    return {
+      valid: false,
+      error: `Parent hash mismatch: claimed ${parentId}, computed ${recomputedHex}`,
+    };
+  }
+  return { valid: true };
+}
 
 // ---------------------------------------------------------------------------
 // Dependency interface
@@ -19,6 +61,8 @@ export interface VerifierDeps {
   ) => { challenge: Uint8Array; expiresAtBlock: number; userId: Uint8Array } | null;
   getKarmaBoxes: (owner: Uint8Array) => { value: number; id?: string }[];
   getPost: (id: string) => unknown | null;
+  /** Raw CBOR bytes for a post, used for independent hash recomputation. */
+  getPostRaw?: (id: string) => Uint8Array | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -117,11 +161,13 @@ export function verifyPost(
     };
   }
 
-  // 8. Parent refs: every referenced post must exist.
+  // 8. Parent refs: every referenced post must exist AND hash must match.
   for (const parentId of post.parentRefs) {
     if (!deps.getPost(parentId)) {
       return { valid: false, error: `Parent post not found: ${parentId}` };
     }
+    const hashCheck = verifyParentHash(deps, parentId);
+    if (!hashCheck.valid) return hashCheck;
   }
 
   return { valid: true };
@@ -194,11 +240,13 @@ export function verifyPostForRelay(
   //    reject it.  Cryptographic checks (signature, PoW) are sufficient
   //    for relay acceptance.
 
-  // 8. Parent refs exist
+  // 8. Parent refs: must exist AND hash must match.
   for (const parentId of post.parentRefs) {
     if (!deps.getPost(parentId)) {
       return { valid: false, error: `Parent post not found: ${parentId}` };
     }
+    const hashCheck = verifyParentHash(deps, parentId);
+    if (!hashCheck.valid) return hashCheck;
   }
 
   return { valid: true };

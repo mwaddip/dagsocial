@@ -80,6 +80,7 @@ export function createApp(config: Config): express.Express {
       insertPost: store.insertPost,
       consumeChallenge: store.consumeChallenge,
       getPost: store.getPost,
+      getPostRaw: store.getPostRaw,
       queryPosts: store.queryPosts,
       getActiveChallenge: store.getActiveChallenge,
       getKarmaBoxes: store.getKarmaBoxes,
@@ -91,6 +92,8 @@ export function createApp(config: Config): express.Express {
       validateTx: (tx, currentBlockHeight) =>
         validateTx(utxoEngineDeps, tx, currentBlockHeight),
       getBox: store.getBox,
+      metaPut: store.metaPut,
+      metaGet: store.metaGet,
     }),
   );
 

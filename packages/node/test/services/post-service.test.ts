@@ -18,6 +18,7 @@ function mockDeps(overrides?: Partial<PostServiceDeps>): PostServiceDeps {
     }),
     getKarmaBoxes: () => [{ value: 100 }],
     getPost: () => ({ id: 'post-1', content: 'hello' }),
+    getPostRaw: () => new Uint8Array(32).fill(0xaa),
     encodePost: () => new Uint8Array(10),
     insertPost: () => {},
     getCurrentHeight: () => 100,
@@ -36,6 +37,8 @@ function mockDeps(overrides?: Partial<PostServiceDeps>): PostServiceDeps {
         lastTouchBlock: 1,
       }) as AnyBox,
     onSubBlockReceived: () => {},
+    metaPut: () => {},
+    metaGet: () => null,
     ...overrides,
   };
 }

@@ -157,6 +157,36 @@ export function getPost(id: string): Post | Stump | null {
 }
 
 /**
+ * Retrieve the raw CBOR bytes for a post or stump by id.
+ * Returns null if not found. Used for independent hash recomputation
+ * (validate-don't-trust: verify that the hash of the stored bytes matches
+ * the claimed id).
+ */
+export function getPostRaw(id: string): Uint8Array | null {
+  const db = getDb();
+
+  // Try dag_posts first
+  const postRow = db
+    .prepare('SELECT raw_cbor FROM dag_posts WHERE id = ?')
+    .get(id) as { raw_cbor: Buffer } | undefined;
+
+  if (postRow) {
+    return new Uint8Array(postRow.raw_cbor);
+  }
+
+  // Try dag_stumps
+  const stumpRow = db
+    .prepare('SELECT raw_cbor FROM dag_stumps WHERE id = ?')
+    .get(id) as { raw_cbor: Buffer } | undefined;
+
+  if (stumpRow) {
+    return new Uint8Array(stumpRow.raw_cbor);
+  }
+
+  return null;
+}
+
+/**
  * Query live posts (status != 'pruned'), newest first.
  *
  * @param opts.author  Optional author filter.

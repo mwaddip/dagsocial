@@ -7,6 +7,7 @@ export {
 export {
   insertPost,
   getPost,
+  getPostRaw,
   queryPosts,
   getPendingPosts,
   confirmPost,
@@ -86,3 +87,5 @@ export type { SystemKeypair } from './system.js';
 
 export type { PostStore, StoreEntry, PeerRecord } from './post-store.js';
 export { SqlitePostStore } from './sqlite-store.js';
+
+export { metaGet, metaPut, metaDelete, metaHas } from './meta.js';
