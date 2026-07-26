@@ -3,7 +3,8 @@ import { encode, decode } from 'cbor-x';
 import type { BlockHeader, OrderingBlock } from '@dagsocial/types';
 import { PROTOCOL_VERSION } from '@dagsocial/types';
 import { blockHash } from '@dagsocial/validation';
-import { HEADERS_PROTOCOL, mergeUint8Arrays } from '../src/headers.js';
+import { HEADERS_PROTOCOL } from '../src/sync.js';
+import { mergeUint8Arrays } from '../src/util.js';
 
 // ---------------------------------------------------------------------------
 // Mock data helpers
