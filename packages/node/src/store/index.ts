@@ -83,3 +83,6 @@ export {
   signWithSystemKey,
 } from './system.js';
 export type { SystemKeypair } from './system.js';
+
+export type { PostStore, StoreEntry, PeerRecord } from './post-store.js';
+export { SqlitePostStore } from './sqlite-store.js';
