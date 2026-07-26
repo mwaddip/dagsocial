@@ -43,3 +43,5 @@ export {
   encodeModifierRequest, decodeModifierRequest,
   encodeModifierResponse, decodeModifierResponse,
 } from './sync-codec.js';
+export { SyncMachine } from './sync-machine.js';
+export type { SyncStore } from './sync-machine.js';
