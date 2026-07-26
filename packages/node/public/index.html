@@ -644,10 +644,10 @@ function buildClaimInviteTx(inviteBox, bondBox, inviteePubKeyHex, secretHex) {
     value: bondBox.value,
     createdAtBlock: now,
     inviterId: inviteBox.inviterId,
-    inviteBoxId: inviteBox.inviteBoxId || '',
+    inviteBoxId: bondBox.inviteBoxId || '',
     inviteePublicKey: inviteePubKeyHex,
-    probationStartBlock: bondBox.probationStartBlock || now,
-    probationEndBlock: bondBox.probationEndBlock || (now + INVITE_PROBATION_BLOCKS),
+    probationStartBlock: bondBox.probationStartBlock,
+    probationEndBlock: bondBox.probationEndBlock,
     guard: 'bond_dual',
   };
 
@@ -1634,6 +1634,10 @@ document.getElementById('redeemInviteBtn').addEventListener('click', async () =>
       result.innerHTML = `<span class="result-msg err">Commit failed: ${esc(commitData.error || 'unknown error')}</span>`;
       return;
     }
+
+    // Persist probation timers set during commit (block height at commit time)
+    bondBox.probationStartBlock = currentBlockHeight;
+    bondBox.probationEndBlock = currentBlockHeight + INVITE_PROBATION_BLOCKS;
 
     // Store secret for reveal step (survives page refresh)
     sessionStorage.setItem('reveal_' + inviteBoxId, JSON.stringify({
