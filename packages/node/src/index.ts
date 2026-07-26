@@ -230,6 +230,12 @@ try {
 
   // Register headers handler for fork resolution sync
   net.setHeadersHandler(getOrderingBlock);
+
+  // Register blocks handler — bridges sync machine's pull path
+  // (ModifierResponse) to the node's applyOrderingBlock pipeline.
+  net.setBlocksHandler((block) => {
+    applyOrderingBlock(block);
+  });
 } catch (err) {
   console.warn(`Net startup failed (continuing without networking): ${String(err)}`);
 }

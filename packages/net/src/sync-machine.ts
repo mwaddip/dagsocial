@@ -311,9 +311,14 @@ export class SyncMachine {
 
       if (blocks.length > 0) {
         this.store.appendBlocks(blocks);
+        const newHeight = this.store.chainHeight();
         this.state.downloadedHeight = Math.max(
           this.state.downloadedHeight,
-          this.state.downloadedHeight + blocks.length,
+          newHeight,
+        );
+        this.state.stateAppliedHeight = Math.max(
+          this.state.stateAppliedHeight,
+          newHeight,
         );
       }
     } else if (resp.typeId === MODIFIER_SUB_BLOCK) {

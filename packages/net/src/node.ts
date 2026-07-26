@@ -10,7 +10,7 @@ import { encode, decode } from 'cbor-x';
 
 import type { Libp2p } from 'libp2p';
 import type { SubBlock, OrderingBlock, UtxoTransaction, BlockHeader } from '@dagsocial/types';
-import { PROTOCOL_VERSION, encodeSubBlock, decodeSubBlock, encodeOrderingBlock } from '@dagsocial/types';
+import { PROTOCOL_VERSION, encodeSubBlock, decodeSubBlock, encodeOrderingBlock, decodeOrderingBlock } from '@dagsocial/types';
 import { blockHash } from '@dagsocial/validation';
 import { ReaderError } from '@dagsocial/wire';
 import type { NetConfig, NetValidators, Peer, PeerRecord } from './types.js';
@@ -58,6 +58,7 @@ function asGossip(libp2p: Libp2p): Libp2pGossip {
 class LazySyncStore implements SyncStore {
   private _getOrderingBlock: ((height: number) => unknown | null) | null = null;
   private _getSubBlock: ((id: string) => unknown | null) | null = null;
+  private _blocksHandler: ((block: OrderingBlock) => void) | null = null;
 
   setOrderingBlockFn(fn: (height: number) => unknown | null): void {
     this._getOrderingBlock = fn;
@@ -65,6 +66,10 @@ class LazySyncStore implements SyncStore {
 
   setSubBlockFn(fn: (id: string) => unknown | null): void {
     this._getSubBlock = fn;
+  }
+
+  setBlocksHandler(fn: (block: OrderingBlock) => void): void {
+    this._blocksHandler = fn;
   }
 
   getOrderingBlock(height: number): unknown | null {
@@ -166,7 +171,16 @@ class LazySyncStore implements SyncStore {
   }
 
   appendBlocks(_blocks: unknown[]): void {
-    // Same as appendHeaders — node layer owns persistence.
+    if (!this._blocksHandler) return;
+    for (const raw of _blocks) {
+      if (!(raw instanceof Uint8Array)) continue;
+      try {
+        const block = decodeOrderingBlock(raw);
+        this._blocksHandler(block);
+      } catch (err) {
+        console.warn(`[net] appendBlocks: failed to decode block: ${String(err)}`);
+      }
+    }
   }
 
   setValidatedHeight(_height: number): void {
@@ -717,6 +731,16 @@ export class NetNode {
    */
   setSyncHandler(handler: (id: string) => SubBlock | null): void {
     this.syncStore.setSubBlockFn((id) => handler(id));
+  }
+
+  /**
+   * Register a handler for blocks received via the sync machine's pull path
+   * (ModifierResponse during header-first sync). The node layer decodes and
+   * applies blocks to state — this bridges the sync machine's receive side
+   * to the node's applyOrderingBlock pipeline.
+   */
+  setBlocksHandler(handler: (block: OrderingBlock) => void): void {
+    this.syncStore.setBlocksHandler(handler);
   }
 
   /**
