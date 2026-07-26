@@ -118,6 +118,12 @@ const MIGRATIONS = [
 
   // Clean invite/bond boxes with old guard types (pre commit-reveal)
   `DELETE FROM utxo_boxes WHERE (box_type = 'invite' AND guard = 'hash_preimage') OR (box_type = 'bond' AND guard = 'inviter_signature')`,
+
+  // dag_meta key-value metadata table
+  `CREATE TABLE IF NOT EXISTS dag_meta (
+    key   TEXT PRIMARY KEY,
+    value BLOB NOT NULL
+  )`,
 ];
 
 export function initDb(path: string): void {
