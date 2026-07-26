@@ -10,6 +10,7 @@ import {
   getKarmaBox,
   getKarmaBoxes,
   getPost,
+  insertPost,
   insertBox,
   getBox,
   consumeBox,
@@ -30,8 +31,9 @@ import {
   PROTOCOL_VERSION,
   computeTxId,
   computeBoxId,
+  encodePost,
 } from '@dagsocial/types';
-import type { AnyBox, BlockJournal, OrderingBlock } from '@dagsocial/types';
+import type { AnyBox, BlockJournal, OrderingBlock, UtxoTransaction } from '@dagsocial/types';
 
 let currentJournal: BlockJournal | null = null;
 
@@ -54,24 +56,13 @@ export function applyOrderingBlock(block: OrderingBlock): boolean {
     decayBurns: [],
   };
 
-  // Populate subBlockCbors from mempool entries
+  // Populate subBlockCbors from the block itself (self-contained)
   if (block.subBlockTree.subBlockRefs.length > 0) {
-    const pendingEntries = getPendingEntries(1000);
-    for (const subBlockId of block.subBlockTree.subBlockRefs) {
-      const match = pendingEntries.find((e) => {
-        if (e.entryType !== 'subblock' || !e.subblockCbor) return false;
-        try {
-          const sb = decodeSubBlock(e.subblockCbor);
-          return sb.subBlockId === subBlockId;
-        } catch {
-          return false;
-        }
-      });
-      if (match?.subblockCbor) {
-        currentJournal.subBlockCbors.push({
-          subBlockId,
-          cbor: match.subblockCbor,
-        });
+    for (let i = 0; i < block.subBlockTree.subBlockRefs.length; i++) {
+      const subBlockId = block.subBlockTree.subBlockRefs[i]!;
+      const cbor = block.subBlockTree.subBlocks[i];
+      if (cbor) {
+        currentJournal.subBlockCbors.push({ subBlockId, cbor });
       }
     }
   }
@@ -161,15 +152,28 @@ export function applyOrderingBlock(block: OrderingBlock): boolean {
     }
   }
 
-  // 7. Confirm sub-blocks and their posts, then remove from mempool
-  for (const subBlockId of block.subBlockTree.subBlockRefs) {
+  // 7. Confirm sub-blocks and their posts — decode from block, not mempool
+  for (let i = 0; i < block.subBlockTree.subBlockRefs.length; i++) {
+    const subBlockId = block.subBlockTree.subBlockRefs[i]!;
+    const subBlockCbor = block.subBlockTree.subBlocks[i];
+
+    // Insert post if we don't already have it (e.g., from gossip)
+    if (subBlockCbor && !getPost(subBlockId)) {
+      try {
+        const sb = decodeSubBlock(subBlockCbor);
+        insertPost(sb.post, encodePost(sb.post));
+      } catch (err) {
+        console.warn(`Failed to decode sub-block ${subBlockId} from block: ${String(err)}`);
+      }
+    }
+
     try {
       confirmPost(subBlockId, block.header.height);
     } catch (err) {
       console.warn(`Failed to confirm sub-block ${subBlockId}: ${String(err)}`);
     }
   }
-  // Remove confirmed sub-block entries from mempool
+  // Still remove confirmed entries from local mempool (if we have them)
   if (block.subBlockTree.subBlockRefs.length > 0) {
     const entriesAfter = getPendingEntries(1000);
     for (const subBlockId of block.subBlockTree.subBlockRefs) {
@@ -239,23 +243,34 @@ export function applyOrderingBlock(block: OrderingBlock): boolean {
       getDb().transaction(fn)();
     },
   };
-  for (const txId of block.utxoTxTree.utxoTxIds) {
-    // Look up in local mempool
-    const entries = getPendingEntries(1000);
-    const entry = entries.find((e) => {
-      if (e.entryType !== 'utxo_tx' || !e.utxoTxCbor) return false;
-      const tx = decodeTx(e.utxoTxCbor);
-      return computeTxId(tx) === txId;
-    });
-    if (!entry) {
-      // Already applied by a prior block or not in our mempool
+  for (let i = 0; i < block.utxoTxTree.utxoTxIds.length; i++) {
+    const txId = block.utxoTxTree.utxoTxIds[i]!;
+    const txCbor = block.utxoTxTree.utxoTxs[i];
+
+    if (!txCbor) {
+      console.warn(`UTXO tx ${txId} missing CBOR in block`);
       continue;
     }
-    const tx = decodeTx(entry.utxoTxCbor!);
+
+    let tx: UtxoTransaction;
+    try {
+      tx = decodeTx(txCbor);
+    } catch (err) {
+      console.warn(`Failed to decode UTXO tx ${txId} from block: ${String(err)}`);
+      continue;
+    }
+
     const revalResult = revalidateTxInContext(utxoDeps, tx, block.header.height);
     if (!revalResult.valid) {
       console.warn(`UTXO tx ${txId} failed revalidation: ${revalResult.error}`);
-      removeEntry(entry.rowid);
+      // Remove from local mempool if present (stale entry)
+      const entries = getPendingEntries(1000);
+      const entry = entries.find((e) => {
+        if (e.entryType !== 'utxo_tx' || !e.utxoTxCbor) return false;
+        const et = decodeTx(e.utxoTxCbor);
+        return computeTxId(et) === txId;
+      });
+      if (entry) removeEntry(entry.rowid);
       continue;
     }
     const computedOutputs = tx.outputs.map((box) => ({
@@ -263,7 +278,15 @@ export function applyOrderingBlock(block: OrderingBlock): boolean {
       id: computeBoxId(box),
     })) as AnyBox[];
     applyTx(utxoDeps, tx, computedOutputs, block.header.height);
-    removeEntry(entry.rowid);
+
+    // Remove from local mempool if present
+    const entries = getPendingEntries(1000);
+    const entry = entries.find((e) => {
+      if (e.entryType !== 'utxo_tx' || !e.utxoTxCbor) return false;
+      const et = decodeTx(e.utxoTxCbor);
+      return computeTxId(et) === txId;
+    });
+    if (entry) removeEntry(entry.rowid);
 
     // Record in journal
     currentJournal.appliedUtxoTxs.push({
