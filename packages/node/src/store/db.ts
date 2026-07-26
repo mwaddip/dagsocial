@@ -115,6 +115,9 @@ const MIGRATIONS = [
     block_height INTEGER PRIMARY KEY,
     journal_cbor BLOB NOT NULL
   )`,
+
+  // Clean invite/bond boxes with old guard types (pre commit-reveal)
+  `DELETE FROM utxo_boxes WHERE (box_type = 'invite' AND guard = 'hash_preimage') OR (box_type = 'bond' AND guard = 'inviter_signature')`,
 ];
 
 export function initDb(path: string): void {

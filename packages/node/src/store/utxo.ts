@@ -52,7 +52,8 @@ interface InviteExtra {
 }
 
 interface BondExtra {
-  inviterId: string;     // hex-encoded pubkey in JSON (Uint8Array in code)
+  inviterId: string;                // hex-encoded pubkey in JSON (Uint8Array in code)
+  inviteBoxId: string;              // BoxId of the paired InviteBox
   inviteePublicKey: number[] | null;
   probationStartBlock: number | null;
   probationEndBlock: number | null;
@@ -147,7 +148,7 @@ function rowToBox(row: UtxoRow): AnyBox {
         createdAtBlock: row.created_at_block,
         secretHash: new Uint8Array(e.secretHash),
         inviterId: hexToPubkey(e.inviterId),
-        guard: 'hash_preimage',
+        guard: 'hash_preimage_with_bond',
       } satisfies InviteBox as InviteBox;
     }
 
@@ -159,12 +160,13 @@ function rowToBox(row: UtxoRow): AnyBox {
         value: row.value,
         createdAtBlock: row.created_at_block,
         inviterId: hexToPubkey(e.inviterId),
+        inviteBoxId: e.inviteBoxId ?? '',
         inviteePublicKey: e.inviteePublicKey
           ? new Uint8Array(e.inviteePublicKey)
           : new Uint8Array(0),
         probationStartBlock: e.probationStartBlock ?? 0,
         probationEndBlock: e.probationEndBlock ?? 0,
-        guard: 'inviter_signature',
+        guard: 'bond_dual',
       } satisfies BondBox as BondBox;
     }
 
@@ -462,6 +464,7 @@ export function insertBox(box: AnyBox): void {
       const b = box as BondBox;
       extraData = {
         inviterId: pubkeyToHex(b.inviterId),
+        inviteBoxId: b.inviteBoxId,
         inviteePublicKey:
           b.inviteePublicKey.length > 0
             ? Array.from(b.inviteePublicKey)
