@@ -161,7 +161,18 @@ export function applyOrderingBlock(block: OrderingBlock): boolean {
     if (subBlockCbor && !getPost(subBlockId)) {
       try {
         const sb = decodeSubBlock(subBlockCbor);
-        insertPost(sb.post, encodePost(sb.post));
+        // Verify the CBOR decodes to the declared subBlockRefs ID.
+        // Prevents a malicious miner from swapping CBOR entries or
+        // injecting content under a different post ID.
+        if (sb.subBlockId !== subBlockId) {
+          console.warn(
+            `Sub-block CBOR mismatch: refs[${i}]=${subBlockId}, CBOR decodes to ${sb.subBlockId}`,
+          );
+          // Don't insert mismatched content. Fall through to confirmPost
+          // (which will no-op if the post doesn't exist).
+        } else {
+          insertPost(sb.post, encodePost(sb.post));
+        }
       } catch (err) {
         console.warn(`Failed to decode sub-block ${subBlockId} from block: ${String(err)}`);
       }
@@ -243,6 +254,7 @@ export function applyOrderingBlock(block: OrderingBlock): boolean {
       getDb().transaction(fn)();
     },
   };
+  const pendingEntries = getPendingEntries(1000);
   for (let i = 0; i < block.utxoTxTree.utxoTxIds.length; i++) {
     const txId = block.utxoTxTree.utxoTxIds[i]!;
     const txCbor = block.utxoTxTree.utxoTxs[i];
@@ -260,17 +272,26 @@ export function applyOrderingBlock(block: OrderingBlock): boolean {
       continue;
     }
 
+    // Verify the CBOR decodes to the declared utxoTxIds entry.
+    // Prevents a malicious miner from swapping UTXO tx CBOR entries.
+    const decodedTxId = computeTxId(tx);
+    if (decodedTxId !== txId) {
+      console.warn(
+        `Rejected UTXO tx ${txId}: CBOR decodes to ${decodedTxId}`,
+      );
+      continue;
+    }
+
     const revalResult = revalidateTxInContext(utxoDeps, tx, block.header.height);
     if (!revalResult.valid) {
       console.warn(`UTXO tx ${txId} failed revalidation: ${revalResult.error}`);
       // Remove from local mempool if present (stale entry)
-      const entries = getPendingEntries(1000);
-      const entry = entries.find((e) => {
+      const mempoolEntry = pendingEntries.find((e) => {
         if (e.entryType !== 'utxo_tx' || !e.utxoTxCbor) return false;
         const et = decodeTx(e.utxoTxCbor);
         return computeTxId(et) === txId;
       });
-      if (entry) removeEntry(entry.rowid);
+      if (mempoolEntry) removeEntry(mempoolEntry.rowid);
       continue;
     }
     const computedOutputs = tx.outputs.map((box) => ({
@@ -280,13 +301,12 @@ export function applyOrderingBlock(block: OrderingBlock): boolean {
     applyTx(utxoDeps, tx, computedOutputs, block.header.height);
 
     // Remove from local mempool if present
-    const entries = getPendingEntries(1000);
-    const entry = entries.find((e) => {
+    const mempoolEntry = pendingEntries.find((e) => {
       if (e.entryType !== 'utxo_tx' || !e.utxoTxCbor) return false;
       const et = decodeTx(e.utxoTxCbor);
       return computeTxId(et) === txId;
     });
-    if (entry) removeEntry(entry.rowid);
+    if (mempoolEntry) removeEntry(mempoolEntry.rowid);
 
     // Record in journal
     currentJournal.appliedUtxoTxs.push({
