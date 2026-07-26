@@ -29,6 +29,9 @@ importers:
       '@dagsocial/validation':
         specifier: workspace:*
         version: link:../validation
+      '@dagsocial/wire':
+        specifier: workspace:*
+        version: link:../wire
       '@libp2p/identify':
         specifier: ^2.0.0
         version: 2.1.5
@@ -135,6 +138,18 @@ importers:
       vitest:
         specifier: ^1.6.0
         version: 1.6.1(@types/node@22.20.1)
+
+  packages/wire:
+    devDependencies:
+      tsup:
+        specifier: ^8.0.0
+        version: 8.5.1(postcss@8.5.20)(typescript@5.9.3)
+      typescript:
+        specifier: ^5.4.0
+        version: 5.9.3
+      vitest:
+        specifier: ^1.6.0
+        version: 1.6.1(@types/node@26.1.1)
 
 packages:
 

@@ -1,6 +1,27 @@
 import type { SubBlock, OrderingBlock, UtxoTransaction, Post } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
+// Message codes
+// ---------------------------------------------------------------------------
+
+export const MSG_HANDSHAKE = 1;
+export const MSG_SYNC_INFO = 2;
+export const MSG_INV = 3;
+export const MSG_MODIFIER_REQUEST = 4;
+export const MSG_MODIFIER_RESPONSE = 5;
+export const MSG_GET_SUB_BLOCK = 6;
+export const MSG_SUB_BLOCK_RESPONSE = 7;
+export const MSG_GET_PEERS = 8;
+export const MSG_PEERS = 9;
+
+// ---------------------------------------------------------------------------
+// Modifier type IDs
+// ---------------------------------------------------------------------------
+
+export const MODIFIER_ORDERING_BLOCK = 101;
+export const MODIFIER_SUB_BLOCK = 102;
+
+// ---------------------------------------------------------------------------
 // Peer
 // ---------------------------------------------------------------------------
 
@@ -25,13 +46,31 @@ export interface PenaltyRecord {
 }
 
 // ---------------------------------------------------------------------------
+// PeerRecord — persisted peer metadata
+// ---------------------------------------------------------------------------
+
+export interface PeerRecord {
+  address: string;
+  lastSeenMs: number;
+  agentName: string;
+  nodeName: string;
+  protocolVersion: number;
+  capabilities: number[];
+}
+
+// ---------------------------------------------------------------------------
 // NetConfig
 // ---------------------------------------------------------------------------
 
 export interface NetConfig {
+  magic?: number;
   bootstrapPeers: string[];
   listenAddrs: string;
   maxPeers: number;
+  minPeers?: number;
+  peerDbCap?: number;
+  outboundFillIntervalMs?: number;
+  outboundRedialCooldownMs?: number;
   penaltyScoreThreshold: number;
   temporalBanDurationMs: number;
   penaltySafeIntervalMs: number;
