@@ -36,3 +36,10 @@ export type {
   PenaltyType,
   PenaltyRecord,
 } from './types.js';
+export type { SyncInfo, Inv, ModifierRequest, ModifierResponse, SyncState } from './sync-types.js';
+export {
+  encodeSyncInfo, decodeSyncInfo,
+  encodeInv, decodeInv,
+  encodeModifierRequest, decodeModifierRequest,
+  encodeModifierResponse, decodeModifierResponse,
+} from './sync-codec.js';
