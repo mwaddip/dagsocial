@@ -188,26 +188,53 @@ export class DagService {
   }
 
   /**
-   * Walk from startId back to ancestorId following the first parent at each
-   * step. Returns post IDs from ancestor (exclusive) to startId (inclusive),
+   * Walk from startId back to ancestorId using BFS over ALL parent references.
+   * Returns post IDs from ancestor (exclusive) to startId (inclusive),
    * in ascending order (ancestor's child first).
+   *
+   * Uses BFS (shortest path) for consistency with findForkPoint, which also
+   * explores all parent edges. Following only parents[0] would miss the fork
+   * point for multi-parent posts.
    */
   private walkToAncestor(startId: string, ancestorId: string): string[] {
-    const path: string[] = [];
-    let current = startId;
+    if (startId === ancestorId) return [];
 
-    while (current !== ancestorId) {
-      path.push(current);
+    const visited = new Set<string>();
+    // parentId -> childId: reverse edge so we can reconstruct the path
+    // from ancestorId forward (through children) to startId.
+    const childMap = new Map<string, string>();
+    const queue: string[] = [startId];
+    visited.add(startId);
+    let steps = 0;
+
+    while (queue.length > 0 && steps < MAX_ANCESTOR_WALK) {
+      const current = queue.shift()!;
+      steps++;
+
+      if (current === ancestorId) {
+        // Reconstruct path from ancestorId to startId (forward in DAG)
+        const path: string[] = [];
+        let node = ancestorId;
+        while (node !== startId) {
+          const child = childMap.get(node)!;
+          path.push(child);
+          node = child;
+        }
+        // path is already [ancestor's child, ..., startId] — ascending order
+        return path;
+      }
+
       const parents = getParentRefs(current);
-      if (parents.length === 0) break; // reached genesis but not ancestor
-      current = parents[0]!; // follow first parent (most-recently-added edge)
+      for (const parentId of parents) {
+        if (!visited.has(parentId)) {
+          visited.add(parentId);
+          childMap.set(parentId, current); // record parent->child edge
+          queue.push(parentId);
+        }
+      }
     }
 
-    // If we didn't reach the ancestor, return empty (walk failed)
-    if (current !== ancestorId) return [];
-
-    path.reverse(); // ancestor's child first, startId last
-    return path;
+    return []; // walk failed
   }
 
   // -----------------------------------------------------------------------
@@ -229,7 +256,7 @@ export class DagService {
     if (!currentTip) {
       // No canonical branch yet — this is the first tip.
       // Build a plan that inserts the full path from genesis to newTip.
-      return this.buildInitialPlan(newTipId, newTipScore);
+      return this.buildInitialPlan(newTipId);
     }
 
     // Strictly greater score required
@@ -266,10 +293,7 @@ export class DagService {
   /**
    * Build a reorg plan for the initial tip (no canonical branch exists yet).
    */
-  private buildInitialPlan(
-    newTipId: string,
-    newTipScore: number,
-  ): DagReorgPlan | null {
+  private buildInitialPlan(newTipId: string): DagReorgPlan | null {
     // Walk from newTip back to genesis (post with no parents).
     // Collect all posts along the first-parent path.
     const toConfirm = this.walkToGenesis(newTipId);
@@ -280,23 +304,47 @@ export class DagService {
   }
 
   /**
-   * Walk from startId back to genesis (post with empty parentRefs),
-   * following first parent at each step. Returns posts in ascending
+   * Walk from startId back to a genesis post (one with empty parentRefs),
+   * using BFS over ALL parent references. Returns posts in ascending
    * order (genesis child first, startId last).
    */
   private walkToGenesis(startId: string): string[] {
-    const path: string[] = [];
-    let current = startId;
+    const visited = new Set<string>();
+    // parentId -> childId: reverse edge for path reconstruction
+    const childMap = new Map<string, string>();
+    const queue: string[] = [startId];
+    visited.add(startId);
+    let steps = 0;
 
-    while (true) {
-      path.push(current);
+    while (queue.length > 0 && steps < MAX_ANCESTOR_WALK) {
+      const current = queue.shift()!;
+      steps++;
+
       const parents = getParentRefs(current);
-      if (parents.length === 0) break;
-      current = parents[0]!;
+      if (parents.length === 0) {
+        // Found genesis — reconstruct path from genesis to startId
+        // Include genesis itself (unlike walkToAncestor which excludes the endpoint)
+        const path: string[] = [current]; // genesis
+        let node = current;
+        while (node !== startId) {
+          const child = childMap.get(node)!;
+          path.push(child);
+          node = child;
+        }
+        // path is [genesis, genesisChild, ..., startId] — ascending order
+        return path;
+      }
+
+      for (const parentId of parents) {
+        if (!visited.has(parentId)) {
+          visited.add(parentId);
+          childMap.set(parentId, current); // record parent->child edge
+          queue.push(parentId);
+        }
+      }
     }
 
-    path.reverse();
-    return path;
+    return [];
   }
 
   // -----------------------------------------------------------------------
@@ -339,8 +387,13 @@ export class DagService {
           insertStmt.run(forkDepth + 1 + i, plan.toConfirm[i]!);
         }
 
-        // 3. Update dag_tip_hash (store post ID bytes decoded from hex)
-        const newTip = plan.toConfirm[plan.toConfirm.length - 1]!;
+        // 3. Update dag_tip_hash
+        // When toConfirm is empty (newTipId === forkPoint), the fork point
+        // becomes the new tip — we're truncating the branch.
+        const newTip =
+          plan.toConfirm.length > 0
+            ? plan.toConfirm[plan.toConfirm.length - 1]!
+            : plan.forkPoint!;
         db.prepare(
           'INSERT OR REPLACE INTO dag_meta (key, value) VALUES (?, ?)',
         ).run('dag_tip_hash', Buffer.from(newTip, 'hex'));
