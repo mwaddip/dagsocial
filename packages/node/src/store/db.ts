@@ -124,6 +124,18 @@ const MIGRATIONS = [
     key   TEXT PRIMARY KEY,
     value BLOB NOT NULL
   )`,
+
+  // Canonical DAG branch — depth → post_id mapping for fork-choice view
+  `CREATE TABLE IF NOT EXISTS canonical_branch (
+    depth    INTEGER PRIMARY KEY,
+    post_id  TEXT NOT NULL
+  )`,
+
+  // Cumulative PoW scores per post for fork-choice rule
+  `CREATE TABLE IF NOT EXISTS post_scores (
+    post_id           TEXT PRIMARY KEY,
+    cumulative_score  INTEGER NOT NULL
+  )`,
 ];
 
 export function initDb(path: string): void {
