@@ -241,8 +241,6 @@ function checkTransitions(
 
     // ------------------------------------------------------------------
     // InviteBox → KarmaBox (new owner via claim)
-    // Note: hash_preimage guard rejected in guard check — this path is
-    // only reachable via specialised claim handler, not generic validation.
     // ------------------------------------------------------------------
     case 'invite': {
       const karmaOutputs = outputs.filter((o) => o.boxType === 'karma');
@@ -264,7 +262,8 @@ function checkTransitions(
       if (bondOuts.length === 1 && outputs.length === 1) {
         const bondIn = inputs[0] as BondBox;
         const bondOut = bondOuts[0] as BondBox;
-        if (bondIn.inviteePublicKey.length === 0 &&
+        if (inputs.length === 1 &&
+            bondIn.inviteePublicKey.length === 0 &&
             bondOut.inviteePublicKey.length === 32 &&
             bondOut.probationStartBlock > 0 &&
             bondOut.probationEndBlock > bondOut.probationStartBlock) {
@@ -441,19 +440,16 @@ function checkGuards(
             error: `Invite claim requires a BondBox input alongside the InviteBox`,
           };
         }
-        if (bondInput.inviteePublicKey.length !== 32) {
-          return {
-            valid: false,
-            error: `BondBox must be committed (inviteePublicKey set) before reveal`,
-          };
+        if (bondInput.inviteePublicKey.length === 32) {
+          // Bond is committed — reveal: must be signed by the invitee
+          if (!verifyGuardSignature(tx, txHash, bondInput.inviteePublicKey)) {
+            return {
+              valid: false,
+              error: `Reveal must be signed by the committed invitee`,
+            };
+          }
         }
-        // The tx must be signed by the committed invitee
-        if (!verifyGuardSignature(tx, txHash, bondInput.inviteePublicKey)) {
-          return {
-            valid: false,
-            error: `Reveal must be signed by the committed invitee`,
-          };
-        }
+        // If not committed, just the preimage suffices (cancel path)
         break;
       }
 
