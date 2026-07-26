@@ -269,6 +269,7 @@ export class NetNode {
       (peerId: string, data: Uint8Array) => this.sendToPeer(peerId, data),
       async (peerId: string, ids: string[]) => this.requestSubBlocksFn(peerId, ids),
     );
+    this.syncMachine.start();
 
     // Create OutboundManager
     this.outboundMgr = new OutboundManager(this.config, this.peerDb);
@@ -408,6 +409,7 @@ export class NetNode {
     await this.libp2p.stop();
     this.libp2p = null;
     this.peerDb = null;
+    this.syncMachine?.stop();
     this.syncMachine = null;
     this.outboundMgr = null;
     this.started = false;

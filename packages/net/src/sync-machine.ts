@@ -51,6 +51,22 @@ export interface SyncStore {
 }
 
 // ---------------------------------------------------------------------------
+// Event types for biased event loop
+// ---------------------------------------------------------------------------
+
+/** Control events — unbounded channel, never dropped. */
+type ControlEvent =
+  | { type: 'peer-active'; peerId: string; peerHeight: number }
+  | { type: 'peer-disconnect'; peerId: string }
+  | { type: 'sync-info'; peerId: string; info: SyncInfo };
+
+/** Data events — bounded channel, lossy. */
+type DataEvent =
+  | { type: 'inv'; peerId: string; inv: Inv }
+  | { type: 'modifier-request'; peerId: string; req: ModifierRequest }
+  | { type: 'modifier-response'; peerId: string; resp: ModifierResponse };
+
+// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
@@ -60,17 +76,26 @@ const STALL_TIMEOUT_MS = 60_000;
 const SYNCED_POLL_INTERVAL_MS = 30_000;
 /** Maximum number of IDs to include in a single Inv message. */
 const MAX_INV_IDS = 400;
+/** Maximum data events in the queue before dropping oldest. */
+const MAX_DATA_QUEUE = 64;
 
 // ---------------------------------------------------------------------------
 // SyncMachine
 // ---------------------------------------------------------------------------
 
 /**
- * Core sync state machine.
+ * Core sync state machine with biased event loop.
  *
  * Event-driven — the node calls `onPeerActive`, `handleMessage`, `onTimerTick`,
  * and `onPeerDisconnect`. The machine owns sync phase, peer selection, stall
  * detection, and rotation.
+ *
+ * **Biased event loop** (call `start()` to begin):
+ * 1. Control events (peer connect/disconnect, sync-info) — unbounded, never dropped
+ * 2. Data events (inv, modifier req/resp) — bounded, lossy above MAX_DATA_QUEUE
+ * 3. Timer tick — fallback, lowest priority
+ *
+ * Call `flush()` to synchronously drain all queued events (useful in tests).
  */
 export class SyncMachine {
   private state: SyncState = {
@@ -86,6 +111,19 @@ export class SyncMachine {
 
   private readonly magic: number;
 
+  // -----------------------------------------------------------------------
+  // Biased event queues
+  // -----------------------------------------------------------------------
+
+  /** Control events: unbounded, never dropped. */
+  private controlQueue: ControlEvent[] = [];
+
+  /** Data events: bounded, lossy. Oldest dropped when full. */
+  private dataQueue: DataEvent[] = [];
+
+  /** Whether the background event loop is running. */
+  private running = false;
+
   constructor(
     private config: NetConfig,
     private store: SyncStore,
@@ -93,6 +131,91 @@ export class SyncMachine {
     private requestSubBlocks: (peerId: string, ids: string[]) => Promise<unknown[]>,
   ) {
     this.magic = config.magic ?? MAGIC_MAINNET;
+  }
+
+  // -----------------------------------------------------------------------
+  // Lifecycle
+  // -----------------------------------------------------------------------
+
+  /** Start the background event loop. Idempotent. */
+  start(): void {
+    if (this.running) return;
+    this.running = true;
+    this.eventLoop().catch((err) => {
+      console.error('[sync-machine] event loop crashed:', err);
+    });
+  }
+
+  /** Stop the background event loop. Idempotent. */
+  stop(): void {
+    this.running = false;
+  }
+
+  // -----------------------------------------------------------------------
+  // Background event loop
+  // -----------------------------------------------------------------------
+
+  /**
+   * Biased event loop.
+   *
+   * Priority order:
+   * 1. Drain ALL control events (unbounded, never dropped)
+   * 2. Process ONE data event (bounded, lossy)
+   * 3. Timer tick (fallback, lowest priority)
+   *
+   * Yields to the microtask queue between iterations to prevent CPU spinning.
+   */
+  private async eventLoop(): Promise<void> {
+    while (this.running) {
+      let didWork = false;
+
+      // 1. Drain control events first (never dropped)
+      while (this.controlQueue.length > 0) {
+        const event = this.controlQueue.shift()!;
+        this.handleControlEvent(event);
+        didWork = true;
+      }
+
+      // 2. Process one data event
+      const dataEvent = this.dataQueue.shift();
+      if (dataEvent) {
+        this.handleDataEvent(dataEvent);
+        didWork = true;
+      }
+
+      // 3. Fallback: timer tick
+      this.onTimerTick();
+
+      // Small yield to prevent CPU spinning
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Synchronous flush — drains all queued events (test support)
+  // -----------------------------------------------------------------------
+
+  /**
+   * Synchronously drain all queued events.
+   *
+   * Processes control events first (all of them), then data events (one at a
+   * time, interleaving with control drain between each). Does NOT run the
+   * timer tick — use `onTimerTick()` directly if needed.
+   */
+  flush(): void {
+    while (this.controlQueue.length > 0 || this.dataQueue.length > 0) {
+      // Drain all control events
+      while (this.controlQueue.length > 0) {
+        const event = this.controlQueue.shift()!;
+        this.handleControlEvent(event);
+      }
+
+      // Process one data event
+      const dataEvent = this.dataQueue.shift();
+      if (dataEvent) {
+        this.handleDataEvent(dataEvent);
+      }
+    }
   }
 
   /** Read-only snapshot of current sync state. */
@@ -107,21 +230,10 @@ export class SyncMachine {
   /**
    * Called after handshake reveals a peer's tip height.
    *
-   * - If the peer is ahead and we're idle → enter syncing phase.
-   * - If the peer is behind → serve them an Inv so they can catch up.
+   * Enqueues a control event — the event loop processes it with top priority.
    */
   onPeerActive(peerId: string, peerHeight: number): void {
-    const ourHeight = this.store.chainHeight();
-
-    if (peerHeight > ourHeight && (this.state.phase === 'idle' || this.state.phase === 'synced')) {
-      this.state.phase = 'syncing';
-      this.state.syncPeerId = peerId;
-      this.state.stalledPeers.delete(peerId);
-      this.lastProgressMs = Date.now();
-      this.sendSyncInfo(peerId);
-    } else if (peerHeight < ourHeight) {
-      this.servePeer(peerId, peerHeight);
-    }
+    this.controlQueue.push({ type: 'peer-active', peerId, peerHeight });
   }
 
   /**
@@ -129,20 +241,34 @@ export class SyncMachine {
    *
    * The `body` is the raw CBOR payload (already stripped of the frame
    * envelope by the caller).
+   *
+   * Routes to control queue (SyncInfo) or data queue (everything else).
    */
   handleMessage(peerId: string, code: number, body: Uint8Array): void {
     switch (code) {
       case MSG_SYNC_INFO:
-        this.handleSyncInfo(peerId, decodeSyncInfo(body));
+        this.controlQueue.push({
+          type: 'sync-info',
+          peerId,
+          info: decodeSyncInfo(body),
+        });
         break;
       case MSG_INV:
-        this.handleInv(peerId, decodeInv(body));
+        this.enqueueData({ type: 'inv', peerId, inv: decodeInv(body) });
         break;
       case MSG_MODIFIER_REQUEST:
-        this.handleModifierRequest(peerId, decodeModifierRequest(body));
+        this.enqueueData({
+          type: 'modifier-request',
+          peerId,
+          req: decodeModifierRequest(body),
+        });
         break;
       case MSG_MODIFIER_RESPONSE:
-        this.handleModifierResponse(peerId, decodeModifierResponse(body));
+        this.enqueueData({
+          type: 'modifier-response',
+          peerId,
+          resp: decodeModifierResponse(body),
+        });
         break;
       // Unknown message types are silently ignored.
     }
@@ -150,6 +276,9 @@ export class SyncMachine {
 
   /**
    * Periodic timer tick.
+   *
+   * Called by the event loop as lowest-priority fallback. Also called
+   * directly by the node's setInterval for the 30 s periodic check.
    *
    * - Checks for stall (no progress in STALL_TIMEOUT_MS).
    * - Sends periodic SyncInfo while syncing/synced.
@@ -179,10 +308,95 @@ export class SyncMachine {
   /**
    * Called when a peer disconnects.
    *
+   * Enqueues a control event — processed with top priority.
+   */
+  onPeerDisconnect(peerId: string): void {
+    this.controlQueue.push({ type: 'peer-disconnect', peerId });
+  }
+
+  // -----------------------------------------------------------------------
+  // Internal — control event handler
+  // -----------------------------------------------------------------------
+
+  private handleControlEvent(event: ControlEvent): void {
+    switch (event.type) {
+      case 'peer-active':
+        this.handlePeerActive(event.peerId, event.peerHeight);
+        break;
+      case 'peer-disconnect':
+        this.handlePeerDisconnect(event.peerId);
+        break;
+      case 'sync-info':
+        this.handleSyncInfoMsg(event.peerId, event.info);
+        break;
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Internal — data event handler
+  // -----------------------------------------------------------------------
+
+  private handleDataEvent(event: DataEvent): void {
+    switch (event.type) {
+      case 'inv':
+        this.handleInvMsg(event.peerId, event.inv);
+        break;
+      case 'modifier-request':
+        this.handleModifierRequestMsg(event.peerId, event.req);
+        break;
+      case 'modifier-response':
+        this.handleModifierResponseMsg(event.peerId, event.resp);
+        break;
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Internal — data queue enqueue (bounded, lossy)
+  // -----------------------------------------------------------------------
+
+  /**
+   * Enqueue a data event. If the queue is at capacity, the oldest event is
+   * dropped to make room (lossy behavior).
+   */
+  private enqueueData(event: DataEvent): void {
+    if (this.dataQueue.length >= MAX_DATA_QUEUE) {
+      // Drop the oldest event to make room
+      this.dataQueue.shift();
+    }
+    this.dataQueue.push(event);
+  }
+
+  // -----------------------------------------------------------------------
+  // Control event handlers
+  // -----------------------------------------------------------------------
+
+  /**
+   * Handle a peer becoming active (post-handshake).
+   *
+   * - If the peer is ahead and we're idle → enter syncing phase.
+   * - If the peer is behind → serve them an Inv so they can catch up.
+   */
+  private handlePeerActive(peerId: string, peerHeight: number): void {
+    const ourHeight = this.store.chainHeight();
+
+    if (peerHeight > ourHeight && (this.state.phase === 'idle' || this.state.phase === 'synced')) {
+      this.state.phase = 'syncing';
+      this.state.syncPeerId = peerId;
+      this.state.stalledPeers.delete(peerId);
+      this.lastProgressMs = Date.now();
+      this.sendSyncInfo(peerId);
+    } else if (peerHeight < ourHeight) {
+      this.servePeer(peerId, peerHeight);
+    }
+  }
+
+  /**
+   * Handle a peer disconnecting.
+   *
    * If the disconnected peer was our sync peer, add it to the stalled set and
    * reset phase so the node can pick a new peer.
    */
-  onPeerDisconnect(peerId: string): void {
+  private handlePeerDisconnect(peerId: string): void {
     if (this.state.syncPeerId === peerId) {
       this.state.stalledPeers.add(peerId);
       this.state.syncPeerId = null;
@@ -193,7 +407,7 @@ export class SyncMachine {
   }
 
   // -----------------------------------------------------------------------
-  // Internal — message handlers
+  // Internal — message handlers (dispatched from control/data event handlers)
   // -----------------------------------------------------------------------
 
   /**
@@ -203,7 +417,7 @@ export class SyncMachine {
    * - Peer behind → serve them an Inv.
    * - Equal height + we were syncing → transition to synced.
    */
-  private handleSyncInfo(peerId: string, info: SyncInfo): void {
+  private handleSyncInfoMsg(peerId: string, info: SyncInfo): void {
     const ourHeight = this.store.chainHeight();
 
     if (info.tipHeight > ourHeight) {
@@ -227,7 +441,7 @@ export class SyncMachine {
    * If we're syncing, request the announced modifiers from our sync peer.
    * Unknown IDs that we already have are filtered before requesting.
    */
-  private handleInv(_peerId: string, inv: Inv): void {
+  private handleInvMsg(_peerId: string, inv: Inv): void {
     if (this.state.phase !== 'syncing' || !this.state.syncPeerId) return;
 
     // Filter out IDs we already know about
@@ -249,7 +463,7 @@ export class SyncMachine {
    * Process a ModifierRequest from a peer — serve the requested data from
    * our local store.
    */
-  private handleModifierRequest(peerId: string, req: ModifierRequest): void {
+  private handleModifierRequestMsg(peerId: string, req: ModifierRequest): void {
     const modifiers: { id: string; data: Uint8Array }[] = [];
 
     for (const id of req.ids) {
@@ -286,7 +500,7 @@ export class SyncMachine {
   /**
    * Process a ModifierResponse — apply received headers/blocks to the store.
    */
-  private handleModifierResponse(_peerId: string, resp: ModifierResponse): void {
+  private handleModifierResponseMsg(_peerId: string, resp: ModifierResponse): void {
     if (resp.modifiers.length === 0) return;
 
     this.lastProgressMs = Date.now();

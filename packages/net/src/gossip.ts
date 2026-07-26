@@ -204,3 +204,53 @@ export async function broadcastTx(libp2p: Libp2pGossip, tx: UtxoTransaction): Pr
   const data = encodeTx(tx);
   await libp2p.services.pubsub.publish(TOPICS.tx, data);
 }
+
+// ---------------------------------------------------------------------------
+// Serve-before-relay — incoming content request handler
+// ---------------------------------------------------------------------------
+
+/**
+ * Dependencies for the serve-before-relay handler.
+ *
+ * The caller (node layer) provides concrete implementations of each callback
+ * so gossip.ts stays decoupled from storage and peer management.
+ */
+export interface GossipDeps {
+  /** Check if a modifier is available locally. Returns the serialized data
+   *  if found, or null if not present. Called before relaying. */
+  localServe: (typeId: number, id: Uint8Array) => Uint8Array | null;
+  /** Relay a modifier request to connected peers (excluding the requester). */
+  relay: (typeId: number, id: Uint8Array, excludePeer: string) => void;
+  /** Send a response directly to a peer. */
+  sendTo: (peerId: string, message: Uint8Array) => void;
+}
+
+/**
+ * Handle an incoming modifier request from a peer.
+ *
+ * **Invariant:** local store is checked BEFORE relaying. Serve and relay are
+ * mutually exclusive per request ID — a request is either served locally
+ * OR relayed, never both.
+ *
+ * @param deps - Callbacks for local lookup, relaying, and direct sending.
+ * @param requesterId - The peer that sent the modifier request.
+ * @param typeId - Modifier type ID (e.g. MODIFIER_ORDERING_BLOCK).
+ * @param id - The modifier identifier to look up.
+ */
+export function handleModifierRequest(
+  deps: GossipDeps,
+  requesterId: string,
+  typeId: number,
+  id: Uint8Array,
+): void {
+  // Check local store FIRST
+  const localData = deps.localServe(typeId, id);
+  if (localData) {
+    // Serve from local store — do NOT relay
+    deps.sendTo(requesterId, localData);
+    return;
+  }
+
+  // Only relay if not available locally
+  deps.relay(typeId, id, requesterId);
+}

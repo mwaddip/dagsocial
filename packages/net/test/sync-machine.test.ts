@@ -70,16 +70,30 @@ function makeMachine(overrides?: {
   return { machine, sent };
 }
 
-/** CBOR-encode a SyncInfo and pass it to handleMessage. */
+/** CBOR-encode a SyncInfo, enqueue it, and flush. */
 function sendSyncInfo(machine: SyncMachine, peerId: string, info: SyncInfo): void {
   const body = new Uint8Array(encode(info));
   machine.handleMessage(peerId, MSG_SYNC_INFO, body);
+  machine.flush();
 }
 
-/** CBOR-encode an Inv and pass it to handleMessage. */
+/** CBOR-encode an Inv, enqueue it, and flush. */
 function sendInv(machine: SyncMachine, peerId: string, inv: Inv): void {
   const body = new Uint8Array(encode(inv));
   machine.handleMessage(peerId, MSG_INV, body);
+  machine.flush();
+}
+
+/** Call onPeerActive and flush the event loop. */
+function peerActive(machine: SyncMachine, peerId: string, peerHeight: number): void {
+  machine.onPeerActive(peerId, peerHeight);
+  machine.flush();
+}
+
+/** Call onPeerDisconnect and flush the event loop. */
+function peerDisconnect(machine: SyncMachine, peerId: string): void {
+  machine.onPeerDisconnect(peerId);
+  machine.flush();
 }
 
 // ---------------------------------------------------------------------------
@@ -121,7 +135,7 @@ describe('SyncMachine', () => {
   describe('onPeerActive', () => {
     it('transitions to syncing when peer is ahead and we are idle', () => {
       const { machine } = makeMachine({ store: { chainHeight: () => 0 } });
-      machine.onPeerActive('peer1', 100);
+      peerActive(machine, 'peer1', 100);
       expect(machine.getState().phase).toBe('syncing');
       expect(machine.getState().syncPeerId).toBe('peer1');
     });
@@ -130,7 +144,7 @@ describe('SyncMachine', () => {
       const { machine, sent } = makeMachine({
         store: { chainHeight: () => 0, getOrderingBlockId: () => 'abc123' },
       });
-      machine.onPeerActive('peer1', 100);
+      peerActive(machine, 'peer1', 100);
       expect(sent.length).toBe(1);
       expect(sent[0].peerId).toBe('peer1');
     });
@@ -138,13 +152,13 @@ describe('SyncMachine', () => {
     it('removes peer from stalled set when entering syncing', () => {
       const { machine } = makeMachine({ store: { chainHeight: () => 0 } });
       machine.getState().stalledPeers.add('peer1');
-      machine.onPeerActive('peer1', 100);
+      peerActive(machine, 'peer1', 100);
       expect(machine.getState().stalledPeers.has('peer1')).toBe(false);
     });
 
     it('stays idle when peer height equals ours', () => {
       const { machine } = makeMachine({ store: { chainHeight: () => 0 } });
-      machine.onPeerActive('peer1', 0);
+      peerActive(machine, 'peer1', 0);
       expect(machine.getState().phase).toBe('idle');
     });
 
@@ -155,7 +169,7 @@ describe('SyncMachine', () => {
           getOrderingBlockId: (h: number) => `block_${h}`,
         },
       });
-      machine.onPeerActive('peer1', 5); // peer at 5, we at 10
+      peerActive(machine, 'peer1', 5); // peer at 5, we at 10
       expect(sent.length).toBe(1);
       expect(sent[0].peerId).toBe('peer1');
     });
@@ -163,7 +177,7 @@ describe('SyncMachine', () => {
     it('re-enters syncing from synced when peer reports higher height', () => {
       const { machine } = makeMachine({ store: { chainHeight: () => 100 } });
       // Get to synced
-      machine.onPeerActive('peer1', 200);
+      peerActive(machine, 'peer1', 200);
       sendSyncInfo(machine, 'peer1', {
         tipHeight: 100,
         tipBlockId: 'abc',
@@ -173,19 +187,19 @@ describe('SyncMachine', () => {
       expect(machine.getState().phase).toBe('synced');
 
       // Peer reports a higher height — should re-enter syncing
-      machine.onPeerActive('peer2', 300);
+      peerActive(machine, 'peer2', 300);
       expect(machine.getState().phase).toBe('syncing');
       expect(machine.getState().syncPeerId).toBe('peer2');
     });
 
     it('does not switch sync peer when already syncing', () => {
       const { machine } = makeMachine({ store: { chainHeight: () => 0 } });
-      machine.onPeerActive('peer1', 100);
+      peerActive(machine, 'peer1', 100);
       expect(machine.getState().phase).toBe('syncing');
       expect(machine.getState().syncPeerId).toBe('peer1');
 
       // Another peer comes along, also ahead
-      machine.onPeerActive('peer2', 200);
+      peerActive(machine, 'peer2', 200);
       expect(machine.getState().phase).toBe('syncing');
       expect(machine.getState().syncPeerId).toBe('peer1');
     });
@@ -228,7 +242,7 @@ describe('SyncMachine', () => {
     it('transitions to synced when peer reports equal height while we are syncing', () => {
       const { machine } = makeMachine({ store: { chainHeight: () => 100 } });
       // First enter syncing
-      machine.onPeerActive('peer1', 200);
+      peerActive(machine, 'peer1', 200);
       expect(machine.getState().phase).toBe('syncing');
 
       // Now peer reports equal height
@@ -243,7 +257,7 @@ describe('SyncMachine', () => {
 
     it('clears stalled peers when transitioning to synced', () => {
       const { machine } = makeMachine({ store: { chainHeight: () => 100 } });
-      machine.onPeerActive('peer1', 200);
+      peerActive(machine, 'peer1', 200);
       machine.getState().stalledPeers.add('oldPeer');
 
       sendSyncInfo(machine, 'peer1', {
@@ -270,7 +284,7 @@ describe('SyncMachine', () => {
     it('re-enters syncing from synced when peer reports higher height', () => {
       const { machine } = makeMachine({ store: { chainHeight: () => 100 } });
       // Get to synced
-      machine.onPeerActive('peer1', 200);
+      peerActive(machine, 'peer1', 200);
       sendSyncInfo(machine, 'peer1', {
         tipHeight: 100,
         tipBlockId: 'abc',
@@ -312,7 +326,7 @@ describe('SyncMachine', () => {
       const { machine, sent } = makeMachine({
         store: { chainHeight: () => 0, hasOrderingBlockHeader: () => false },
       });
-      machine.onPeerActive('peer1', 100);
+      peerActive(machine, 'peer1', 100);
       sent.length = 0; // clear the SyncInfo send
 
       const inv: Inv = { typeId: MODIFIER_ORDERING_BLOCK, ids: ['id1', 'id2'] };
@@ -338,7 +352,7 @@ describe('SyncMachine', () => {
           hasOrderingBlockHeader: (id: string) => id === 'id1', // id1 is known
         },
       });
-      machine.onPeerActive('peer1', 100);
+      peerActive(machine, 'peer1', 100);
       sent.length = 0;
 
       const inv: Inv = { typeId: MODIFIER_ORDERING_BLOCK, ids: ['id1', 'id2'] };
@@ -355,7 +369,7 @@ describe('SyncMachine', () => {
           hasOrderingBlockHeader: () => true,
         },
       });
-      machine.onPeerActive('peer1', 100);
+      peerActive(machine, 'peer1', 100);
       sent.length = 0;
 
       const inv: Inv = { typeId: MODIFIER_ORDERING_BLOCK, ids: ['id1', 'id2'] };
@@ -368,7 +382,7 @@ describe('SyncMachine', () => {
       const { machine, sent } = makeMachine({
         store: { chainHeight: () => 0 },
       });
-      machine.onPeerActive('peer1', 100);
+      peerActive(machine, 'peer1', 100);
       sent.length = 0;
 
       const inv: Inv = { typeId: 999, ids: ['x'] };
@@ -393,6 +407,7 @@ describe('SyncMachine', () => {
         }),
       );
       machine.handleMessage('peer1', MSG_MODIFIER_RESPONSE, body);
+      machine.flush();
       // This is an internal effect — verified by stall tests
     });
 
@@ -403,6 +418,7 @@ describe('SyncMachine', () => {
       );
       // Should not throw
       machine.handleMessage('peer1', MSG_MODIFIER_RESPONSE, body);
+      machine.flush();
     });
 
     it('calls appendBlocks for ordering block responses', () => {
@@ -423,6 +439,7 @@ describe('SyncMachine', () => {
         }),
       );
       machine.handleMessage('peer1', MSG_MODIFIER_RESPONSE, body);
+      machine.flush();
       expect(appended.length).toBe(2);
     });
 
@@ -444,6 +461,7 @@ describe('SyncMachine', () => {
         }),
       );
       machine.handleMessage('peer1', MSG_MODIFIER_RESPONSE, body);
+      machine.flush();
       expect(appended.length).toBe(1);
     });
   });
@@ -460,7 +478,7 @@ describe('SyncMachine', () => {
           getOrderingBlockId: (h: number) => `block_${h}`,
         },
       });
-      machine.onPeerActive('peer1', 5);
+      peerActive(machine, 'peer1', 5);
       expect(sent.length).toBe(1);
     });
 
@@ -471,7 +489,7 @@ describe('SyncMachine', () => {
           getOrderingBlockId: (h: number) => `block_${h}`,
         },
       });
-      machine.onPeerActive('peer1', 10); // equal — behind condition is peerHeight < ourHeight
+      peerActive(machine, 'peer1', 10); // equal — behind condition is peerHeight < ourHeight
       expect(sent.length).toBe(0);
     });
 
@@ -482,7 +500,7 @@ describe('SyncMachine', () => {
           getOrderingBlockId: (h: number) => `block_${h}`,
         },
       });
-      machine.onPeerActive('peer1', 0);
+      peerActive(machine, 'peer1', 0);
       expect(sent.length).toBe(1);
       // The Inv should have at most 400 IDs
       // We can't easily verify the encoded content here, but the send happened
@@ -499,7 +517,7 @@ describe('SyncMachine', () => {
           },
         },
       });
-      machine.onPeerActive('peer1', 0);
+      peerActive(machine, 'peer1', 0);
       expect(sent.length).toBe(1);
       // Should have sent Inv for heights 1,2,4,5 (skipping 3)
     });
@@ -520,7 +538,7 @@ describe('SyncMachine', () => {
 
     it('rotates peer after stall timeout with no progress', () => {
       const { machine } = makeMachine({ store: { chainHeight: () => 0 } });
-      machine.onPeerActive('peer1', 100);
+      peerActive(machine, 'peer1', 100);
       expect(machine.getState().phase).toBe('syncing');
       expect(machine.getState().syncPeerId).toBe('peer1');
 
@@ -535,7 +553,7 @@ describe('SyncMachine', () => {
 
     it('does not rotate if progress was made recently', () => {
       const { machine } = makeMachine({ store: { chainHeight: () => 0 } });
-      machine.onPeerActive('peer1', 100);
+      peerActive(machine, 'peer1', 100);
 
       // Simulate progress by sending a ModifierResponse
       vi.advanceTimersByTime(30_000); // 30s
@@ -546,6 +564,7 @@ describe('SyncMachine', () => {
         }),
       );
       machine.handleMessage('peer1', MSG_MODIFIER_RESPONSE, body);
+      machine.flush(); // <-- process the data event so lastProgressMs updates
 
       // Advance to 61s total
       vi.advanceTimersByTime(31_000);
@@ -557,7 +576,7 @@ describe('SyncMachine', () => {
 
     it('rotates after stall even with progress long ago', () => {
       const { machine } = makeMachine({ store: { chainHeight: () => 0 } });
-      machine.onPeerActive('peer1', 100);
+      peerActive(machine, 'peer1', 100);
 
       // Progress at t=0 (the onPeerActive itself doesn't set lastProgressMs)
       // Explicitly trigger progress
@@ -568,6 +587,7 @@ describe('SyncMachine', () => {
         }),
       );
       machine.handleMessage('peer1', MSG_MODIFIER_RESPONSE, body);
+      machine.flush(); // <-- process the data event so lastProgressMs updates
 
       // Advance past 60s from that progress
       vi.advanceTimersByTime(61_000);
@@ -581,7 +601,7 @@ describe('SyncMachine', () => {
       const { machine } = makeMachine({ store: { chainHeight: () => 0 } });
 
       // Enter syncing at fake time 0 — lastProgressMs is set to Date.now()
-      machine.onPeerActive('peer1', 100);
+      peerActive(machine, 'peer1', 100);
 
       // Advance 59s — just under the stall threshold
       vi.advanceTimersByTime(59_000);
@@ -593,7 +613,7 @@ describe('SyncMachine', () => {
 
     it('sends periodic SyncInfo when not idle', () => {
       const { machine, sent } = makeMachine({ store: { chainHeight: () => 0 } });
-      machine.onPeerActive('peer1', 100);
+      peerActive(machine, 'peer1', 100);
       sent.length = 0; // clear initial SyncInfo
 
       // Advance past 30s poll interval
@@ -615,7 +635,7 @@ describe('SyncMachine', () => {
     it('sends periodic SyncInfo when synced', () => {
       const { machine, sent } = makeMachine({ store: { chainHeight: () => 100 } });
       // Get to synced phase
-      machine.onPeerActive('peer1', 200);
+      peerActive(machine, 'peer1', 200);
       sendSyncInfo(machine, 'peer1', {
         tipHeight: 100,
         tipBlockId: 'abc',
@@ -639,43 +659,43 @@ describe('SyncMachine', () => {
   describe('onPeerDisconnect', () => {
     it('adds sync peer to stalled set on disconnect', () => {
       const { machine } = makeMachine({ store: { chainHeight: () => 0 } });
-      machine.onPeerActive('peer1', 100);
-      machine.onPeerDisconnect('peer1');
+      peerActive(machine, 'peer1', 100);
+      peerDisconnect(machine, 'peer1');
 
       expect(machine.getState().stalledPeers.has('peer1')).toBe(true);
     });
 
     it('resets to idle when sync peer disconnects while syncing', () => {
       const { machine } = makeMachine({ store: { chainHeight: () => 0 } });
-      machine.onPeerActive('peer1', 100);
+      peerActive(machine, 'peer1', 100);
       expect(machine.getState().phase).toBe('syncing');
 
-      machine.onPeerDisconnect('peer1');
+      peerDisconnect(machine, 'peer1');
       expect(machine.getState().phase).toBe('idle');
       expect(machine.getState().syncPeerId).toBeNull();
     });
 
     it('does not reset phase for non-sync peer disconnect', () => {
       const { machine } = makeMachine({ store: { chainHeight: () => 0 } });
-      machine.onPeerActive('peer1', 100);
+      peerActive(machine, 'peer1', 100);
       expect(machine.getState().phase).toBe('syncing');
 
-      machine.onPeerDisconnect('peer2'); // different peer
+      peerDisconnect(machine, 'peer2'); // different peer
       expect(machine.getState().phase).toBe('syncing');
       expect(machine.getState().syncPeerId).toBe('peer1');
     });
 
     it('does not add non-sync peer to stalled set', () => {
       const { machine } = makeMachine({ store: { chainHeight: () => 0 } });
-      machine.onPeerActive('peer1', 100);
-      machine.onPeerDisconnect('peer2');
+      peerActive(machine, 'peer1', 100);
+      peerDisconnect(machine, 'peer2');
 
       expect(machine.getState().stalledPeers.has('peer2')).toBe(false);
     });
 
     it('resets to idle when sync peer disconnects while synced', () => {
       const { machine } = makeMachine({ store: { chainHeight: () => 100 } });
-      machine.onPeerActive('peer1', 200);
+      peerActive(machine, 'peer1', 200);
       sendSyncInfo(machine, 'peer1', {
         tipHeight: 100,
         tipBlockId: 'abc',
@@ -684,7 +704,7 @@ describe('SyncMachine', () => {
       });
       expect(machine.getState().phase).toBe('synced');
 
-      machine.onPeerDisconnect('peer1');
+      peerDisconnect(machine, 'peer1');
       // Phase resets to idle so the node can pick a new sync peer
       expect(machine.getState().phase).toBe('idle');
       expect(machine.getState().syncPeerId).toBeNull();
@@ -710,6 +730,7 @@ describe('SyncMachine', () => {
       const { machine } = makeMachine({ store: { chainHeight: () => 0 } });
       // Should not throw
       machine.handleMessage('peer1', 99, new Uint8Array([1, 2, 3]));
+      machine.flush();
       expect(machine.getState().phase).toBe('idle');
     });
   });
@@ -724,12 +745,12 @@ describe('SyncMachine', () => {
 
       expect(machine.getState().phase).toBe('idle');
 
-      machine.onPeerActive('peer1', 100);
+      peerActive(machine, 'peer1', 100);
       const s1 = machine.getState();
       expect(s1.phase).toBe('syncing');
       expect(s1.syncPeerId).toBe('peer1');
 
-      machine.onPeerDisconnect('peer1');
+      peerDisconnect(machine, 'peer1');
       const s2 = machine.getState();
       expect(s2.phase).toBe('idle');
       expect(s2.syncPeerId).toBeNull();
@@ -752,7 +773,7 @@ describe('SyncMachine', () => {
         },
       });
 
-      machine.onPeerActive('peer1', 100);
+      peerActive(machine, 'peer1', 100);
 
       expect(sent.length).toBe(1);
       // We can't easily decode the framed SyncInfo from the raw bytes in the test,
@@ -779,6 +800,7 @@ describe('SyncMachine', () => {
       );
 
       machine.onPeerActive('peer1', 100);
+      machine.flush();
 
       // Should have sent a SyncInfo frame without throwing
       // (if magic were undefined, encodeFrame would fail)
@@ -804,6 +826,7 @@ describe('SyncMachine', () => {
       const req: ModifierRequest = { typeId: MODIFIER_ORDERING_BLOCK, ids: ['block_3'] };
       const body = new Uint8Array(encode(req));
       machine.handleMessage('peer1', MSG_MODIFIER_REQUEST, body);
+      machine.flush();
 
       // Currently sends response only when modifiers are found.
       // The implementation iterates heights to find matching IDs.
@@ -825,6 +848,7 @@ describe('SyncMachine', () => {
       const req: ModifierRequest = { typeId: MODIFIER_ORDERING_BLOCK, ids: ['nonexistent'] };
       const body = new Uint8Array(encode(req));
       machine.handleMessage('peer1', MSG_MODIFIER_REQUEST, body);
+      machine.flush();
 
       expect(sent.length).toBe(0);
     });
