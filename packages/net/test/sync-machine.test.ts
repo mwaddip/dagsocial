@@ -366,7 +366,7 @@ describe('SyncMachine', () => {
       expect(sent.length).toBe(0);
     });
 
-    it('filters sub-block IDs via hasSubBlock', () => {
+    it('ignores MODIFIER_SUB_BLOCK inv (sub-blocks are inline in blocks)', () => {
       const { machine, sent } = makeMachine({
         store: {
           chainHeight: () => 0,
@@ -379,7 +379,7 @@ describe('SyncMachine', () => {
       const inv: Inv = { typeId: MODIFIER_SUB_BLOCK, ids: ['sb1', 'sb2'] };
       sendInv(machine, 'peer1', inv);
 
-      expect(sent.length).toBe(1);
+      expect(sent.length).toBe(0); // MODIFIER_SUB_BLOCK is ignored
     });
 
     it('ignores unknown typeId', () => {
@@ -444,7 +444,7 @@ describe('SyncMachine', () => {
       expect(appended.length).toBe(2);
     });
 
-    it('calls appendBlocks for sub-block responses', () => {
+    it('ignores sub-block modifier responses (sub-blocks are inline in blocks)', () => {
       const appended: unknown[] = [];
       const { machine } = makeMachine({
         store: {
@@ -459,7 +459,7 @@ describe('SyncMachine', () => {
         }),
       );
       machine.handleMessage('peer1', MSG_MODIFIER_RESPONSE, body);
-      expect(appended.length).toBe(1);
+      expect(appended.length).toBe(0); // silently ignored
     });
 
     it('skips modifiers with empty data', () => {

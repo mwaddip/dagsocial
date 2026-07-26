@@ -6,7 +6,6 @@ import {
   MSG_MODIFIER_REQUEST,
   MSG_MODIFIER_RESPONSE,
   MODIFIER_ORDERING_BLOCK,
-  MODIFIER_SUB_BLOCK,
 } from './types.js';
 import type { SyncInfo, Inv, ModifierRequest, ModifierResponse, SyncState } from './sync-types.js';
 import {
@@ -238,9 +237,7 @@ export class SyncMachine {
       if (inv.typeId === MODIFIER_ORDERING_BLOCK) {
         return !this.store.hasOrderingBlockHeader(id);
       }
-      if (inv.typeId === MODIFIER_SUB_BLOCK) {
-        return !this.store.hasSubBlock(id);
-      }
+      // MODIFIER_SUB_BLOCK — dropped. Sub-blocks are carried inline in ordering blocks.
       return false;
     });
 
@@ -320,18 +317,6 @@ export class SyncMachine {
           this.state.stateAppliedHeight,
           newHeight,
         );
-      }
-    } else if (resp.typeId === MODIFIER_SUB_BLOCK) {
-      // Sub-blocks are typically requested via the stream protocol
-      // (sync.ts). If received as modifiers, append them.
-      const subBlocks: unknown[] = [];
-      for (const mod of resp.modifiers) {
-        if (mod.data.length > 0) {
-          subBlocks.push(mod.data);
-        }
-      }
-      if (subBlocks.length > 0) {
-        this.store.appendBlocks(subBlocks);
       }
     }
   }
