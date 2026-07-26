@@ -1,7 +1,7 @@
 # DAGsocial Architecture
 
 **Protocol version:** 2
-**Last updated:** 2026-07-24
+**Last updated:** 2026-07-26
 
 ## Overview
 
@@ -654,6 +654,12 @@ Bootstrap uses a **two-phase genesis committee** model:
 
 ---
 
+### Wire Format
+
+Stream messages are framed: `[magic:4][version:1][code:VLQ][length:VLQ][checksum:4][body]`. Gossip messages are raw CBOR. Wire-codec types (ByteReader, ByteWriter, VLQ) live in `@dagsocial/wire`.
+
+---
+
 ## Protocol Versioning
 
 Every post, stump, ordering block, sub-block, and UTXO transaction carries a
@@ -690,7 +696,7 @@ forever. A node rejects objects with an unsupported protocol version.
 - Public keys: 32 raw bytes, hex-encoded on wire
 - Secret keys never in API responses, DTOs, or committed data structures
 - Post PoW acts as sub-block proof — verified by validators at ordering time
-- Stream messages are framed: `[magic:4][version:1][code:VLQ][length:VLQ][checksum:4][body]`. Gossip messages are raw CBOR. Wire-codec types (ByteReader, ByteWriter, VLQ) live in `@dagsocial/wire`.
+
 
 ### Content sovereignty
 
@@ -759,7 +765,7 @@ fresh. Namespacing keeps the option open to split into separate stores later
 - Internal + external mining modes
 - Unified mempool: all state mutations queued, applied atomically at block
   finalization
-- Framed p2p stream protocol with magic bytes, VLQ length prefixing, blake2b256 checksum
+- Framed p2p stream protocol with magic bytes, VLQ length prefixing, 32-byte blake2b checksum
 - Header-first historical sync with SyncInfo/Inv/Modifier protocol
 - Peer discovery via GetPeers/Peers gossip + PeerDb
 
