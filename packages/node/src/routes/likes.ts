@@ -36,7 +36,7 @@ export function createRouter(deps: LikesDeps): Router {
     const body = req.body as { tx?: Record<string, unknown> };
 
     if (!body.tx) {
-      res.status(400).json({ error: 'tx required' });
+      res.status(400).json({ error: 400, reason: 'tx required' });
       return;
     }
 
@@ -44,7 +44,7 @@ export function createRouter(deps: LikesDeps): Router {
     try {
       tx = jsonToTx(body.tx);
     } catch (err) {
-      res.status(400).json({ error: (err as Error).message });
+      res.status(400).json({ error: 400, reason: (err as Error).message });
       return;
     }
 
@@ -72,7 +72,7 @@ export function createRouter(deps: LikesDeps): Router {
         expiresAtHeight: response.expiresAtHeight,
       });
     } catch (err) {
-      res.status(400).json({ error: (err as Error).message });
+      res.status(400).json({ error: 400, reason: (err as Error).message });
     }
   });
 
@@ -81,7 +81,7 @@ export function createRouter(deps: LikesDeps): Router {
     const body = req.body as { tx?: Record<string, unknown> };
 
     if (!body.tx) {
-      res.status(400).json({ error: 'tx required' });
+      res.status(400).json({ error: 400, reason: 'tx required' });
       return;
     }
 
@@ -89,7 +89,7 @@ export function createRouter(deps: LikesDeps): Router {
     try {
       tx = jsonToTx(body.tx);
     } catch (err) {
-      res.status(400).json({ error: (err as Error).message });
+      res.status(400).json({ error: 400, reason: (err as Error).message });
       return;
     }
 
@@ -113,9 +113,9 @@ export function createRouter(deps: LikesDeps): Router {
     } catch (err) {
       const message = (err as Error).message;
       if (message === 'Like not found') {
-        res.status(404).json({ error: message });
+        res.status(404).json({ error: 404, reason: message });
       } else {
-        res.status(400).json({ error: message });
+        res.status(400).json({ error: 400, reason: message });
       }
     }
   });
