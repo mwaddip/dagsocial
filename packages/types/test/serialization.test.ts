@@ -94,12 +94,14 @@ function makeSubBlockTree(): SubBlockTree {
   return {
     subBlockRefs: ['d'.repeat(64)],
     stumpIds: [],
+    subBlocks: [encodeSubBlock(makeSubBlock())],
   };
 }
 
 function makeUtxoTxTree(): UtxoTxTree {
   return {
     utxoTxIds: ['f'.repeat(64)],
+    utxoTxs: [encodeTx(makeTx())],
     likeBoxIds: ['e'.repeat(64)],
     coinbaseOutputs: [],
   };
