@@ -213,18 +213,20 @@ describe('validateAndApplyTx', () => {
       createdAtBlock: 10,
       secretHash,
       inviterId: ownerUserId,
-      guard: 'hash_preimage',
+      guard: 'hash_preimage_with_bond',
     };
+    const inviteId = computeBoxId(inviteBox);
 
     const bondBox: BondBox = {
       boxType: 'bond',
       value: 15,
       createdAtBlock: 10,
       inviterId: ownerUserId,
+      inviteBoxId: inviteId,
       inviteePublicKey: new Uint8Array(32),
       probationStartBlock: 0,
       probationEndBlock: 0,
-      guard: 'inviter_signature',
+      guard: 'bond_dual',
     };
 
     const tx = buildSignedTx(
@@ -508,37 +510,59 @@ describe('validateAndApplyTx', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 11. hash_preimage guard
+  // 11. hash_preimage_with_bond guard
   // ---------------------------------------------------------------------------
-  describe('hash_preimage guard', () => {
+  describe('hash_preimage_with_bond guard', () => {
     let inviterPubKey: Uint8Array;
     let inviterPrivKey: KeyObject;
+    let inviteePubKey: Uint8Array;
+    let inviteePrivKey: KeyObject;
     let inviteBoxId: string;
+    let bondBoxId: string;
     let secret: Uint8Array;
     let secretHash: Uint8Array;
 
     beforeEach(() => {
-      const keys = generateKeyPairSync('ed25519');
-      inviterPubKey = rawPublicKey(keys.publicKey);
-      inviterPrivKey = keys.privateKey;
+      const inviterKeys = generateKeyPairSync('ed25519');
+      inviterPubKey = rawPublicKey(inviterKeys.publicKey);
+      inviterPrivKey = inviterKeys.privateKey;
+
+      const inviteeKeys = generateKeyPairSync('ed25519');
+      inviteePubKey = rawPublicKey(inviteeKeys.publicKey);
+      inviteePrivKey = inviteeKeys.privateKey;
 
       secret = new Uint8Array(Buffer.from('a'.repeat(64), 'hex'));
       secretHash = createHash('blake2b512').update(Buffer.from(secret)).digest().subarray(0, 32);
 
-      // Create an invite box (hash-locked)
+      // Create an invite box
       const inviteBox: InviteBox = {
         boxType: 'invite',
         value: 25,
         createdAtBlock: 1,
         secretHash,
         inviterId: inviterPubKey,
-        guard: 'hash_preimage',
+        guard: 'hash_preimage_with_bond',
       };
       inviteBoxId = computeBoxId(inviteBox);
       storeInsertBox({ ...inviteBox, id: inviteBoxId });
+
+      // Create an unclaimed bond box paired with the invite
+      const bondBox: BondBox = {
+        boxType: 'bond',
+        value: 25,
+        createdAtBlock: 1,
+        inviterId: inviterPubKey,
+        inviteBoxId: inviteBoxId,
+        inviteePublicKey: new Uint8Array(0),
+        probationStartBlock: 0,
+        probationEndBlock: 0,
+        guard: 'bond_dual',
+      };
+      bondBoxId = computeBoxId(bondBox);
+      storeInsertBox({ ...bondBox, id: bondBoxId });
     });
 
-    it('rejects tx with missing preimage', () => {
+    it('rejects tx with no BondBox input', () => {
       const newKarmaBox: KarmaBox = {
         boxType: 'karma',
         value: 25,
@@ -552,6 +576,40 @@ describe('validateAndApplyTx', () => {
       const tx: UtxoTransaction = {
         inputs: [inviteBoxId],
         outputs: [newKarmaBox],
+        signatures: {},
+        protocolVersion: 1,
+      };
+
+      const result = validateTx(deps, tx, 10);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('requires a BondBox');
+    });
+
+    it('rejects tx with missing preimage', () => {
+      const bondOut: BondBox = {
+        boxType: 'bond',
+        value: 25,
+        createdAtBlock: 1,
+        inviterId: inviterPubKey,
+        inviteBoxId,
+        inviteePublicKey: new Uint8Array(0),
+        probationStartBlock: 0,
+        probationEndBlock: 0,
+        guard: 'bond_dual',
+      };
+      const karmaOut: KarmaBox = {
+        boxType: 'karma',
+        value: 25,
+        createdAtBlock: 10,
+        owner: new Uint8Array(32),
+        guard: 'owner_signature',
+        proofSource: 'claim',
+        lastTouchBlock: 10,
+      };
+
+      const tx: UtxoTransaction = {
+        inputs: [inviteBoxId, bondBoxId],
+        outputs: [karmaOut, bondOut],
         signatures: {},
         protocolVersion: 1,
       };
@@ -563,7 +621,18 @@ describe('validateAndApplyTx', () => {
 
     it('rejects tx with wrong preimage', () => {
       const wrongSecret = new Uint8Array(32);
-      const newKarmaBox: KarmaBox = {
+      const bondOut: BondBox = {
+        boxType: 'bond',
+        value: 25,
+        createdAtBlock: 1,
+        inviterId: inviterPubKey,
+        inviteBoxId,
+        inviteePublicKey: new Uint8Array(0),
+        probationStartBlock: 0,
+        probationEndBlock: 0,
+        guard: 'bond_dual',
+      };
+      const karmaOut: KarmaBox = {
         boxType: 'karma',
         value: 25,
         createdAtBlock: 10,
@@ -574,8 +643,8 @@ describe('validateAndApplyTx', () => {
       };
 
       const tx: UtxoTransaction = {
-        inputs: [inviteBoxId],
-        outputs: [newKarmaBox],
+        inputs: [inviteBoxId, bondBoxId],
+        outputs: [karmaOut, bondOut],
         signatures: {},
         preimages: { [inviteBoxId]: wrongSecret },
         protocolVersion: 1,
@@ -586,38 +655,66 @@ describe('validateAndApplyTx', () => {
       expect(result.error).toContain('preimage mismatch');
     });
 
-    it('accepts tx with valid preimage for hash_preimage guard', () => {
-      const newKarmaBox: KarmaBox = {
+    it('accepts tx with valid preimage and committed bond', () => {
+      // Simulate committed BondBox
+      db.prepare(
+        'UPDATE utxo_boxes SET extra_data = ? WHERE id = ?',
+      ).run(
+        JSON.stringify({
+          inviterId: Buffer.from(inviterPubKey).toString('hex'),
+          inviteBoxId,
+          inviteePublicKey: Array.from(inviteePubKey),
+          probationStartBlock: 3,
+          probationEndBlock: 1003,
+        }),
+        bondBoxId,
+      );
+
+      const bondOut: BondBox = {
+        boxType: 'bond',
+        value: 25,
+        createdAtBlock: 1,
+        inviterId: inviterPubKey,
+        inviteBoxId,
+        inviteePublicKey: inviteePubKey,
+        probationStartBlock: 3,
+        probationEndBlock: 1003,
+        guard: 'bond_dual',
+      };
+      const karmaOut: KarmaBox = {
         boxType: 'karma',
         value: 25,
         createdAtBlock: 10,
-        owner: new Uint8Array(32),
+        owner: inviteePubKey,
         guard: 'owner_signature',
         proofSource: 'claim',
         lastTouchBlock: 10,
       };
 
       const tx: UtxoTransaction = {
-        inputs: [inviteBoxId],
-        outputs: [newKarmaBox],
+        inputs: [inviteBoxId, bondBoxId],
+        outputs: [karmaOut, bondOut],
         signatures: {},
         preimages: { [inviteBoxId]: secret },
         protocolVersion: 1,
       };
+      const hash = computeTxHash(tx);
+      const hexKey = Buffer.from(inviteePubKey).toString('hex');
+      tx.signatures[hexKey] = signHash(hash, inviteePrivKey);
 
       const result = validateTx(deps, tx, 10);
-      // Guard passes via preimage, transition check allows invite→karma
       expect(result.valid).toBe(true);
     });
   });
 
   // ---------------------------------------------------------------------------
-  // 12. invite+bond claim transition
+  // 12. invite+bond reveal (claim) transition
   // ---------------------------------------------------------------------------
-  describe('invite+bond claim transition', () => {
+  describe('invite+bond reveal transition', () => {
     let inviterPubKey: Uint8Array;
     let inviterPrivKey: KeyObject;
     let inviteePubKey: Uint8Array;
+    let inviteePrivKey: KeyObject;
     let secret: Uint8Array;
     let secretHash: Uint8Array;
     let inviteBoxId: string;
@@ -630,40 +727,41 @@ describe('validateAndApplyTx', () => {
 
       const inviteeKeys = generateKeyPairSync('ed25519');
       inviteePubKey = rawPublicKey(inviteeKeys.publicKey);
-
+      inviteePrivKey = inviteeKeys.privateKey;
 
       secret = new Uint8Array(Buffer.from('a'.repeat(64), 'hex'));
       secretHash = createHash('blake2b512').update(Buffer.from(secret)).digest().subarray(0, 32);
 
-      // Create invite box (hash-locked)
+      // Create invite box
       const inviteBox: InviteBox = {
         boxType: 'invite',
         value: 25,
         createdAtBlock: 1,
         secretHash,
         inviterId: inviterPubKey,
-        guard: 'hash_preimage',
+        guard: 'hash_preimage_with_bond',
       };
       inviteBoxId = computeBoxId(inviteBox);
       storeInsertBox({ ...inviteBox, id: inviteBoxId });
 
-      // Create unclaimed bond box
+      // Create unclaimed bond box paired with invite
       const bondBox: BondBox = {
         boxType: 'bond',
         value: 25,
         createdAtBlock: 1,
         inviterId: inviterPubKey,
+        inviteBoxId: inviteBoxId,
         inviteePublicKey: new Uint8Array(0),
         probationStartBlock: 0,
         probationEndBlock: 0,
-        guard: 'inviter_signature',
+        guard: 'bond_dual',
       };
       bondBoxId = computeBoxId(bondBox);
       storeInsertBox({ ...bondBox, id: bondBoxId });
     });
 
-    /** Build a signed claim tx with preimages and inviter signature. */
-    function buildClaimTx(
+    /** Build a signed reveal tx with preimages and invitee signature. */
+    function buildRevealTx(
       karmaOut: KarmaBox,
       bondOut: BondBox,
     ): UtxoTransaction {
@@ -675,12 +773,26 @@ describe('validateAndApplyTx', () => {
         protocolVersion: 1,
       };
       const hash = computeTxHash(tx);
-      const hexKey = Buffer.from(inviterPubKey).toString('hex');
-      tx.signatures[hexKey] = signHash(hash, inviterPrivKey);
+      const hexKey = Buffer.from(inviteePubKey).toString('hex');
+      tx.signatures[hexKey] = signHash(hash, inviteePrivKey);
       return tx;
     }
 
-    it('accepts valid invite+bond claim', () => {
+    it('accepts valid invite+bond reveal', () => {
+      // Simulate committed BondBox
+      db.prepare(
+        'UPDATE utxo_boxes SET extra_data = ? WHERE id = ?',
+      ).run(
+        JSON.stringify({
+          inviterId: Buffer.from(inviterPubKey).toString('hex'),
+          inviteBoxId,
+          inviteePublicKey: Array.from(inviteePubKey),
+          probationStartBlock: 3,
+          probationEndBlock: 1003,
+        }),
+        bondBoxId,
+      );
+
       const karmaOut: KarmaBox = {
         boxType: 'karma',
         value: 25,
@@ -695,18 +807,19 @@ describe('validateAndApplyTx', () => {
         value: 25,
         createdAtBlock: 1,
         inviterId: inviterPubKey,
+        inviteBoxId,
         inviteePublicKey: inviteePubKey,
-        probationStartBlock: 10,
-        probationEndBlock: 1010,
-        guard: 'inviter_signature',
+        probationStartBlock: 3,
+        probationEndBlock: 1003,
+        guard: 'bond_dual',
       };
 
-      const tx = buildClaimTx(karmaOut, bondOut);
+      const tx = buildRevealTx(karmaOut, bondOut);
       const result = validateTx(deps, tx, 10);
       expect(result.valid).toBe(true);
     });
 
-    it('rejects claim with no bond output', () => {
+    it('rejects reveal with no bond output', () => {
       // karma output value matches total input value (50) to pass value conservation,
       // then the transition check catches the missing bond output
       const karmaOut: KarmaBox = {
@@ -732,10 +845,10 @@ describe('validateAndApplyTx', () => {
 
       const result = validateTx(deps, tx, 10);
       expect(result.valid).toBe(false);
-      expect(result.error).toContain('Invalid invite claim');
+      expect(result.error).toContain('Invalid invite reveal');
     });
 
-    it('rejects claim with unclaimed bond output (empty inviteePubKey)', () => {
+    it('rejects reveal with uncommitted bond output (empty inviteePubKey)', () => {
       const karmaOut: KarmaBox = {
         boxType: 'karma',
         value: 25,
@@ -750,10 +863,11 @@ describe('validateAndApplyTx', () => {
         value: 25,
         createdAtBlock: 1,
         inviterId: inviterPubKey,
+        inviteBoxId,
         inviteePublicKey: new Uint8Array(0),
         probationStartBlock: 0,
         probationEndBlock: 0,
-        guard: 'inviter_signature',
+        guard: 'bond_dual',
       };
 
       const tx: UtxoTransaction = {
@@ -769,7 +883,7 @@ describe('validateAndApplyTx', () => {
 
       const result = validateTx(deps, tx, 10);
       expect(result.valid).toBe(false);
-      expect(result.error).toContain('Invalid invite claim');
+      expect(result.error).toContain('Invalid invite reveal');
     });
   });
 });

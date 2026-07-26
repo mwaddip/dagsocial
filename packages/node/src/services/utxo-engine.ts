@@ -413,6 +413,14 @@ function checkGuards(
       }
 
       case 'hash_preimage_with_bond': {
+        // Cross-box check: a BondBox input in the same tx is required
+        const bondInput = inputBoxes.find((b): b is BondBox => b.boxType === 'bond');
+        if (!bondInput) {
+          return {
+            valid: false,
+            error: `Invite reveal requires a BondBox input alongside the InviteBox`,
+          };
+        }
         const preimage = tx.preimages?.[box.id!];
         if (!preimage) {
           return {
@@ -431,21 +439,15 @@ function checkGuards(
             error: `Hash preimage mismatch for box ${box.id}`,
           };
         }
-        // Cross-box check: a BondBox input in the same tx must be committed
-        // to the tx signer's pubkey
-        const bondInput = inputBoxes.find((b): b is BondBox => b.boxType === 'bond');
-        if (!bondInput) {
-          return {
-            valid: false,
-            error: `Invite claim requires a BondBox input alongside the InviteBox`,
-          };
-        }
         if (bondInput.inviteePublicKey.length === 32) {
-          // Bond is committed — reveal: must be signed by the invitee
-          if (!verifyGuardSignature(tx, txHash, bondInput.inviteePublicKey)) {
+          // Bond is committed — either reveal (invitee signs) or cancel (inviter signs)
+          if (
+            !verifyGuardSignature(tx, txHash, bondInput.inviteePublicKey) &&
+            !verifyGuardSignature(tx, txHash, bondInput.inviterId)
+          ) {
             return {
               valid: false,
-              error: `Reveal must be signed by the committed invitee`,
+              error: `Reveal must be signed by the committed invitee or the inviter`,
             };
           }
         }
@@ -455,16 +457,23 @@ function checkGuards(
 
       case 'bond_dual': {
         const bondBox = box as BondBox;
-        // Path 1: inviter_signature — inviter reclaims the bond
+        // Path 1: inviter_signature — inviter reclaims the bond (cancel)
         if (verifyGuardSignature(tx, txHash, bondBox.inviterId)) {
           break;
         }
-        // Path 2: hash_preimage — invitee commits their identity
+        // Path 2: invitee_signature — invitee reveals after commit
+        if (
+          bondBox.inviteePublicKey.length === 32 &&
+          verifyGuardSignature(tx, txHash, bondBox.inviteePublicKey)
+        ) {
+          break;
+        }
+        // Path 3: hash_preimage — invitee commits their identity
         const bondPreimage = tx.preimages?.[box.id!];
         if (!bondPreimage) {
           return {
             valid: false,
-            error: `Bond box ${box.id} requires inviter signature or preimage for commit`,
+            error: `Bond box ${box.id} requires inviter signature, committed invitee signature, or preimage for commit`,
           };
         }
         // Look up the paired InviteBox to get the expected secretHash

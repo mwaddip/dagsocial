@@ -140,7 +140,7 @@ describe('invites routes', () => {
       createdAtBlock: 1,
       secretHash,
       inviterId,
-      guard: 'hash_preimage',
+      guard: 'hash_preimage_with_bond',
     };
     const inviteBoxId = computeBoxId(inviteBox);
 
@@ -149,10 +149,11 @@ describe('invites routes', () => {
       value: INVITE_BOND_KARMA,
       createdAtBlock: 1,
       inviterId,
+      inviteBoxId,
       inviteePublicKey: new Uint8Array(0),
       probationStartBlock: 0,
       probationEndBlock: 0,
-      guard: 'inviter_signature',
+      guard: 'bond_dual',
     };
     const bondBoxId = computeBoxId(bondBox);
 
@@ -195,26 +196,48 @@ describe('invites routes', () => {
       createdAtBlock: 1,
       secretHash,
       inviterId,
-      guard: 'hash_preimage',
+      guard: 'hash_preimage_with_bond',
     };
     const inviteBoxId = computeBoxId(inviteBox);
-    storeInsertBox({ ...inviteBox, id: inviteBoxId, boxType: 'invite', guard: 'hash_preimage' } as InviteBox);
+    storeInsertBox({ ...inviteBox, id: inviteBoxId, boxType: 'invite', guard: 'hash_preimage_with_bond' } as InviteBox);
 
     const bondBox: BondBox = {
       boxType: 'bond',
       value: INVITE_BOND_KARMA,
       createdAtBlock: 1,
       inviterId,
+      inviteBoxId,
       inviteePublicKey: new Uint8Array(0),
       probationStartBlock: 0,
       probationEndBlock: 0,
-      guard: 'inviter_signature',
+      guard: 'bond_dual',
     };
     const bondBoxId = computeBoxId(bondBox);
-    storeInsertBox({ ...bondBox, id: bondBoxId, boxType: 'bond', guard: 'inviter_signature' } as BondBox);
+    storeInsertBox({ ...bondBox, id: bondBoxId, boxType: 'bond', guard: 'bond_dual' } as BondBox);
 
     const newKp = generateKeyPair();
     const inviteePubKey = newKp.publicKey;
+    const inviteePubKeyHex = Buffer.from(inviteePubKey).toString('hex');
+    const inviteePrivKeyObj = createPrivateKey({
+      key: Buffer.from(newKp.secretKey),
+      format: 'der',
+      type: 'pkcs8',
+    });
+
+    // Simulate committed BondBox
+    const db = getDb();
+    db.prepare(
+      'UPDATE utxo_boxes SET extra_data = ? WHERE id = ?',
+    ).run(
+      JSON.stringify({
+        inviterId: Buffer.from(inviterId).toString('hex'),
+        inviteBoxId,
+        inviteePublicKey: Array.from(inviteePubKey),
+        probationStartBlock: 3,
+        probationEndBlock: 3 + INVITE_PROBATION_BLOCKS,
+      }),
+      bondBoxId,
+    );
 
     const karmaOut: KarmaBox = {
       boxType: 'karma',
@@ -230,12 +253,13 @@ describe('invites routes', () => {
     const bondOut: BondBox = {
       boxType: 'bond',
       value: INVITE_BOND_KARMA,
-      createdAtBlock: 1,
+      createdAtBlock: 3,
       inviterId,
+      inviteBoxId,
       inviteePublicKey: inviteePubKey,
-      probationStartBlock: 5,
-      probationEndBlock: 5 + INVITE_PROBATION_BLOCKS,
-      guard: 'inviter_signature',
+      probationStartBlock: 3,
+      probationEndBlock: 3 + INVITE_PROBATION_BLOCKS,
+      guard: 'bond_dual',
     };
     const bondOutId = computeBoxId(bondOut);
 
@@ -249,7 +273,7 @@ describe('invites routes', () => {
       preimages: { [inviteBoxId]: secret },
       protocolVersion: PROTOCOL_VERSION,
     };
-    signTransaction(tx, inviterPrivKeyObj, inviterPubKeyHex);
+    signTransaction(tx, inviteePrivKeyObj, inviteePubKeyHex);
 
     const res = await request('/claim', 'POST', { tx: txToJson(tx) });
     expect(res.status).toBe(201);
@@ -273,23 +297,24 @@ describe('invites routes', () => {
       createdAtBlock: blockHeight,
       secretHash,
       inviterId,
-      guard: 'hash_preimage',
+      guard: 'hash_preimage_with_bond',
     };
     const inviteBoxId = computeBoxId(inviteBox);
-    storeInsertBox({ ...inviteBox, id: inviteBoxId, boxType: 'invite', guard: 'hash_preimage' } as InviteBox);
+    storeInsertBox({ ...inviteBox, id: inviteBoxId, boxType: 'invite', guard: 'hash_preimage_with_bond' } as InviteBox);
 
     const bondBox: BondBox = {
       boxType: 'bond',
       value: INVITE_BOND_KARMA,
       createdAtBlock: blockHeight,
       inviterId,
+      inviteBoxId,
       inviteePublicKey: new Uint8Array(0),
       probationStartBlock: 0,
       probationEndBlock: 0,
-      guard: 'inviter_signature',
+      guard: 'bond_dual',
     };
     const bondBoxId = computeBoxId(bondBox);
-    storeInsertBox({ ...bondBox, id: bondBoxId, boxType: 'bond', guard: 'inviter_signature' } as BondBox);
+    storeInsertBox({ ...bondBox, id: bondBoxId, boxType: 'bond', guard: 'bond_dual' } as BondBox);
 
     const karmaIn: KarmaBox = {
       boxType: 'karma',
@@ -344,23 +369,24 @@ describe('invites routes', () => {
       createdAtBlock: blockHeight,
       secretHash,
       inviterId,
-      guard: 'hash_preimage',
+      guard: 'hash_preimage_with_bond',
     };
     const inviteBoxId = computeBoxId(inviteBox);
-    storeInsertBox({ ...inviteBox, id: inviteBoxId, boxType: 'invite', guard: 'hash_preimage' } as InviteBox);
+    storeInsertBox({ ...inviteBox, id: inviteBoxId, boxType: 'invite', guard: 'hash_preimage_with_bond' } as InviteBox);
 
     const bondBox: BondBox = {
       boxType: 'bond',
       value: INVITE_BOND_KARMA,
       createdAtBlock: blockHeight,
       inviterId,
+      inviteBoxId,
       inviteePublicKey: new Uint8Array(0),
       probationStartBlock: 0,
       probationEndBlock: 0,
-      guard: 'inviter_signature',
+      guard: 'bond_dual',
     };
     const bondBoxId = computeBoxId(bondBox);
-    storeInsertBox({ ...bondBox, id: bondBoxId, boxType: 'bond', guard: 'inviter_signature' } as BondBox);
+    storeInsertBox({ ...bondBox, id: bondBoxId, boxType: 'bond', guard: 'bond_dual' } as BondBox);
 
     const wrongKp = generateKeyPair();
     const wrongPubKey = wrongKp.publicKey;
