@@ -593,18 +593,22 @@ function buildCreateInviteTx(karmaBox, pubKeyHex, secretHashHex) {
     createdAtBlock: now,
     secretHash: secretHashHex,
     inviterId: pubKeyHex,
-    guard: 'hash_preimage',
+    guard: 'hash_preimage_with_bond',
   };
+
+  const inviteBoxId = computeBoxId(inviteOutput);
+  inviteOutput.id = inviteBoxId;
 
   const bondOutput = {
     boxType: 'bond',
     value: INVITE_BOND_KARMA,
     createdAtBlock: now,
     inviterId: pubKeyHex,
+    inviteBoxId: inviteBoxId,
     inviteePublicKey: '00'.repeat(32), // 32 zero bytes = unclaimed
     probationStartBlock: 0,
     probationEndBlock: 0,
-    guard: 'inviter_signature',
+    guard: 'bond_dual',
   };
 
   return {
@@ -640,10 +644,11 @@ function buildClaimInviteTx(inviteBox, bondBox, inviteePubKeyHex, secretHex) {
     value: bondBox.value,
     createdAtBlock: now,
     inviterId: inviteBox.inviterId,
+    inviteBoxId: inviteBox.inviteBoxId || '',
     inviteePublicKey: inviteePubKeyHex,
-    probationStartBlock: now,
-    probationEndBlock: now + INVITE_PROBATION_BLOCKS,
-    guard: 'inviter_signature',
+    probationStartBlock: bondBox.probationStartBlock || now,
+    probationEndBlock: bondBox.probationEndBlock || (now + INVITE_PROBATION_BLOCKS),
+    guard: 'bond_dual',
   };
 
   return {
@@ -651,6 +656,38 @@ function buildClaimInviteTx(inviteBox, bondBox, inviteePubKeyHex, secretHex) {
     outputs: [karmaOutput, bondOutput],
     signatures: {},
     preimages: { [inviteBox.id]: secretHex },
+    protocolVersion: PROTOCOL_VERSION,
+  };
+}
+
+/**
+ * Build a commit tx: BondBox(unclaimed) → BondBox(committed).
+ * Called as step 1 of the two-step redeem. The preimage proves knowledge
+ * of the secret without publishing it on-chain yet.
+ * @param {Object} bondBox - { id, value, inviterId, inviteBoxId }
+ * @param {string} inviteePubKeyHex
+ * @param {string} secretHex - raw hex preimage for bond_dual's hash_preimage path
+ */
+function buildCommitTx(bondBox, inviteePubKeyHex, secretHex) {
+  const now = currentBlockHeight;
+
+  const bondOutput = {
+    boxType: 'bond',
+    value: bondBox.value,
+    createdAtBlock: now,
+    inviterId: bondBox.inviterId,
+    inviteBoxId: bondBox.inviteBoxId,
+    inviteePublicKey: inviteePubKeyHex,
+    probationStartBlock: now,
+    probationEndBlock: now + INVITE_PROBATION_BLOCKS,
+    guard: 'bond_dual',
+  };
+
+  return {
+    inputs: [bondBox.id],
+    outputs: [bondOutput],
+    signatures: {},
+    preimages: { [bondBox.id]: secretHex },
     protocolVersion: PROTOCOL_VERSION,
   };
 }
@@ -1562,49 +1599,93 @@ document.getElementById('redeemInviteBtn').addEventListener('click', async () =>
   const secretHex = document.getElementById('inviteSecretInput').value.trim();
 
   if (!inviteBoxId || !bondBoxId || !inviterId || !secretHex) {
-    result.innerHTML = '<span class="result-msg err">All fields are required: Invite Box ID, Bond Box ID, Inviter ID, and Secret</span>';
+    result.innerHTML = '<span class="result-msg err">All fields are required</span>';
     return;
   }
 
   btn.disabled = true;
-  result.innerHTML = '<span class="result-msg">Redeeming...</span>';
 
   try {
     const inviteePubKeyHex = buf2hex(pubKeyRaw);
 
-    const inviteBox = {
-      id: inviteBoxId,
-      value: INVITE_KARMA_AMOUNT,
-      inviterId,
-    };
+    const inviteBox = { id: inviteBoxId, value: INVITE_KARMA_AMOUNT, inviterId };
+
+    // ---- Step 1: Commit ----
+    result.innerHTML = '<span class="result-msg">Committing...</span>';
+
     const bondBox = {
       id: bondBoxId,
       value: INVITE_BOND_KARMA,
+      inviterId,
+      inviteBoxId: inviteBoxId,
     };
 
-    const tx = buildClaimInviteTx(inviteBox, bondBox, inviteePubKeyHex, secretHex);
-    const { signature } = await signTxId(tx);
-    tx.signatures[inviteePubKeyHex] = signature;
+    const commitTx = buildCommitTx(bondBox, inviteePubKeyHex, secretHex);
+    const { signature: commitSig } = await signTxId(commitTx);
+    commitTx.signatures[inviteePubKeyHex] = commitSig;
 
-    const res = await fetch(API + '/invites/claim', {
+    const commitRes = await fetch(API + '/invites/commit', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tx }),
+      body: JSON.stringify({ tx: commitTx }),
     });
-    const data = await res.json();
-    if (res.ok) {
-      result.innerHTML = `
-        <span class="result-msg ok">Invite claimed!</span>
-        <div style="font-size:11px;color:#8b949e;margin:4px 0">User ID:</div>
-        <pre>${esc(data.userId)}</pre>
-        <div style="font-size:11px;color:#8b949e;margin:4px 0">Karma Box ID:</div>
-        <pre>${esc(data.karmaBoxId)}</pre>
-      `;
-      loadStatus();
-      loadIdentityStatus();
-    } else {
-      result.innerHTML = `<span class="result-msg err">${esc(data.error || 'redeem failed')}</span>`;
+    const commitData = await commitRes.json();
+    if (!commitRes.ok) {
+      result.innerHTML = `<span class="result-msg err">Commit failed: ${esc(commitData.error || 'unknown error')}</span>`;
+      return;
     }
+
+    // Store secret for reveal step (survives page refresh)
+    sessionStorage.setItem('reveal_' + inviteBoxId, JSON.stringify({
+      secretHex,
+      bondBoxId,
+      inviterId,
+      inviteePubKeyHex,
+      bondInviteBoxId: inviteBoxId,
+    }));
+
+    // ---- Step 2: Wait then reveal ----
+    result.innerHTML = '<span class="result-msg">Committed — waiting for block inclusion...</span>';
+
+    // Poll for block height change (or use fixed delay)
+    const startHeight = currentBlockHeight;
+    const checkReveal = async () => {
+      await loadStatus(); // refreshes currentBlockHeight
+      if (currentBlockHeight > startHeight) {
+        // Block advanced — proceed to reveal
+        result.innerHTML = '<span class="result-msg">Revealing...</span>';
+
+        const revealTx = buildClaimInviteTx(inviteBox, bondBox, inviteePubKeyHex, secretHex);
+        const { signature: revealSig } = await signTxId(revealTx);
+        revealTx.signatures[inviteePubKeyHex] = revealSig;
+
+        const revealRes = await fetch(API + '/invites/claim', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tx: revealTx }),
+        });
+        const revealData = await revealRes.json();
+        if (revealRes.ok) {
+          sessionStorage.removeItem('reveal_' + inviteBoxId);
+          result.innerHTML = `
+            <span class="result-msg ok">Invite claimed!</span>
+            <div style="font-size:11px;color:#8b949e;margin:4px 0">User ID:</div>
+            <pre>${esc(revealData.userId)}</pre>
+            <div style="font-size:11px;color:#8b949e;margin:4px 0">Karma Box ID:</div>
+            <pre>${esc(revealData.karmaBoxId)}</pre>
+          `;
+          loadStatus();
+          loadIdentityStatus();
+        } else {
+          result.innerHTML = `<span class="result-msg err">Reveal failed: ${esc(revealData.error || 'unknown error')}</span>`;
+        }
+      } else {
+        // Not yet — poll again in 5 seconds
+        setTimeout(checkReveal, 5000);
+      }
+    };
+
+    setTimeout(checkReveal, 3000); // Start polling after 3s
   } catch (e) {
     result.innerHTML = `<span class="result-msg err">${esc(e.message)}</span>`;
   } finally {
@@ -1679,6 +1760,18 @@ document.getElementById('cancelInviteBtn').addEventListener('click', async () =>
 // ===========================================================================
 // Init
 // ===========================================================================
+
+// Check for in-progress reveals from a previous page load
+const revealKeys = Object.keys(sessionStorage).filter(k => k.startsWith('reveal_'));
+if (revealKeys.length > 0) {
+  const key = revealKeys[0];
+  const stored = JSON.parse(sessionStorage.getItem(key));
+  document.getElementById('inviteBoxIdInput').value = stored.inviteBoxId || key.replace('reveal_', '');
+  document.getElementById('bondBoxIdForClaimInput').value = stored.bondBoxId;
+  document.getElementById('inviterIdForClaimInput').value = stored.inviterId;
+  document.getElementById('inviteSecretInput').value = stored.secretHex;
+  document.getElementById('redeemResult').innerHTML = '<span class="result-msg">Committed invite pending reveal — click Redeem to continue</span>';
+}
 
 await loadIdentities();
 loadFeed();
