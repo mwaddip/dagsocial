@@ -2,6 +2,7 @@ import { decodeSubBlock, decodeOrderingBlock, decodeTx, POST_POW_TARGET_BITS, po
 import { encodeSubBlock, encodeOrderingBlock, encodeTx } from '@dagsocial/types';
 import {
   verifyContentLimits,
+  verifyContentCharacters,
   verifyParentRefsCount,
 } from '@dagsocial/validation';
 import type { SubBlock, OrderingBlock, UtxoTransaction } from '@dagsocial/types';
@@ -166,6 +167,9 @@ function runStage1SubBlock(
 
   const content = verifyContentLimits(post.content);
   if (!content.valid) return content;
+
+  const chars = verifyContentCharacters(post.content);
+  if (!chars.valid) return chars;
 
   const refs = verifyParentRefsCount(post.parentRefs);
   if (!refs.valid) return refs;

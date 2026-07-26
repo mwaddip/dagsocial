@@ -110,6 +110,27 @@ verifyParentRefsCount(refs: string[]): { valid: boolean; error?: string }
 
 Rejects if `refs.length > MAX_PARENT_REFS` (8). Accepts 0–8 refs.
 
+### verifyContentCharacters
+
+```
+verifyContentCharacters(content: string): { valid: boolean; error?: string }
+```
+
+Rejects content containing any character in Unicode category C (Other):
+`\p{Cc}` (control), `\p{Cf}` (format), `\p{Cs}` (surrogate), `\p{Co}`
+(private use), `\p{Cn}` (unassigned). The only exception is `\n` (U+000A,
+line feed) — it is in Cc but explicitly allowed.
+
+This blocks zero-width characters (ZWSP U+200B, ZWNJ U+200C, ZWJ U+200D),
+bidi override characters (U+202A–U+202E, U+2066–U+2069), control characters
+(null, backspace, `\r`, `\t`, escape sequences), and private-use codepoints.
+
+Allows all letters, marks, numbers, punctuation, symbols, separators,
+emoji, and `\n`.
+
+Implemented as a single regex: `/^[\P{C}\n]*$/u`. Pure stateless check
+with no version gating — applies unconditionally to all post content.
+
 ---
 
 ## Structural Validation
@@ -164,6 +185,7 @@ not verify PoW, signatures, or UTXO state transitions.
 Stage 1 (@dagsocial/net — topic validators, before mesh forwarding)
   ├── verifySubBlockStructure
   ├── verifyContentLimits
+  ├── verifyContentCharacters
   ├── verifyParentRefsCount
   ├── verifyProtocolVersion
   ├── verifyPoW

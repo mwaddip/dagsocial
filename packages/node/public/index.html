@@ -1141,7 +1141,7 @@ function renderPost(p, id, depth) {
   const indent = depth * 20;
   return `
     <div class="post" data-post-id="${id}" style="margin-left:${indent}px;border-left:${depth > 0 ? '2px solid #30363d' : 'none'};padding-left:${depth > 0 ? '10px' : '12px'}">
-      <div class="post-author">${esc(p.author.slice(0, 20))}...</div>
+      <div class="post-author">${esc(p.author.slice(0, 12))}...</div>
       <div class="post-content">${esc(p.content)}</div>
       <div class="post-meta">
         <span>${new Date(p.timestamp).toLocaleTimeString()}</span>

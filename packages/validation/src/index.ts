@@ -3,6 +3,7 @@ export {
   verifyPostSignature,
   verifyProtocolVersion,
   verifyContentLimits,
+  verifyContentCharacters,
   verifyParentRefsCount,
   verifySubBlockStructure,
   verifyTxStructure,

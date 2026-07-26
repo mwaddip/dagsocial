@@ -34,8 +34,6 @@ export interface SyncStore {
   getOrderingBlockId(height: number): string | null;
   /** True if the header with this ID is already known. */
   hasOrderingBlockHeader(id: string): boolean;
-  /** True if the sub-block with this ID is already known. */
-  hasSubBlock(id: string): boolean;
   /** Current best-chain tip height. */
   chainHeight(): number;
   /** Cumulative work (sum of 2^targetBits) of the best chain. */
@@ -237,7 +235,7 @@ export class SyncMachine {
       if (inv.typeId === MODIFIER_ORDERING_BLOCK) {
         return !this.store.hasOrderingBlockHeader(id);
       }
-      // MODIFIER_SUB_BLOCK — dropped. Sub-blocks are carried inline in ordering blocks.
+      // Unknown modifier types are dropped.
       return false;
     });
 

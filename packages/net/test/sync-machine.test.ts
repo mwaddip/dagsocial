@@ -8,7 +8,6 @@ import {
   MSG_MODIFIER_REQUEST,
   MSG_MODIFIER_RESPONSE,
   MODIFIER_ORDERING_BLOCK,
-  MODIFIER_SUB_BLOCK,
 } from '../src/types.js';
 import type { NetConfig } from '../src/types.js';
 import type { SyncInfo, Inv, ModifierRequest } from '../src/sync-types.js';
@@ -24,7 +23,6 @@ function stubStore(overrides: Partial<SyncStore> = {}): SyncStore {
     getOrderingBlockHeader: () => null,
     getOrderingBlockId: () => null,
     hasOrderingBlockHeader: () => false,
-    hasSubBlock: () => false,
     chainHeight: () => 0,
     cumulativeWork: () => 0n,
     getAnchors: () => [],
@@ -366,22 +364,6 @@ describe('SyncMachine', () => {
       expect(sent.length).toBe(0);
     });
 
-    it('ignores MODIFIER_SUB_BLOCK inv (sub-blocks are inline in blocks)', () => {
-      const { machine, sent } = makeMachine({
-        store: {
-          chainHeight: () => 0,
-          hasSubBlock: (id: string) => id === 'sb1',
-        },
-      });
-      machine.onPeerActive('peer1', 100);
-      sent.length = 0;
-
-      const inv: Inv = { typeId: MODIFIER_SUB_BLOCK, ids: ['sb1', 'sb2'] };
-      sendInv(machine, 'peer1', inv);
-
-      expect(sent.length).toBe(0); // MODIFIER_SUB_BLOCK is ignored
-    });
-
     it('ignores unknown typeId', () => {
       const { machine, sent } = makeMachine({
         store: { chainHeight: () => 0 },
@@ -442,24 +424,6 @@ describe('SyncMachine', () => {
       );
       machine.handleMessage('peer1', MSG_MODIFIER_RESPONSE, body);
       expect(appended.length).toBe(2);
-    });
-
-    it('ignores sub-block modifier responses (sub-blocks are inline in blocks)', () => {
-      const appended: unknown[] = [];
-      const { machine } = makeMachine({
-        store: {
-          chainHeight: () => 0,
-          appendBlocks: (blocks: unknown[]) => { appended.push(...blocks); },
-        },
-      });
-      const body = new Uint8Array(
-        encode({
-          typeId: MODIFIER_SUB_BLOCK,
-          modifiers: [{ id: 'sb1', data: new Uint8Array([10]) }],
-        }),
-      );
-      machine.handleMessage('peer1', MSG_MODIFIER_RESPONSE, body);
-      expect(appended.length).toBe(0); // silently ignored
     });
 
     it('skips modifiers with empty data', () => {

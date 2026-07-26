@@ -77,6 +77,19 @@ export function verifyContentLimits(content: string): { valid: boolean; error?: 
 }
 
 // ---------------------------------------------------------------------------
+// verifyContentCharacters
+// ---------------------------------------------------------------------------
+
+const CONTENT_CHAR_REGEX = /^[\P{C}\n]*$/u;
+
+export function verifyContentCharacters(content: string): { valid: boolean; error?: string } {
+  if (!CONTENT_CHAR_REGEX.test(content)) {
+    return { valid: false, error: 'Content contains disallowed characters (control, zero-width, or bidi override)' };
+  }
+  return { valid: true };
+}
+
+// ---------------------------------------------------------------------------
 // verifyParentRefsCount
 // ---------------------------------------------------------------------------
 
@@ -138,6 +151,10 @@ export function verifyOrderingBlockStructure(
   if (!Array.isArray(block.subBlockTree?.subBlockRefs)) {
     return { valid: false, error: 'Ordering block missing subBlockTree.subBlockRefs' };
   }
+  if (!Array.isArray(block.subBlockTree.subBlocks) ||
+      block.subBlockTree.subBlocks.length !== block.subBlockTree.subBlockRefs.length) {
+    return { valid: false, error: 'Ordering block subBlocks must align with subBlockRefs' };
+  }
   if (!block.validatorSignature || block.validatorSignature.length !== 64) {
     return { valid: false, error: 'Ordering block missing or invalid validatorSignature' };
   }
@@ -155,6 +172,13 @@ export function verifyOrderingBlockStructure(
   }
   if (typeof h.powTargetBits !== 'number' || h.powTargetBits < ORDERING_BLOCK_POW_TARGET_FLOOR) {
     return { valid: false, error: 'Ordering block missing or invalid powTargetBits' };
+  }
+  if (!Array.isArray(block.utxoTxTree?.utxoTxIds)) {
+    return { valid: false, error: 'Ordering block missing utxoTxTree.utxoTxIds' };
+  }
+  if (!Array.isArray(block.utxoTxTree.utxoTxs) ||
+      block.utxoTxTree.utxoTxs.length !== block.utxoTxTree.utxoTxIds.length) {
+    return { valid: false, error: 'Ordering block utxoTxs must align with utxoTxIds' };
   }
   if (!Array.isArray(block.utxoTxTree?.coinbaseOutputs)) {
     return { valid: false, error: 'Ordering block missing utxoTxTree.coinbaseOutputs' };

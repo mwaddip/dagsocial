@@ -7,7 +7,7 @@ import {
   POST_LOCK_REPLY_COST,
 } from '@dagsocial/types';
 import type { Post } from '@dagsocial/types';
-import { verifyPoW, verifyPostSignature } from '@dagsocial/validation';
+import { verifyPoW, verifyPostSignature, verifyContentCharacters } from '@dagsocial/validation';
 
 // ---------------------------------------------------------------------------
 // Dependency interface
@@ -53,6 +53,10 @@ export function verifyPost(
   if (contentBytes > MAX_CONTENT_BYTES) {
     return { valid: false, error: 'Content exceeds max length' };
   }
+
+  // 1b. Character restrictions: no control, zero-width, or bidi chars.
+  const charCheck = verifyContentCharacters(post.content);
+  if (!charCheck.valid) return charCheck;
 
   // 2. Parent refs: 0–8.
   if (post.parentRefs.length > MAX_PARENT_REFS) {
@@ -148,6 +152,10 @@ export function verifyPostForRelay(
   if (contentBytes > MAX_CONTENT_BYTES) {
     return { valid: false, error: 'Content exceeds max length' };
   }
+
+  // 1b. Character restrictions: no control, zero-width, or bidi chars.
+  const charCheck = verifyContentCharacters(post.content);
+  if (!charCheck.valid) return charCheck;
 
   // 2. Parent refs count
   if (post.parentRefs.length > MAX_PARENT_REFS) {

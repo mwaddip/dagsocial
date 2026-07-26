@@ -94,11 +94,9 @@ async function main() {
   const aK = generateKeyPairSync('ed25519'), aPub = rawPublicKey(aK.publicKey), aPubH = hex(aPub);
   const bK = generateKeyPairSync('ed25519'), bPub = rawPublicKey(bK.publicKey), bPubH = hex(bPub);
 
-  // ---- Identity + Faucet ----
-  console.log('─── Identity + Faucet ───');
-  if (!pass(await postBoth('/identity/import', { publicKey: aPubH }), 'Alice identity') ||
-      !pass(await postBoth('/identity/import', { publicKey: bPubH }), 'Bob identity') ||
-      !pass(await postBoth('/faucet', { userId: aPubH }), 'faucet Alice') ||
+  // ---- Faucet (identity is self-sovereign — userId IS the hex public key) ----
+  console.log('─── Faucet ───');
+  if (!pass(await postBoth('/faucet', { userId: aPubH }), 'faucet Alice') ||
       !pass(await postBoth('/faucet', { userId: bPubH }), 'faucet Bob')) { process.exit(1); }
   await wait('faucet confirm');
 
@@ -228,10 +226,8 @@ async function main() {
     console.log(`  ✗ missing inviteBoxId or bondBoxId, skipping claim`);
     f++;
   } else {
-    // Generate a fresh key for the invitee (Charlie — not yet registered)
+    // Generate a fresh key for the invitee (Charlie)
     const cK = generateKeyPairSync('ed25519'), cPub = rawPublicKey(cK.publicKey), cPubH = hex(cPub);
-    // Import Charlie on both nodes
-    await postBoth('/identity/import', { publicKey: cPubH });
     // Faucet Charlie for karma lookup to work after claim
     await postBoth('/faucet', { userId: cPubH });
 

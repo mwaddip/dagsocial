@@ -151,10 +151,8 @@ afterAll(() => { n1?.kill(); n2?.kill(); });
 
 describe('E2E Pipeline', () => {
   it('full pipeline', async () => {
-    // 1. Identity + Faucet
-    const id = await api('POST', `${A1}/identity/import`, { publicKey: pubHex }) as { userId: string };
-    userId = id.userId;
-    expect(userId).toBeTruthy();
+    // 1. Identity (self-sovereign — userId IS the hex public key) + Faucet
+    userId = pubHex;
     console.log(`Identity: ${userId.slice(0,16)}...`);
     await wait(4000);
 

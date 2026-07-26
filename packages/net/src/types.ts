@@ -19,7 +19,6 @@ export const MSG_PEERS = 9;
 // ---------------------------------------------------------------------------
 
 export const MODIFIER_ORDERING_BLOCK = 101;
-export const MODIFIER_SUB_BLOCK = 102;
 
 // ---------------------------------------------------------------------------
 // Peer

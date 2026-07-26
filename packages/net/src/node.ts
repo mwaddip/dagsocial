@@ -116,10 +116,6 @@ class LazySyncStore implements SyncStore {
     return false;
   }
 
-  hasSubBlock(id: string): boolean {
-    return this._getSubBlock?.(id) != null;
-  }
-
   getSubBlock(id: string): unknown | null {
     return this._getSubBlock?.(id) ?? null;
   }
