@@ -15,11 +15,12 @@ a miner's mempool, and confirmed in batches by ordering blocks.
 This contract defines sub-block identity, lifecycle, propagation, the
 relationship to ordering blocks, and missing-sub-block resolution.
 
-Sub-blocks are best understood as **transactions with PoW attached** — they
-bundle a post with associated UTXO operations (karma lock, likes) and a
-proof-of-work that gates their validity. They are not miner-produced weak
-blocks a la Ergo/Bitcoin-NG; they are user-produced post packages whose
-ordering is assigned by whichever miner collects them into an ordering block.
+Sub-blocks are best understood as **pre-confirmation stubs** — they bundle a
+post with associated UTXO operations (karma lock, likes) and a proof-of-work.
+They propagate via gossip so nodes can display pending content, but they are
+not part of the permanent chain. Once a miner includes them in an ordering
+block, the sub-blocks' authoritative representation is inside that block.
+The mempool is purely local staging for the miner.
 
 ---
 
@@ -168,95 +169,44 @@ the mempool insert is idempotent (sub-block ID is the primary key), and
 `verifyPostForRelay` skips the challenge check (the challenge was node-local
 to the origin node).
 
-### Pull path (fetch — needs implementation)
+### Pull path — not needed
 
-When a node receives an ordering block (via gossip or sync) whose
-`subBlockRefs` include IDs not in the local store, the node fetches those
-sub-blocks before applying the block.
-
-#### Protocol
-
-Uses existing message codes 6 (`GetSubBlock`) and 7 (`SubBlockResponse`) over
-the framed sync stream (`/dagsocial/sync/1`):
-
-```
-GetSubBlock (code 6):
-  Body: sub-block ID as UTF-8 string
-
-SubBlockResponse (code 7):
-  Body: CBOR-encoded SubBlock, or single byte 0x00 if not found
-```
-
-#### Flow
-
-```
-receive ordering block
-  │
-  ├── missing = subBlockRefs.filter(id => !localStore.hasPost(id))
-  │
-  ├── if missing.length === 0:
-  │     applyOrderingBlock(block)
-  │     return
-  │
-  └── for each id in missing:
-        send GetSubBlock(id) to the peer that sent the block
-          │
-          ├── response received:
-          │     decode, Stage 1 validate, insert post, insert mempool
-          │
-          └── timeout or not-found:
-                log warning, skip this ref
-```
-
-#### Application rule
-
-An ordering block CAN be applied with missing `subBlockRefs`. Missing refs
-are logged and skipped — the post doesn't confirm, its UTXO txs aren't
-applied. The ordering block remains valid: its integrity depends on header
-chain-link, PoW, Merkle roots, and coinbase emission, not on sub-block
-availability.
-
-#### Fetch policy
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `SUBBLOCK_FETCH_TIMEOUT_MS` | 5000 | Max wait per GetSubBlock request |
-| `SUBBLOCK_FETCH_PARALLEL` | 8 | Max concurrent requests |
-
-If the source peer doesn't have a sub-block, the node may query other
-connected peers before giving up.
+Sub-blocks travel via gossip only. They are NOT requested independently via
+the sync protocol. Once a miner includes sub-blocks in an ordering block, the
+block carries the full CBOR inline — every node receives the sub-blocks as
+part of the block. See `NET_INTERFACE.md` for the ordering block serialization
+format.
 
 ---
 
 ## Ordering Block Relationship
 
-The ordering block references sub-blocks via `subBlockTree.subBlockRefs` —
-a flat list of sub-block IDs being confirmed in this block. This is the
-existing `subBlockRoot` Merkle commitment. No additional chain commitment
-or ordering metadata is needed.
+Ordering blocks carry sub-block CBOR inline. `subBlockTree` contains both
+`subBlockRefs` (IDs, for Merkle ordering) and `subBlocks` (CBOR-encoded
+`SubBlock` bytes, aligned by index). When a node applies an ordering block,
+it decodes sub-blocks from the block itself — no mempool lookup, no fetch.
 
 ### Block creation (miner)
 
-1. Pull all pending sub-blocks from mempool (`getPendingEntries`)
-2. Decode, attach standalone like UTXO txs to matching sub-blocks
-3. Deduplicate like boxes (a like in both a sub-block and standalone pool
-   is counted once)
-4. `subBlockRefs` = ordered list of sub-block IDs (FIFO by mempool insertion)
+1. Pull pending sub-blocks from mempool
+2. Decode, attach standalone like UTXO txs, deduplicate likes
+3. `subBlockRefs` = ordered list of sub-block IDs (FIFO)
+4. `subBlocks` = `encodeSubBlock(sb)` for each sub-block (same order)
 5. Build `subBlockRoot` = Merkle root over `subBlockRefs`
-6. Sub-blocks beyond `maxSubBlocksPerBlock` stay in mempool for the next block
+6. Sub-blocks beyond `maxSubBlocksPerBlock` stay in mempool
 
 ### Block application (all nodes)
 
-1. For each ID in `subBlockRefs`:
-   - If post exists locally: `confirmPost(id, blockHeight)`, remove from mempool
-   - If post missing: log, skip (post doesn't confirm; sub-block isn't in our
-     mempool anyway, so nothing to remove)
-2. Apply the UTXO transactions referenced by `utxoTxIds`
-3. Remove confirmed entries from mempool
+1. For each index `i` in `subBlockRefs`:
+   - Decode `subBlocks[i]` via `decodeSubBlock`
+   - Insert post if not already present (e.g., from gossip)
+   - `confirmPost(subBlockId, blockHeight)`
+2. For each index `i` in `utxoTxIds`:
+   - Decode `utxoTxs[i]` via `decodeTx`
+   - Revalidate in context, apply
+3. Remove confirmed entries from local mempool
 
-Sub-blocks that weren't in `subBlockRefs` remain untouched in the mempool.
-They are eligible for the next ordering block. No explicit "carry forward"
-step is needed — the code simply doesn't remove them.
+The block is self-contained. No external data needed to apply it fully.
 
 ---
 
@@ -277,12 +227,9 @@ enough that pending→confirmed latency is acceptable without it.
 ### Net package
 
 - `broadcastSubBlock(sb)`: push to mesh peers via gossipsub
-- `requestSubBlock(id, peerId)`: pull a specific sub-block from a peer
-  (uses `GetSubBlock`/`SubBlockResponse` over the framed sync stream)
 - `onSubBlock(callback)`: register Stage 2 handler for inbound sub-blocks
-- Sync machine: `ModifierResponse` with `typeId=102` delivers sub-blocks
-  during historical sync. These decode as `SubBlock` (not `OrderingBlock`)
-  and follow the same insert-post → insert-mempool path.
+- Sync: sub-blocks do not travel independently via the sync protocol. They
+  are carried inline in ordering blocks.
 
 ### Node package
 
@@ -320,8 +267,8 @@ enough that pending→confirmed latency is acceptable without it.
 - Sub-blocks pass Stage 1 + Stage 2 validation before mempool insertion
 - Sub-blocks not confirmed in one ordering block survive in the mempool for
   the next block (eventual consistency)
-- Missing sub-blocks referenced by an ordering block are fetched on demand
-  via the pull path
+- Ordering blocks carry sub-block CBOR inline — every node can apply every
+  block fully without external data
 - Confirmed sub-blocks have their posts transitioned to `confirmed` and their
   UTXO transactions applied
 
@@ -332,12 +279,13 @@ enough that pending→confirmed latency is acceptable without it.
 - Sub-blocks are user-produced, carrying post-level PoW
 - The ordering block is the sole authority on which sub-blocks get confirmed
 - `subBlockRefs.length ≤ maxSubBlocksPerBlock`
+- `subBlockRefs[i]` corresponds to `subBlocks[i]` — same index, same sub-block
 - Sub-block gossip is stateless at Stage 1 — verification depends only on
   the sub-block's own content
-- Missing sub-block refs do not invalidate an ordering block
 - Sub-blocks not referenced by an ordering block remain in the mempool
   (not discarded) until they expire or are confirmed by a later block
-- Sub-block CBOR is the canonical wire format
+- Ordering blocks are self-contained — they carry all data needed to apply
+  their state transitions
 
 ---
 
