@@ -10,6 +10,7 @@ import {
   createInvite,
   claimInvite,
   cancelInvite,
+  commitInvite,
 } from '../../src/services/invites.js';
 import {
   generateKeyPair,
@@ -49,6 +50,7 @@ async function request(
       createInvite,
       claimInvite,
       cancelInvite,
+      commitInvite,
       getCurrentHeight,
     };
     const app = express();
@@ -183,6 +185,80 @@ describe('invites routes', () => {
 
   it('POST /invites with missing tx returns 400', async () => {
     const res = await request('/', 'POST', {});
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /invites/commit commits to BondBox and returns 201 with pending', async () => {
+    const secret = new Uint8Array(32).fill(0x66);
+    const secretHash = createHash('blake2b512').update(Buffer.from(secret)).digest().subarray(0, 32);
+
+    const inviteBox: InviteBox = {
+      boxType: 'invite',
+      value: INVITE_KARMA_AMOUNT,
+      createdAtBlock: 1,
+      secretHash,
+      inviterId,
+      guard: 'hash_preimage_with_bond',
+    };
+    const inviteBoxId = computeBoxId(inviteBox);
+    storeInsertBox({ ...inviteBox, id: inviteBoxId, boxType: 'invite', guard: 'hash_preimage_with_bond' } as InviteBox);
+
+    const bondBox: BondBox = {
+      boxType: 'bond',
+      value: INVITE_BOND_KARMA,
+      createdAtBlock: 1,
+      inviterId,
+      inviteBoxId: inviteBoxId,
+      inviteePublicKey: new Uint8Array(0),
+      probationStartBlock: 0,
+      probationEndBlock: 0,
+      guard: 'bond_dual',
+    };
+    const bondBoxId = computeBoxId(bondBox);
+    storeInsertBox({ ...bondBox, id: bondBoxId, boxType: 'bond', guard: 'bond_dual' } as BondBox);
+
+    const newKp = generateKeyPair();
+    const inviteePubKey = newKp.publicKey;
+    const inviteePubKeyHex = Buffer.from(inviteePubKey).toString('hex');
+    const inviteePrivKeyObj = createPrivateKey({
+      key: Buffer.from(newKp.secretKey),
+      format: 'der',
+      type: 'pkcs8',
+    });
+
+    const bondOut: BondBox = {
+      boxType: 'bond',
+      value: INVITE_BOND_KARMA,
+      createdAtBlock: 5,
+      inviterId,
+      inviteBoxId: inviteBoxId,
+      inviteePublicKey: inviteePubKey,
+      probationStartBlock: 5,
+      probationEndBlock: 5 + INVITE_PROBATION_BLOCKS,
+      guard: 'bond_dual',
+    };
+    const bondOutId = computeBoxId(bondOut);
+
+    const tx: UtxoTransaction = {
+      inputs: [bondBoxId],
+      outputs: [{ ...bondOut, id: bondOutId }],
+      signatures: {},
+      preimages: { [bondBoxId]: secret },
+      protocolVersion: PROTOCOL_VERSION,
+    };
+    signTransaction(tx, inviteePrivKeyObj, inviteePubKeyHex);
+
+    const res = await request('/commit', 'POST', { tx: txToJson(tx) });
+    expect(res.status).toBe(201);
+    const body = res.data as Record<string, unknown>;
+    expect(body.status).toBe('pending');
+    expect(typeof body.txId).toBe('string');
+    expect(typeof body.expiresAtHeight).toBe('number');
+    expect(typeof body.bondBoxId).toBe('string');
+  });
+
+  it('POST /invites/commit with missing tx returns 400', async () => {
+    const res = await request('/commit', 'POST', {});
     expect(res.status).toBe(400);
   });
 
