@@ -11,6 +11,7 @@ import { encode, decode } from 'cbor-x';
 import type { Libp2p } from 'libp2p';
 import type { SubBlock, OrderingBlock, UtxoTransaction, BlockHeader } from '@dagsocial/types';
 import { PROTOCOL_VERSION, encodeSubBlock, decodeSubBlock, encodeOrderingBlock } from '@dagsocial/types';
+import { blockHash } from '@dagsocial/validation';
 import { ReaderError } from '@dagsocial/wire';
 import type { NetConfig, NetValidators, Peer, PeerRecord } from './types.js';
 import type { Libp2pGossip, GossipHandlers } from './gossip.js';
@@ -86,11 +87,15 @@ class LazySyncStore implements SyncStore {
 
   getOrderingBlockId(height: number): string | null {
     const block = this._getOrderingBlock?.(height);
-    if (block && typeof block === 'object') {
-      // OrderingBlock IDs are derived from block hash; use any id property
-      // or fall back to computed hash.
-      const b = block as Record<string, unknown>;
-      if (typeof b['id'] === 'string') return b['id'];
+    if (block && typeof block === 'object' && 'header' in block) {
+      const header = (block as { header: unknown }).header;
+      if (header && typeof header === 'object') {
+        try {
+          return blockHash(header as Parameters<typeof blockHash>[0]);
+        } catch {
+          return null;
+        }
+      }
     }
     return null;
   }
@@ -436,6 +441,7 @@ export class NetNode {
 
         const msg = parseHandshakeBody(body);
         const result = validateHandshake(msg, [PROTOCOL_VERSION]);
+        console.log(`[net] inbound handshake from ${peerId}: ok=${result.ok} height=${msg.chainHeight}`);
 
         // Record peer regardless of validation outcome
         const listenAddrs = this.libp2p!.getMultiaddrs();
@@ -523,6 +529,7 @@ export class NetNode {
         }
 
         // Dispatch to sync machine for all other message types
+        console.log(`[net] sync handler: received code=${code} body_len=${body.length} from ${peerId}`);
         this.syncMachine?.handleMessage(peerId, code, body);
       } catch {
         try { await stream.sink([new Uint8Array(0)]); } catch { /* ignore */ }
@@ -586,7 +593,9 @@ export class NetNode {
       }
 
       const msg = parseHandshakeBody(body);
-      return validateHandshake(msg, [PROTOCOL_VERSION]);
+      const result = validateHandshake(msg, [PROTOCOL_VERSION]);
+      console.log(`[net] outbound handshake with ${peerId}: ok=${result.ok} height=${result.peerHeight} caps=${result.peerCapabilities.length}`);
+      return result;
     } finally {
       if (stream) await stream.close();
     }
@@ -599,7 +608,10 @@ export class NetNode {
   private sendToPeer(peerId: string, data: Uint8Array): void {
     if (!this.libp2p) return;
     const peer = this.libp2p.getPeers().find(p => p.toString() === peerId);
-    if (!peer) return;
+    if (!peer) {
+      console.warn(`[net] sendToPeer: peer ${peerId} not found in libp2p.getPeers() (have ${this.libp2p.getPeers().length} peers)`);
+      return;
+    }
 
     this.libp2p.dialProtocol(peer, SYNC_PROTOCOL).then(async (stream) => {
       try {
