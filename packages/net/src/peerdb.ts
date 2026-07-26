@@ -52,7 +52,10 @@ export class PeerDb {
       }
     }
 
-    this.storage?.put(merged);
+    // Only persist if the entry survived eviction
+    if (this.entries.has(record.address)) {
+      this.storage?.put(merged);
+    }
   }
 
   forget(addr: string): void {

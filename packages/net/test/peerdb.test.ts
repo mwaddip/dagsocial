@@ -62,6 +62,29 @@ describe('PeerDb', () => {
     expect(smallDb.get('d')).not.toBeNull();
   });
 
+  it('evicted entry is not persisted to storage', () => {
+    const stored: PeerRecord[] = [];
+    const storage = {
+      loadAll: () => stored,
+      put: (rec: PeerRecord) => {
+        const idx = stored.findIndex((r) => r.address === rec.address);
+        if (idx >= 0) stored[idx] = rec;
+        else stored.push(rec);
+      },
+      delete: (addr: string) => {
+        const idx = stored.findIndex((r) => r.address === addr);
+        if (idx >= 0) stored.splice(idx, 1);
+      },
+    };
+    const cap1Db = new PeerDb(storage, 1, []);
+    cap1Db.record(makeRecord('a', 1000));
+    cap1Db.record(makeRecord('b', 500)); // older — should be evicted and NOT persisted
+
+    expect(cap1Db.count()).toBe(1);
+    expect(cap1Db.all().map((r) => r.address)).toEqual(['a']);
+    expect(stored.map((r) => r.address)).toEqual(['a']);
+  });
+
   it('recent returns most recent excluding specified', () => {
     db.record(makeRecord('a', 1000));
     db.record(makeRecord('b', 2000));
