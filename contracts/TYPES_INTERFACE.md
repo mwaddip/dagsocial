@@ -158,26 +158,29 @@ LikeBox extends BoxBase {
 ```
 InviteBox extends BoxBase {
   boxType: "invite"
-  value: number                // N karma transferred
-  secretHash: Uint8Array(32)   // H(s) — blake2b512(s).subarray(0,32)
+  value: number                       // N karma transferred
+  secretHash: Uint8Array(32)          // H(s) — blake2b512(s).subarray(0,32)
   inviterId: UserId
-  guard: "hash_preimage"       // H(s_preimage) == secretHash ∧ recipient pubkey not in ledger
+  guard: "hash_preimage_with_bond"    // H(s_preimage) == secretHash ∧ committed BondBox present
 }
 ```
 
-Also cancellable by inviter's signature (co-guard, handled at the service layer).
+Cancel path: inviter provides the preimage to spend the InviteBox alongside
+an uncommitted BondBox. Reveal path: invitee provides the preimage alongside a
+BondBox committed to their pubkey.
 
 ### BondBox
 
 ```
 BondBox extends BoxBase {
   boxType: "bond"
-  value: number                // D karma deposited
-  inviterId: UserId            // Owner — the inviter
-  inviteePublicKey: Uint8Array // 32 raw bytes — set when invite is claimed
-  probationStartBlock: number  // Set when invite is claimed
-  probationEndBlock: number    // probationStartBlock + INVITE_PROBATION_BLOCKS
-  guard: "inviter_signature"   // Only inviter may reclaim (after conditions met)
+  value: number                       // D karma deposited
+  inviterId: UserId                   // Owner — the inviter
+  inviteBoxId: BoxId                  // Which InviteBox this pairs with
+  inviteePublicKey: Uint8Array        // empty = unclaimed, 32 bytes = committed
+  probationStartBlock: number         // Set during commit
+  probationEndBlock: number           // probationStartBlock + INVITE_PROBATION_BLOCKS
+  guard: "bond_dual"                  // inviter_signature (reclaim) OR hash_preimage (commit)
 }
 ```
 
@@ -201,7 +204,7 @@ Post lock karma is gradually unlocked at epoch boundaries: every
 ### BoxGuard
 
 ```
-type BoxGuard = "owner_signature" | "epoch_tally" | "hash_preimage" | "inviter_signature"
+type BoxGuard = "owner_signature" | "epoch_tally" | "hash_preimage" | "inviter_signature" | "bond_dual" | "hash_preimage_with_bond"
 ```
 
 ### UtxoTransaction

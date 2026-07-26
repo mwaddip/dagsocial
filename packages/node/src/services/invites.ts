@@ -141,7 +141,7 @@ export function createInvite(
  * Commit to an invite by spending the BondBox to lock in the invitee's identity.
  *
  * The invitee builds a tx spending only the BondBox. The bond_dual guard's
- * hash_preimage path verifies that the preimage matches the InviteBox's
+ * hash_preimage commit path verifies that the preimage matches the InviteBox's
  * secretHash. The transition records the invitee's public key and starts
  * probation timers.
  *
@@ -222,7 +222,7 @@ export function commitInvite(
  * The client builds a tx consuming the InviteBox and BondBox, producing a
  * new KarmaBox for the invitee and an updated (claimed) BondBox.
  *
- * validateTx verifies the hash_preimage guard via the preimages map.
+ * validateTx verifies the hash_preimage_with_bond guard via the preimages map.
  * The claim is **pending** until the next ordering block is confirmed.
  */
 export function claimInvite(
@@ -288,7 +288,7 @@ export function claimInvite(
   }
 
   // ---- 4. Validate transaction (guards, transitions, decay) ----
-  // This verifies the hash_preimage via checkGuards, the bond claim
+  // This verifies the hash_preimage_with_bond via checkGuards, the bond reveal
   // transition, and value conservation.
   const result = validateTx(deps, tx, currentBlockHeight);
   if (!result.valid) {
@@ -318,8 +318,8 @@ export function claimInvite(
  * consumes the KarmaBox, InviteBox, and BondBox, returning all value to a new
  * KarmaBox for the inviter.
  *
- * validateTx checks the inviter_signature guard on the bond box and the
- * owner_signature on the karma box.
+ * validateTx checks the bond_dual guard (inviter_signature path) on the bond box
+ * and the owner_signature on the karma box.
  * The cancellation is **pending** until the next ordering block is confirmed.
  */
 export function cancelInvite(
@@ -382,12 +382,12 @@ export function cancelInvite(
     throw new Error(`Bond box not found: ${bondBoxId}`);
   }
   // Cancel works on both unclaimed and committed BondBoxes.
-  // The inviter_signature path on bond_dual allows the inviter to reclaim
+  // The inviter reclaim path on bond_dual allows the inviter to reclaim
   // regardless of commit state.
 
   // ---- 4. Validate transaction (guards, transitions, decay) ----
-  // This checks owner_signature on the karma box, inviter_signature on the
-  // bond box, and the cancel transition.
+  // This checks owner_signature on the karma box, bond_dual (inviter reclaim path)
+  // on the bond box, and the cancel transition.
   const result = validateTx(deps, tx, currentBlockHeight);
   if (!result.valid) {
     throw new Error(`Invalid invite cancel transaction: ${result.error}`);
