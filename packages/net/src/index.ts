@@ -25,6 +25,8 @@ export {
 } from './types.js';
 export { buildHandshakeFrame, parseHandshakeBody, validateHandshake } from './handshake.js';
 export type { HandshakeMsg, HandshakeResult } from './handshake.js';
+export { PeerDb } from './peerdb.js';
+export type { PeerStorage } from './peerdb.js';
 export type {
   NetConfig,
   NetValidators,
