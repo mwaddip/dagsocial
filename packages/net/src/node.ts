@@ -590,6 +590,10 @@ export class NetNode {
             return;
           }
           const request = decodeGetPosts(body);
+          if (request.postIds.length > 100) {
+            console.warn(`[net] GetPosts request with ${request.postIds.length} IDs exceeds limit, dropping`);
+            return;
+          }
           const entries = this.postsHandler(request.postIds);
           const response = encodePosts(this.config.magic ?? MAGIC_MAINNET, { entries });
           await stream.sink([response]);
@@ -811,7 +815,8 @@ export class NetNode {
       return { entries: [] };
     }
     const magic = this.config.magic ?? MAGIC_MAINNET;
-    const request = encodeGetPosts(magic, { postIds });
+    const clamped = postIds.slice(0, 100);
+    const request = encodeGetPosts(magic, { postIds: clamped });
     let stream: import('@libp2p/interface').Stream | undefined;
     try {
       stream = await this.libp2p.dialProtocol(peer, SYNC_PROTOCOL);

@@ -1,6 +1,5 @@
 import { verifyPostId } from '@dagsocial/types';
 import { encodePost } from '@dagsocial/types';
-import type { Post } from '@dagsocial/types';
 import type { NetNode } from '@dagsocial/net';
 import { verifyPostForRelay, type VerifierDeps } from './verifier.js';
 import { insertPost } from '../store/posts.js';

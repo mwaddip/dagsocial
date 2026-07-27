@@ -260,16 +260,19 @@ try {
   // registered during NetNode.start())
   net.setSyncHandler((subBlockId: string) => {
     const post = getPost(subBlockId);
-    if (!post || !('content' in post)) return null;
+    if (!post || !('content' in post) || !post.content) return null;
     return subBlockFromPost(post, subBlockId);
   });
 
-  // Register posts handler for GetPosts requests — skip missing and placeholder posts
+  // Register posts handler for GetPosts requests — skip missing and placeholder posts.
+  // Validate IDs are 64-char hex before querying (reject malformed).
   net.setPostsHandler((postIds: string[]) => {
+    const HEX64 = /^[0-9a-f]{64}$/;
     const entries: PostsEntry[] = [];
     for (const postId of postIds) {
+      if (!HEX64.test(postId)) continue;
       const post = getPost(postId);
-      if (!post || !('content' in post)) continue;
+      if (!post || !('content' in post) || !post.content) continue;
       entries.push({ postId, post, likeBoxes: [] });
     }
     return entries;
