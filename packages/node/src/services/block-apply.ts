@@ -188,11 +188,45 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
     }
   }
 
-  // 8. Standalone like boxes are tallied by computeEpochTally at epoch
+  // 8. Compute DAG scores and evaluate canonical tip
+  if (dagService) {
+    let bestScore = 0;
+    let bestId: string | null = null;
+
+    for (const entry of block.subBlockTree.subBlockEntries) {
+      let maxParent = 0;
+      for (const pid of entry.parentRefs) {
+        const ps = dagService.getScore(pid);
+        if (ps !== null && ps > maxParent) {
+          maxParent = ps;
+        }
+      }
+      const score = maxParent + 1; // uniform weight: ownWork = 1
+      dagService.saveScore(entry.postId, score);
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestId = entry.postId;
+      }
+    }
+
+    if (bestId !== null) {
+      try {
+        const plan = dagService.buildReorgPlan(bestId, bestScore);
+        if (plan) {
+          dagService.switchToBranch(plan);
+        }
+      } catch (err) {
+        console.error(`DagService reorg evaluation failed: ${String(err)}`);
+      }
+    }
+  }
+
+  // 9. Standalone like boxes are tallied by computeEpochTally at epoch
   // boundaries.  The computation was verified before block storage (§5);
   // here we apply the karma mints and the UTXO/bookkeeping side effects.
 
-  // 9. Apply epoch tally results
+  // 10. Apply epoch tally results
   if (block.utxoTxTree.epochTallyResults) {
     const tally = computeEpochTally(block.header.height);
     const rewards = tally.rewards;
@@ -252,7 +286,7 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
     }
   }
 
-  // 10. Apply UTXO transactions from the block
+  // 11. Apply UTXO transactions from the block
   const utxoDeps = {
     getBox,
     insertBox,
@@ -325,7 +359,7 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
     });
   }
 
-  // 11. Apply periodic karma decay
+  // 12. Apply periodic karma decay
   const decayDeps: DecayDeps = {
     getKarmaBoxes: (owner: Uint8Array) => getKarmaBoxes(owner),
     consumeBox,
@@ -349,7 +383,7 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
   });
   currentJournal.decayBurns.push(...journalEntries);
 
-  // 12. Persist journal and purge old ones
+  // 13. Persist journal and purge old ones
   insertBlockJournal(currentJournal);
   purgeOldJournals(block.header.height - 20);
   currentJournal = null;
