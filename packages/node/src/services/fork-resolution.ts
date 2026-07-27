@@ -15,6 +15,7 @@ import {
 } from '../store/index.js';
 import { getDb } from '../store/db.js';
 import { applyOrderingBlock } from './block-apply.js';
+import type { DagService } from './dag-service.js';
 
 export const MAX_REORG_DEPTH = 20;
 
@@ -118,7 +119,7 @@ export function revertBlock(height: number): void {
  * Reorg: revert our chain from currentHeight down to forkHeight+1,
  * then apply the competing chain forward.
  */
-export function reorg(forkHeight: number, newBlocks: OrderingBlock[]): void {
+export function reorg(forkHeight: number, newBlocks: OrderingBlock[], dagService?: DagService): void {
   getDb().transaction(() => {
   const currentHeight = getCurrentHeight();
 
@@ -147,7 +148,7 @@ export function reorg(forkHeight: number, newBlocks: OrderingBlock[]): void {
 
   // Phase 3: apply new chain
   for (const block of newBlocks) {
-    if (!applyOrderingBlock(block)) {
+    if (!applyOrderingBlock(block, dagService)) {
       throw new Error(`reorg failed: block at height ${block.header.height} rejected`);
     }
   }

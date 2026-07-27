@@ -18,6 +18,8 @@ import { sweepPlaceholders, hasPlaceholders } from './services/content-sweep.js'
 import { validateTx } from './services/utxo-engine.js';
 import { setNet } from './services/net-instance.js';
 import { applyOrderingBlock } from './services/block-apply.js';
+import { DagService } from './services/dag-service.js';
+import { SqlitePostStore } from './store/sqlite-store.js';
 import { extendsOurTip, findForkPoint, reorg, MAX_REORG_DEPTH } from './services/fork-resolution.js';
 import {
   getKarmaBox,
@@ -98,6 +100,10 @@ const deps = {
   getPost,
 };
 
+// DagService — owns canonical branch population and DAG reorg logic
+const postStore = new SqlitePostStore();
+const dagService = new DagService(postStore);
+
 // 3. Register Stage 2 handlers
 
 net.onSubBlock((sb) => {
@@ -126,7 +132,7 @@ net.onOrderingBlock(async (block) => {
 
   // Genesis or extends our tip: apply normally
   if (currentHeight === 0 || extendsOurTip(block)) {
-    applyOrderingBlock(block);
+    applyOrderingBlock(block, dagService);
     return;
   }
 
@@ -215,7 +221,7 @@ net.onOrderingBlock(async (block) => {
       return;
     }
 
-    reorg(forkHeight, newBlocks);
+    reorg(forkHeight, newBlocks, dagService);
     console.log(
       `Reorg complete: new tip at height=${forkHeight + newBlocks.length}`,
     );
@@ -284,7 +290,7 @@ try {
   // Register blocks handler — bridges sync machine's pull path
   // (ModifierResponse) to the node's applyOrderingBlock pipeline.
   net.setBlocksHandler((block) => {
-    applyOrderingBlock(block);
+    applyOrderingBlock(block, dagService);
   });
 } catch (err) {
   console.warn(`Net startup failed (continuing without networking): ${String(err)}`);
