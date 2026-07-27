@@ -31,9 +31,11 @@ import {
   insertMempoolSubBlock,
   insertUtxoTx,
   getOrderingBlock,
+  insertStump,
+  getStump,
 } from './store/index.js';
-import { encodePost, cumulativeWork, MEMPOOL_EXPIRY_BLOCKS, subBlockFromPost, verifyPostId } from '@dagsocial/types';
-import type { BlockHeader } from '@dagsocial/types';
+import { encodePost, cumulativeWork, MEMPOOL_EXPIRY_BLOCKS, subBlockFromPost, verifyPostId, computeStumpId } from '@dagsocial/types';
+import type { BlockHeader, Stump } from '@dagsocial/types';
 
 const config = loadConfig();
 const startTime = Date.now();
@@ -257,6 +259,13 @@ net.onTx((tx) => {
   console.log(`Relayed tx queued in mempool: ${result.txId}`);
 });
 
+net.onStump((stump) => {
+  const stumpId = computeStumpId(stump);
+  if (getStump(stumpId)) return;
+  insertStump(stump);
+  console.log(`Relayed stump stored: ${stumpId}`);
+});
+
 // 4. Start net
 try {
   await net.start();
@@ -280,6 +289,19 @@ try {
       const post = getPost(postId);
       if (!post || !('content' in post) || !post.content) continue;
       entries.push({ postId, post, likeBoxes: [] });
+    }
+    return entries;
+  });
+
+  // Register stumps handler for GetStumps requests
+  net.setStumpsHandler((stumpIds: string[]) => {
+    const HEX64 = /^[0-9a-f]{64}$/;
+    const entries: Array<{ stumpId: string; stump: Stump }> = [];
+    for (const stumpId of stumpIds) {
+      if (!HEX64.test(stumpId)) continue;
+      const stump = getStump(stumpId);
+      if (!stump) continue;
+      entries.push({ stumpId, stump });
     }
     return entries;
   });
