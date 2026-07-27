@@ -15,6 +15,8 @@ export const MSG_GET_PEERS = 8;
 export const MSG_PEERS = 9;
 export const MSG_GET_POSTS = 10;
 export const MSG_POSTS = 11;
+export const MSG_GET_STUMPS = 12;
+export const MSG_STUMPS = 13;
 
 // ---------------------------------------------------------------------------
 // Modifier type IDs
@@ -165,4 +167,21 @@ export interface PostsEntry {
 
 export interface PostsMsg {
   entries: PostsEntry[];
+}
+
+// ---------------------------------------------------------------------------
+// GetStumps / Stumps message types
+// ---------------------------------------------------------------------------
+
+export interface GetStumpsMsg {
+  stumpIds: string[];
+}
+
+export interface StumpsEntry {
+  stumpId: string;
+  stump: import('@dagsocial/types').Stump;
+}
+
+export interface StumpsMsg {
+  entries: StumpsEntry[];
 }

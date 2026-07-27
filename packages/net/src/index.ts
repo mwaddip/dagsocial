@@ -21,6 +21,8 @@ export {
   MSG_PEERS,
   MSG_GET_POSTS,
   MSG_POSTS,
+  MSG_GET_STUMPS,
+  MSG_STUMPS,
   MODIFIER_ORDERING_BLOCK,
 } from './types.js';
 export { buildHandshakeFrame, parseHandshakeBody, validateHandshake } from './handshake.js';
@@ -45,6 +47,9 @@ export type {
   GetPostsMsg,
   PostsEntry,
   PostsMsg,
+  GetStumpsMsg,
+  StumpsEntry,
+  StumpsMsg,
 } from './types.js';
 export type { SyncInfo, Inv, ModifierRequest, ModifierResponse, SyncState } from './sync-types.js';
 export {
@@ -54,6 +59,8 @@ export {
   encodeModifierResponse, decodeModifierResponse,
   encodeGetPosts, decodeGetPosts,
   encodePosts, decodePosts,
+  encodeGetStumps, decodeGetStumps,
+  encodeStumps, decodeStumps,
 } from './sync-codec.js';
 export { SyncMachine } from './sync-machine.js';
 export type { SyncStore } from './sync-machine.js';
