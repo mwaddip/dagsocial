@@ -14,7 +14,7 @@ import {
 import { NetNode, type PostsEntry } from '@dagsocial/net';
 import * as validation from '@dagsocial/validation';
 import { verifyPostForRelay } from './services/verifier.js';
-import { sweepPlaceholders, hasPlaceholders } from './services/content-sweep.js';
+import { sweepPlaceholders, hasPlaceholders, sweepStumps, hasMissingStumps } from './services/content-sweep.js';
 import { validateTx } from './services/utxo-engine.js';
 import { setNet } from './services/net-instance.js';
 import { applyOrderingBlock } from './services/block-apply.js';
@@ -334,6 +334,18 @@ net.onSyncComplete(() => {
       console.error(`[content-sweep] Sweep failed: ${err.message}`);
     });
   }
+  if (hasMissingStumps()) {
+    console.log('[content-sweep] Sync complete, sweeping missing stumps...');
+    sweepStumps(net).then((result) => {
+      if (result.success) {
+        console.log('[content-sweep] All stumps resolved.');
+      } else {
+        console.warn(`[content-sweep] Stump sweep incomplete: ${result.remaining} stumps remain.`);
+      }
+    }).catch((err: Error) => {
+      console.error(`[content-sweep] Stump sweep failed: ${err.message}`);
+    });
+  }
 });
 
 // Re-run content sweep when a new peer becomes active and we have pending placeholders
@@ -342,6 +354,12 @@ net.onPeerActive((_peerId: string) => {
     console.log('[content-sweep] New peer active, retrying placeholder sweep...');
     sweepPlaceholders(net, deps).catch((err: Error) => {
       console.error(`[content-sweep] Sweep failed: ${err.message}`);
+    });
+  }
+  if (hasMissingStumps()) {
+    console.log('[content-sweep] New peer active, retrying stump sweep...');
+    sweepStumps(net).catch((err: Error) => {
+      console.error(`[content-sweep] Stump sweep failed: ${err.message}`);
     });
   }
 });
