@@ -8,6 +8,7 @@ export interface PeerStorage {
 
 export class PeerDb {
   private entries: Map<string, PeerRecord> = new Map();
+  private bannedAddrs: Set<string> = new Set();
   private selfAddrs: Set<string>;
 
   constructor(
@@ -28,6 +29,7 @@ export class PeerDb {
 
   record(record: PeerRecord): void {
     if (this.selfAddrs.has(record.address)) return;
+    if (this.bannedAddrs.has(record.address)) return;
 
     const existing = this.entries.get(record.address);
     const merged: PeerRecord = existing
@@ -63,13 +65,31 @@ export class PeerDb {
     this.storage?.delete(addr);
   }
 
+  /** Ban a peer address — removes from entries and prevents re-add. */
+  ban(addr: string): void {
+    this.bannedAddrs.add(addr);
+    this.entries.delete(addr);
+    this.storage?.delete(addr);
+  }
+
+  /** Check if an address is banned. */
+  isBanned(addr: string): boolean {
+    return this.bannedAddrs.has(addr);
+  }
+
+  /** Lift a ban (e.g., temporal ban expired). */
+  unban(addr: string): void {
+    this.bannedAddrs.delete(addr);
+  }
+
   get(addr: string): PeerRecord | null {
+    if (this.bannedAddrs.has(addr)) return null;
     return this.entries.get(addr) ?? null;
   }
 
   recent(limit: number, excludeAddrs: Set<string>): PeerRecord[] {
     const filtered = Array.from(this.entries.values())
-      .filter((r) => !excludeAddrs.has(r.address));
+      .filter((r) => !excludeAddrs.has(r.address) && !this.bannedAddrs.has(r.address));
     filtered.sort((a, b) => b.lastSeenMs - a.lastSeenMs);
     return filtered.slice(0, limit);
   }

@@ -26,6 +26,10 @@ export type { HandshakeMsg, HandshakeResult } from './handshake.js';
 export { PeerDb } from './peerdb.js';
 export { OutboundManager } from './outbound-mgr.js';
 export type { PeerStorage } from './peerdb.js';
+export {
+  PeerState,
+  PenaltyKind,
+} from './types.js';
 export type {
   NetConfig,
   NetValidators,
@@ -33,6 +37,9 @@ export type {
   PeerRecord,
   PenaltyType,
   PenaltyRecord,
+  PeerMetadata,
+  ControlEvent,
+  DataEvent,
 } from './types.js';
 export type { SyncInfo, Inv, ModifierRequest, ModifierResponse, SyncState } from './sync-types.js';
 export {

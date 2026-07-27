@@ -45,6 +45,61 @@ export interface PenaltyRecord {
 }
 
 // ---------------------------------------------------------------------------
+// Peer state machine
+// ---------------------------------------------------------------------------
+
+export enum PeerState {
+  Connecting = 'connecting',
+  Handshaking = 'handshaking',
+  Active = 'active',
+  Disconnected = 'disconnected',
+  Failed = 'failed',
+  Banned = 'banned',
+}
+
+// ---------------------------------------------------------------------------
+// Penalty attribution tiers (additive to existing PenaltyType)
+// ---------------------------------------------------------------------------
+
+export enum PenaltyKind {
+  /** Transient failure — cooldown, not a ban. */
+  Transient = 'transient',
+  /** Protocol violation — permanent ban. */
+  ProtocolViolation = 'protocol_violation',
+  /** Rate limit exceeded. */
+  RateLimit = 'rate_limit',
+}
+
+// ---------------------------------------------------------------------------
+// PeerMetadata — runtime peer state tracked by PeerManager
+// ---------------------------------------------------------------------------
+
+export interface PeerMetadata {
+  peerId: string;
+  state: PeerState;
+  penaltyCount: number;
+  bannedUntil: number | null; // null = not banned, timestamp = ban expiration
+  stalled: boolean;
+  lastSeenMs: number;
+}
+
+// ---------------------------------------------------------------------------
+// Event types for the biased event loop
+// ---------------------------------------------------------------------------
+
+export interface ControlEvent {
+  kind: 'reorg' | 'peer_disconnect' | 'new_peer' | 'shutdown';
+  peerId?: string;
+  data?: unknown;
+}
+
+export interface DataEvent {
+  kind: 'post_received' | 'post_acknowledged' | 'message';
+  peerId: string;
+  data: Uint8Array;
+}
+
+// ---------------------------------------------------------------------------
 // PeerRecord — persisted peer metadata
 // ---------------------------------------------------------------------------
 
