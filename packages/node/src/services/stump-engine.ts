@@ -1,10 +1,12 @@
 import {
   computePostId,
+  computeStumpId,
   PROTOCOL_VERSION,
   leafHash,
   nodeHash,
   buildMerkleRoot,
   hexToBuf,
+  MEMPOOL_EXPIRY_BLOCKS,
 } from '@dagsocial/types';
 import type { Stump, PruneIntent, KarmaDelta, Post, LikeBox, UserId } from '@dagsocial/types';
 import {
@@ -13,6 +15,7 @@ import {
   getLockedLikeBoxes,
   pruneSubtree,
   getCurrentHeight,
+  insertMempoolStump,
 } from '../store/index.js';
 
 // ---------------------------------------------------------------------------
@@ -132,6 +135,11 @@ export function executePrune(
 
   // ---- 8. Prune the subtree ----
   pruneSubtree(intent.rootPostHash, stump);
+
+  // Enqueue stump for block inclusion
+  const stumpId = computeStumpId(stump);
+  const ch = getCurrentHeight();
+  insertMempoolStump(stumpId, ch + MEMPOOL_EXPIRY_BLOCKS);
 
   return stump;
 }
