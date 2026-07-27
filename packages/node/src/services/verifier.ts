@@ -5,9 +5,11 @@ import {
   POST_POW_TARGET_BITS,
   POST_LOCK_THREAD_COST,
   POST_LOCK_REPLY_COST,
+  computePostId,
+  decodePost,
 } from '@dagsocial/types';
 import type { Post } from '@dagsocial/types';
-import { verifyPoW, verifyPostSignature, verifyContentCharacters, blake2b32 } from '@dagsocial/validation';
+import { verifyPoW, verifyPostSignature, verifyContentCharacters } from '@dagsocial/validation';
 
 // ---------------------------------------------------------------------------
 // Parent hash verification
@@ -31,12 +33,13 @@ function verifyParentHash(
     // verified by the caller). This is a soft-path for tests.
     return { valid: true };
   }
-  const recomputed = blake2b32(parentRaw);
-  const recomputedHex = Buffer.from(recomputed).toString('hex');
-  if (recomputedHex !== parentId) {
+  // Round-trip through decode -> computePostId (CBOR hash != field hash)
+  const parentPost = decodePost(parentRaw);
+  const recomputedId = computePostId(parentPost);
+  if (recomputedId !== parentId) {
     return {
       valid: false,
-      error: `Parent hash mismatch: claimed ${parentId}, computed ${recomputedHex}`,
+      error: `Parent hash mismatch: claimed ${parentId}, computed ${recomputedId}`,
     };
   }
   return { valid: true };

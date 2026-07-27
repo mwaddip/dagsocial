@@ -1,10 +1,10 @@
 import {
   computePostId,
+  decodePost,
   MEMPOOL_EXPIRY_BLOCKS,
 } from '@dagsocial/types';
 import type { Post, KarmaBox, UtxoTransaction, AnyBox, SubBlock, LikeBox } from '@dagsocial/types';
 import type { VerifierDeps, VerificationResult } from './verifier.js';
-import { blake2b32 } from '@dagsocial/validation';
 
 // ---------------------------------------------------------------------------
 // Error
@@ -166,13 +166,14 @@ export function createPost(
         `parent post ${parentRef} not found (raw bytes unavailable)`,
       );
     }
-    // Recompute the parent's hash from raw stored bytes and verify it
-    // matches the claimed reference. The parentRef IS the content hash.
-    const recomputedId = blake2b32(parentBytes);
-    const recomputedHex = Buffer.from(recomputedId).toString('hex');
-    if (recomputedHex !== parentRef) {
+    // Round-trip through decode -> computePostId to get the canonical ID.
+    // Raw CBOR hashing doesn't match -- CBOR framing differs from the
+    // field-level hashing that computePostId uses.
+    const parentPost = decodePost(parentBytes);
+    const recomputedId = computePostId(parentPost);
+    if (recomputedId !== parentRef) {
       throw new PostValidationError(
-        `parent hash mismatch: claimed ${parentRef}, computed ${recomputedHex}`,
+        `parent hash mismatch: claimed ${parentRef}, computed ${recomputedId}`,
       );
     }
   }

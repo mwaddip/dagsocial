@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest';
-import { createHash } from 'crypto';
 import {
   createPost,
   PostServiceError,
@@ -7,18 +6,11 @@ import {
 } from '../../src/services/post-service.js';
 import type { PostServiceDeps } from '../../src/services/post-service.js';
 import type { Post, UtxoTransaction, AnyBox, KarmaBox } from '@dagsocial/types';
-import { PROTOCOL_VERSION } from '@dagsocial/types';
+import { PROTOCOL_VERSION, encodePost, computePostId } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Standard blake2b-512/32 hash (matches the implementation in post-service.ts).
- */
-function blake2b32(data: Uint8Array): Uint8Array {
-  return createHash('blake2b512').update(data).digest().subarray(0, 32);
-}
 
 function encodeUint32(n: number): Uint8Array {
   const buf = new ArrayBuffer(4);
@@ -56,9 +48,7 @@ function mockDeps(
       return raw ?? null;
     },
     encodePost: (post: Post) => {
-      // CBOR encode for the parent hash check — use JSON as a simple
-      // deterministic serialization for test purposes
-      return new TextEncoder().encode(JSON.stringify(post));
+      return encodePost(post);
     },
     insertPost: () => {},
     getCurrentHeight: () => 100,
@@ -145,23 +135,19 @@ describe('validate-dont-trust', () => {
   // Parent hash recomputation
   // -----------------------------------------------------------------------
 
-  it('rejects a post whose parent hash does not match stored bytes', () => {
+  it('accepts a post whose parent hash matches stored bytes', () => {
     const store = makeStore();
 
-    // Store a parent post with a known ID. The raw bytes are arbitrary.
-    const parentRaw = new TextEncoder().encode(
-      JSON.stringify({ content: 'parent content', author: Array(32).fill(0) }),
-    );
-    const parentHash = blake2b32(parentRaw);
-    const parentId = Buffer.from(parentHash).toString('hex');
+    // Create a real parent post, encode it as CBOR, compute its canonical ID
+    const parentPost = makePost({ content: 'parent content' });
+    const parentRaw = encodePost(parentPost);
+    const parentId = computePostId(parentPost);
     store.posts.set(parentId, parentRaw);
 
-    // Create a child post that references the correct parentId — this should
-    // succeed because getPostRaw returns bytes that hash to parentId.
     const child = makePost({ parentRefs: [parentId] });
     const tx = makeKarmaLockTx();
 
-    // This should succeed — parent hash matches
+    // Should succeed: decodePost(parentRaw) -> computePostId -> matches parentId
     const result = createPost(mockDeps(store), child, tx);
     expect(result.status).toBe('pending');
   });
@@ -169,24 +155,19 @@ describe('validate-dont-trust', () => {
   it('rejects a post whose parent hash does not match: tampered bytes', () => {
     const store = makeStore();
 
-    // Store a parent post with ID derived from original bytes
-    const originalRaw = new TextEncoder().encode('original parent data');
-    const originalHash = blake2b32(originalRaw);
-    const parentId = Buffer.from(originalHash).toString('hex');
+    // Create two different parent posts. Store post B's CBOR under post A's ID.
+    const postA = makePost({ content: 'original parent data' });
+    const postB = makePost({ content: 'tampered parent data' });
+    const idA = computePostId(postA);
+    const rawB = encodePost(postB);
 
-    // Store DIFFERENT bytes at this parentId — simulating a tampered store
-    // where the stored bytes don't hash to the claimed ID
-    const tamperedRaw = new TextEncoder().encode('tampered parent data');
-    // tamperedHash != originalHash, but we're storing it under parentId
-    // (which is derived from originalRaw)
-    store.posts.set(parentId, tamperedRaw);
+    // Store post B's CBOR bytes under post A's ID — tampered store
+    store.posts.set(idA, rawB);
 
-    // Create a child that references parentId
-    const child = makePost({ parentRefs: [parentId] });
+    const child = makePost({ parentRefs: [idA] });
     const tx = makeKarmaLockTx();
 
-    // Should reject: getPostRaw(parentId) returns tamperedRaw,
-    // blake2b32(tamperedRaw) != parentId
+    // Should reject: decodePost(rawB) -> computePostId(postB) != idA
     expect(() => createPost(mockDeps(store), child, tx)).toThrow(PostValidationError);
     expect(() => createPost(mockDeps(store), child, tx)).toThrow('parent hash mismatch');
   });
@@ -379,11 +360,13 @@ describe('validate-dont-trust', () => {
   it('accepts a post with multiple valid parent refs', () => {
     const store = makeStore();
 
-    // Store two parent posts
-    const raw1 = new TextEncoder().encode(JSON.stringify({ content: 'parent 1' }));
-    const raw2 = new TextEncoder().encode(JSON.stringify({ content: 'parent 2' }));
-    const id1 = Buffer.from(blake2b32(raw1)).toString('hex');
-    const id2 = Buffer.from(blake2b32(raw2)).toString('hex');
+    // Create two real parent posts
+    const parent1 = makePost({ content: 'parent 1' });
+    const parent2 = makePost({ content: 'parent 2' });
+    const raw1 = encodePost(parent1);
+    const raw2 = encodePost(parent2);
+    const id1 = computePostId(parent1);
+    const id2 = computePostId(parent2);
 
     store.posts.set(id1, raw1);
     store.posts.set(id2, raw2);
