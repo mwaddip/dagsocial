@@ -9,15 +9,15 @@ import { multiaddr } from '@multiformats/multiaddr';
 import { encode, decode } from 'cbor-x';
 
 import type { Libp2p } from 'libp2p';
-import type { SubBlock, OrderingBlock, UtxoTransaction, BlockHeader } from '@dagsocial/types';
+import type { SubBlock, OrderingBlock, UtxoTransaction, BlockHeader, Stump } from '@dagsocial/types';
 import { PROTOCOL_VERSION, encodeSubBlock, decodeSubBlock, encodeOrderingBlock, decodeOrderingBlock } from '@dagsocial/types';
 import { blockHash } from '@dagsocial/validation';
 import { ReaderError } from '@dagsocial/wire';
-import type { NetConfig, NetValidators, Peer, PeerRecord, PostsMsg, PostsEntry } from './types.js';
+import type { NetConfig, NetValidators, Peer, PeerRecord, PostsMsg, PostsEntry, StumpsEntry, StumpsMsg } from './types.js';
 import { PeerState } from './types.js';
 import type { Libp2pGossip, GossipHandlers } from './gossip.js';
 import { PeerManager } from './peer-mgr.js';
-import { subscribeTopics, broadcastSubBlock, broadcastOrderingBlock, broadcastTx } from './gossip.js';
+import { subscribeTopics, broadcastSubBlock, broadcastOrderingBlock, broadcastTx, broadcastStump } from './gossip.js';
 import {
   SYNC_PROTOCOL,
   HEADERS_PROTOCOL,
@@ -30,6 +30,10 @@ import {
   decodeGetPosts,
   encodePosts,
   decodePosts,
+  encodeGetStumps,
+  decodeGetStumps,
+  encodeStumps,
+  decodeStumps,
 } from './sync-codec.js';
 import { mergeUint8Arrays } from './util.js';
 import { PeerDb } from './peerdb.js';
@@ -44,6 +48,8 @@ import {
   MSG_SUB_BLOCK_RESPONSE,
   MSG_GET_POSTS,
   MSG_POSTS,
+  MSG_GET_STUMPS,
+  MSG_STUMPS,
 } from './types.js';
 
 type SubBlockCallback = (sb: SubBlock) => void;
@@ -205,6 +211,7 @@ export class NetNode {
   private subBlockHandlers: SubBlockCallback[] = [];
   private orderingBlockHandlers: OrderingBlockCallback[] = [];
   private txHandlers: TxCallback[] = [];
+  private stumpHandlers: Array<(stump: Stump) => void> = [];
   private started = false;
 
   // New sync infrastructure
@@ -217,6 +224,7 @@ export class NetNode {
   private syncHandlerRegistered = false;
   private headersHandlerRegistered = false;
   private postsHandler: ((postIds: string[]) => PostsEntry[]) | null = null;
+  private stumpsHandler: ((stumpIds: string[]) => StumpsEntry[]) | null = null;
   private syncCompleteHandlers: Array<() => void> = [];
   private peerActiveHandlers: Array<(peerId: string) => void> = [];
 
@@ -359,6 +367,9 @@ export class NetNode {
       onSubBlock: (sb) => { for (const cb of this.subBlockHandlers) cb(sb); },
       onOrderingBlock: (block) => { for (const cb of this.orderingBlockHandlers) cb(block); },
       onTx: (tx) => { for (const cb of this.txHandlers) cb(tx); },
+      onStump: (stump) => {
+        for (const cb of this.stumpHandlers) { try { cb(stump); } catch {} }
+      },
     };
 
     await subscribeTopics(asGossip(this.libp2p), this.validators, this.peerMgr, handlers);
@@ -600,6 +611,23 @@ export class NetNode {
           return;
         }
 
+        // Handle stump requests (MSG_GET_STUMPS)
+        if (code === MSG_GET_STUMPS) {
+          if (!this.stumpsHandler) {
+            // No handler registered — silently ignore (peer will time out)
+            return;
+          }
+          const request = decodeGetStumps(body);
+          if (request.stumpIds.length > 100) {
+            console.warn(`[net] GetStumps request with ${request.stumpIds.length} IDs exceeds limit, dropping`);
+            return;
+          }
+          const entries = this.stumpsHandler(request.stumpIds);
+          const response = encodeStumps(this.config.magic ?? MAGIC_MAINNET, { entries });
+          await stream.sink([response]);
+          return;
+        }
+
         // Dispatch to sync machine for all other message types
         console.log(`[net] sync handler: received code=${code} body_len=${body.length} from ${peerId}`);
         this.syncMachine?.handleMessage(peerId, code, body);
@@ -751,6 +779,11 @@ export class NetNode {
     await broadcastTx(asGossip(this.libp2p), tx);
   }
 
+  async broadcastStump(stump: Stump): Promise<void> {
+    if (!this.libp2p) return;
+    await broadcastStump(asGossip(this.libp2p), stump);
+  }
+
   // -----------------------------------------------------------------------
   // Inbound handlers
   // -----------------------------------------------------------------------
@@ -765,6 +798,10 @@ export class NetNode {
 
   onTx(cb: TxCallback): void {
     this.txHandlers.push(cb);
+  }
+
+  onStump(cb: (stump: Stump) => void): void {
+    this.stumpHandlers.push(cb);
   }
 
   /**
@@ -843,6 +880,46 @@ export class NetNode {
     }
   }
 
+  /**
+   * Request stump data from a specific peer. Opens a sync-protocol stream,
+   * sends a GetStumps message, and reads the Stumps response.
+   */
+  async requestStumps(peerId: string, stumpIds: string[]): Promise<StumpsMsg> {
+    if (!this.libp2p) return { entries: [] };
+    const peer = this.libp2p.getPeers().find(p => p.toString() === peerId);
+    if (!peer) {
+      console.warn(`[net] requestStumps: peer ${peerId} not found`);
+      return { entries: [] };
+    }
+    const magic = this.config.magic ?? MAGIC_MAINNET;
+    const clamped = stumpIds.slice(0, 100);
+    const request = encodeGetStumps(magic, { stumpIds: clamped });
+    let stream: import('@libp2p/interface').Stream | undefined;
+    try {
+      stream = await this.libp2p.dialProtocol(peer, SYNC_PROTOCOL);
+      await stream.sink([request]);
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of stream.source) {
+        chunks.push(chunk instanceof Uint8Array ? chunk : chunk.subarray());
+      }
+      if (chunks.length === 0) {
+        return { entries: [] };
+      }
+      const data = mergeUint8Arrays(chunks);
+      const frame = decodeFrame(magic, data);
+      if (frame.code !== MSG_STUMPS) {
+        console.warn(`[net] requestStumps: unexpected response code ${frame.code}`);
+        return { entries: [] };
+      }
+      return decodeStumps(frame.body);
+    } catch (err) {
+      console.warn(`[net] requestStumps failed for peer ${peerId}: ${String(err)}`);
+      return { entries: [] };
+    } finally {
+      if (stream) await stream.close().catch(() => {});
+    }
+  }
+
   // -----------------------------------------------------------------------
   // Sync — handler registration
   // -----------------------------------------------------------------------
@@ -862,6 +939,15 @@ export class NetNode {
    */
   setPostsHandler(handler: (postIds: string[]) => PostsEntry[]): void {
     this.postsHandler = handler;
+  }
+
+  /**
+   * Register a handler that serves stump data to peers who request it via
+   * MSG_GET_STUMPS. The handler receives an array of stump IDs and must return
+   * the corresponding StumpsEntry records.
+   */
+  setStumpsHandler(handler: (stumpIds: string[]) => StumpsEntry[]): void {
+    this.stumpsHandler = handler;
   }
 
   /**
