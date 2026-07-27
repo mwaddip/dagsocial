@@ -59,3 +59,22 @@ export function writeSchemaVersion(version: number): void {
   new DataView(buf).setUint32(0, version, true);
   metaPut('schema_version', new Uint8Array(buf));
 }
+
+/**
+ * Read the reorg floor from dag_meta. Returns 0 if not set.
+ * Encoded as 4-byte LE uint32, same as schema_version.
+ */
+export function getReorgFloor(): number {
+  const bytes = metaGet('reorg_floor');
+  if (!bytes || bytes.length < 4) return 0;
+  return new DataView(bytes.buffer, bytes.byteOffset, 4).getUint32(0, true);
+}
+
+/**
+ * Write the reorg floor to dag_meta. Set to 0 to disable.
+ */
+export function setReorgFloor(depth: number): void {
+  const buf = new ArrayBuffer(4);
+  new DataView(buf).setUint32(0, depth, true);
+  metaPut('reorg_floor', new Uint8Array(buf));
+}
