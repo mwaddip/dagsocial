@@ -17,6 +17,7 @@ import {
   getCurrentHeight,
   insertMempoolStump,
 } from '../store/index.js';
+import { getNet } from './net-instance.js';
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -140,6 +141,14 @@ export function executePrune(
   const stumpId = computeStumpId(stump);
   const ch = getCurrentHeight();
   insertMempoolStump(stumpId, ch + MEMPOOL_EXPIRY_BLOCKS);
+
+  // Broadcast stump to peers (gossip push)
+  const net = getNet();
+  if (net) {
+    net.broadcastStump(stump).catch((err: Error) => {
+      console.warn(`Failed to broadcast stump ${stumpId}: ${err.message}`);
+    });
+  }
 
   return stump;
 }
