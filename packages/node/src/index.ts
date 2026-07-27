@@ -11,7 +11,7 @@ import {
   emitShutdownSignalReceived,
   emitServerShuttingDown,
 } from './journal.js';
-import { NetNode } from '@dagsocial/net';
+import { NetNode, type PostsEntry } from '@dagsocial/net';
 import * as validation from '@dagsocial/validation';
 import { verifyPostForRelay } from './services/verifier.js';
 import { validateTx } from './services/utxo-engine.js';
@@ -29,8 +29,8 @@ import {
   insertUtxoTx,
   getOrderingBlock,
 } from './store/index.js';
-import { encodePost, cumulativeWork, MEMPOOL_EXPIRY_BLOCKS } from '@dagsocial/types';
-import type { BlockHeader, SubBlock } from '@dagsocial/types';
+import { encodePost, cumulativeWork, MEMPOOL_EXPIRY_BLOCKS, subBlockFromPost } from '@dagsocial/types';
+import type { BlockHeader } from '@dagsocial/types';
 
 const config = loadConfig();
 const startTime = Date.now();
@@ -251,14 +251,19 @@ try {
   // registered during NetNode.start())
   net.setSyncHandler((subBlockId: string) => {
     const post = getPost(subBlockId);
-    if (!post || !('author' in post)) return null;
-    return {
-      subBlockId,
-      post,
-      likeBoxes: [],
-      producerId: post.author,
-      protocolVersion: post.protocolVersion,
-    } as SubBlock;
+    if (!post || !('content' in post)) return null;
+    return subBlockFromPost(post, subBlockId);
+  });
+
+  // Register posts handler for GetPosts requests — skip missing and placeholder posts
+  net.setPostsHandler((postIds: string[]) => {
+    const entries: PostsEntry[] = [];
+    for (const postId of postIds) {
+      const post = getPost(postId);
+      if (!post || !('content' in post)) continue;
+      entries.push({ postId, post, likeBoxes: [] });
+    }
+    return entries;
   });
 
   // Register headers handler for fork resolution sync
