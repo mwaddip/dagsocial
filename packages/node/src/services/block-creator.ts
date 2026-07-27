@@ -58,6 +58,7 @@ import {
   getPendingEntries,
   purgeExpired,
   removeEntry,
+  drainMempoolStumps,
   type PoolEntry,
 } from '../store/mempool.js';
 import {
@@ -511,11 +512,15 @@ export function createOrderingBlock(): OrderingBlock | null {
     }
   }
 
+  // Drain queued stump IDs for block inclusion
+  const MAX_STUMPS_PER_BLOCK = 32;
+  const stumpIds = drainMempoolStumps(MAX_STUMPS_PER_BLOCK);
+
   // 17. Build the body trees
   const subBlockTree: SubBlockTree = {
     subBlockRefs,
     subBlockEntries: subBlockEntriesForBlock,
-    stumpIds: [], // deferred — prune commit queuing is a follow-up session
+    stumpIds,
   };
   const utxoTxTree: UtxoTxTree = {
     utxoTxIds,
