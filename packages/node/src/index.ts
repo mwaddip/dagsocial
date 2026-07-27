@@ -29,7 +29,7 @@ import {
   insertUtxoTx,
   getOrderingBlock,
 } from './store/index.js';
-import { encodePost, cumulativeWork, MEMPOOL_EXPIRY_BLOCKS, subBlockFromPost } from '@dagsocial/types';
+import { encodePost, cumulativeWork, MEMPOOL_EXPIRY_BLOCKS, subBlockFromPost, verifyPostId } from '@dagsocial/types';
 import type { BlockHeader } from '@dagsocial/types';
 
 const config = loadConfig();
@@ -106,9 +106,18 @@ net.onSubBlock((sb) => {
     console.warn(`Relayed sub-block rejected: ${result.error}`);
     return;
   }
+  // Verify post ID matches claimed subBlockId (defense-in-depth)
+  if (!verifyPostId(sb.post, sb.subBlockId)) {
+    console.warn(`Relayed sub-block rejected: post ID mismatch for ${sb.subBlockId}`);
+    return;
+  }
   insertPost(sb.post, encodePost(sb.post));
   const currentHeight = getCurrentHeight();
   insertMempoolSubBlock(sb.subBlockId, currentHeight + MEMPOOL_EXPIRY_BLOCKS);
+  // Re-broadcast to other peers (gap 5)
+  net.broadcastSubBlock(sb).catch((err: Error) => {
+    console.warn(`Failed to relay sub-block ${sb.subBlockId}: ${err.message}`);
+  });
   console.log(`Relayed sub-block queued in mempool: ${sb.subBlockId}`);
 });
 
