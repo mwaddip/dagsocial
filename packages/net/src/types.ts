@@ -1,4 +1,4 @@
-import type { SubBlock, OrderingBlock, UtxoTransaction, Post } from '@dagsocial/types';
+import type { SubBlock, OrderingBlock, UtxoTransaction, Post, LikeBox } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
 // Message codes
@@ -13,6 +13,8 @@ export const MSG_GET_SUB_BLOCK = 6;
 export const MSG_SUB_BLOCK_RESPONSE = 7;
 export const MSG_GET_PEERS = 8;
 export const MSG_PEERS = 9;
+export const MSG_GET_POSTS = 10;
+export const MSG_POSTS = 11;
 
 // ---------------------------------------------------------------------------
 // Modifier type IDs
@@ -145,4 +147,22 @@ export interface NetValidators {
   verifySubBlockStructure: (sb: SubBlock) => { valid: boolean; error?: string };
   verifyTxStructure: (tx: UtxoTransaction) => { valid: boolean; error?: string };
   verifyOrderingBlockStructure: (block: OrderingBlock) => { valid: boolean; error?: string };
+}
+
+// ---------------------------------------------------------------------------
+// GetPosts / Posts message types
+// ---------------------------------------------------------------------------
+
+export interface GetPostsMsg {
+  postIds: string[];
+}
+
+export interface PostsEntry {
+  postId: string;
+  post: Post;
+  likeBoxes: LikeBox[];
+}
+
+export interface PostsMsg {
+  entries: PostsEntry[];
 }
