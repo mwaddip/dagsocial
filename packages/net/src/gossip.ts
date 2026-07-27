@@ -9,6 +9,7 @@ import type { SubBlock, OrderingBlock, UtxoTransaction } from '@dagsocial/types'
 import { TopicValidatorResult } from '@libp2p/interface';
 import type { PubSub } from '@libp2p/interface';
 import type { GossipsubEvents } from '@chainsafe/libp2p-gossipsub';
+import { PenaltyKind } from './types.js';
 import type { NetValidators } from './types.js';
 import type { PeerManager } from './peer-mgr.js';
 
@@ -69,12 +70,15 @@ export function subscribeTopics(
       const sb = decodeSubBlock(raw);
       const vr = runStage1SubBlock(sb, validators);
       if (!vr.valid) {
+        // Bogus — well-formed message with invalid content.
+        // Score accumulates toward temporal ban but is NOT an instant permanent ban.
         peerMgr.recordPenalty('misbehavior', _peer.toString(), 100, vr.error ?? 'invalid sub-block');
         return TopicValidatorResult.Reject;
       }
       return TopicValidatorResult.Accept;
     } catch (err) {
-      peerMgr.recordPenalty('misbehavior', _peer.toString(), 100, `decode error: ${String(err)}`);
+      // Malformed — cannot even decode. Permanent ban.
+      peerMgr.recordPenaltyKind(PenaltyKind.ProtocolViolation, _peer.toString(), `malformed sub-block: ${String(err)}`);
       return TopicValidatorResult.Reject;
     }
   });
@@ -85,16 +89,19 @@ export function subscribeTopics(
       const block = decodeOrderingBlock(raw);
       const vr = validators.verifyOrderingBlockStructure(block);
       if (!vr.valid) {
+        // Bogus — well-formed message with invalid content.
         peerMgr.recordPenalty('misbehavior', _peer.toString(), 100, vr.error ?? 'invalid ordering block');
         return TopicValidatorResult.Reject;
       }
       if (!validators.verifyProtocolVersion(block.header.protocolVersion)) {
+        // Bogus — well-formed message with unsupported version.
         peerMgr.recordPenalty('misbehavior', _peer.toString(), 100, 'unsupported protocol version');
         return TopicValidatorResult.Reject;
       }
       return TopicValidatorResult.Accept;
     } catch (err) {
-      peerMgr.recordPenalty('misbehavior', _peer.toString(), 100, `decode error: ${String(err)}`);
+      // Malformed — cannot even decode. Permanent ban.
+      peerMgr.recordPenaltyKind(PenaltyKind.ProtocolViolation, _peer.toString(), `malformed ordering block: ${String(err)}`);
       return TopicValidatorResult.Reject;
     }
   });
@@ -105,16 +112,19 @@ export function subscribeTopics(
       const tx = decodeTx(raw);
       const vr = validators.verifyTxStructure(tx);
       if (!vr.valid) {
+        // Bogus — well-formed message with invalid content.
         peerMgr.recordPenalty('misbehavior', _peer.toString(), 100, vr.error ?? 'invalid tx');
         return TopicValidatorResult.Reject;
       }
       if (!validators.verifyProtocolVersion(tx.protocolVersion)) {
+        // Bogus — well-formed message with unsupported version.
         peerMgr.recordPenalty('misbehavior', _peer.toString(), 100, 'unsupported protocol version');
         return TopicValidatorResult.Reject;
       }
       return TopicValidatorResult.Accept;
     } catch (err) {
-      peerMgr.recordPenalty('misbehavior', _peer.toString(), 100, `decode error: ${String(err)}`);
+      // Malformed — cannot even decode. Permanent ban.
+      peerMgr.recordPenaltyKind(PenaltyKind.ProtocolViolation, _peer.toString(), `malformed tx: ${String(err)}`);
       return TopicValidatorResult.Reject;
     }
   });
