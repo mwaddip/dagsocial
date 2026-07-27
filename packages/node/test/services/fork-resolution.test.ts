@@ -21,7 +21,6 @@ import {
 import { blockHash } from '@dagsocial/validation';
 import type {
   Post,
-  SubBlock,
   LikeBox,
   KarmaBox,
   OrderingBlock,
@@ -98,7 +97,7 @@ async function importMempoolFresh() {
   const mod = await import('../../src/store/mempool.js');
   return mod as {
     insertSubBlock: (
-      subBlock: SubBlock,
+      postId: string,
       expiresAtHeight: number,
       batchId?: string | null,
     ) => number;
@@ -110,7 +109,7 @@ async function importMempoolFresh() {
     getPendingEntries: (limit: number) => Array<{
       rowid: number;
       entryType: string;
-      subblockCbor: Uint8Array | null;
+      subblockId: string | null;
       utxoTxCbor: Uint8Array | null;
       batchId: string | null;
       expiresAtHeight: number;
@@ -369,10 +368,7 @@ describe('extendsOurTip', () => {
     posts.insertPost(post, encodePost(post));
 
     const mempool = await importMempoolFresh();
-    mempool.insertSubBlock({
-      subBlockId: postId, post,
-      likeBoxes: [], producerId: author.userId, protocolVersion: PROTOCOL_VERSION,
-    }, 1000);
+    mempool.insertSubBlock(postId, 1000);
 
     const bc = await importBlockCreator();
     bc.startBlockCreator(testConfig);
@@ -383,10 +379,7 @@ describe('extendsOurTip', () => {
     const post2 = makePost(author.userId, 'block 2');
     const postId2 = computePostId(post2);
     posts.insertPost(post2, encodePost(post2));
-    mempool.insertSubBlock({
-      subBlockId: postId2, post: post2,
-      likeBoxes: [], producerId: author.userId, protocolVersion: PROTOCOL_VERSION,
-    }, 1000);
+    mempool.insertSubBlock(postId2, 1000);
 
     const block2 = bc.createOrderingBlock();
     expect(block2).not.toBeNull();
@@ -426,10 +419,7 @@ describe('extendsOurTip', () => {
     posts.insertPost(post, encodePost(post));
 
     const mempool = await importMempoolFresh();
-    mempool.insertSubBlock({
-      subBlockId: postId, post,
-      likeBoxes: [], producerId: author.userId, protocolVersion: PROTOCOL_VERSION,
-    }, 1000);
+    mempool.insertSubBlock(postId, 1000);
 
     const bc = await importBlockCreator();
     bc.startBlockCreator(testConfig);
@@ -450,7 +440,7 @@ describe('extendsOurTip', () => {
         powTargetBits: 4,
         createdAt: Date.now(),
       },
-      subBlockTree: { subBlockRefs: [], stumpIds: [], subBlocks: [] },
+      subBlockTree: { subBlockRefs: [], subBlockEntries: [], stumpIds: [] },
       utxoTxTree: { utxoTxIds: [], utxoTxs: [], likeBoxIds: [], coinbaseOutputs: [] },
       validatorSignature: new Uint8Array(64),
     };
@@ -476,7 +466,7 @@ describe('extendsOurTip', () => {
         powTargetBits: 4,
         createdAt: Date.now(),
       },
-      subBlockTree: { subBlockRefs: [], stumpIds: [], subBlocks: [] },
+      subBlockTree: { subBlockRefs: [], subBlockEntries: [], stumpIds: [] },
       utxoTxTree: { utxoTxIds: [], utxoTxs: [], likeBoxIds: [], coinbaseOutputs: [] },
       validatorSignature: new Uint8Array(64),
     };
@@ -517,10 +507,7 @@ describe('findForkPoint', () => {
       const post = makePost(author.userId, `block ${i + 1}`);
       const postId = computePostId(post);
       posts.insertPost(post, encodePost(post));
-      mempool.insertSubBlock({
-        subBlockId: postId, post,
-        likeBoxes: [], producerId: author.userId, protocolVersion: PROTOCOL_VERSION,
-      }, 1000);
+      mempool.insertSubBlock(postId, 1000);
       bc.createOrderingBlock();
     }
 
@@ -574,10 +561,7 @@ describe('findForkPoint', () => {
     const post = makePost(author.userId, 'genesis');
     const postId = computePostId(post);
     posts.insertPost(post, encodePost(post));
-    mempool.insertSubBlock({
-      subBlockId: postId, post,
-      likeBoxes: [], producerId: author.userId, protocolVersion: PROTOCOL_VERSION,
-    }, 1000);
+    mempool.insertSubBlock(postId, 1000);
     bc.createOrderingBlock();
 
     const ordering = await importOrdering();
@@ -628,10 +612,7 @@ describe('findForkPoint', () => {
       const post = makePost(author.userId, `deep ${i}`);
       const postId = computePostId(post);
       posts.insertPost(post, encodePost(post));
-      mempool.insertSubBlock({
-        subBlockId: postId, post,
-        likeBoxes: [], producerId: author.userId, protocolVersion: PROTOCOL_VERSION,
-      }, 1000);
+      mempool.insertSubBlock(postId, 1000);
       bc.createOrderingBlock();
     }
 
@@ -715,10 +696,7 @@ describe('revertBlock', () => {
     posts.insertPost(post, encodePost(post));
 
     const mempool = await importMempoolFresh();
-    mempool.insertSubBlock({
-      subBlockId: postId, post,
-      likeBoxes: [], producerId: author.userId, protocolVersion: PROTOCOL_VERSION,
-    }, 1000);
+    mempool.insertSubBlock(postId, 1000);
 
     const bc = await importBlockCreator();
     bc.startBlockCreator(testConfig);
@@ -766,10 +744,7 @@ describe('revertBlock', () => {
     posts.insertPost(post, encodePost(post));
 
     // Insert sub-block
-    mempool.insertSubBlock({
-      subBlockId: postId, post,
-      likeBoxes: [], producerId: author.userId, protocolVersion: PROTOCOL_VERSION,
-    }, 1000);
+    mempool.insertSubBlock(postId, 1000);
 
     // Insert a standalone UTXO tx
     const karmaBox = makeKarmaBox(100, author.userId, 0);
@@ -914,10 +889,7 @@ describe('reorg', () => {
       const post = makePost(author.userId, `reorg test ${i}`);
       const postId = computePostId(post);
       posts.insertPost(post, encodePost(post));
-      mempool.insertSubBlock({
-        subBlockId: postId, post,
-        likeBoxes: [], producerId: author.userId, protocolVersion: PROTOCOL_VERSION,
-      }, 1000);
+      mempool.insertSubBlock(postId, 1000);
       bc.createOrderingBlock();
     }
 
@@ -966,10 +938,7 @@ describe('reorg', () => {
       const post = makePost(author.userId, `chain a ${i}`);
       const postId = computePostId(post);
       posts.insertPost(post, encodePost(post));
-      mempool.insertSubBlock({
-        subBlockId: postId, post,
-        likeBoxes: [], producerId: author.userId, protocolVersion: PROTOCOL_VERSION,
-      }, 1000);
+      mempool.insertSubBlock(postId, 1000);
       bc.createOrderingBlock();
     }
 
@@ -1017,10 +986,7 @@ describe('reorg', () => {
       const post = makePost(author.userId, `original ${i}`);
       const postId = computePostId(post);
       posts.insertPost(post, encodePost(post));
-      mempool.insertSubBlock({
-        subBlockId: postId, post,
-        likeBoxes: [], producerId: author.userId, protocolVersion: PROTOCOL_VERSION,
-      }, 1000);
+      mempool.insertSubBlock(postId, 1000);
       bc.createOrderingBlock();
     }
 

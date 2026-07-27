@@ -48,7 +48,7 @@ function makeOrderingBlock(
     subBlockTree: {
       subBlockRefs: ['sb-1', 'sb-2'],
       stumpIds: ['stump-1'],
-      subBlocks: [],
+      subBlockEntries: [],
     },
     utxoTxTree: {
       utxoTxIds: ['tx-1'],
@@ -106,7 +106,7 @@ describe('ordering store', () => {
       subBlockTree: {
         subBlockRefs: ['sb-ref-1', 'sb-ref-2'],
         stumpIds: ['stump-aaa'],
-        subBlocks: [],
+        subBlockEntries: [],
       },
       utxoTxTree: {
         utxoTxIds: ['tx-id-1'],

@@ -35,7 +35,7 @@ function makeMockOrderingBlock(
 ): OrderingBlock {
   return {
     header: makeMockHeader(height, prevBlockHash),
-    subBlockTree: { subBlockRefs: [], stumpIds: [], subBlocks: [] },
+    subBlockTree: { subBlockRefs: [], subBlockEntries: [], stumpIds: [] },
     utxoTxTree: {
       utxoTxIds: [],
       utxoTxs: [],

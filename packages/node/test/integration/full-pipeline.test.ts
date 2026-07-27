@@ -31,7 +31,6 @@ import {
 } from '@dagsocial/types';
 import type {
   Post,
-  SubBlock,
   KarmaBox,
   LikeBox,
   InviteBox,
@@ -108,7 +107,7 @@ async function importUtxo() {
 async function importMempool() {
   return (await import('../../src/store/mempool.js')) as {
     insertUtxoTx: (tx: UtxoTransaction, batchId: string | null, expiresAtHeight: number) => number;
-    insertSubBlock: (sb: SubBlock, expiresAtHeight: number) => number;
+    insertSubBlock: (postId: string, expiresAtHeight: number, batchId?: string | null) => number;
     getPendingEntries: (limit: number) => Array<{
       rowid: number;
       entryType: string;
@@ -365,14 +364,7 @@ describe('full-pipeline', () => {
 
     // Insert sub-block into mempool
     const mempool = await importMempool();
-    const subBlock: SubBlock = {
-      subBlockId: postId,
-      post,
-      likeBoxes: [],
-      producerId: author.userId,
-      protocolVersion: PROTOCOL_VERSION,
-    };
-    mempool.insertSubBlock(subBlock, 1000);
+    mempool.insertSubBlock(postId, 1000);
 
     // Cast like via service
     const changeVal = karmaBox.value - LIKE_COST;
