@@ -132,6 +132,7 @@ let currentTemplate: OrderingBlock | null = null;   // For external mining mode
 let confirmedRowids: Set<number> = new Set();       // Mempool rowids included in current block
 let difficultyWindowStartMs: number | null = null;   // Timestamp of first block in current epoch
 let difficultyWindowStartTarget: number | null = null; // Target bits of first block in current epoch
+let dagService: import('./dag-service.js').DagService | undefined;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -161,6 +162,10 @@ export function stopBlockCreator(): void {
     clearInterval(intervalId);
     intervalId = null;
   }
+}
+
+export function setDagServiceForMiner(ds: import('./dag-service.js').DagService): void {
+  dagService = ds;
 }
 
 export function onSubBlockReceived(): void {
@@ -596,7 +601,7 @@ export function createOrderingBlock(): OrderingBlock | null {
 function finalizeBlock(block: OrderingBlock): void {
   // applyOrderingBlock handles validation, storage, coinbase, confirmations,
   // UTXO tx application, journal recording, and basic mempool cleanup
-  applyOrderingBlock(block);
+  applyOrderingBlock(block, dagService);
 
   // Clean up any remaining mempool entries that applyOrderingBlock didn't
   // remove (e.g. UTXO txs that were attached to sub-blocks and removed

@@ -157,8 +157,8 @@ existing: `[magic:4][version:1][code:VLQ][length:VLQ][checksum:4][body]`):
 
 | Code | Name | Body |
 |---|---|---|
-| 0x10 | `GetStumps` | `{ stumpIds: string[] }` |
-| 0x11 | `Stumps` | `{ entries: { stumpId: string, stump: Stump }[] }` |
+| 12 | `GetStumps` | `{ stumpIds: string[] }` |
+| 13 | `Stumps` | `{ entries: { stumpId: string, stump: Stump }[] }` |
 
 Content-sweep service extended with `sweepStumps(maxRetries)`:
 - Query `ordering_blocks` for `stumpIds` referenced in blocks that are not

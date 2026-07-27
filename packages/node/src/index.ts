@@ -2,7 +2,7 @@ import { loadConfig } from './config.js';
 import { initDb, closeDb } from './store/db.js';
 import { schemaVersion, writeSchemaVersion, CURRENT_SCHEMA_VERSION } from './store/meta.js';
 import { initSystemKeypair, ensureSystemKarmaBox, ensureFaucetCreditBox } from './store/system.js';
-import { startBlockCreator, stopBlockCreator } from './services/block-creator.js';
+import { startBlockCreator, stopBlockCreator, setDagServiceForMiner } from './services/block-creator.js';
 import { createApp, createAdminApp } from './server.js';
 import {
   initJournal,
@@ -105,6 +105,7 @@ const deps = {
 // DagService — owns canonical branch population and DAG reorg logic
 const postStore = new SqlitePostStore();
 const dagService = new DagService(postStore);
+setDagServiceForMiner(dagService);
 
 // 3. Register Stage 2 handlers
 
