@@ -13,7 +13,7 @@ import type { SubBlock, OrderingBlock, UtxoTransaction, BlockHeader } from '@dag
 import { PROTOCOL_VERSION, encodeSubBlock, decodeSubBlock, encodeOrderingBlock, decodeOrderingBlock } from '@dagsocial/types';
 import { blockHash } from '@dagsocial/validation';
 import { ReaderError } from '@dagsocial/wire';
-import type { NetConfig, NetValidators, Peer, PeerRecord } from './types.js';
+import type { NetConfig, NetValidators, Peer, PeerRecord, PostsMsg, PostsEntry } from './types.js';
 import { PeerState } from './types.js';
 import type { Libp2pGossip, GossipHandlers } from './gossip.js';
 import { PeerManager } from './peer-mgr.js';
@@ -25,6 +25,12 @@ import {
   requestHeaders,
   requestBlocks,
 } from './sync.js';
+import {
+  encodeGetPosts,
+  decodeGetPosts,
+  encodePosts,
+  decodePosts,
+} from './sync-codec.js';
 import { mergeUint8Arrays } from './util.js';
 import { PeerDb } from './peerdb.js';
 import { SyncMachine } from './sync-machine.js';
@@ -36,6 +42,8 @@ import type { HandshakeResult } from './handshake.js';
 import {
   MSG_GET_SUB_BLOCK,
   MSG_SUB_BLOCK_RESPONSE,
+  MSG_GET_POSTS,
+  MSG_POSTS,
 } from './types.js';
 
 type SubBlockCallback = (sb: SubBlock) => void;
@@ -208,6 +216,9 @@ export class NetNode {
   private handshakeHandlerRegistered = false;
   private syncHandlerRegistered = false;
   private headersHandlerRegistered = false;
+  private postsHandler: ((postIds: string[]) => PostsEntry[]) | null = null;
+  private syncCompleteHandlers: Array<() => void> = [];
+  private peerActiveHandlers: Array<(peerId: string) => void> = [];
 
   constructor(config: NetConfig, validators: NetValidators) {
     this.config = config;
@@ -271,6 +282,16 @@ export class NetNode {
       async (peerId: string, ids: string[]) => this.requestSubBlocksFn(peerId, ids),
     );
     this.syncMachine.start();
+
+    // Wire sync-complete callback: when the sync machine reaches 'synced',
+    // fire all registered onSyncComplete handlers.
+    this.syncMachine.onSynced(() => {
+      for (const cb of this.syncCompleteHandlers) {
+        try { cb(); } catch (err) {
+          console.warn(`[net] syncComplete handler error: ${String(err)}`);
+        }
+      }
+    });
 
     // Create OutboundManager
     this.outboundMgr = new OutboundManager(this.config, this.peerDb);
@@ -369,6 +390,12 @@ export class NetNode {
             });
             // Notify sync machine
             this.syncMachine?.onPeerActive(conn.remotePeer.toString(), result.peerHeight);
+            // Notify registered peer-active callbacks
+            for (const cb of this.peerActiveHandlers) {
+              try { cb(conn.remotePeer.toString()); } catch (err) {
+                console.warn(`[net] peerActive handler error: ${String(err)}`);
+              }
+            }
           }
         } catch (handshakeErr: any) {
           console.warn(`[net] handshake with bootstrap peer ${addr} failed: ${handshakeErr?.message ?? handshakeErr}`);
@@ -473,6 +500,11 @@ export class NetNode {
         if (result.ok) {
           this.peerMgr.setPeerState(peerId, PeerState.Active);
           this.syncMachine?.onPeerActive(peerId, msg.chainHeight);
+          for (const cb of this.peerActiveHandlers) {
+            try { cb(peerId); } catch (err) {
+              console.warn(`[net] peerActive handler error: ${String(err)}`);
+            }
+          }
         }
 
         // Send our handshake in response
@@ -548,6 +580,19 @@ export class NetNode {
           } else {
             await stream.sink([encodeFrame(magic, MSG_SUB_BLOCK_RESPONSE, new Uint8Array([0x00]))]);
           }
+          return;
+        }
+
+        // Handle post requests (MSG_GET_POSTS)
+        if (code === MSG_GET_POSTS) {
+          if (!this.postsHandler) {
+            // No handler registered — silently ignore (peer will time out)
+            return;
+          }
+          const request = decodeGetPosts(body);
+          const entries = this.postsHandler(request.postIds);
+          const response = encodePosts(this.config.magic ?? MAGIC_MAINNET, { entries });
+          await stream.sink([response]);
           return;
         }
 
@@ -676,6 +721,13 @@ export class NetNode {
     return this.peerMgr.getPeers();
   }
 
+  /** Return the peer IDs of all currently Active peers. */
+  getConnectedPeers(): string[] {
+    return this.peerMgr.getPeers()
+      .filter(p => this.peerMgr.isPeerActive(p.id))
+      .map(p => p.id);
+  }
+
   // -----------------------------------------------------------------------
   // Outbound broadcast
   // -----------------------------------------------------------------------
@@ -711,6 +763,22 @@ export class NetNode {
     this.txHandlers.push(cb);
   }
 
+  /**
+   * Register a callback that fires when the sync machine transitions to
+   * the 'synced' phase (peer tip height matches our tip height).
+   */
+  onSyncComplete(cb: () => void): void {
+    this.syncCompleteHandlers.push(cb);
+  }
+
+  /**
+   * Register a callback that fires when a peer completes the handshake
+   * and becomes Active. The peer's ID is passed to the callback.
+   */
+  onPeerActive(cb: (peerId: string) => void): void {
+    this.peerActiveHandlers.push(cb);
+  }
+
   // -----------------------------------------------------------------------
   // Sync — outbound requests
   // -----------------------------------------------------------------------
@@ -730,6 +798,46 @@ export class NetNode {
     return requestBlocks(this.libp2p, startHeight, endHeight, peerId, this.config);
   }
 
+  /**
+   * Request full post data (post body + like boxes) from a specific peer.
+   * Opens a sync-protocol stream, sends a GetPosts message, and reads the
+   * Posts response. Returns an empty entries array on any error.
+   */
+  async requestPosts(peerId: string, postIds: string[]): Promise<PostsMsg> {
+    if (!this.libp2p) return { entries: [] };
+    const peer = this.libp2p.getPeers().find(p => p.toString() === peerId);
+    if (!peer) {
+      console.warn(`[net] requestPosts: peer ${peerId} not found`);
+      return { entries: [] };
+    }
+    const magic = this.config.magic ?? MAGIC_MAINNET;
+    const request = encodeGetPosts(magic, { postIds });
+    let stream: import('@libp2p/interface').Stream | undefined;
+    try {
+      stream = await this.libp2p.dialProtocol(peer, SYNC_PROTOCOL);
+      await stream.sink([request]);
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of stream.source) {
+        chunks.push(chunk instanceof Uint8Array ? chunk : chunk.subarray());
+      }
+      if (chunks.length === 0) {
+        return { entries: [] };
+      }
+      const data = mergeUint8Arrays(chunks);
+      const frame = decodeFrame(magic, data);
+      if (frame.code !== MSG_POSTS) {
+        console.warn(`[net] requestPosts: unexpected response code ${frame.code}`);
+        return { entries: [] };
+      }
+      return decodePosts(frame.body);
+    } catch (err) {
+      console.warn(`[net] requestPosts failed for peer ${peerId}: ${String(err)}`);
+      return { entries: [] };
+    } finally {
+      if (stream) await stream.close().catch(() => {});
+    }
+  }
+
   // -----------------------------------------------------------------------
   // Sync — handler registration
   // -----------------------------------------------------------------------
@@ -740,6 +848,15 @@ export class NetNode {
    */
   setSyncHandler(handler: (id: string) => SubBlock | null): void {
     this.syncStore.setSubBlockFn((id) => handler(id));
+  }
+
+  /**
+   * Register a handler that serves post data to peers who request it via
+   * MSG_GET_POSTS. The handler receives an array of post IDs and must return
+   * the corresponding PostsEntry records (post + like boxes).
+   */
+  setPostsHandler(handler: (postIds: string[]) => PostsEntry[]): void {
+    this.postsHandler = handler;
   }
 
   /**

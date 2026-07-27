@@ -111,6 +111,8 @@ export class SyncMachine {
 
   private readonly magic: number;
 
+  private onSyncedCallbacks: Array<() => void> = [];
+
   // -----------------------------------------------------------------------
   // Biased event queues
   // -----------------------------------------------------------------------
@@ -221,6 +223,14 @@ export class SyncMachine {
   /** Read-only snapshot of current sync state. */
   getState(): Readonly<SyncState> {
     return this.state;
+  }
+
+  /**
+   * Register a callback that fires when the sync machine transitions to the
+   * 'synced' phase (peer tip height matches our tip height).
+   */
+  onSynced(cb: () => void): void {
+    this.onSyncedCallbacks.push(cb);
   }
 
   // -----------------------------------------------------------------------
@@ -432,6 +442,12 @@ export class SyncMachine {
     } else if (info.tipHeight === ourHeight && this.state.phase === 'syncing') {
       this.state.phase = 'synced';
       this.state.stalledPeers.clear();
+      // Fire sync-complete callbacks
+      for (const cb of this.onSyncedCallbacks) {
+        try { cb(); } catch (err) {
+          console.warn(`[sync-machine] onSynced callback error: ${String(err)}`);
+        }
+      }
     }
   }
 
