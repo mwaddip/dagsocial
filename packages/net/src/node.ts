@@ -14,6 +14,7 @@ import { PROTOCOL_VERSION, encodeSubBlock, decodeSubBlock, encodeOrderingBlock, 
 import { blockHash } from '@dagsocial/validation';
 import { ReaderError } from '@dagsocial/wire';
 import type { NetConfig, NetValidators, Peer, PeerRecord } from './types.js';
+import { PeerState } from './types.js';
 import type { Libp2pGossip, GossipHandlers } from './gossip.js';
 import { PeerManager } from './peer-mgr.js';
 import { subscribeTopics, broadcastSubBlock, broadcastOrderingBlock, broadcastTx } from './gossip.js';
@@ -355,6 +356,8 @@ export class NetNode {
         try {
           const result = await this.runOutboundHandshake(conn.remotePeer.toString());
           if (result.ok) {
+            this.peerMgr.setPeerState(conn.remotePeer.toString(), PeerState.Active);
+
             // Record in PeerDb
             this.peerDb?.record({
               address: addr,
@@ -468,6 +471,7 @@ export class NetNode {
         });
 
         if (result.ok) {
+          this.peerMgr.setPeerState(peerId, PeerState.Active);
           this.syncMachine?.onPeerActive(peerId, msg.chainHeight);
         }
 
@@ -495,6 +499,13 @@ export class NetNode {
 
     libp2p.handle(SYNC_PROTOCOL, async ({ stream, connection }) => {
       const peerId = connection.remotePeer.toString();
+
+      // Drop messages from peers that are not in Active state
+      if (!this.peerMgr.isPeerActive(peerId)) {
+        try { await stream.sink([new Uint8Array(0)]); } catch { /* ignore */ }
+        return;
+      }
+
       try {
         const chunks: Uint8Array[] = [];
         for await (const chunk of stream.source) {

@@ -140,11 +140,6 @@ export class PeerManager {
         // Permanent ban — remove peer entirely
         this.bans.set(peerId, { peerId, bannedAt: now, banExpiresAt: null });
         this.peers.delete(peerId);
-        const meta = this.metadata.get(peerId);
-        if (meta) {
-          meta.state = PeerState.Banned;
-          meta.bannedUntil = null; // permanent
-        }
         this.metadata.delete(peerId);
         this.stalledPeers.delete(peerId);
         return;
@@ -160,7 +155,7 @@ export class PeerManager {
           return;
         }
 
-        const score = kind === PenaltyKind.RateLimit ? 50 : 100;
+        const score = kind === PenaltyKind.Transient ? 50 : 100;
         entry.penaltyScore += score;
         entry.lastPenaltyTime = now;
 
@@ -204,6 +199,12 @@ export class PeerManager {
   /** Get metadata for a peer, or null if not tracked. */
   getPeerMetadata(peerId: string): PeerMetadata | null {
     return this.metadata.get(peerId) ?? null;
+  }
+
+  /** Guard: returns true only if the peer is in the Active state. */
+  isPeerActive(peerId: string): boolean {
+    const meta = this.metadata.get(peerId);
+    return meta?.state === PeerState.Active;
   }
 
   // -----------------------------------------------------------------------

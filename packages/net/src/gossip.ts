@@ -129,6 +129,12 @@ export function subscribeTopics(
     const { detail } = evt;
     if (!detail?.msg) return;
 
+    // Drop messages from peers that are not in Active state
+    const sourcePeerId = (detail.msg as { from?: { toString(): string } }).from?.toString();
+    if (sourcePeerId && !peerMgr.isPeerActive(sourcePeerId)) {
+      return;
+    }
+
     const { topic } = detail.msg;
     const raw = new Uint8Array(detail.msg.data);
 
