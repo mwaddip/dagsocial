@@ -52,7 +52,7 @@ export { base58Encode, base58Decode } from './base58.js';
 export { leafHash, nodeHash, buildMerkleRoot, hexToBuf } from './merkle.js';
 
 // Posts
-export { signingHash, computePostId, getPostDiscriminator, buildProfileContent, postPowPreimage } from './post.js';
+export { signingHash, computePostId, verifyPostId, getPostDiscriminator, buildProfileContent, postPowPreimage } from './post.js';
 export type { Post, PostId } from './post.js';
 
 // UTXO
@@ -77,7 +77,7 @@ export { computeStumpId } from './stump.js';
 export type { PruneIntent, KarmaDelta, Stump, StumpId } from './stump.js';
 
 // Blocks
-export { EMPTY_STATE_ROOT, cumulativeWork } from './block.js';
+export { EMPTY_STATE_ROOT, cumulativeWork, subBlockFromPost } from './block.js';
 export type {
   SubBlock,
   SubBlockEntry,

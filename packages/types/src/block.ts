@@ -1,6 +1,6 @@
 import type { UserId } from './identity.js';
 import type { Post, PostId } from './post.js';
-import type { BoxId, TxId, LikeBox, PostLockBox } from './utxo.js';
+import type { AnyBox, BoxId, TxId, LikeBox, PostLockBox } from './utxo.js';
 import type { StumpId } from './stump.js';
 
 // ---------------------------------------------------------------------------
@@ -25,6 +25,21 @@ export interface SubBlock {
   likeBoxes: LikeBox[];       // Pending likes riding as sidecars
   producerId: UserId;         // = post.author
   protocolVersion: number;
+}
+
+/** Construct a SubBlock from a Post, deriving producerId and protocolVersion. */
+export function subBlockFromPost(
+  post: Post,
+  subBlockId: string,
+  likeBoxes: AnyBox[] = [],
+): SubBlock {
+  return {
+    subBlockId,
+    post,
+    likeBoxes,
+    producerId: post.author,
+    protocolVersion: post.protocolVersion,
+  };
 }
 
 // ---------------------------------------------------------------------------

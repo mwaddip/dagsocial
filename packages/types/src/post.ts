@@ -71,6 +71,11 @@ export function computePostId(post: Post): PostId {
   return h.digest().subarray(0, 32).toString('hex');
 }
 
+/** Verify that a post's computed ID matches an expected ID. */
+export function verifyPostId(post: Post, expectedId: string): boolean {
+  return computePostId(post) === expectedId;
+}
+
 // ---------------------------------------------------------------------------
 // Profile post discriminators
 // ---------------------------------------------------------------------------
