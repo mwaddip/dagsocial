@@ -1,6 +1,7 @@
 import type { PostStore } from '../store/post-store.js';
 import { getDb } from '../store/db.js';
 import { getParentRefs } from '../store/posts.js';
+import { getReorgFloor } from '../store/meta.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -275,6 +276,12 @@ export class DagService {
       // Fork point exists in the DAG but isn't on our canonical branch.
       // This shouldn't happen normally — the current canonical tip is
       // always an ancestor of itself.  If it does, treat as no-reorg.
+      return null;
+    }
+
+    // Reorg floor: reject reorgs below the floor depth
+    const floor = getReorgFloor();
+    if (forkDepth < floor) {
       return null;
     }
 

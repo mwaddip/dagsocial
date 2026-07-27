@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { initDb, closeDb, getDb } from '../../src/store/db.js';
+import { setReorgFloor } from '../../src/store/meta.js';
 import { DagService } from '../../src/services/dag-service.js';
 import { SqlitePostStore } from '../../src/store/sqlite-store.js';
 
@@ -307,6 +308,57 @@ describe('DagService', () => {
       expect(plan!.forkPoint).toBeNull(); // initial plan
       expect(plan!.toUnconfirm).toEqual([]);
       expect(plan!.toConfirm).toEqual([G, A, B]); // genesis -> tip
+    });
+
+    it('returns null when fork point is below reorg floor', () => {
+      const db = getDb();
+      // Current canonical: G -> A -> B (tip, score 100)
+      db.prepare('INSERT INTO canonical_branch (depth, post_id) VALUES (?, ?)').run(0, G);
+      db.prepare('INSERT INTO canonical_branch (depth, post_id) VALUES (?, ?)').run(1, A);
+      db.prepare('INSERT INTO canonical_branch (depth, post_id) VALUES (?, ?)').run(2, B);
+      service.saveScore(B, 100);
+
+      // Competing: G -> A -> D (tip, score 200)
+      insertPost(G, []);
+      insertPost(A, [G]);
+      insertPost(B, [A]);
+      insertPost(D, [A]);
+      service.saveScore(D, 200);
+
+      // Set reorg floor to depth 2 — fork is at depth 1 (A), which is below floor
+      setReorgFloor(2);
+
+      const plan = service.buildReorgPlan(D, 200);
+      expect(plan).toBeNull();
+
+      // Cleanup: reset floor
+      setReorgFloor(0);
+    });
+
+    it('allows reorg when fork point is at or above reorg floor', () => {
+      const db = getDb();
+      // Current canonical: G -> A -> B (tip, score 100)
+      db.prepare('INSERT INTO canonical_branch (depth, post_id) VALUES (?, ?)').run(0, G);
+      db.prepare('INSERT INTO canonical_branch (depth, post_id) VALUES (?, ?)').run(1, A);
+      db.prepare('INSERT INTO canonical_branch (depth, post_id) VALUES (?, ?)').run(2, B);
+      service.saveScore(B, 100);
+
+      // Competing: G -> A -> D (tip, score 200)
+      insertPost(G, []);
+      insertPost(A, [G]);
+      insertPost(B, [A]);
+      insertPost(D, [A]);
+      service.saveScore(D, 200);
+
+      // Set reorg floor to depth 1 — fork is at depth 1 (A), which equals floor
+      setReorgFloor(1);
+
+      const plan = service.buildReorgPlan(D, 200);
+      expect(plan).not.toBeNull();
+      expect(plan!.forkPoint).toBe(A);
+
+      // Cleanup: reset floor
+      setReorgFloor(0);
     });
   });
 
