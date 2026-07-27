@@ -5,6 +5,7 @@ import { applyKarmaDecay } from './decay.js';
 import type { DecayDeps } from './decay.js';
 import { config } from '../config.js';
 import { computeBlockReward, computeSubBlockRoot, computeUtxoTxRoot, clearTemplate, computeEpochTally } from './block-creator.js';
+import { DagService } from './dag-service.js';
 import { revalidateTxInContext, applyTx } from './utxo-engine.js';
 import {
   getKarmaBox,
@@ -40,7 +41,7 @@ export function getCurrentJournal(): BlockJournal | null {
   return currentJournal;
 }
 
-export function applyOrderingBlock(block: OrderingBlock): boolean {
+export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService): boolean {
   const currentHeight = getCurrentHeight();
 
   // Initialize journal
