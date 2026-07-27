@@ -14,6 +14,7 @@ import {
 import { NetNode, type PostsEntry } from '@dagsocial/net';
 import * as validation from '@dagsocial/validation';
 import { verifyPostForRelay } from './services/verifier.js';
+import { sweepPlaceholders, hasPlaceholders } from './services/content-sweep.js';
 import { validateTx } from './services/utxo-engine.js';
 import { setNet } from './services/net-instance.js';
 import { applyOrderingBlock } from './services/block-apply.js';
@@ -90,18 +91,17 @@ const net = new NetNode(
 );
 setNet(net);
 
+// Shared deps for verifier and content sweep
+const deps = {
+  getActiveChallenge: () => null as { challenge: Uint8Array; expiresAtBlock: number; userId: Uint8Array } | null,
+  getKarmaBoxes,
+  getPost,
+};
+
 // 3. Register Stage 2 handlers
 
 net.onSubBlock((sb) => {
-  const result = verifyPostForRelay(
-    {
-      getActiveChallenge: () => null, // challenges are node-local to origin
-      getKarmaBoxes,
-      getPost,
-    },
-    sb.post,
-    0,
-  );
+  const result = verifyPostForRelay(deps, sb.post, 0);
   if (!result.valid) {
     console.warn(`Relayed sub-block rejected: ${result.error}`);
     return;
@@ -286,6 +286,34 @@ try {
 } catch (err) {
   console.warn(`Net startup failed (continuing without networking): ${String(err)}`);
 }
+
+// Register content sweep on sync completion (gap 1)
+net.onSyncComplete(() => {
+  if (hasPlaceholders()) {
+    console.log('[content-sweep] Sync complete, sweeping placeholders...');
+    sweepPlaceholders(net, deps).then((result) => {
+      if (result.success) {
+        console.log('[content-sweep] All placeholders resolved.');
+      } else {
+        console.warn(
+          `[content-sweep] Sweep incomplete: ${result.remaining} placeholders remain after retries.`,
+        );
+      }
+    }).catch((err: Error) => {
+      console.error(`[content-sweep] Sweep failed: ${err.message}`);
+    });
+  }
+});
+
+// Re-run content sweep when a new peer becomes active and we have pending placeholders
+net.onPeerActive((_peerId: string) => {
+  if (hasPlaceholders()) {
+    console.log('[content-sweep] New peer active, retrying placeholder sweep...');
+    sweepPlaceholders(net, deps).catch((err: Error) => {
+      console.error(`[content-sweep] Sweep failed: ${err.message}`);
+    });
+  }
+});
 
 // 5. Start block creator (miner only) and HTTP server
 if (config.nodeRole === 'miner') {
