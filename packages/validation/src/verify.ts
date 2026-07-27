@@ -167,9 +167,23 @@ export function verifyOrderingBlockStructure(
   if (!Array.isArray(block.subBlockTree?.subBlockRefs)) {
     return { valid: false, error: 'Ordering block missing subBlockTree.subBlockRefs' };
   }
-  if (!Array.isArray(block.subBlockTree.subBlocks) ||
-      block.subBlockTree.subBlocks.length !== block.subBlockTree.subBlockRefs.length) {
-    return { valid: false, error: 'Ordering block subBlocks must align with subBlockRefs' };
+  if (!Array.isArray(block.subBlockTree.subBlockEntries) ||
+      block.subBlockTree.subBlockEntries.length !== block.subBlockTree.subBlockRefs.length) {
+    return { valid: false, error: 'Ordering block subBlockEntries must align with subBlockRefs' };
+  }
+  // Validate each entry
+  for (const entry of block.subBlockTree.subBlockEntries) {
+    if (typeof entry.postId !== 'string' || entry.postId.length !== 64) {
+      return { valid: false, error: 'Ordering block subBlockEntry has invalid postId' };
+    }
+    if (!Array.isArray(entry.parentRefs) || entry.parentRefs.length > 8) {
+      return { valid: false, error: 'Ordering block subBlockEntry has invalid parentRefs' };
+    }
+    for (const ref of entry.parentRefs) {
+      if (typeof ref !== 'string' || ref.length !== 64) {
+        return { valid: false, error: 'Ordering block subBlockEntry parentRef must be 64-char hex' };
+      }
+    }
   }
   if (!block.validatorSignature || block.validatorSignature.length !== 64) {
     return { valid: false, error: 'Ordering block missing or invalid validatorSignature' };
