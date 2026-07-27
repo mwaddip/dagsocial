@@ -1,6 +1,6 @@
 import type { UserId } from './identity.js';
 import type { Post, PostId } from './post.js';
-import type { AnyBox, BoxId, TxId, LikeBox, PostLockBox } from './utxo.js';
+import type { BoxId, TxId, LikeBox, PostLockBox } from './utxo.js';
 import type { StumpId } from './stump.js';
 
 // ---------------------------------------------------------------------------
@@ -31,7 +31,7 @@ export interface SubBlock {
 export function subBlockFromPost(
   post: Post,
   subBlockId: string,
-  likeBoxes: AnyBox[] = [],
+  likeBoxes: LikeBox[] = [],
 ): SubBlock {
   return {
     subBlockId,
