@@ -40,11 +40,8 @@ function blockToJson(block: OrderingBlock): Record<string, unknown> {
     },
     subBlockTree: {
       subBlockRefs: block.subBlockTree.subBlockRefs,
+      subBlockEntries: block.subBlockTree.subBlockEntries,
       stumpIds: block.subBlockTree.stumpIds,
-      // CBOR fields omitted from JSON — subBlock CBOR has no meaningful
-      // textual representation. Consumers needing the raw CBOR should use
-      // the libp2p protocol or a binary endpoint (future).
-      subBlocks: [],
     },
     utxoTxTree: {
       utxoTxIds: block.utxoTxTree.utxoTxIds,

@@ -27,11 +27,10 @@ import {
   getCurrentHeight,
   insertMempoolSubBlock,
   insertUtxoTx,
-  getPendingEntries,
   getOrderingBlock,
 } from './store/index.js';
-import { encodePost, decodeSubBlock, cumulativeWork, MEMPOOL_EXPIRY_BLOCKS } from '@dagsocial/types';
-import type { BlockHeader } from '@dagsocial/types';
+import { encodePost, cumulativeWork, MEMPOOL_EXPIRY_BLOCKS } from '@dagsocial/types';
+import type { BlockHeader, SubBlock } from '@dagsocial/types';
 
 const config = loadConfig();
 const startTime = Date.now();
@@ -109,7 +108,7 @@ net.onSubBlock((sb) => {
   }
   insertPost(sb.post, encodePost(sb.post));
   const currentHeight = getCurrentHeight();
-  insertMempoolSubBlock(sb, currentHeight + MEMPOOL_EXPIRY_BLOCKS);
+  insertMempoolSubBlock(sb.subBlockId, currentHeight + MEMPOOL_EXPIRY_BLOCKS);
   console.log(`Relayed sub-block queued in mempool: ${sb.subBlockId}`);
 });
 
@@ -251,13 +250,15 @@ try {
   // Register storage-backed sync handler (replaces the null placeholder
   // registered during NetNode.start())
   net.setSyncHandler((subBlockId: string) => {
-    const entries = getPendingEntries(1000);
-    for (const entry of entries) {
-      if (entry.entryType !== 'subblock' || !entry.subblockCbor) continue;
-      const sb = decodeSubBlock(entry.subblockCbor);
-      if (sb.subBlockId === subBlockId) return sb;
-    }
-    return null;
+    const post = getPost(subBlockId);
+    if (!post || !('author' in post)) return null;
+    return {
+      subBlockId,
+      post,
+      likeBoxes: [],
+      producerId: post.author,
+      protocolVersion: post.protocolVersion,
+    } as SubBlock;
   });
 
   // Register headers handler for fork resolution sync

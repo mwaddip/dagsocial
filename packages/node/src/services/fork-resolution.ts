@@ -1,6 +1,6 @@
 import { blockHash } from '@dagsocial/validation';
 import type { BlockHeader, OrderingBlock, BlockJournal } from '@dagsocial/types';
-import { decodeTx, decodeSubBlock, MEMPOOL_EXPIRY_BLOCKS } from '@dagsocial/types';
+import { decodeTx, MEMPOOL_EXPIRY_BLOCKS } from '@dagsocial/types';
 import {
   getOrderingBlock,
   getCurrentHeight,
@@ -139,10 +139,9 @@ export function reorg(forkHeight: number, newBlocks: OrderingBlock[]): void {
       const tx = decodeTx(txRecord.txCbor);
       insertUtxoTx(tx, null, mempoolExpiry);
     }
-    // Re-insert sub-blocks
-    for (const { cbor } of journal.subBlockCbors) {
-      const sb = decodeSubBlock(cbor);
-      insertMempoolSubBlock(sb, mempoolExpiry);
+    // Re-insert sub-blocks by ID (content is in dag_posts)
+    for (const subBlockId of journal.confirmedSubBlockIds) {
+      insertMempoolSubBlock(subBlockId, mempoolExpiry);
     }
   }
 

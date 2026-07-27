@@ -42,9 +42,10 @@ export function createRouter(deps: MiningDeps): Router {
         createdAt: tpl.header.createdAt,
       },
       subBlockRefs: tpl.subBlockTree.subBlockRefs,
+      subBlockEntries: tpl.subBlockTree.subBlockEntries,
+      stumpIds: tpl.subBlockTree.stumpIds,
       likeBoxIds: tpl.utxoTxTree.likeBoxIds,
       utxoTxIds: tpl.utxoTxTree.utxoTxIds,
-      stumpIds: tpl.subBlockTree.stumpIds,
       coinbaseOutputs: tpl.utxoTxTree.coinbaseOutputs.map((o) => ({
         owner: Buffer.from(o.owner).toString('hex'),
         value: o.value,

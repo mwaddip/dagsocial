@@ -73,7 +73,7 @@ export interface PostServiceDeps {
   // Mutations
   consumeChallenge: (userId: Uint8Array, challenge: Uint8Array) => void;
   insertMempoolSubBlock: (
-    subBlock: SubBlock,
+    postId: string,
     expiresAtHeight: number,
     batchId?: string | null,
   ) => number;
@@ -250,7 +250,7 @@ export function createPost(
   // ---- Insert both as a batch into the mempool (same batchId = postId) ----
   const batchId = postId;
   const expiresAtHeight = currentHeight + MEMPOOL_EXPIRY_BLOCKS;
-  deps.insertMempoolSubBlock(subBlock, expiresAtHeight, batchId);
+  deps.insertMempoolSubBlock(postId, expiresAtHeight, batchId);
   deps.insertUtxoTx(karmaLockTx, batchId, expiresAtHeight);
 
   // ---- Signal the block creator ----
