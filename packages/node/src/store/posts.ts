@@ -80,40 +80,76 @@ function rowToStump(row: StumpRow): Stump {
  * Insert a new post into dag_posts with status='pending', and insert a row
  * into dag_parent_refs for each parentId in post.parentRefs.
  *
- * Both writes are wrapped in a single transaction so a crash after the
- * dag_posts insert but before the parent_ref inserts completes leaves no
- * orphaned row.
+ * If a placeholder row already exists for this post ID (created by
+ * insertPostPlaceholder during block application), the placeholder is
+ * atomically upgraded with the real content instead of inserting.
+ *
+ * All writes are wrapped in a single transaction so a crash leaves no
+ * orphaned rows or half-upgraded placeholders.
  */
 export function insertPost(post: Post, rawCbor: Uint8Array): void {
   const db = getDb();
   const postId = computePostId(post);
 
-  const insertPostStmt = db.prepare(
-    `INSERT INTO dag_posts
-       (id, content, author, parent_refs, challenge, pow_nonce,
-        protocol_version, timestamp, signature, raw_cbor, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
-  );
-  const insertRef = db.prepare(
-    'INSERT OR IGNORE INTO dag_parent_refs (post_id, parent_id) VALUES (?, ?)',
-  );
-
   db.transaction(() => {
-    insertPostStmt.run(
-      postId,
-      post.content,
-      Buffer.from(post.author),
-      JSON.stringify(post.parentRefs),
-      Buffer.from(post.challenge),
-      post.powNonce,
-      post.protocolVersion,
-      post.timestamp,
-      Buffer.from(post.signature),
-      Buffer.from(rawCbor),
-    );
+    // Check if a placeholder exists (status='pending' with empty content)
+    const existing = db.prepare(
+      "SELECT status, content FROM dag_posts WHERE id = ?",
+    ).get(postId) as { status: string; content: string } | undefined;
 
-    for (const parentId of post.parentRefs) {
-      insertRef.run(postId, parentId);
+    if (existing && existing.status === 'pending' && existing.content === '') {
+      // Upgrade placeholder to real content. parent_refs and dag_parent_refs
+      // were already populated by insertPostPlaceholder.
+      db.prepare(
+        `UPDATE dag_posts SET
+           content = ?,
+           author = ?,
+           challenge = ?,
+           pow_nonce = ?,
+           protocol_version = ?,
+           timestamp = ?,
+           signature = ?,
+           raw_cbor = ?,
+           status = 'pending'
+         WHERE id = ?`,
+      ).run(
+        post.content,
+        Buffer.from(post.author),
+        Buffer.from(post.challenge),
+        post.powNonce,
+        post.protocolVersion,
+        post.timestamp,
+        Buffer.from(post.signature),
+        Buffer.from(rawCbor),
+        postId,
+      );
+    } else {
+      // Normal insert — post not yet in DB
+      db.prepare(
+        `INSERT INTO dag_posts
+           (id, content, author, parent_refs, challenge, pow_nonce,
+            protocol_version, timestamp, signature, raw_cbor, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+      ).run(
+        postId,
+        post.content,
+        Buffer.from(post.author),
+        JSON.stringify(post.parentRefs),
+        Buffer.from(post.challenge),
+        post.powNonce,
+        post.protocolVersion,
+        post.timestamp,
+        Buffer.from(post.signature),
+        Buffer.from(rawCbor),
+      );
+
+      // Insert parent refs
+      const insertRef = db.prepare(
+        'INSERT OR IGNORE INTO dag_parent_refs (post_id, parent_id) VALUES (?, ?)',
+      );
+      for (const parentId of post.parentRefs) {
+        insertRef.run(postId, parentId);
+      }
     }
   })();
 }

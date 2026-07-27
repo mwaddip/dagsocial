@@ -20,6 +20,7 @@ async function importPostsFresh() {
   const mod = await import('../../src/store/posts.js');
   return mod as {
     insertPost: (post: Post, rawCbor: Uint8Array) => void;
+    insertPostPlaceholder: (postId: string, parentRefs: string[]) => void;
     getPost: (id: string) => Post | Stump | null;
     queryPosts: (opts: { author?: string; limit?: number; offset?: number }) => Post[];
     getPendingPosts: (limit: number) => Post[];
@@ -501,5 +502,73 @@ describe('posts store', () => {
     expect(limited[0].content).toBe('pending-0');
     expect(limited[1].content).toBe('pending-1');
     expect(limited[2].content).toBe('pending-2');
+  });
+
+  // 15. insertPost upgrades an existing placeholder with real content
+  it('insertPost upgrades an existing placeholder with real content', async () => {
+    const { initDb, getDb } = await importDbFresh();
+    const { insertPost, insertPostPlaceholder } = await importPostsFresh();
+    const { computePostId } = await importTypesPosts();
+
+    initDb(':memory:');
+
+    // Build the post first so we can compute its real postId
+    const post: Post = {
+      content: 'real content',
+      author: new Uint8Array(32).fill(1),
+      parentRefs: ['bb'.repeat(32)],
+      challenge: new Uint8Array(32).fill(2),
+      powNonce: 42,
+      protocolVersion: 1,
+      timestamp: 1700000000000,
+      signature: new Uint8Array(64).fill(3),
+    };
+    const postId = computePostId(post);
+
+    // Create a placeholder (simulating block-apply before gossip arrives)
+    insertPostPlaceholder(postId, ['bb'.repeat(32)]);
+
+    // Verify placeholder exists with empty content
+    const placeholder = getDb()
+      .prepare('SELECT content, author FROM dag_posts WHERE id = ?')
+      .get(postId) as any;
+    expect(placeholder.content).toBe('');
+
+    // Now insert real content via insertPost (simulating gossip arrival)
+    insertPost(post, new Uint8Array([1, 2, 3]));
+
+    // Verify content was upgraded
+    const upgraded = getDb()
+      .prepare('SELECT content, author, pow_nonce FROM dag_posts WHERE id = ?')
+      .get(postId) as any;
+    expect(upgraded.content).toBe('real content');
+    expect(upgraded.pow_nonce).toBe(42);
+  });
+
+  // 16. insertPost still works for a new post (no placeholder)
+  it('insertPost still works for a new post (no placeholder)', async () => {
+    const { initDb, getDb } = await importDbFresh();
+    const { insertPost } = await importPostsFresh();
+    const { computePostId } = await importTypesPosts();
+
+    initDb(':memory:');
+
+    const post: Post = {
+      content: 'fresh post',
+      author: new Uint8Array(32).fill(9),
+      parentRefs: [],
+      challenge: new Uint8Array(32).fill(8),
+      powNonce: 7,
+      protocolVersion: 1,
+      timestamp: 1700000000000,
+      signature: new Uint8Array(64).fill(6),
+    };
+    insertPost(post, new Uint8Array([4, 5, 6]));
+
+    const postId = computePostId(post);
+    const row = getDb()
+      .prepare('SELECT content FROM dag_posts WHERE id = ?')
+      .get(postId) as any;
+    expect(row.content).toBe('fresh post');
   });
 });
