@@ -71,9 +71,12 @@ export {
 export {
   insertSubBlock as insertMempoolSubBlock,
   insertUtxoTx,
+  insertMempoolStump,
   getPendingEntries,
   purgeExpired,
   removeEntry,
+  drainMempoolStumps,
+  removeMempoolStumps,
 } from './mempool.js';
 export type { PoolEntry } from './mempool.js';
 

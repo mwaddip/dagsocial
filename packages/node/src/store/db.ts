@@ -140,6 +140,33 @@ const MIGRATIONS = [
   )`,
 ];
 
+function migrateMempoolForStumps(database: Database.Database): void {
+  // Check if migration already applied
+  const cols = database.prepare("PRAGMA table_info('mempool')").all() as Array<{ name: string }>;
+  if (cols.some(c => c.name === 'stump_id')) return;
+
+  database.exec(`
+    ALTER TABLE mempool RENAME TO mempool_old;
+
+    CREATE TABLE mempool (
+      rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+      entry_type TEXT NOT NULL CHECK(entry_type IN ('subblock', 'utxo_tx', 'stump')),
+      subblock_id TEXT,
+      utxo_tx_cbor BLOB,
+      stump_id TEXT,
+      batch_id TEXT,
+      expires_at_height INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    INSERT INTO mempool (rowid, entry_type, subblock_id, utxo_tx_cbor, batch_id, expires_at_height, created_at)
+    SELECT rowid, entry_type, subblock_id, utxo_tx_cbor, batch_id, expires_at_height, created_at
+    FROM mempool_old;
+
+    DROP TABLE mempool_old;
+  `);
+}
+
 export function initDb(path: string): void {
   db = new Database(path);
   db.pragma('journal_mode = WAL');
@@ -147,6 +174,7 @@ export function initDb(path: string): void {
   for (const sql of MIGRATIONS) {
     db.exec(sql);
   }
+  migrateMempoolForStumps(db);
 }
 
 export function getDb(): Database.Database {
