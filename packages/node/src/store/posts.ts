@@ -264,6 +264,36 @@ export function getParentRefs(postId: string): string[] {
 }
 
 /**
+ * Insert a placeholder post row for a post whose content hasn't arrived yet.
+ * Used during block application when a block confirms a sub-block whose post
+ * we don't have locally. The placeholder fields (empty content, zero/blank
+ * buffers) are filled in later when the actual post content arrives via gossip.
+ */
+export function insertPostPlaceholder(postId: string, parentRefs: string[]): void {
+  const db = getDb();
+  db.prepare(
+    `INSERT OR IGNORE INTO dag_posts
+     (id, content, author, parent_refs, challenge, pow_nonce,
+      protocol_version, timestamp, signature, raw_cbor, status)
+     VALUES (?, '', ?, ?, ?, 0, 1, 0, ?, ?, 'pending')`,
+  ).run(
+    postId,
+    Buffer.alloc(32),                 // author placeholder
+    JSON.stringify(parentRefs),
+    Buffer.alloc(32),                 // challenge placeholder
+    Buffer.alloc(64),                 // signature placeholder
+    Buffer.from([]),                  // raw_cbor empty
+  );
+  // Insert parent refs for DAG walking
+  const insertRef = db.prepare(
+    'INSERT OR IGNORE INTO dag_parent_refs (post_id, parent_id) VALUES (?, ?)',
+  );
+  for (const parentId of parentRefs) {
+    insertRef.run(postId, parentId);
+  }
+}
+
+/**
  * Return all descendant posts of the given root post, using a recursive CTE
  * over dag_parent_refs. The root post itself is NOT included in the result.
  */

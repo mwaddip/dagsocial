@@ -10,7 +10,7 @@ import {
   getKarmaBox,
   getKarmaBoxes,
   getPost,
-  insertPost,
+  insertPostPlaceholder,
   insertBox,
   getBox,
   consumeBox,
@@ -28,11 +28,9 @@ import { insertBlockJournal, purgeOldJournals } from '../store/journal.js';
 import {
   encodeTx,
   decodeTx,
-  decodeSubBlock,
   PROTOCOL_VERSION,
   computeTxId,
   computeBoxId,
-  encodePost,
 } from '@dagsocial/types';
 import type { AnyBox, BlockJournal, OrderingBlock, UtxoTransaction } from '@dagsocial/types';
 
@@ -50,23 +48,11 @@ export function applyOrderingBlock(block: OrderingBlock): boolean {
     blockHeight: block.header.height,
     creditBoxIds: [],
     confirmedSubBlockIds: [...block.subBlockTree.subBlockRefs],
-    subBlockCbors: [],
     talliedLikeBoxIds: [...block.utxoTxTree.likeBoxIds],
     karmaMints: [],
     appliedUtxoTxs: [],
     decayBurns: [],
   };
-
-  // Populate subBlockCbors from the block itself (self-contained)
-  if (block.subBlockTree.subBlockRefs.length > 0) {
-    for (let i = 0; i < block.subBlockTree.subBlockRefs.length; i++) {
-      const subBlockId = block.subBlockTree.subBlockRefs[i]!;
-      const cbor = block.subBlockTree.subBlocks[i];
-      if (cbor) {
-        currentJournal.subBlockCbors.push({ subBlockId, cbor });
-      }
-    }
-  }
 
   // 1. Chain-link check
   if (currentHeight === 0) {
@@ -171,30 +157,14 @@ export function applyOrderingBlock(block: OrderingBlock): boolean {
     }
   }
 
-  // 7. Confirm sub-blocks and their posts — decode from block, not mempool
-  for (let i = 0; i < block.subBlockTree.subBlockRefs.length; i++) {
-    const subBlockId = block.subBlockTree.subBlockRefs[i]!;
-    const subBlockCbor = block.subBlockTree.subBlocks[i];
+  // 7. Confirm sub-blocks — create placeholders if post doesn't exist
+  for (let i = 0; i < block.subBlockTree.subBlockEntries.length; i++) {
+    const entry = block.subBlockTree.subBlockEntries[i]!;
+    const subBlockId = entry.postId;
 
-    // Insert post if we don't already have it (e.g., from gossip)
-    if (subBlockCbor && !getPost(subBlockId)) {
-      try {
-        const sb = decodeSubBlock(subBlockCbor);
-        // Verify the CBOR decodes to the declared subBlockRefs ID.
-        // Prevents a malicious miner from swapping CBOR entries or
-        // injecting content under a different post ID.
-        if (sb.subBlockId !== subBlockId) {
-          console.warn(
-            `Sub-block CBOR mismatch: refs[${i}]=${subBlockId}, CBOR decodes to ${sb.subBlockId}`,
-          );
-          // Don't insert mismatched content. Fall through to confirmPost
-          // (which will no-op if the post doesn't exist).
-        } else {
-          insertPost(sb.post, encodePost(sb.post));
-        }
-      } catch (err) {
-        console.warn(`Failed to decode sub-block ${subBlockId} from block: ${String(err)}`);
-      }
+    // Create placeholder row if post doesn't exist yet
+    if (!getPost(subBlockId)) {
+      insertPostPlaceholder(subBlockId, entry.parentRefs);
     }
 
     try {
@@ -203,19 +173,14 @@ export function applyOrderingBlock(block: OrderingBlock): boolean {
       console.warn(`Failed to confirm sub-block ${subBlockId}: ${String(err)}`);
     }
   }
+
   // Still remove confirmed entries from local mempool (if we have them)
   if (block.subBlockTree.subBlockRefs.length > 0) {
     const entriesAfter = getPendingEntries(1000);
     for (const subBlockId of block.subBlockTree.subBlockRefs) {
-      const match = entriesAfter.find((e) => {
-        if (e.entryType !== 'subblock' || !e.subblockCbor) return false;
-        try {
-          const sb = decodeSubBlock(e.subblockCbor);
-          return sb.subBlockId === subBlockId;
-        } catch {
-          return false;
-        }
-      });
+      const match = entriesAfter.find((e) =>
+        e.entryType === 'subblock' && e.subblockId === subBlockId,
+      );
       if (match) {
         removeEntry(match.rowid);
       }

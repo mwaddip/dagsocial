@@ -84,10 +84,12 @@ const MIGRATIONS = [
   )`,
 
   // Mempool (unified sub-block + UTXO transaction pool)
+  // Schema change: subblock_cbor BLOB → subblock_id TEXT (ID-based, not CBOR-based).
+  // Existing databases with the old schema will fail — pre-stable, DB reset acceptable.
   `CREATE TABLE IF NOT EXISTS mempool (
     rowid INTEGER PRIMARY KEY AUTOINCREMENT,
     entry_type TEXT NOT NULL CHECK(entry_type IN ('subblock', 'utxo_tx')),
-    subblock_cbor BLOB,
+    subblock_id TEXT,
     utxo_tx_cbor BLOB,
     batch_id TEXT,
     expires_at_height INTEGER NOT NULL,

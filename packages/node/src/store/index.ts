@@ -15,6 +15,7 @@ export {
   getParentRefs,
   getSubtree,
   pruneSubtree,
+  insertPostPlaceholder,
 } from './posts.js';
 
 export {

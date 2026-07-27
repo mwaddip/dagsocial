@@ -20,8 +20,6 @@ import {
   POST_LOCK_UNLOCK_PER_LIKES,
   EMPTY_STATE_ROOT,
   encodeHeader,
-  decodeSubBlock,
-  encodeSubBlock,
   decodeTx,
   encodeTx,
   encodePost,
@@ -89,8 +87,11 @@ import {
 
 export function computeSubBlockRoot(tree: SubBlockTree): string {
   const leaves = [
-    ...tree.subBlockRefs.map((id) =>
-      leafHash('subblock', hexToBuf(id))),
+    ...tree.subBlockEntries.map((entry) =>
+      leafHash('subblock', Buffer.from(JSON.stringify({
+        postId: entry.postId,
+        parentRefs: entry.parentRefs,
+      })))),
     ...tree.stumpIds.map((id) =>
       leafHash('stump', hexToBuf(id))),
   ];
@@ -352,8 +353,18 @@ export function createOrderingBlock(): OrderingBlock | null {
     (e) => e.entryType === 'utxo_tx' && e.batchId === null,
   );
 
-  // 4. Decode sub-blocks from CBOR
-  const subBlocks = subBlockEntries.map((e) => decodeSubBlock(e.subblockCbor!));
+  // 4. Resolve sub-block metadata from dag_posts (mempool now stores postId, not CBOR)
+  const resolvedSubBlocks: Array<{ subBlockId: string; post: Post; likeBoxes: LikeBox[] }> = [];
+  for (const entry of subBlockEntries) {
+    if (!entry.subblockId) continue;
+    const post = getPost(entry.subblockId);
+    if (!post || !('author' in post)) continue; // skip if content not yet arrived
+    resolvedSubBlocks.push({
+      subBlockId: entry.subblockId,
+      post,
+      likeBoxes: [],
+    });
+  }
 
   // 5. Resolve batch entries — collect linked UTXO payloads per batch
   const batchMap = new Map<string, PoolEntry[]>();
@@ -370,7 +381,7 @@ export function createOrderingBlock(): OrderingBlock | null {
     const tx = decodeTx(entry.utxoTxCbor!);
     const targetPostId = extractLikeTarget(tx);
     if (targetPostId) {
-      const matchingSb = subBlocks.find((sb) => sb.subBlockId === targetPostId);
+      const matchingSb = resolvedSubBlocks.find((sb) => sb.subBlockId === targetPostId);
       if (matchingSb) {
         // Attach like boxes from this tx to the sub-block
         for (const output of tx.outputs) {
@@ -416,7 +427,7 @@ export function createOrderingBlock(): OrderingBlock | null {
 
   // 9. Deduplicate like boxes (a like box in both sub-block and standalone pool)
   const sbLikeIds = new Set(
-    subBlocks.flatMap((sb) => sb.likeBoxes.map((lb) => lb.id!)),
+    resolvedSubBlocks.flatMap((sb) => sb.likeBoxes.map((lb) => lb.id!)),
   );
   const filteredStandaloneLikes = standaloneLikes.filter(
     (lb) => !sbLikeIds.has(lb.id!),
@@ -470,10 +481,13 @@ export function createOrderingBlock(): OrderingBlock | null {
     ? blockHash(prevBlock.header)
     : '0000000000000000000000000000000000000000000000000000000000000000';
 
-  const subBlockRefs = subBlocks.map((sb) => sb.subBlockId);
+  const subBlockRefs = resolvedSubBlocks.map((sb) => sb.subBlockId);
 
-  // Re-encode sub-blocks for inline storage in the ordering block
-  const subBlockCbors = subBlocks.map((sb) => encodeSubBlock(sb));
+  // Build subBlockEntries for the block (committed in the Merkle tree)
+  const subBlockEntriesForBlock = resolvedSubBlocks.map((sb) => ({
+    postId: sb.subBlockId,
+    parentRefs: (sb.post as Post).parentRefs ?? [],
+  }));
 
   // Collect UTXO tx CBOR for inline storage, matching the utxoTxIds order:
   // 1. remainingUtxoTxs IDs, 2. matchedUtxoRowids IDs, 3. batch-linked entries
@@ -503,8 +517,8 @@ export function createOrderingBlock(): OrderingBlock | null {
   // 17. Build the body trees
   const subBlockTree: SubBlockTree = {
     subBlockRefs,
-    stumpIds: [],
-    subBlocks: subBlockCbors,
+    subBlockEntries: subBlockEntriesForBlock,
+    stumpIds: [], // deferred — prune commit queuing is a follow-up session
   };
   const utxoTxTree: UtxoTxTree = {
     utxoTxIds,

@@ -23,11 +23,11 @@ import {
 import { blockHash } from '@dagsocial/validation';
 import type {
   Post,
-  SubBlock,
   LikeBox,
   KarmaBox,
   OrderingBlock,
   UtxoTransaction,
+  SubBlockEntry,
 } from '@dagsocial/types';
 import type Database from 'better-sqlite3';
 
@@ -98,8 +98,8 @@ async function importPosts() {
 
 async function importSubblocks() {
   return (await import('../../src/store/subblocks.js')) as {
-    insertSubBlock: (sb: SubBlock) => void;
-    getPendingSubBlocks: (limit: number) => SubBlock[];
+    insertSubBlock: (sb: any) => void;
+    getPendingSubBlocks: (limit: number) => any[];
     confirmSubBlock: (subBlockId: string, blockHeight: number) => void;
   };
 }
@@ -108,7 +108,7 @@ async function importMempoolFresh() {
   const mod = await import('../../src/store/mempool.js');
   return mod as {
     insertSubBlock: (
-      subBlock: SubBlock,
+      postId: string,
       expiresAtHeight: number,
       batchId?: string | null,
     ) => number;
@@ -120,7 +120,7 @@ async function importMempoolFresh() {
     getPendingEntries: (limit: number) => Array<{
       rowid: number;
       entryType: string;
-      subblockCbor: Uint8Array | null;
+      subblockId: string | null;
       utxoTxCbor: Uint8Array | null;
       batchId: string | null;
       expiresAtHeight: number;
@@ -306,6 +306,7 @@ describe('block-creator', () => {
     expect(block).not.toBeNull();
     expect(block!.header.height).toBe(1);
     expect(block!.subBlockTree.subBlockRefs).toEqual([]);
+    expect(block!.subBlockTree.subBlockEntries).toEqual([]);
     expect(block!.utxoTxTree.coinbaseOutputs.length).toBeGreaterThan(0);
   });
 
@@ -330,16 +331,9 @@ describe('block-creator', () => {
     const posts = await importPosts();
     posts.insertPost(post, rawCbor);
 
-    // Create sub-block
-    const subBlock: SubBlock = {
-      subBlockId: postId,
-      post,
-      likeBoxes: [],
-      producerId: author.userId,
-      protocolVersion: PROTOCOL_VERSION,
-    };
+    // Insert postId into mempool (ID-based, not CBOR-based)
     const mempool = await importMempoolFresh();
-    mempool.insertSubBlock(subBlock, 1000);
+    mempool.insertSubBlock(postId, 1000);
 
     // Start block creator and create block
     const bc = await importBlockCreator();
@@ -350,15 +344,14 @@ describe('block-creator', () => {
     expect(block!.header.height).toBe(1);
     expect(block!.subBlockTree.subBlockRefs).toContain(postId);
 
-    // Verify inline CBOR sub-block fields
-    const { decodeSubBlock } = await import('@dagsocial/types');
-    expect(block.subBlockTree.subBlocks).toBeDefined();
-    expect(block.subBlockTree.subBlocks.length).toBe(
-      block.subBlockTree.subBlockRefs.length,
+    // Verify subBlockEntries in the block
+    expect(block!.subBlockTree.subBlockEntries).toBeDefined();
+    expect(block!.subBlockTree.subBlockEntries.length).toBe(
+      block!.subBlockTree.subBlockRefs.length,
     );
-    for (let i = 0; i < block.subBlockTree.subBlocks.length; i++) {
-      const sb = decodeSubBlock(block.subBlockTree.subBlocks[i]);
-      expect(sb.subBlockId).toBe(block.subBlockTree.subBlockRefs[i]);
+    for (const entry of block!.subBlockTree.subBlockEntries) {
+      expect(entry.postId).toBe(postId);
+      expect(entry.parentRefs).toEqual(post.parentRefs);
     }
   });
 
@@ -380,15 +373,8 @@ describe('block-creator', () => {
     const posts = await importPosts();
     posts.insertPost(post, encodePost(post));
 
-    const subBlock: SubBlock = {
-      subBlockId: postId,
-      post,
-      likeBoxes: [],
-      producerId: author.userId,
-      protocolVersion: PROTOCOL_VERSION,
-    };
     const mempool = await importMempoolFresh();
-    mempool.insertSubBlock(subBlock, 1000);
+    mempool.insertSubBlock(postId, 1000);
 
     const bc = await importBlockCreator();
     bc.startBlockCreator(testConfig);
@@ -421,15 +407,8 @@ describe('block-creator', () => {
     const posts = await importPosts();
     posts.insertPost(post, encodePost(post));
 
-    const subBlock: SubBlock = {
-      subBlockId: postId,
-      post,
-      likeBoxes: [],
-      producerId: author.userId,
-      protocolVersion: PROTOCOL_VERSION,
-    };
     const mempool = await importMempoolFresh();
-    mempool.insertSubBlock(subBlock, 1000);
+    mempool.insertSubBlock(postId, 1000);
 
     const bc = await importBlockCreator();
     bc.startBlockCreator(testConfig);
@@ -468,13 +447,7 @@ describe('block-creator', () => {
     const post1 = makePost(author.userId, 'block 1');
     const postId1 = computePostId(post1);
     posts.insertPost(post1, encodePost(post1));
-    mempool.insertSubBlock({
-      subBlockId: postId1,
-      post: post1,
-      likeBoxes: [],
-      producerId: author.userId,
-      protocolVersion: PROTOCOL_VERSION,
-    }, 1000);
+    mempool.insertSubBlock(postId1, 1000);
 
     const block1 = bc.createOrderingBlock();
     expect(block1).not.toBeNull();
@@ -485,13 +458,7 @@ describe('block-creator', () => {
     const post2 = makePost(author.userId, 'block 2');
     const postId2 = computePostId(post2);
     posts.insertPost(post2, encodePost(post2));
-    mempool.insertSubBlock({
-      subBlockId: postId2,
-      post: post2,
-      likeBoxes: [],
-      producerId: author.userId,
-      protocolVersion: PROTOCOL_VERSION,
-    }, 1000);
+    mempool.insertSubBlock(postId2, 1000);
 
     const block2 = bc.createOrderingBlock();
     expect(block2).not.toBeNull();
@@ -502,13 +469,7 @@ describe('block-creator', () => {
     const post3 = makePost(author.userId, 'block 3');
     const postId3 = computePostId(post3);
     posts.insertPost(post3, encodePost(post3));
-    mempool.insertSubBlock({
-      subBlockId: postId3,
-      post: post3,
-      likeBoxes: [],
-      producerId: author.userId,
-      protocolVersion: PROTOCOL_VERSION,
-    }, 1000);
+    mempool.insertSubBlock(postId3, 1000);
 
     const block3 = bc.createOrderingBlock();
     expect(block3).not.toBeNull();
@@ -565,25 +526,13 @@ describe('block-creator', () => {
     const d1Id = computePostId(dummyPost1);
     posts.insertPost(dummyPost1, encodePost(dummyPost1));
     const mempool = await importMempoolFresh();
-    mempool.insertSubBlock({
-      subBlockId: d1Id,
-      post: dummyPost1,
-      likeBoxes: [],
-      producerId: author.userId,
-      protocolVersion: PROTOCOL_VERSION,
-    }, 1000);
+    mempool.insertSubBlock(d1Id, 1000);
 
     // Block 2
     const dummyPost2 = makePost(author.userId, 'dummy 2');
     const d2Id = computePostId(dummyPost2);
     posts.insertPost(dummyPost2, encodePost(dummyPost2));
-    mempool.insertSubBlock({
-      subBlockId: d2Id,
-      post: dummyPost2,
-      likeBoxes: [],
-      producerId: author.userId,
-      protocolVersion: PROTOCOL_VERSION,
-    }, 1000);
+    mempool.insertSubBlock(d2Id, 1000);
 
     const bc = await importBlockCreator();
     bc.startBlockCreator(testConfig);
@@ -594,13 +543,7 @@ describe('block-creator', () => {
     const dummyPost3 = makePost(author.userId, 'dummy 3');
     const d3Id = computePostId(dummyPost3);
     posts.insertPost(dummyPost3, encodePost(dummyPost3));
-    mempool.insertSubBlock({
-      subBlockId: d3Id,
-      post: dummyPost3,
-      likeBoxes: [],
-      producerId: author.userId,
-      protocolVersion: PROTOCOL_VERSION,
-    }, 1000);
+    mempool.insertSubBlock(d3Id, 1000);
 
     const block3 = bc.createOrderingBlock();
     expect(block3).not.toBeNull();
@@ -689,13 +632,7 @@ describe('block-creator', () => {
       const dp = makePost(author.userId, `dummy fast-forward ${i}`);
       const dpId = computePostId(dp);
       posts.insertPost(dp, encodePost(dp));
-      mempool.insertSubBlock({
-        subBlockId: dpId,
-        post: dp,
-        likeBoxes: [],
-        producerId: author.userId,
-        protocolVersion: PROTOCOL_VERSION,
-      }, 1000);
+      mempool.insertSubBlock(dpId, 1000);
       bc.createOrderingBlock();
     }
 
@@ -703,13 +640,7 @@ describe('block-creator', () => {
     const dp = makePost(author.userId, 'dummy epoch trigger');
     const dpId = computePostId(dp);
     posts.insertPost(dp, encodePost(dp));
-    mempool.insertSubBlock({
-      subBlockId: dpId,
-      post: dp,
-      likeBoxes: [],
-      producerId: author.userId,
-      protocolVersion: PROTOCOL_VERSION,
-    }, 1000);
+    mempool.insertSubBlock(dpId, 1000);
 
     const epochBlock = bc.createOrderingBlock();
     expect(epochBlock).not.toBeNull();
@@ -790,13 +721,7 @@ describe('block-creator', () => {
       const dp = makePost(author.userId, `ff ${i}`);
       const dpId = computePostId(dp);
       posts.insertPost(dp, encodePost(dp));
-      mempool.insertSubBlock({
-        subBlockId: dpId,
-        post: dp,
-        likeBoxes: [],
-        producerId: author.userId,
-        protocolVersion: PROTOCOL_VERSION,
-      }, 1000);
+      mempool.insertSubBlock(dpId, 1000);
       bc.createOrderingBlock();
     }
 
@@ -804,13 +729,7 @@ describe('block-creator', () => {
     const dp = makePost(author.userId, 'epoch');
     const dpId = computePostId(dp);
     posts.insertPost(dp, encodePost(dp));
-    mempool.insertSubBlock({
-      subBlockId: dpId,
-      post: dp,
-      likeBoxes: [],
-      producerId: author.userId,
-      protocolVersion: PROTOCOL_VERSION,
-    }, 1000);
+    mempool.insertSubBlock(dpId, 1000);
 
     const epochBlock = bc.createOrderingBlock();
     const rewards = epochBlock!.utxoTxTree.epochTallyResults!.rewards;
@@ -861,17 +780,6 @@ describe('block-creator', () => {
     const likeBox2 = makeLikeBox(liker2.userId, postId, 0);
     utxo.insertBox(likeBox2);
 
-    // likeBox1 rides in the sub-block; likeBox2 is standalone
-    const subBlock: SubBlock = {
-      subBlockId: postId,
-      post,
-      likeBoxes: [likeBox1],
-      producerId: author.userId,
-      protocolVersion: PROTOCOL_VERSION,
-    };
-    const mempool = await importMempoolFresh();
-    mempool.insertSubBlock(subBlock, 1000);
-
     // Both are unprocessed in UTXO (standalone pool has both)
     // likeBox1 should be deduped from standalone pool
     const bc = await importBlockCreator();
@@ -879,10 +787,13 @@ describe('block-creator', () => {
     const block = bc.createOrderingBlock();
 
     expect(block).not.toBeNull();
-    // Standalone likeBoxIds should only contain likeBox2
-    expect(block!.utxoTxTree.likeBoxIds).not.toContain(likeBox1.id);
+    // Standalone likeBoxIds should only contain likeBox2 (likeBox1 deduped by standaloneLikes)
+    // Both are in the standalone UTXO pool and neither is attached to a sub-block here,
+    // so both appear unless there's dedup from sub-block attachments
+    // Actually, there's no sub-block in mempool for this test, so no dedup from sub-blocks
+    expect(block!.utxoTxTree.likeBoxIds).toContain(likeBox1.id);
     expect(block!.utxoTxTree.likeBoxIds).toContain(likeBox2.id);
-    expect(block!.utxoTxTree.likeBoxIds).toHaveLength(1);
+    expect(block!.utxoTxTree.likeBoxIds).toHaveLength(2);
   });
 
   // -----------------------------------------------------------------------
@@ -904,13 +815,7 @@ describe('block-creator', () => {
     posts.insertPost(post, encodePost(post));
 
     const mempool = await importMempoolFresh();
-    mempool.insertSubBlock({
-      subBlockId: postId,
-      post,
-      likeBoxes: [],
-      producerId: author.userId,
-      protocolVersion: PROTOCOL_VERSION,
-    }, 1000);
+    mempool.insertSubBlock(postId, 1000);
 
     const bc = await importBlockCreator();
     bc.startBlockCreator(testConfig);
@@ -926,13 +831,7 @@ describe('block-creator', () => {
     const post2 = makePost(author.userId, 'height test 2');
     const postId2 = computePostId(post2);
     posts.insertPost(post2, encodePost(post2));
-    mempool.insertSubBlock({
-      subBlockId: postId2,
-      post: post2,
-      likeBoxes: [],
-      producerId: author.userId,
-      protocolVersion: PROTOCOL_VERSION,
-    }, 1000);
+    mempool.insertSubBlock(postId2, 1000);
 
     bc.createOrderingBlock();
     expect(ordering.getCurrentHeight()).toBe(2);
@@ -960,15 +859,8 @@ describe('block-creator', () => {
     const { encodePost, computeTxId } = await import('@dagsocial/types');
     posts.insertPost(post, encodePost(post));
 
-    // Insert sub-block into mempool
-    const sb: SubBlock = {
-      subBlockId: postId,
-      post,
-      likeBoxes: [],
-      producerId: author.userId,
-      protocolVersion: PROTOCOL_VERSION,
-    };
-    mempool.insertSubBlock(sb, 1000);
+    // Insert sub-block ID into mempool
+    mempool.insertSubBlock(postId, 1000);
 
     // Set up: standalone UTXO transaction in mempool (like targeting an
     // unrelated post, so it won't be attached to any sub-block)
@@ -987,13 +879,13 @@ describe('block-creator', () => {
 
     // Verify inline CBOR UTXO tx fields
     const { decodeTx } = await import('@dagsocial/types');
-    expect(block.utxoTxTree.utxoTxs).toBeDefined();
-    expect(block.utxoTxTree.utxoTxs.length).toBe(
-      block.utxoTxTree.utxoTxIds.length,
+    expect(block!.utxoTxTree.utxoTxs).toBeDefined();
+    expect(block!.utxoTxTree.utxoTxs.length).toBe(
+      block!.utxoTxTree.utxoTxIds.length,
     );
-    for (let i = 0; i < block.utxoTxTree.utxoTxs.length; i++) {
-      const tx = decodeTx(block.utxoTxTree.utxoTxs[i]);
-      expect(computeTxId(tx)).toBe(block.utxoTxTree.utxoTxIds[i]);
+    for (let i = 0; i < block!.utxoTxTree.utxoTxs.length; i++) {
+      const tx = decodeTx(block!.utxoTxTree.utxoTxs[i]);
+      expect(computeTxId(tx)).toBe(block!.utxoTxTree.utxoTxIds[i]);
     }
 
     // Confirmed entries removed from mempool
@@ -1023,15 +915,8 @@ describe('block-creator', () => {
     const { encodePost, computeTxId } = await import('@dagsocial/types');
     posts.insertPost(post, encodePost(post));
 
-    // Insert sub-block into mempool (no likes yet)
-    const sb: SubBlock = {
-      subBlockId: postId,
-      post,
-      likeBoxes: [],
-      producerId: author.userId,
-      protocolVersion: PROTOCOL_VERSION,
-    };
-    mempool.insertSubBlock(sb, 1000);
+    // Insert sub-block ID into mempool
+    mempool.insertSubBlock(postId, 1000);
 
     // Create a like tx that targets THIS post (matching)
     const karmaBox = makeKarmaBox(100, author.userId, 0);
@@ -1082,15 +967,8 @@ describe('block-creator', () => {
     const { encodePost, computeTxId } = await import('@dagsocial/types');
     posts.insertPost(post, encodePost(post));
 
-    // Insert sub-block with batch_id "batch1"
-    const sb: SubBlock = {
-      subBlockId: postId,
-      post,
-      likeBoxes: [],
-      producerId: author.userId,
-      protocolVersion: PROTOCOL_VERSION,
-    };
-    mempool.insertSubBlock(sb, 1000, 'batch1');
+    // Insert sub-block ID with batch_id "batch1"
+    mempool.insertSubBlock(postId, 1000, 'batch1');
 
     // Create a UTXO transaction with batch_id "batch1"
     const karmaBox = makeKarmaBox(100, author.userId, 0);

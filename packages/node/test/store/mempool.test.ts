@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import type { SubBlock } from '@dagsocial/types';
 import type Database from 'better-sqlite3';
 
 // Dynamic import pattern — fresh modules per test
@@ -15,32 +14,11 @@ async function importDbFresh() {
 async function importMempoolFresh() {
   const mod = await import('../../src/store/mempool.js');
   return mod as {
-    insertSubBlock: (subBlock: SubBlock, expiresAtHeight: number, batchId?: string | null) => number;
+    insertSubBlock: (postId: string, expiresAtHeight: number, batchId?: string | null) => number;
     insertUtxoTx: (tx: any, batchId: string | null, expiresAtHeight: number) => number;
     getPendingEntries: (limit: number) => any[];
     purgeExpired: (currentHeight: number) => number;
     removeEntry: (rowid: number) => void;
-  };
-}
-
-function makeSubBlock(overrides?: Partial<SubBlock>): SubBlock {
-  return {
-    subBlockId: 'sb_test1',
-    post: {
-      id: 'post_test1',
-      content: 'hello',
-      author: new Uint8Array(32).fill(1),
-      parentRefs: [],
-      challenge: new Uint8Array(32).fill(2),
-      powNonce: 0,
-      protocolVersion: 1,
-      timestamp: Date.now(),
-      signature: new Uint8Array(64),
-    },
-    likeBoxes: [],
-    producerId: new Uint8Array(32).fill(3),
-    protocolVersion: 1,
-    ...overrides,
   };
 }
 
@@ -58,15 +36,15 @@ describe('mempool store', () => {
 
   it('inserts a subblock and retrieves it via getPendingEntries', async () => {
     const { insertSubBlock, getPendingEntries } = await importMempoolFresh();
-    const sb = makeSubBlock();
 
-    const rowid = insertSubBlock(sb, 100); // expires at height 100
+    const rowid = insertSubBlock('post_test1', 100); // expires at height 100
     const entries = getPendingEntries(10);
 
     expect(entries).toHaveLength(1);
     expect(entries[0].rowid).toBe(rowid);
     expect(entries[0].entryType).toBe('subblock');
-    expect(entries[0].subblockCbor).toBeInstanceOf(Uint8Array);
+    expect(entries[0].subblockId).toBe('post_test1');
+    expect(entries[0].utxoTxCbor).toBeNull();
     expect(entries[0].batchId).toBeNull();
     expect(entries[0].expiresAtHeight).toBe(100);
   });
@@ -91,9 +69,8 @@ describe('mempool store', () => {
 
   it('inserts a subblock with batchId and retrieves it', async () => {
     const { insertSubBlock, getPendingEntries } = await importMempoolFresh();
-    const sb = makeSubBlock({ subBlockId: 'sb_batch' });
 
-    insertSubBlock(sb, 50, 'batch-abc');
+    insertSubBlock('sb_batch', 50, 'batch-abc');
     const entries = getPendingEntries(10);
 
     expect(entries).toHaveLength(1);
@@ -122,7 +99,7 @@ describe('mempool store', () => {
     const { insertSubBlock, getPendingEntries } = await importMempoolFresh();
 
     for (let i = 0; i < 5; i++) {
-      insertSubBlock(makeSubBlock({ subBlockId: `sb_${i}` }), 100);
+      insertSubBlock(`sb_${i}`, 100);
     }
 
     const entries = getPendingEntries(3);
@@ -132,9 +109,9 @@ describe('mempool store', () => {
   it('getPendingEntries returns entries in FIFO order by rowid', async () => {
     const { insertSubBlock, getPendingEntries } = await importMempoolFresh();
 
-    insertSubBlock(makeSubBlock({ subBlockId: 'first' }), 100);
-    insertSubBlock(makeSubBlock({ subBlockId: 'second' }), 100);
-    insertSubBlock(makeSubBlock({ subBlockId: 'third' }), 100);
+    insertSubBlock('first', 100);
+    insertSubBlock('second', 100);
+    insertSubBlock('third', 100);
 
     const entries = getPendingEntries(10);
     expect(entries).toHaveLength(3);
@@ -147,8 +124,8 @@ describe('mempool store', () => {
     const { insertSubBlock, insertUtxoTx, getPendingEntries, purgeExpired } =
       await importMempoolFresh();
 
-    insertSubBlock(makeSubBlock({ subBlockId: 'sb_expired' }), 10);
-    insertSubBlock(makeSubBlock({ subBlockId: 'sb_valid' }), 50);
+    insertSubBlock('sb_expired', 10);
+    insertSubBlock('sb_valid', 50);
     const tx = { inputs: ['box3'], outputs: [], signatures: {}, protocolVersion: 1 };
     insertUtxoTx(tx as any, null, 30);
 
@@ -165,9 +142,9 @@ describe('mempool store', () => {
   it('purgeExpired returns count of removed entries', async () => {
     const { insertSubBlock, purgeExpired } = await importMempoolFresh();
 
-    insertSubBlock(makeSubBlock({ subBlockId: 'a' }), 10);
-    insertSubBlock(makeSubBlock({ subBlockId: 'b' }), 20);
-    insertSubBlock(makeSubBlock({ subBlockId: 'c' }), 30);
+    insertSubBlock('a', 10);
+    insertSubBlock('b', 20);
+    insertSubBlock('c', 30);
 
     const removed = purgeExpired(25);
     expect(removed).toBe(2); // a (10) and b (20) — both < 25
@@ -176,8 +153,8 @@ describe('mempool store', () => {
   it('removeEntry removes a specific row by rowid', async () => {
     const { insertSubBlock, getPendingEntries, removeEntry } = await importMempoolFresh();
 
-    const rowid1 = insertSubBlock(makeSubBlock({ subBlockId: 'keep' }), 100);
-    const rowid2 = insertSubBlock(makeSubBlock({ subBlockId: 'remove' }), 100);
+    const rowid1 = insertSubBlock('keep', 100);
+    const rowid2 = insertSubBlock('remove', 100);
 
     removeEntry(rowid2);
 
@@ -190,9 +167,9 @@ describe('mempool store', () => {
     const { insertSubBlock, insertUtxoTx, getPendingEntries } = await importMempoolFresh();
     const tx = { inputs: ['box5'], outputs: [], signatures: {}, protocolVersion: 1 };
 
-    insertSubBlock(makeSubBlock({ subBlockId: 'sb1' }), 100);
+    insertSubBlock('sb1', 100);
     insertUtxoTx(tx as any, null, 100);
-    insertSubBlock(makeSubBlock({ subBlockId: 'sb2' }), 100);
+    insertSubBlock('sb2', 100);
 
     const entries = getPendingEntries(10);
     expect(entries).toHaveLength(3);
@@ -209,21 +186,21 @@ describe('mempool store', () => {
 
   it('getPendingEntries with limit 0 returns empty array', async () => {
     const { insertSubBlock, getPendingEntries } = await importMempoolFresh();
-    insertSubBlock(makeSubBlock({ subBlockId: 'sb_limit0' }), 100);
+    insertSubBlock('sb_limit0', 100);
     const entries = getPendingEntries(0);
     expect(entries).toEqual([]);
   });
 
   it('purgeExpired returns 0 when nothing to purge', async () => {
     const { insertSubBlock, purgeExpired } = await importMempoolFresh();
-    insertSubBlock(makeSubBlock(), 100);
+    insertSubBlock('sb_nopurge', 100);
     const removed = purgeExpired(50); // nothing < 50
     expect(removed).toBe(0);
   });
 
   it('removeEntry is a no-op for a non-existent rowid', async () => {
     const { insertSubBlock, getPendingEntries, removeEntry } = await importMempoolFresh();
-    insertSubBlock(makeSubBlock(), 100);
+    insertSubBlock('sb_remove_noop', 100);
     removeEntry(9999); // should not throw
     const entries = getPendingEntries(10);
     expect(entries).toHaveLength(1);
@@ -231,9 +208,30 @@ describe('mempool store', () => {
 
   it('createdAt is set on insert', async () => {
     const { insertSubBlock, getPendingEntries } = await importMempoolFresh();
-    insertSubBlock(makeSubBlock(), 100);
+    insertSubBlock('sb_createdat', 100);
     const entries = getPendingEntries(10);
     expect(entries[0].createdAt).toBeTruthy();
     expect(typeof entries[0].createdAt).toBe('string');
+  });
+
+  it('subblock entry has subblockId set and utxoTxCbor null', async () => {
+    const { insertSubBlock, getPendingEntries } = await importMempoolFresh();
+    insertSubBlock('post_abc123', 200);
+    const entries = getPendingEntries(10);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].entryType).toBe('subblock');
+    expect(entries[0].subblockId).toBe('post_abc123');
+    expect(entries[0].utxoTxCbor).toBeNull();
+  });
+
+  it('utxo_tx entry has subblockId null and utxoTxCbor set', async () => {
+    const { insertUtxoTx, getPendingEntries } = await importMempoolFresh();
+    const tx = { inputs: ['box99'], outputs: [], signatures: {}, protocolVersion: 1 };
+    insertUtxoTx(tx as any, null, 300);
+    const entries = getPendingEntries(10);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].entryType).toBe('utxo_tx');
+    expect(entries[0].subblockId).toBeNull();
+    expect(entries[0].utxoTxCbor).toBeInstanceOf(Uint8Array);
   });
 });

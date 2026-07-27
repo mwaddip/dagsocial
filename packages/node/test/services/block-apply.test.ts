@@ -22,7 +22,6 @@ import {
 } from '@dagsocial/types';
 import type {
   Post,
-  SubBlock,
   LikeBox,
   KarmaBox,
   OrderingBlock,
@@ -99,7 +98,7 @@ async function importMempoolFresh() {
   const mod = await import('../../src/store/mempool.js');
   return mod as {
     insertSubBlock: (
-      subBlock: SubBlock,
+      postId: string,
       expiresAtHeight: number,
       batchId?: string | null,
     ) => number;
@@ -111,7 +110,7 @@ async function importMempoolFresh() {
     getPendingEntries: (limit: number) => Array<{
       rowid: number;
       entryType: string;
-      subblockCbor: Uint8Array | null;
+      subblockId: string | null;
       utxoTxCbor: Uint8Array | null;
       batchId: string | null;
       expiresAtHeight: number;
@@ -312,10 +311,10 @@ describe('block-apply journal recording', () => {
   });
 
   // -----------------------------------------------------------------------
-  // 2. Post confirm records confirmedSubBlockIds and subBlockCbors
+  // 2. Post confirm records confirmedSubBlockIds in journal
   // -----------------------------------------------------------------------
 
-  it('post confirm records confirmedSubBlockIds and subBlockCbors in journal', async () => {
+  it('post confirm records confirmedSubBlockIds in journal', async () => {
     const db = await importDb();
     db.initDb(':memory:');
 
@@ -329,21 +328,14 @@ describe('block-apply journal recording', () => {
     const posts = await importPosts();
     posts.insertPost(post, encodePost(post));
 
-    const subBlock: SubBlock = {
-      subBlockId: postId,
-      post,
-      likeBoxes: [],
-      producerId: author.userId,
-      protocolVersion: PROTOCOL_VERSION,
-    };
     const mempool = await importMempoolFresh();
-    mempool.insertSubBlock(subBlock, 1000);
+    mempool.insertSubBlock(postId, 1000);
 
     const bc = await importBlockCreator();
     bc.startBlockCreator(testConfig);
     bc.createOrderingBlock();
 
-    // Verify post was confirmed (sub-block decoded from block CBOR)
+    // Verify post was confirmed
     const confirmedPost = posts.getPost(postId);
     expect(confirmedPost).not.toBeNull();
 
@@ -351,9 +343,6 @@ describe('block-apply journal recording', () => {
     const saved = journal.getBlockJournal(1);
     expect(saved).not.toBeNull();
     expect(saved!.confirmedSubBlockIds).toContain(postId);
-    expect(saved!.subBlockCbors.length).toBe(1);
-    expect(saved!.subBlockCbors[0]!.subBlockId).toBe(postId);
-    expect(saved!.subBlockCbors[0]!.cbor).toBeInstanceOf(Uint8Array);
   });
 
   // -----------------------------------------------------------------------
@@ -385,16 +374,9 @@ describe('block-apply journal recording', () => {
     const likeBox = makeLikeBox(liker.userId, postId, 0);
     utxo.insertBox(likeBox);
 
-    // Insert sub-block for the post
+    // Insert sub-block ID for the post
     const mempool = await importMempoolFresh();
-    const sb: SubBlock = {
-      subBlockId: postId,
-      post,
-      likeBoxes: [],
-      producerId: author.userId,
-      protocolVersion: PROTOCOL_VERSION,
-    };
-    mempool.insertSubBlock(sb, 1000);
+    mempool.insertSubBlock(postId, 1000);
 
     const bc = await importBlockCreator();
     bc.startBlockCreator(testConfig);
@@ -448,13 +430,7 @@ describe('block-apply journal recording', () => {
       const dp = makePost(author.userId, `ff ${i}`);
       const dpId = computePostId(dp);
       posts.insertPost(dp, encodePost(dp));
-      mempool.insertSubBlock({
-        subBlockId: dpId,
-        post: dp,
-        likeBoxes: [],
-        producerId: author.userId,
-        protocolVersion: PROTOCOL_VERSION,
-      }, 1000);
+      mempool.insertSubBlock(dpId, 1000);
       bc.createOrderingBlock();
     }
 
@@ -462,13 +438,7 @@ describe('block-apply journal recording', () => {
     const dp = makePost(author.userId, 'epoch trigger');
     const dpId = computePostId(dp);
     posts.insertPost(dp, encodePost(dp));
-    mempool.insertSubBlock({
-      subBlockId: dpId,
-      post: dp,
-      likeBoxes: [],
-      producerId: author.userId,
-      protocolVersion: PROTOCOL_VERSION,
-    }, 1000);
+    mempool.insertSubBlock(dpId, 1000);
 
     bc.createOrderingBlock();
 
@@ -507,15 +477,8 @@ describe('block-apply journal recording', () => {
     const { encodePost, computeTxId } = await import('@dagsocial/types');
     posts.insertPost(post, encodePost(post));
 
-    // Insert sub-block
-    const sb: SubBlock = {
-      subBlockId: postId,
-      post,
-      likeBoxes: [],
-      producerId: author.userId,
-      protocolVersion: PROTOCOL_VERSION,
-    };
-    mempool.insertSubBlock(sb, 1000);
+    // Insert sub-block ID
+    mempool.insertSubBlock(postId, 1000);
 
     // Insert a standalone UTXO transaction in mempool
     const karmaBox = makeKarmaBox(100, author.userId, 0);
@@ -573,7 +536,7 @@ describe('block-apply journal recording', () => {
         powTargetBits: 20, // High difficulty — nonce 0 will not satisfy
         createdAt: Date.now(),
       },
-      subBlockTree: { subBlockRefs: [], stumpIds: [], subBlocks: [] },
+      subBlockTree: { subBlockRefs: [], subBlockEntries: [], stumpIds: [] },
       utxoTxTree: {
         utxoTxIds: [],
         utxoTxs: [],
@@ -615,7 +578,7 @@ describe('block-apply journal recording', () => {
         powTargetBits: 4,
         createdAt: Date.now(),
       },
-      subBlockTree: { subBlockRefs: [], stumpIds: [], subBlocks: [] },
+      subBlockTree: { subBlockRefs: [], subBlockEntries: [], stumpIds: [] },
       utxoTxTree: {
         utxoTxIds: [],
         utxoTxs: [],
@@ -656,7 +619,7 @@ describe('block-apply journal recording', () => {
         powTargetBits: 4,
         createdAt: Date.now(),
       },
-      subBlockTree: { subBlockRefs: [], stumpIds: [], subBlocks: [] },
+      subBlockTree: { subBlockRefs: [], subBlockEntries: [], stumpIds: [] },
       utxoTxTree: {
         utxoTxIds: [],
         utxoTxs: [],
@@ -698,7 +661,7 @@ describe('block-apply journal recording', () => {
         powTargetBits: 4,
         createdAt: Date.now(),
       },
-      subBlockTree: { subBlockRefs: [], stumpIds: [], subBlocks: [] },
+      subBlockTree: { subBlockRefs: [], subBlockEntries: [], stumpIds: [] },
       utxoTxTree: {
         utxoTxIds: [],
         utxoTxs: [],
