@@ -11,11 +11,13 @@ import {
   getKarmaBox,
   getKarmaBoxes,
   getPost,
+  getStump,
   insertPostPlaceholder,
   insertBox,
   getBox,
   consumeBox,
   confirmPost,
+  pruneSubtree,
   markLikeBoxesTallied,
   markFreeLikesProcessed,
   getCurrentHeight,
@@ -219,6 +221,25 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
       } catch (err) {
         console.error(`DagService reorg evaluation failed: ${String(err)}`);
       }
+    }
+  }
+
+  // Replay prune commits from this block's stumpIds
+  for (const stumpId of block.subBlockTree.stumpIds) {
+    const stump = getStump(stumpId);
+    if (!stump) {
+      console.warn(`Stump ${stumpId} not found locally — will backfill via content sweep`);
+      continue;
+    }
+    const rootPost = getPost(stump.rootPostHash);
+    if (rootPost && 'subtreeMerkleRoot' in rootPost) {
+      // Already pruned — skip duplicate stump
+      continue;
+    }
+    try {
+      pruneSubtree(stump.rootPostHash, stump);
+    } catch (err) {
+      console.warn(`Failed to replay prune for stump ${stumpId}: ${String(err)}`);
     }
   }
 
