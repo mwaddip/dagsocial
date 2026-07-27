@@ -24,7 +24,6 @@ export interface BlockJournal {
   blockHeight: number;
   creditBoxIds: string[];
   confirmedSubBlockIds: string[];
-  subBlockCbors: { subBlockId: string; cbor: Uint8Array }[];  // for mempool re-insertion
   talliedLikeBoxIds: string[];
   karmaMints: KarmaMint[];
   appliedUtxoTxs: AppliedUtxoTx[];

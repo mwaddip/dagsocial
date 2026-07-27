@@ -80,6 +80,7 @@ export type { PruneIntent, KarmaDelta, Stump, StumpId } from './stump.js';
 export { EMPTY_STATE_ROOT, cumulativeWork } from './block.js';
 export type {
   SubBlock,
+  SubBlockEntry,
   OrderingBlock,
   BlockHeader,
   SubBlockTree,

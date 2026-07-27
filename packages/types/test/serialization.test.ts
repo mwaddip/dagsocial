@@ -24,6 +24,7 @@ import type { Post } from '../src/post.js';
 import type { Stump } from '../src/stump.js';
 import type {
   SubBlock,
+  SubBlockEntry,
   BlockHeader,
   SubBlockTree,
   UtxoTxTree,
@@ -93,8 +94,10 @@ function makeBlockHeader(): BlockHeader {
 function makeSubBlockTree(): SubBlockTree {
   return {
     subBlockRefs: ['d'.repeat(64)],
+    subBlockEntries: [
+      { postId: 'b'.repeat(64), parentRefs: [] },
+    ],
     stumpIds: [],
-    subBlocks: [encodeSubBlock(makeSubBlock())],
   };
 }
 
@@ -223,6 +226,22 @@ describe('CBOR serialization', () => {
 
     it('decodeSubBlockTree throws on garbage bytes', () => {
       expect(() => decodeSubBlockTree(new Uint8Array([0xff, 0xfe, 0xfd]))).toThrow();
+    });
+
+    it('roundtrips SubBlockTree with subBlockEntries', () => {
+      const tree: SubBlockTree = {
+        subBlockRefs: ['aa'.repeat(32), 'bb'.repeat(32)],
+        subBlockEntries: [
+          { postId: 'aa'.repeat(32), parentRefs: [] },
+          { postId: 'bb'.repeat(32), parentRefs: ['aa'.repeat(32)] },
+        ],
+        stumpIds: [],
+      };
+      const encoded = encodeSubBlockTree(tree);
+      const decoded = decodeSubBlockTree(encoded);
+      expect(decoded.subBlockEntries).toEqual(tree.subBlockEntries);
+      expect(decoded.subBlockRefs).toEqual(tree.subBlockRefs);
+      expect(decoded.stumpIds).toEqual(tree.stumpIds);
     });
   });
 

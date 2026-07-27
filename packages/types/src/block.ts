@@ -83,10 +83,15 @@ export function cumulativeWork(headers: BlockHeader[]): bigint {
 // Body sections (independently requestable)
 // ---------------------------------------------------------------------------
 
+export interface SubBlockEntry {
+  postId: string;        // hex-encoded 32-byte post ID
+  parentRefs: string[];  // hex-encoded parent post IDs (0–8 entries)
+}
+
 export interface SubBlockTree {
-  subBlockRefs: PostId[];       // sub-blocks anchored in this block
-  stumpIds: StumpId[];          // stumps committed in this block
-  subBlocks: Uint8Array[];      // CBOR-encoded SubBlocks (aligned with subBlockRefs)
+  subBlockRefs: PostId[];           // derived from subBlockEntries, kept for ordering
+  subBlockEntries: SubBlockEntry[]; // topology committed in the block
+  stumpIds: StumpId[];              // stumps committed in this block
 }
 
 export interface UtxoTxTree {
