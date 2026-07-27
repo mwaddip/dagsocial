@@ -2,6 +2,7 @@ import type { PostStore } from '../store/post-store.js';
 import { getDb } from '../store/db.js';
 import { getParentRefs } from '../store/posts.js';
 import { getReorgFloor } from '../store/meta.js';
+import { emitDagReorg } from '../journal.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -363,15 +364,22 @@ export class DagService {
    *
    * Either the in-memory view AND the store both switch, or neither does.
    * The canonical_branch table is updated inside a single transaction:
-   *   1. Remove old branch entries above the fork point
-   *   2. Insert new branch entries starting at forkDepth + 1
-   *   3. Update dag_tip_hash in dag_meta
+   *   1. Cross-check: verify plan.toUnconfirm matches depth-based query
+   *   2. Floor gate: reject reorg below reorg_floor
+   *   3. Remove old branch entries using plan.toUnconfirm (explicit IDs)
+   *   4. Insert new branch entries starting at forkDepth + 1
+   *   5. Update dag_tip_hash in dag_meta
+   *
+   * Emits dag_reorg journal event for actual reorgs (forkPoint !== null).
    *
    * If forkPoint is null (initial plan), the entire branch is inserted from
    * depth 0.
    */
   switchToBranch(plan: DagReorgPlan): void {
     const db = getDb();
+
+    // Snapshot current tip for journal event (before transaction)
+    const oldTip = this.getCurrentTip();
 
     db.transaction(() => {
       if (plan.forkPoint !== null) {
@@ -383,8 +391,43 @@ export class DagService {
           );
         }
 
-        // 1. Remove old branch entries above fork point
-        db.prepare('DELETE FROM canonical_branch WHERE depth > ?').run(forkDepth);
+        // Floor gate: second line of defense
+        const floor = getReorgFloor();
+        if (forkDepth < floor) {
+          throw new Error(
+            `Reorg rejected: fork depth ${forkDepth} is below reorg floor ${floor}`,
+          );
+        }
+
+        // Cross-check: verify plan.toUnconfirm matches depth-based query
+        const depthBased = this.getBranchAbove(forkDepth);
+        const planSet = new Set(plan.toUnconfirm);
+        const depthSet = new Set(depthBased);
+        if (planSet.size !== depthSet.size) {
+          throw new Error(
+            `toUnconfirm mismatch: plan has ${plan.toUnconfirm.length} posts, ` +
+            `depth-based query has ${depthBased.length} posts. ` +
+            `plan: [${plan.toUnconfirm.join(', ')}], ` +
+            `depth: [${depthBased.join(', ')}]`,
+          );
+        }
+        for (const id of planSet) {
+          if (!depthSet.has(id)) {
+            throw new Error(
+              `toUnconfirm mismatch: post ${id} in plan but not in depth-based query. ` +
+              `plan: [${plan.toUnconfirm.join(', ')}], ` +
+              `depth: [${depthBased.join(', ')}]`,
+            );
+          }
+        }
+
+        // 1. Remove old branch entries using explicit IDs from the plan
+        const deleteStmt = db.prepare(
+          'DELETE FROM canonical_branch WHERE post_id = ?',
+        );
+        for (const postId of plan.toUnconfirm) {
+          deleteStmt.run(postId);
+        }
 
         // 2. Insert new branch entries
         const insertStmt = db.prepare(
@@ -395,8 +438,6 @@ export class DagService {
         }
 
         // 3. Update dag_tip_hash
-        // When toConfirm is empty (newTipId === forkPoint), the fork point
-        // becomes the new tip — we're truncating the branch.
         const newTip =
           plan.toConfirm.length > 0
             ? plan.toConfirm[plan.toConfirm.length - 1]!
@@ -406,7 +447,6 @@ export class DagService {
         ).run('dag_tip_hash', Buffer.from(newTip, 'hex'));
       } else {
         // Initial plan: insert from depth 0
-        // First, clear any existing entries (shouldn't be any, but be safe)
         db.prepare('DELETE FROM canonical_branch').run();
 
         const insertStmt = db.prepare(
@@ -416,12 +456,25 @@ export class DagService {
           insertStmt.run(i, plan.toConfirm[i]!);
         }
 
-        // Update dag_tip_hash
         const newTip = plan.toConfirm[plan.toConfirm.length - 1]!;
         db.prepare(
           'INSERT OR REPLACE INTO dag_meta (key, value) VALUES (?, ?)',
         ).run('dag_tip_hash', Buffer.from(newTip, 'hex'));
       }
     })();
+
+    // Emit journal event after transaction commits (only for actual reorgs)
+    if (plan.forkPoint !== null) {
+      const newTip =
+        plan.toConfirm.length > 0
+          ? plan.toConfirm[plan.toConfirm.length - 1]!
+          : plan.forkPoint!;
+      emitDagReorg(
+        plan.forkPoint,
+        plan.toUnconfirm.length,
+        oldTip?.postId ?? 'unknown',
+        newTip,
+      );
+    }
   }
 }

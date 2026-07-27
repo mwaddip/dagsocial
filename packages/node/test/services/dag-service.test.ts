@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { initDb, closeDb, getDb } from '../../src/store/db.js';
 import { setReorgFloor } from '../../src/store/meta.js';
 import { DagService } from '../../src/services/dag-service.js';
 import { SqlitePostStore } from '../../src/store/sqlite-store.js';
+import * as journal from '../../src/journal.js';
 
 // ---------------------------------------------------------------------------
 // Post IDs are 64-char hex strings in production (32 bytes as hex). We use
@@ -468,6 +469,118 @@ describe('DagService', () => {
       expect(rows).toHaveLength(2);
       expect(rows[0].post_id).toBe(G);
       expect(rows[1].post_id).toBe(A);
+    });
+
+    it('throws when toUnconfirm diverges from depth-based query', () => {
+      const db = getDb();
+      // Set up current canonical: G -> A -> B -> C
+      db.prepare('INSERT INTO canonical_branch (depth, post_id) VALUES (?, ?)').run(0, G);
+      db.prepare('INSERT INTO canonical_branch (depth, post_id) VALUES (?, ?)').run(1, A);
+      db.prepare('INSERT INTO canonical_branch (depth, post_id) VALUES (?, ?)').run(2, B);
+      db.prepare('INSERT INTO canonical_branch (depth, post_id) VALUES (?, ?)').run(3, C);
+      service.saveScore(C, 100);
+
+      // DAG with fork
+      insertPost(G, []);
+      insertPost(A, [G]);
+      insertPost(B, [A]);
+      insertPost(C, [B]);
+      insertPost(X, [A]);
+      insertPost(Y, [X]);
+      service.saveScore(Y, 200);
+
+      const plan = service.buildReorgPlan(Y, 200);
+      expect(plan).not.toBeNull();
+
+      // Corrupt the plan: add a post that isn't actually above the fork
+      const corruptedPlan = {
+        ...plan!,
+        toUnconfirm: [...plan!.toUnconfirm, 'ff'.repeat(32)],
+      };
+
+      expect(() => service.switchToBranch(corruptedPlan)).toThrow(
+        /toUnconfirm mismatch/,
+      );
+    });
+
+    it('throws when reorg floor is violated (second gate)', () => {
+      const db = getDb();
+      db.prepare('INSERT INTO canonical_branch (depth, post_id) VALUES (?, ?)').run(0, G);
+      db.prepare('INSERT INTO canonical_branch (depth, post_id) VALUES (?, ?)').run(1, A);
+      db.prepare('INSERT INTO canonical_branch (depth, post_id) VALUES (?, ?)').run(2, B);
+      service.saveScore(B, 100);
+
+      insertPost(G, []);
+      insertPost(A, [G]);
+      insertPost(B, [A]);
+      insertPost(D, [A]);
+      service.saveScore(D, 150);
+
+      // Set floor above fork depth
+      setReorgFloor(5);
+
+      // buildReorgPlan should already reject this
+      const plan = service.buildReorgPlan(D, 150);
+      expect(plan).toBeNull();
+
+      // But if someone calls switchToBranch directly with a plan that
+      // violates the floor, it should throw
+      const badPlan = {
+        forkPoint: A,
+        toUnconfirm: [B],
+        toConfirm: [D],
+      };
+
+      expect(() => service.switchToBranch(badPlan)).toThrow(
+        /below reorg floor/,
+      );
+
+      // Cleanup
+      setReorgFloor(0);
+    });
+
+    it('emits dag_reorg journal event on reorg', () => {
+      const spy = vi.spyOn(journal, 'emitDagReorg');
+
+      const db = getDb();
+      db.prepare('INSERT INTO canonical_branch (depth, post_id) VALUES (?, ?)').run(0, G);
+      db.prepare('INSERT INTO canonical_branch (depth, post_id) VALUES (?, ?)').run(1, A);
+      db.prepare('INSERT INTO canonical_branch (depth, post_id) VALUES (?, ?)').run(2, B);
+      service.saveScore(B, 100);
+
+      insertPost(G, []);
+      insertPost(A, [G]);
+      insertPost(B, [A]);
+      insertPost(D, [A]);
+      service.saveScore(D, 150);
+
+      const plan = service.buildReorgPlan(D, 150);
+      expect(plan).not.toBeNull();
+
+      service.switchToBranch(plan!);
+
+      expect(spy).toHaveBeenCalledOnce();
+      expect(spy).toHaveBeenCalledWith(A, 1, B, D);
+
+      spy.mockRestore();
+    });
+
+    it('does not emit dag_reorg for initial plan', () => {
+      const spy = vi.spyOn(journal, 'emitDagReorg');
+
+      insertPost(G, []);
+      insertPost(A, [G]);
+      insertPost(B, [A]);
+
+      const plan = service.buildReorgPlan(B, 50);
+      expect(plan).not.toBeNull();
+      expect(plan!.forkPoint).toBeNull();
+
+      service.switchToBranch(plan!);
+
+      expect(spy).not.toHaveBeenCalled();
+
+      spy.mockRestore();
     });
   });
 });
