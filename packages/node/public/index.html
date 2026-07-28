@@ -1324,7 +1324,7 @@ async function loadFeed() {
           const res = await fetch(API + '/posts/' + encodeURIComponent(postId), {
             method: 'DELETE',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ authorId: userId, signature }),
+            body: JSON.stringify({ authorId: userId, challenge, signature }),
           });
 
           if (!res.ok) {

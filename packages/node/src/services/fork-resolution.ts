@@ -12,6 +12,8 @@ import {
   unconfirmPost,
   insertUtxoTx,
   insertMempoolSubBlock,
+  insertMempoolStump,
+  removeMempoolStumps,
 } from '../store/index.js';
 import { getDb } from '../store/db.js';
 import { applyOrderingBlock } from './block-apply.js';
@@ -123,11 +125,17 @@ export function reorg(forkHeight: number, newBlocks: OrderingBlock[], dagService
   getDb().transaction(() => {
   const currentHeight = getCurrentHeight();
 
-  // Phase 1: revert our blocks, collecting journals for re-insertion
+  // Phase 1: revert our blocks, collecting journals and stump IDs for re-insertion
   const revertedJournals: BlockJournal[] = [];
+  const revertedStumpIds: string[] = [];
   for (let h = currentHeight; h > forkHeight; h--) {
     const journal = getBlockJournal(h);
     if (journal) revertedJournals.push(journal);
+    // Collect stump IDs before the block is deleted
+    const block = getOrderingBlock(h);
+    if (block?.subBlockTree.stumpIds.length) {
+      revertedStumpIds.push(...block.subBlockTree.stumpIds);
+    }
     revertBlock(h);
   }
 
@@ -143,6 +151,14 @@ export function reorg(forkHeight: number, newBlocks: OrderingBlock[], dagService
     // Re-insert sub-blocks by ID (content is in dag_posts)
     for (const subBlockId of journal.confirmedSubBlockIds) {
       insertMempoolSubBlock(subBlockId, mempoolExpiry);
+    }
+  }
+
+  // Re-insert stumps from reverted blocks (defensive cleanup + re-enqueue)
+  if (revertedStumpIds.length > 0) {
+    removeMempoolStumps(revertedStumpIds);
+    for (const stumpId of revertedStumpIds) {
+      insertMempoolStump(stumpId, mempoolExpiry);
     }
   }
 

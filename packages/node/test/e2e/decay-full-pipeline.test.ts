@@ -23,6 +23,7 @@ import type { UtxoTransaction } from '@dagsocial/types';
 const P1 = 10301, P2 = 10302, LP1 = P1 + 100, LP2 = P2 + 100;
 const A1 = `http://localhost:${P1}`;
 const A2 = `http://localhost:${P2}`;
+const AP1 = P1 + 200, AP2 = P2 + 200; // admin ports
 const ENV = {
   ...process.env,
   ORDERING_BLOCK_INTERVAL_MS: '2000',
@@ -123,7 +124,7 @@ beforeAll(async () => {
   console.log(`Test key: ${pubHex.slice(0,16)}...`);
 
   const root = new URL('../../../..', import.meta.url).pathname;
-  n1 = spawn('node', ['packages/node/dist/index.js'], { env: {...ENV, PORT:String(P1), DB_PATH:':memory:', NODE_ROLE:'miner', LISTEN_ADDRS:`/ip4/0.0.0.0/tcp/${LP1}`}, stdio:'pipe', cwd: root });
+  n1 = spawn('node', ['packages/node/dist/index.js'], { env: {...ENV, PORT:String(P1), ADMIN_PORT:String(AP1), DB_PATH:':memory:', NODE_ROLE:'miner', LISTEN_ADDRS:`/ip4/0.0.0.0/tcp/${LP1}`}, stdio:'pipe', cwd: root });
   n1.stdout!.on('data', d => { n1Log += d.toString(); });
   n1.stderr!.on('data', d => { n1Log += d.toString(); });
   n1.on('error', e => console.error('N1 error:', e));
@@ -137,17 +138,45 @@ beforeAll(async () => {
   const peer1 = m[1]!;
   console.log(`N1 peer: ${peer1}`);
 
-  n2 = spawn('node', ['packages/node/dist/index.js'], { env: {...ENV, PORT:String(P2), DB_PATH:':memory:', NODE_ROLE:'miner', LISTEN_ADDRS:`/ip4/0.0.0.0/tcp/${LP2}`, BOOTSTRAP_PEERS:`/ip4/127.0.0.1/tcp/${LP1}/p2p/${peer1}`}, stdio:'pipe', cwd: root });
+  n2 = spawn('node', ['packages/node/dist/index.js'], { env: {...ENV, PORT:String(P2), ADMIN_PORT:String(AP2), DB_PATH:':memory:', NODE_ROLE:'miner', LISTEN_ADDRS:`/ip4/0.0.0.0/tcp/${LP2}`, BOOTSTRAP_PEERS:`/ip4/127.0.0.1/tcp/${LP1}/p2p/${peer1}`}, stdio:'pipe', cwd: root });
   n2.stdout!.on('data', d => { n2Log += d.toString(); });
   n2.stderr!.on('data', d => { n2Log += d.toString(); });
 
+  // Track unexpected exits
+  let n1Exited = false, n2Exited = false;
+  n1.on('exit', (code, sig) => { n1Exited = true; console.error(`N1 exited code=${code} signal=${sig}`); });
+  n2.on('exit', (code, sig) => { n2Exited = true; console.error(`N2 exited code=${code} signal=${sig}`); });
+
+  let started = false;
   for (let i=0; i<60; i++) {
-    try { await get(`${A1}/status`); await get(`${A2}/status`); break; } catch { await wait(500); }
+    try { await get(`${A1}/status`); await get(`${A2}/status`); started = true; break; } catch { await wait(500); }
+  }
+  if (!started) {
+    throw new Error(
+      `Nodes failed to start within 30s.\n` +
+      `N1 exited: ${n1Exited}\nN1 log tail: ${n1Log.slice(-500)}\n` +
+      `N2 exited: ${n2Exited}\nN2 log tail: ${n2Log.slice(-500)}`,
+    );
   }
   console.log('Both nodes up');
 }, 120000);
 
-afterAll(() => { n1?.kill(); n2?.kill(); });
+afterAll(async () => {
+  // Kill both nodes and wait for process exit so ports are released
+  // before the next test run. SIGKILL for immediate termination.
+  const procs = [n1, n2].filter(Boolean) as ChildProcess[];
+  for (const p of procs) p.kill('SIGKILL');
+  // Wait for all processes to exit (with a 5s safety cap)
+  await Promise.race([
+    Promise.all(procs.map(p => new Promise<void>(resolve => {
+      if (p.killed || p.exitCode !== null) return resolve();
+      p.on('exit', () => resolve());
+    }))),
+    new Promise<void>(resolve => setTimeout(resolve, 5000)),
+  ]);
+  // Give the kernel a moment to release the ports (TIME_WAIT / SO_REUSEADDR)
+  await wait(300);
+});
 
 describe('E2E Pipeline', () => {
   it('full pipeline', async () => {
