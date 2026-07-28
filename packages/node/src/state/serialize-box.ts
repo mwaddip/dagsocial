@@ -49,7 +49,7 @@ function normaliseFields(fields: Record<string, unknown>): Record<string, unknow
 }
 
 // Deterministic CBOR encoder: definite-length maps, no records
-const boxEncoder = new Encoder({ variableMapSize: false, useRecords: false });
+const boxEncoder = new Encoder({ tagUint8Array: false, variableMapSize: false, useRecords: false });
 const cborEncode = (obj: unknown): Uint8Array =>
   boxEncoder.encode(obj) as unknown as Uint8Array;
 
