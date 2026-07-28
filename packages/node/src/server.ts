@@ -5,6 +5,7 @@ import { createRouter as likeRoutes } from './routes/likes.js';
 import { createRouter as inviteRoutes } from './routes/invites.js';
 import { createRouter as faucetRoutes } from './routes/faucet.js';
 import { createRouter as pruningRoutes } from './routes/pruning.js';
+import { createRouter as deleteRoutes } from './routes/delete.js';
 import { createRouter as utxoRoutes } from './routes/utxo.js';
 import { createRouter as blockRoutes } from './routes/blocks.js';
 import { createRouter as miningRoutes } from './routes/mining.js';
@@ -178,6 +179,18 @@ export function createApp(config: Config): express.Express {
   app.use(
     '/',
     pruningRoutes({
+      executePrune,
+      computeStumpId,
+      getActiveChallenge: store.getActiveChallenge,
+      consumeChallenge: store.consumeChallenge,
+      getCurrentHeight: store.getCurrentHeight,
+    }),
+  );
+
+  // Delete — mounts at /, routes include DELETE /posts/:id
+  app.use(
+    '/',
+    deleteRoutes({
       executePrune,
       computeStumpId,
       getActiveChallenge: store.getActiveChallenge,
