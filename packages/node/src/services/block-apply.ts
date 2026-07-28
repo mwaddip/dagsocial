@@ -11,7 +11,9 @@ import {
   getKarmaBox,
   getKarmaBoxes,
   getPost,
+  getPostLockBox,
   getStump,
+  getSubtree,
   insertPostPlaceholder,
   insertBox,
   getBox,
@@ -32,10 +34,11 @@ import {
   encodeTx,
   decodeTx,
   PROTOCOL_VERSION,
+  computePostId,
   computeTxId,
   computeBoxId,
 } from '@dagsocial/types';
-import type { AnyBox, BlockJournal, OrderingBlock, UtxoTransaction } from '@dagsocial/types';
+import type { AnyBox, BlockJournal, OrderingBlock, Post, UtxoTransaction } from '@dagsocial/types';
 
 let currentJournal: BlockJournal | null = null;
 
@@ -236,10 +239,47 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
       // Already pruned — skip duplicate stump
       continue;
     }
+
+    // Prune the DAG subtree
     try {
       pruneSubtree(stump.rootPostHash, stump);
     } catch (err) {
       console.warn(`Failed to replay prune for stump ${stumpId}: ${String(err)}`);
+      continue;
+    }
+
+    // Settle PostLockBoxes: walk the pruned subtree and return locked karma
+    // to each author. Uses the same DAG walk pattern as executePrune so
+    // every node derives the same settlement deterministically.
+    try {
+      const subtreePosts = getSubtree(stump.rootPostHash);
+      // Include the root post itself (getSubtree returns only descendants)
+      const root = getPost(stump.rootPostHash);
+      const allPosts = root && !('subtreeMerkleRoot' in root) ? [root as Post, ...subtreePosts] : subtreePosts;
+
+      // Sum remaining locked value per author
+      const authorRefunds = new Map<string, number>();
+      for (const post of allPosts) {
+        const postId = computePostId(post);
+        const lockBox = getPostLockBox(postId);
+        if (lockBox && lockBox.value > 0) {
+          const key = Buffer.from(lockBox.owner).toString('hex');
+          authorRefunds.set(key, (authorRefunds.get(key) ?? 0) + lockBox.value);
+          // Consume the PostLockBox — karma is being returned
+          consumeBox(lockBox.id!, block.header.height);
+          console.log(
+            `Stump ${stumpId.slice(0, 8)}: returned ${lockBox.value} locked karma ` +
+            `to ${key.slice(0, 12)}... (post ${postId.slice(0, 8)}...)`,
+          );
+        }
+      }
+
+      // Mint refunded karma back to each author
+      for (const [hexUserId, amount] of authorRefunds) {
+        mintKarma(new Uint8Array(Buffer.from(hexUserId, 'hex')), amount, block.header.height);
+      }
+    } catch (err) {
+      console.warn(`Failed to settle PostLockBoxes for stump ${stumpId}: ${String(err)}`);
     }
   }
 
