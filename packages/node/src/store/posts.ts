@@ -1,9 +1,5 @@
 import { getDb } from './db.js';
-import {
-  computePostId,
-  computeStumpId,
-  encodeStump,
-} from '@dagsocial/types';
+import { computePostId } from '@dagsocial/types';
 import type { Post, Stump } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
@@ -28,10 +24,7 @@ interface PostRow {
 interface StumpRow {
   id: string;
   root_post_hash: string;
-  subtree_merkle_root: Buffer;
   author_id: Buffer;          // 32-byte Ed25519 public key
-  prune_signature: Buffer;
-  karma_deltas: string;       // JSON array
   reply_count: number;
   upvote_count: number;
   trigger: string;
@@ -60,10 +53,7 @@ function rowToPost(row: PostRow): Post {
 function rowToStump(row: StumpRow): Stump {
   return {
     rootPostHash: row.root_post_hash,
-    subtreeMerkleRoot: new Uint8Array(row.subtree_merkle_root),
     authorId: new Uint8Array(row.author_id),
-    pruneSignature: new Uint8Array(row.prune_signature),
-    karmaDeltas: JSON.parse(row.karma_deltas),
     replyCount: row.reply_count,
     upvoteCount: row.upvote_count,
     trigger: row.trigger as Stump['trigger'],
@@ -355,18 +345,15 @@ export function getSubtree(postId: string): Post[] {
 }
 
 /**
- * Mark the entire reply subtree (including the root) as pruned, and insert
- * the stump into dag_stumps.
+ * Mark the entire reply subtree (including the root) as pruned.
  *
- * Both the dag_posts status updates and the dag_stumps insert are wrapped in
- * a single transaction.  A crash mid-prune leaves neither partial status
- * changes nor an orphaned stump.
+ * The Stump insertion is handled separately during block application.
+ * This function only updates dag_posts status.
  */
-export function pruneSubtree(rootPostId: string, stump: Stump): void {
+export function pruneSubtree(rootPostId: string): void {
   const db = getDb();
 
-  // Collect all post IDs in the subtree (root + descendants) — this is a
-  // read, so it does not need to be inside the write transaction.
+  // Collect all post IDs in the subtree (root + descendants)
   const rows = db
     .prepare(
       `WITH RECURSIVE subtree AS (
@@ -382,35 +369,15 @@ export function pruneSubtree(rootPostId: string, stump: Stump): void {
     )
     .all(rootPostId) as Array<{ id: string }>;
 
+  if (rows.length === 0) return;
+
   const markPruned = db.prepare(
     "UPDATE dag_posts SET status = 'pruned' WHERE id = ?",
-  );
-  const stumpId = computeStumpId(stump);
-  const insertStump = db.prepare(
-    `INSERT INTO dag_stumps
-       (id, root_post_hash, subtree_merkle_root, author_id, prune_signature,
-        karma_deltas, reply_count, upvote_count, trigger, protocol_version,
-        compacted_at_block_height, raw_cbor)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
 
   db.transaction(() => {
     for (const { id } of rows) {
       markPruned.run(id);
     }
-    insertStump.run(
-      stumpId,
-      stump.rootPostHash,
-      Buffer.from(stump.subtreeMerkleRoot),
-      Buffer.from(stump.authorId),
-      Buffer.from(stump.pruneSignature),
-      JSON.stringify(stump.karmaDeltas),
-      stump.replyCount,
-      stump.upvoteCount,
-      stump.trigger,
-      stump.protocolVersion,
-      stump.compactedAtBlockHeight,
-      Buffer.from(encodeStump(stump)),
-    );
   })();
 }

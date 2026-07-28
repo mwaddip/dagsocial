@@ -1,13 +1,14 @@
 import { getDb } from './db.js';
-import type { UtxoTransaction } from '@dagsocial/types';
-import { encodeTx } from '@dagsocial/types';
+import type { UtxoTransaction, PruneEntry } from '@dagsocial/types';
+import { encodeTx, serializePruneEntry, computePruneEntryId } from '@dagsocial/types';
+import { decode as cborDecode } from 'cbor-x';
 
 export interface PoolEntry {
   rowid: number;
-  entryType: 'subblock' | 'utxo_tx' | 'stump';
+  entryType: 'subblock' | 'utxo_tx' | 'prune';
   subblockId: string | null;
   utxoTxCbor: Uint8Array | null;
-  stumpId: string | null;
+  pruneEntryCbor: Uint8Array | null;
   batchId: string | null;
   expiresAtHeight: number;
   createdAt: string;
@@ -18,7 +19,7 @@ interface MempoolRow {
   entry_type: string;
   subblock_id: string | null;
   utxo_tx_cbor: Buffer | null;
-  stump_id: string | null;
+  prune_entry_cbor: Buffer | null;
   batch_id: string | null;
   expires_at_height: number;
   created_at: string;
@@ -27,10 +28,10 @@ interface MempoolRow {
 function rowToEntry(row: MempoolRow): PoolEntry {
   return {
     rowid: row.rowid,
-    entryType: row.entry_type as 'subblock' | 'utxo_tx' | 'stump',
+    entryType: row.entry_type as 'subblock' | 'utxo_tx' | 'prune',
     subblockId: row.subblock_id,
     utxoTxCbor: row.utxo_tx_cbor ? new Uint8Array(row.utxo_tx_cbor) : null,
-    stumpId: row.stump_id,
+    pruneEntryCbor: row.prune_entry_cbor ? new Uint8Array(row.prune_entry_cbor) : null,
     batchId: row.batch_id,
     expiresAtHeight: row.expires_at_height,
     createdAt: row.created_at,
@@ -67,7 +68,7 @@ export function insertUtxoTx(
 export function getPendingEntries(limit: number): PoolEntry[] {
   const db = getDb();
   const rows = db.prepare(
-    `SELECT rowid, entry_type, subblock_id, utxo_tx_cbor, batch_id,
+    `SELECT rowid, entry_type, subblock_id, utxo_tx_cbor, prune_entry_cbor, batch_id,
             expires_at_height, created_at
      FROM mempool
      ORDER BY rowid ASC
@@ -89,40 +90,58 @@ export function removeEntry(rowid: number): void {
   db.prepare('DELETE FROM mempool WHERE rowid = ?').run(rowid);
 }
 
-export function insertMempoolStump(
-  stumpId: string,
+export function insertMempoolPrune(
+  entry: PruneEntry,
   expiresAtHeight: number,
 ): number {
   const db = getDb();
+  const cbor = Buffer.from(serializePruneEntry(entry));
   const result = db.prepare(
-    `INSERT INTO mempool (entry_type, stump_id, expires_at_height)
-     VALUES ('stump', ?, ?)`,
-  ).run(stumpId, expiresAtHeight);
+    `INSERT INTO mempool (entry_type, prune_entry_cbor, expires_at_height)
+     VALUES ('prune', ?, ?)`,
+  ).run(cbor, expiresAtHeight);
   return Number(result.lastInsertRowid);
 }
 
-export function drainMempoolStumps(limit: number): string[] {
+export function drainMempoolPrunes(limit: number): PruneEntry[] {
   const db = getDb();
   const rows = db.prepare(
-    `SELECT rowid, stump_id FROM mempool
-     WHERE entry_type = 'stump'
-     ORDER BY rowid ASC
-     LIMIT ?`,
-  ).all(limit) as Array<{ rowid: number; stump_id: string }>;
+    `SELECT rowid, prune_entry_cbor FROM mempool
+     WHERE entry_type = 'prune'
+     ORDER BY rowid ASC LIMIT ?`,
+  ).all(limit) as Array<{ rowid: number; prune_entry_cbor: Buffer }>;
+
   if (rows.length === 0) return [];
-  const ids = rows.map((r) => r.stump_id);
-  const rowids = rows.map((r) => r.rowid);
+
+  const ids = rows.map(r => r.rowid);
   db.prepare(
-    `DELETE FROM mempool WHERE rowid IN (${rowids.map(() => '?').join(',')})`,
-  ).run(...rowids);
-  return ids;
+    `DELETE FROM mempool WHERE rowid IN (${ids.map(() => '?').join(',')})`,
+  ).run(...ids);
+
+  return rows.map(r => cborDecode(r.prune_entry_cbor) as PruneEntry);
 }
 
-export function removeMempoolStumps(stumpIds: string[]): void {
-  if (stumpIds.length === 0) return;
+export function removeMempoolPrunes(entryIds: string[]): void {
+  if (entryIds.length === 0) return;
   const db = getDb();
-  const placeholders = stumpIds.map(() => '?').join(',');
-  db.prepare(
-    `DELETE FROM mempool WHERE entry_type = 'stump' AND stump_id IN (${placeholders})`,
-  ).run(...stumpIds);
+
+  // Read all prune entries, compute their IDs, and delete matches
+  const rows = db.prepare(
+    `SELECT rowid, prune_entry_cbor FROM mempool WHERE entry_type = 'prune'`,
+  ).all() as Array<{ rowid: number; prune_entry_cbor: Buffer }>;
+
+  const toDelete: number[] = [];
+  for (const row of rows) {
+    const entry = cborDecode(row.prune_entry_cbor) as PruneEntry;
+    const id = computePruneEntryId(entry);
+    if (entryIds.includes(id)) {
+      toDelete.push(row.rowid);
+    }
+  }
+
+  if (toDelete.length > 0) {
+    db.prepare(
+      `DELETE FROM mempool WHERE rowid IN (${toDelete.map(() => '?').join(',')})`,
+    ).run(...toDelete);
+  }
 }

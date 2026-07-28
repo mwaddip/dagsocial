@@ -1,6 +1,6 @@
 import { getDb } from './db.js';
-import { computeStumpId, encodeStump } from '@dagsocial/types';
-import type { Stump, KarmaDelta } from '@dagsocial/types';
+import { encodeStump } from '@dagsocial/types';
+import type { Stump } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
 // Row shape
@@ -9,10 +9,7 @@ import type { Stump, KarmaDelta } from '@dagsocial/types';
 interface StumpRow {
   id: string;
   root_post_hash: string;
-  subtree_merkle_root: Buffer;
   author_id: Buffer; // 32-byte Ed25519 public key
-  prune_signature: Buffer;
-  karma_deltas: string;              // JSON array
   reply_count: number;
   upvote_count: number;
   trigger: string;
@@ -28,13 +25,7 @@ interface StumpRow {
 function rowToStump(row: StumpRow): Stump {
   return {
     rootPostHash: row.root_post_hash,
-    subtreeMerkleRoot: new Uint8Array(row.subtree_merkle_root),
     authorId: new Uint8Array(row.author_id),
-    pruneSignature: new Uint8Array(row.prune_signature),
-    karmaDeltas: (JSON.parse(row.karma_deltas) as Array<{ userId: string; delta: number }>).map(d => ({
-      userId: new Uint8Array(Buffer.from(d.userId, 'hex')),
-      delta: d.delta,
-    })),
     replyCount: row.reply_count,
     upvoteCount: row.upvote_count,
     trigger: row.trigger as Stump['trigger'],
@@ -49,24 +40,22 @@ function rowToStump(row: StumpRow): Stump {
 
 /**
  * Insert a stump into dag_stumps.
+ * The stump ID is its rootPostHash — the canonical lookup key shared with
+ * the corresponding PruneEntry.
  */
 export function insertStump(stump: Stump): void {
   const db = getDb();
-  const stumpId = computeStumpId(stump);
+  const stumpId = stump.rootPostHash;
 
   db.prepare(
-    `INSERT INTO dag_stumps
-       (id, root_post_hash, subtree_merkle_root, author_id, prune_signature,
-        karma_deltas, reply_count, upvote_count, trigger, protocol_version,
-        compacted_at_block_height, raw_cbor)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO dag_stumps
+       (id, root_post_hash, author_id, reply_count, upvote_count,
+        trigger, protocol_version, compacted_at_block_height, raw_cbor)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     stumpId,
     stump.rootPostHash,
-    Buffer.from(stump.subtreeMerkleRoot),
     Buffer.from(stump.authorId),
-    Buffer.from(stump.pruneSignature),
-    JSON.stringify(stump.karmaDeltas.map(d => ({ userId: Buffer.from(d.userId).toString('hex'), delta: d.delta }))),
     stump.replyCount,
     stump.upvoteCount,
     stump.trigger,
@@ -77,7 +66,7 @@ export function insertStump(stump: Stump): void {
 }
 
 /**
- * Retrieve a stump by its id.
+ * Retrieve a stump by its id (rootPostHash).
  * Returns null if no stump with that id exists.
  */
 export function getStump(stumpId: string): Stump | null {
