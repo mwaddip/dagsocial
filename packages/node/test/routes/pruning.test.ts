@@ -53,7 +53,7 @@ async function request(
   postId: string,
   body: unknown,
   mockDeps?: {
-    getActiveChallenge?: (userId: Uint8Array) => { challenge: Uint8Array; expiresAtBlock: number } | null;
+    getActiveChallenge?: (userId: Uint8Array) => { challenge: Uint8Array; expiresAtBlock: number; userId: Uint8Array } | null;
     consumeChallenge?: (userId: Uint8Array, challenge: Uint8Array) => void;
     getCurrentHeight?: () => number;
   },
@@ -114,9 +114,10 @@ describe('pruning routes', () => {
 
   function makeMockDeps() {
     return {
-      getActiveChallenge: () => ({
+      getActiveChallenge: (userId: Uint8Array) => ({
         challenge: testChallenge,
         expiresAtBlock: testHeight + 10,
+        userId,
       }),
       consumeChallenge: () => {},
       getCurrentHeight: () => testHeight,
@@ -192,6 +193,57 @@ describe('pruning routes', () => {
       authorId: Buffer.from(authorId).toString('hex'),
       trigger: 'author',
       challenge: testChallengeHex,
+      signature: testSignatureHex,
+    }, makeMockDeps());
+    expect(res.status).toBe(403);
+  });
+
+  it('POST /posts/:id/prune missing challenge returns 400', async () => {
+    const res = await request(rootPostId, {
+      authorId: Buffer.from(authorId).toString('hex'),
+      trigger: 'author',
+      signature: testSignatureHex,
+    }, makeMockDeps());
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /posts/:id/prune with expired challenge returns 403', async () => {
+    const expiredDeps = {
+      getActiveChallenge: (userId: Uint8Array) => ({
+        challenge: testChallenge,
+        expiresAtBlock: testHeight - 1, // expired
+        userId,
+      }),
+      consumeChallenge: () => {},
+      getCurrentHeight: () => testHeight,
+    };
+    const res = await request(rootPostId, {
+      authorId: Buffer.from(authorId).toString('hex'),
+      trigger: 'author',
+      challenge: testChallengeHex,
+      signature: testSignatureHex,
+    }, expiredDeps);
+    expect(res.status).toBe(403);
+  });
+
+  it('POST /posts/:id/prune with wrong signature returns 403', async () => {
+    const wrongSig = new Uint8Array(64); // all zeros, not a valid sig
+    const res = await request(rootPostId, {
+      authorId: Buffer.from(authorId).toString('hex'),
+      trigger: 'author',
+      challenge: testChallengeHex,
+      signature: Buffer.from(wrongSig).toString('hex'),
+    }, makeMockDeps());
+    expect(res.status).toBe(403);
+  });
+
+  it('POST /posts/:id/prune with challenge bytes mismatch returns 403', async () => {
+    const wrongChallenge = new Uint8Array(32);
+    crypto.getRandomValues(wrongChallenge);
+    const res = await request(rootPostId, {
+      authorId: Buffer.from(authorId).toString('hex'),
+      trigger: 'author',
+      challenge: Buffer.from(wrongChallenge).toString('hex'),
       signature: testSignatureHex,
     }, makeMockDeps());
     expect(res.status).toBe(403);

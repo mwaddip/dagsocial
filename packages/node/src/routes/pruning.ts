@@ -93,7 +93,7 @@ export function createRouter(deps: PruningDeps): Router {
       ) {
         res.status(400).json({ error: msg });
       } else {
-        res.status(400).json({ error: msg });
+        res.status(500).json({ error: msg });
       }
     }
   });

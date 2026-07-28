@@ -47,13 +47,21 @@ function verifyParentHash(
 }
 
 // ---------------------------------------------------------------------------
+// Shared types
+// ---------------------------------------------------------------------------
+
+export interface ChallengeRecord {
+  challenge: Uint8Array;
+  expiresAtBlock: number;
+  userId: Uint8Array;
+}
+
+// ---------------------------------------------------------------------------
 // Dependency interface
 // ---------------------------------------------------------------------------
 
 export interface VerifierDeps {
-  getActiveChallenge: (
-    userId: Uint8Array,
-  ) => { challenge: Uint8Array; expiresAtBlock: number; userId: Uint8Array } | null;
+  getActiveChallenge: (userId: Uint8Array) => ChallengeRecord | null;
   getKarmaBoxes: (owner: Uint8Array) => { value: number; id?: string }[];
   getPost: (id: string) => unknown | null;
   /** Raw CBOR bytes for a post, used for independent hash recomputation. */
@@ -255,8 +263,8 @@ export function verifyPostForRelay(
  * Dependencies for verifying an author challenge-response.
  */
 export interface AuthorVerifierDeps {
-  getActiveChallenge: (userId: Uint8Array) => { challenge: Uint8Array; expiresAtBlock: number } | null;
-  consumeChallenge: (userId: Uint8Array) => void;
+  getActiveChallenge: (userId: Uint8Array) => ChallengeRecord | null;
+  consumeChallenge: (userId: Uint8Array, challenge: Uint8Array) => void;
   getCurrentHeight: () => number;
 }
 
@@ -315,7 +323,7 @@ export function verifyAuthorSignature(
   }
 
   // 5. Consume the challenge (one-time use)
-  deps.consumeChallenge(authorId);
+  deps.consumeChallenge(authorId, challenge);
 
   return { valid: true };
 }
