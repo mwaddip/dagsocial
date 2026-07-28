@@ -134,6 +134,22 @@ export class SqliteAvlStorage implements VersionedAVLStorage {
     return rows.map(r => new Uint8Array(r.version));
   }
 
+  /** Return the version digest at or before `maxHeight` (block height), or null. */
+  versionAtHeight(maxHeight: number): Uint8Array | null {
+    const row = this.db
+      .prepare('SELECT version FROM avl_tree_versions WHERE height <= ? ORDER BY height DESC LIMIT 1')
+      .get(maxHeight) as { version: Buffer } | undefined;
+    return row ? new Uint8Array(row.version) : null;
+  }
+
+  /** Return the block height for a stored version, or null if not found. */
+  versionHeight(version: Uint8Array): number | null {
+    const row = this.db
+      .prepare('SELECT height FROM avl_tree_versions WHERE version = ?')
+      .get(version) as { height: number } | undefined;
+    return row ? row.height : null;
+  }
+
   flush(): void {
     // SQLite WAL is auto-flushed; explicit checkpoint for durability
     this.db.pragma('wal_checkpoint(TRUNCATE)');

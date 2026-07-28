@@ -21,6 +21,8 @@ import { computeStumpId, encodePost } from '@dagsocial/types';
 import { getDb } from './store/db.js';
 import { validateTx } from './services/utxo-engine.js';
 import { createAdminRouter } from './routes/admin.js';
+import { registerProofEndpoint } from './state/avl-endpoint.js';
+import { tryGetAvlProver } from './state/avl-prover.js';
 import type { Config } from './config.js';
 import type { Server } from 'http';
 
@@ -267,6 +269,12 @@ export function createApp(config: Config): express.Express {
       networkMode: config.networkMode,
     }),
   );
+
+  // Proof endpoint — GET /api/v1/proof/:boxId (light-client AVL proofs)
+  const proverHandle = tryGetAvlProver();
+  if (proverHandle) {
+    registerProofEndpoint(app, proverHandle);
+  }
 
   // ---- Error handler ----
 
