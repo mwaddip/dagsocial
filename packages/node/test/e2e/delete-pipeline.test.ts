@@ -15,6 +15,9 @@ import type { KeyObject } from 'node:crypto';
 import {
   computeTxId,
   computePostId,
+  leafHash,
+  buildMerkleRoot,
+  hexToBuf,
   PROTOCOL_VERSION,
   POST_LOCK_THREAD_COST,
 } from '@dagsocial/types';
@@ -202,19 +205,34 @@ describe('Delete Pipeline', () => {
 
     await wait(8000);
 
-    // 3. Delete the post
+    // 3. Delete the post via PruneIntent
     const karmaBefore = (await get(`${A1}/karma/${userId}`) as { total: number }).total;
     console.log(`Karma before delete: ${karmaBefore}`);
 
-    const delChal = await api('POST', `${A1}/challenge`, { userId }) as { challenge: string };
-    const delHash = blake32(unhex(delChal.challenge));
-    const delSig = hex(new Uint8Array(cryptoSign(null, delHash, userKey)));
+    // Build PruneIntent for a root post with no replies
+    const subtreePostIds = [postId];
+    const prLeaves = subtreePostIds.map((id: string) => leafHash('stump', hexToBuf(id)));
+    const prMerkleRoot = buildMerkleRoot(prLeaves);
+    const prMerkleRootHex = hex(prMerkleRoot);
+    const prPayload = new Uint8Array(
+      createHash('blake2b512')
+        .update(postId)
+        .update(prMerkleRoot)
+        .digest()
+        .subarray(0, 32),
+    );
+    const prSig = hex(new Uint8Array(cryptoSign(null, prPayload, userKey)));
 
-    const delR = await api('DELETE', `${A1}/posts/${postId}`, {
-      authorId: pubHex, challenge: delChal.challenge, signature: delSig,
-    }) as { status: string; stumpId: string; replyCount: number };
+    const delR = await api('POST', `${A1}/posts/${postId}/prune`, {
+      rootPostHash: postId,
+      authorId: pubHex,
+      subtreeMerkleRoot: prMerkleRootHex,
+      subtreePostIds,
+      signature: prSig,
+      trigger: 'author',
+    }) as { status: string; entryId: string; replyCount: number };
     expect(delR.status).toBe('deleted');
-    console.log(`Deleted: stumpId=${delR.stumpId.slice(0,16)}...`);
+    console.log(`Deleted: entryId=${delR.entryId.slice(0,16)}...`);
 
     // 4. Poll for karma return (PostLockBox settlement)
     let karmaAfter = karmaBefore;

@@ -28,7 +28,14 @@ async function importPostsFresh() {
     getPost: (id: string) => Post | Stump | null;
     confirmPost: (postId: string, blockHeight: number) => void;
     getParentRefs: (postId: string) => string[];
-    pruneSubtree: (rootPostId: string, stump: Stump) => void;
+    pruneSubtree: (rootPostId: string) => void;
+  };
+}
+
+async function importStumpsFresh() {
+  const mod = await import('../../src/store/stumps.js');
+  return mod as {
+    insertStump: (stump: Stump) => void;
   };
 }
 
@@ -36,7 +43,6 @@ async function importTypesPosts() {
   const mod = await import('@dagsocial/types');
   return mod as {
     computePostId: (post: Post) => string;
-    computeStumpId: (stump: Stump) => string;
     PROTOCOL_VERSION: number;
   };
 }
@@ -58,17 +64,14 @@ function makePost(overrides: Partial<Post> = {}): Post {
 function makeStump(overrides: Partial<Stump> = {}): Stump {
   return {
     rootPostHash: '0000000000000000000000000000000000000000000000000000000000000000',
-    subtreeMerkleRoot: bytes(32),
     authorId: uid('tester'),
-    pruneSignature: bytes(64),
-    karmaDeltas: [],
     replyCount: 0,
     upvoteCount: 0,
     trigger: 'author' as const,
     protocolVersion: 1,
     compactedAtBlockHeight: 10,
     ...overrides,
-  } as Stump;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -222,10 +225,10 @@ describe('atomic writes', () => {
   // pruneSubtree atomicity
   // -----------------------------------------------------------------------
 
-  it('pruneSubtree atomically marks posts pruned and inserts stump', async () => {
+  it('pruneSubtree atomically marks posts pruned', async () => {
     const { initDb, getDb } = await importDbFresh();
     const { insertPost, pruneSubtree } = await importPostsFresh();
-    const { computePostId, computeStumpId } = await importTypesPosts();
+    const { computePostId } = await importTypesPosts();
 
     initDb(':memory:');
     const db = getDb();
@@ -242,10 +245,13 @@ describe('atomic writes', () => {
     ).get(postId) as { status: string } | undefined;
     expect(before).toBeDefined();
 
-    // Prune it
+    // Prune it (only marks posts as pruned; stump inserted separately)
+    pruneSubtree(postId);
+
+    // Insert the stump separately (done during block application)
+    const { insertStump } = await importStumpsFresh();
     const stump = makeStump({ rootPostHash: postId });
-    const stumpId = computeStumpId(stump);
-    pruneSubtree(postId, stump);
+    insertStump(stump);
 
     // Post must be pruned
     const afterPost = db.prepare("SELECT status FROM dag_posts WHERE id = ?").get(postId) as
@@ -254,18 +260,18 @@ describe('atomic writes', () => {
     expect(afterPost).toBeDefined();
     expect(afterPost!.status).toBe('pruned');
 
-    // Stump must exist
-    const stumpRow = db.prepare('SELECT id FROM dag_stumps WHERE id = ?').get(stumpId) as
+    // Stump must exist (stored by rootPostHash)
+    const stumpRow = db.prepare('SELECT id FROM dag_stumps WHERE id = ?').get(postId) as
       | { id: string }
       | undefined;
     expect(stumpRow).toBeDefined();
-    expect(stumpRow!.id).toBe(stumpId);
+    expect(stumpRow!.id).toBe(postId);
   });
 
   it('pruneSubtree rollback leaves post un-pruned and no orphaned stump', async () => {
     const { initDb, getDb } = await importDbFresh();
     const { insertPost } = await importPostsFresh();
-    const { computePostId, computeStumpId } = await importTypesPosts();
+    const { computePostId } = await importTypesPosts();
 
     initDb(':memory:');
     const db = getDb();
@@ -274,9 +280,6 @@ describe('atomic writes', () => {
     const rawCbor = new Uint8Array([8, 9]);
     insertPost(post, rawCbor);
     const postId = computePostId(post);
-
-    const stump = makeStump({ rootPostHash: postId });
-    const stumpId = computeStumpId(stump);
 
     // Simulate a partial prune: mark the post pruned but throw before
     // inserting the stump, then roll back.
@@ -297,7 +300,7 @@ describe('atomic writes', () => {
     expect(postRow!.status).toBe('pending');
 
     // Stump must NOT exist
-    const stumpRow = db.prepare('SELECT id FROM dag_stumps WHERE id = ?').get(stumpId);
+    const stumpRow = db.prepare('SELECT id FROM dag_stumps WHERE id = ?').get(postId);
     expect(stumpRow).toBeUndefined();
   });
 

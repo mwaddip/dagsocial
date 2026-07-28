@@ -206,9 +206,9 @@ describe('E2E Harness', () => {
           const karmaBefore = (await s.clients[0].getKarma(eve.userId)).total;
           console.log(`  eve karma before delete: ${karmaBefore}`);
 
-          const delR = await s.clients[0].deletePost(eveRootId, eve.key);
+          const delR = await s.clients[0].deletePost(eveRootId, eve.key, [eveRootId, eveReplyId]);
           expect(delR.status).toBe('deleted');
-          console.log(`  deleted eve root: stumpId=${delR.stumpId.slice(0,16)}...`);
+          console.log(`  deleted eve root: entryId=${delR.entryId.slice(0,16)}...`);
 
           await s.clients[0].waitForBlocks(5);
 
@@ -230,7 +230,7 @@ describe('E2E Harness', () => {
           // Server requires post author to delete (thread-owner moderation not implemented).
           const delR = await s.clients[0].deletePost(daveReplyToFrankId, dave.key);
           expect(delR.status).toBe('deleted');
-          console.log(`  dave deleted own reply: stumpId=${delR.stumpId.slice(0,16)}...`);
+          console.log(`  dave deleted own reply: entryId=${delR.entryId.slice(0,16)}...`);
 
           await s.clients[0].waitForBlocks(5);
 

@@ -4,7 +4,7 @@ import type Database from 'better-sqlite3';
 import { randomBytes } from 'node:crypto';
 
 function hex(u: Uint8Array): string { return Buffer.from(u).toString('hex'); }
-import type { Post, Stump, KarmaDelta } from '@dagsocial/types';
+import type { Post, Stump } from '@dagsocial/types';
 
 // Module-level state in db.ts requires reset between tests.
 async function importDbFresh() {
@@ -27,7 +27,14 @@ async function importPostsFresh() {
     confirmPost: (postId: string, blockHeight: number) => void;
     getParentRefs: (postId: string) => string[];
     getSubtree: (postId: string) => Post[];
-    pruneSubtree: (rootPostId: string, stump: Stump) => void;
+    pruneSubtree: (rootPostId: string) => void;
+  };
+}
+
+async function importStumpsFresh() {
+  const mod = await import('../../src/store/stumps.js');
+  return mod as {
+    insertStump: (stump: Stump) => void;
   };
 }
 
@@ -35,7 +42,6 @@ async function importTypesPosts() {
   const mod = await import('@dagsocial/types');
   return mod as {
     computePostId: (post: Post) => string;
-    computeStumpId: (stump: Stump) => string;
     PROTOCOL_VERSION: number;
   };
 }
@@ -62,20 +68,17 @@ function makePost(overrides: Partial<Post> = {}): Post {
   };
 }
 
-function makeStump(overrides: Partial<Stump> & { karmaDeltas?: KarmaDelta[] }): Stump {
+function makeStump(overrides: Partial<Stump>): Stump {
   return {
     rootPostHash: '0000000000000000000000000000000000000000000000000000000000000000',
-    subtreeMerkleRoot: bytes(32),
     authorId: uid('alice123'),
-    pruneSignature: bytes(64),
-    karmaDeltas: [],
     replyCount: 0,
     upvoteCount: 0,
     trigger: 'author',
     protocolVersion: 1,
     compactedAtBlockHeight: 10,
     ...overrides,
-  } as Stump;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -141,6 +144,7 @@ describe('posts store', () => {
   it('getPost returns Stump when post pruned and stump exists', async () => {
     const { initDb } = await importDbFresh();
     const { insertPost, getPost, pruneSubtree } = await importPostsFresh();
+    const { insertStump } = await importStumpsFresh();
     const { computePostId } = await importTypesPosts();
 
     initDb(':memory:');
@@ -162,7 +166,8 @@ describe('posts store', () => {
       compactedAtBlockHeight: 5,
     });
 
-    pruneSubtree(postId, stump);
+    pruneSubtree(postId);
+    insertStump(stump);
 
     const result = getPost(postId);
     expect(result).not.toBeNull();
@@ -244,6 +249,7 @@ describe('posts store', () => {
   it('queryPosts excludes pruned posts', async () => {
     const { initDb } = await importDbFresh();
     const { insertPost, queryPosts, pruneSubtree } = await importPostsFresh();
+    const { insertStump } = await importStumpsFresh();
     const { computePostId } = await importTypesPosts();
 
     initDb(':memory:');
@@ -256,7 +262,8 @@ describe('posts store', () => {
 
     const postId = computePostId(post);
     const stump = makeStump({ rootPostHash: postId });
-    pruneSubtree(postId, stump);
+    pruneSubtree(postId);
+    insertStump(stump);
 
     // After pruning, query excludes the pruned post
     const results = queryPosts({});
@@ -363,10 +370,11 @@ describe('posts store', () => {
     expect(contents).toEqual(['child', 'grandchild']);
   });
 
-  // 11. pruneSubtree marks posts as pruned, inserts stump
+  // 11. pruneSubtree marks posts as pruned
   it('pruneSubtree marks posts as pruned, inserts stump', async () => {
     const { initDb, getDb } = await importDbFresh();
     const { insertPost, getPost, pruneSubtree } = await importPostsFresh();
+    const { insertStump } = await importStumpsFresh();
     const { computePostId } = await importTypesPosts();
 
     initDb(':memory:');
@@ -382,7 +390,8 @@ describe('posts store', () => {
       compactedAtBlockHeight: 99,
     });
 
-    pruneSubtree(postId, stump);
+    pruneSubtree(postId);
+    insertStump(stump);
 
     // Post row is marked as pruned
     const postRow = getDb()
@@ -400,7 +409,8 @@ describe('posts store', () => {
   // 12. pruneSubtree correctly handles nested replies
   it('pruneSubtree correctly handles nested replies', async () => {
     const { initDb, getDb } = await importDbFresh();
-    const { insertPost, getPost, pruneSubtree, getParentRefs } = await importPostsFresh();
+    const { insertPost, getPost, pruneSubtree } = await importPostsFresh();
+    const { insertStump } = await importStumpsFresh();
     const { computePostId } = await importTypesPosts();
 
     initDb(':memory:');
@@ -424,7 +434,8 @@ describe('posts store', () => {
       upvoteCount: 5,
     });
 
-    pruneSubtree(rootId, stump);
+    pruneSubtree(rootId);
+    insertStump(stump);
 
     // All three posts are marked as pruned
     for (const id of [rootId, childId, grandchildId]) {
@@ -439,18 +450,14 @@ describe('posts store', () => {
     const result = getPost(rootId) as Stump;
     expect(result.replyCount).toBe(2);
     expect(result.upvoteCount).toBe(5);
-
-    // Child and grandchild also pruned — getPost should return Stump
-    // (stump lookup by root_post_hash won't match child/grandchild IDs,
-    //  but they're in dag_posts with status='pruned' — so getPost returns null
-    //  from the stump lookup step since root_post_hash won't match)
   });
 
-  // 13. getPost returns a stump when queried by stump id directly
+  // 13. getPost returns a stump when queried by stump id (rootPostHash) directly
   it('getPost returns a stump when queried by stump id directly', async () => {
     const { initDb } = await importDbFresh();
     const { insertPost, getPost, pruneSubtree } = await importPostsFresh();
-    const { computePostId, computeStumpId } = await importTypesPosts();
+    const { insertStump } = await importStumpsFresh();
+    const { computePostId } = await importTypesPosts();
 
     initDb(':memory:');
 
@@ -465,9 +472,11 @@ describe('posts store', () => {
       compactedAtBlockHeight: 7,
     });
 
-    pruneSubtree(postId, stump);
+    pruneSubtree(postId);
+    insertStump(stump);
 
-    const stumpId = computeStumpId(stump);
+    // Stump ID is its rootPostHash
+    const stumpId = stump.rootPostHash;
 
     // Query by stump id directly
     const result = getPost(stumpId);

@@ -12,6 +12,9 @@ import { createHash, generateKeyPairSync, sign as cryptoSign, randomBytes } from
 import type { KeyObject } from 'node:crypto';
 import {
   computeTxId,
+  leafHash,
+  buildMerkleRoot,
+  hexToBuf,
   PROTOCOL_VERSION,
   LIKE_COST,
   INVITE_KARMA_AMOUNT,
@@ -290,19 +293,31 @@ describe('E2E Pipeline', () => {
     const karmaBefore = (await get(`${A1}/karma/${userId}`) as { total: number }).total;
     console.log(`Karma before delete: ${karmaBefore}`);
 
-    // 2. Sign a challenge for deletion
-    const delChal = await api('POST', `${A1}/challenge`, { userId }) as { challenge: string };
-    const delHash = blake32(unhex(delChal.challenge));
-    const delSig = hex(new Uint8Array(cryptoSign(null, delHash, userKey)));
+    // 2. Build PruneIntent for a root post with no replies
+    const subtreePostIds = [targetPostId];
+    const prLeaves = subtreePostIds.map((id: string) => leafHash('stump', hexToBuf(id)));
+    const prMerkleRoot = buildMerkleRoot(prLeaves);
+    const prMerkleRootHex = hex(prMerkleRoot);
+    const prPayload = new Uint8Array(
+      createHash('blake2b512')
+        .update(targetPostId)
+        .update(prMerkleRoot)
+        .digest()
+        .subarray(0, 32),
+    );
+    const prSig = hex(new Uint8Array(cryptoSign(null, prPayload, userKey)));
 
     // 3. Delete the post
-    const delR = await api('DELETE', `${A1}/posts/${targetPostId}`, {
+    const delR = await api('POST', `${A1}/posts/${targetPostId}/prune`, {
+      rootPostHash: targetPostId,
       authorId: pubHex,
-      challenge: delChal.challenge,
-      signature: delSig,
-    }) as { status: string; stumpId: string; postId: string; replyCount: number };
+      subtreeMerkleRoot: prMerkleRootHex,
+      subtreePostIds,
+      signature: prSig,
+      trigger: 'author',
+    }) as { status: string; entryId: string; postId: string; replyCount: number };
     expect(delR.status).toBe('deleted');
-    console.log(`Deleted: stumpId=${delR.stumpId.slice(0, 16)}...`);
+    console.log(`Deleted: entryId=${delR.entryId.slice(0, 16)}...`);
 
     // 4. Diagnostic: check node health
     try {

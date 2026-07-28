@@ -1,7 +1,10 @@
 // packages/node/test/harness/api-client.ts
-import { sign as cryptoSign, type KeyObject } from 'node:crypto';
+import { createHash, sign as cryptoSign, type KeyObject } from 'node:crypto';
 import {
   computePostId,
+  leafHash,
+  buildMerkleRoot,
+  hexToBuf,
   PROTOCOL_VERSION,
   POST_LOCK_THREAD_COST,
   POST_LOCK_REPLY_COST,
@@ -40,7 +43,7 @@ export interface LikeResponse {
 
 export interface DeleteResponse {
   status: string;
-  stumpId: string;
+  entryId: string;
   postId?: string;
   replyCount: number;
 }
@@ -220,17 +223,35 @@ export class ApiClient {
   async deletePost(
     postId: string,
     author: IdentityKey,
+    subtreePostIds?: string[],
   ): Promise<DeleteResponse> {
-    // 1. Request challenge
-    const chal = await this.requestChallenge(author.publicKeyHex);
-    const chalHash = blake32(unhex(chal.challenge));
-    const sig = hex(new Uint8Array(cryptoSign(null, chalHash, author.keyObject)));
+    const ids = (subtreePostIds && subtreePostIds.length > 0)
+      ? [...subtreePostIds]
+      : [postId];
+    const sortedIds = ids.sort();
 
-    // 2. Delete
-    return this.del<DeleteResponse>(`/posts/${postId}`, {
+    // Compute Merkle root over leafHash('stump', postId) for each post
+    const leaves = sortedIds.map(id => leafHash('stump', hexToBuf(id)));
+    const merkleRoot = buildMerkleRoot(leaves);
+    const merkleRootHex = hex(merkleRoot);
+
+    // Sign: blake2b512(rootPostHash ++ subtreeMerkleRoot).subarray(0, 32)
+    const payload = new Uint8Array(
+      createHash('blake2b512')
+        .update(postId)
+        .update(merkleRoot)
+        .digest()
+        .subarray(0, 32),
+    );
+    const sig = hex(new Uint8Array(cryptoSign(null, payload, author.keyObject)));
+
+    return this.post<DeleteResponse>(`/posts/${postId}/prune`, {
+      rootPostHash: postId,
       authorId: author.publicKeyHex,
-      challenge: chal.challenge,
+      subtreeMerkleRoot: merkleRootHex,
+      subtreePostIds: sortedIds,
       signature: sig,
+      trigger: 'author',
     });
   }
 

@@ -8,13 +8,14 @@ import {
 } from 'crypto';
 import {
   computePostId,
-  computeStumpId,
-  computeBoxId,
+  computePruneEntryId,
   encodePost,
+  leafHash,
+  buildMerkleRoot,
+  hexToBuf,
   PROTOCOL_VERSION,
 } from '@dagsocial/types';
-import type { Post, PruneIntent, Stump } from '@dagsocial/types';
-import Database from 'better-sqlite3';
+import type { Post, PruneIntent, PruneEntry } from '@dagsocial/types';
 
 import {
   initDb,
@@ -22,10 +23,8 @@ import {
   getDb,
   insertPost,
   getPost as storeGetPost,
-  getStump,
-  insertBox,
 } from '../../src/store/index.js';
-import { createPruneIntent, executePrune } from '../../src/services/stump-engine.js';
+import { executePrune } from '../../src/services/stump-engine.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -40,7 +39,7 @@ function rawPublicKey(keyObj: KeyObject): Uint8Array {
 /** Create a minimal Post object for testing. */
 function makePost(
   content: string,
-  author: string,
+  author: Uint8Array,
   parentRefs: string[],
   overrides: Partial<Post> = {},
 ): Post {
@@ -65,35 +64,56 @@ function insertTestPost(post: Post): string {
   return postId;
 }
 
-/** Create a karma box for a user (needed for karma tracking). */
-function insertKarmaBox(owner: Uint8Array, value: number, createdAtBlock: number): string {
-  const box = {
-    boxType: 'karma' as const,
-    value,
-    createdAtBlock,
-    owner,
-    guard: 'owner_signature' as const,
-    proofSource: 'test',
-    lastTouchBlock: createdAtBlock,
-  };
-  const id = computeBoxId(box);
-  insertBox({ ...box, id });
-  return id;
-}
+/**
+ * Build a valid PruneIntent signed by the author.
+ *
+ * Reads the actual reply tree from the store to produce correct
+ * subtreePostIds and subtreeMerkleRoot. Signs over
+ * blake2b512(rootPostHash ++ subtreeMerkleRoot).subarray(0,32).
+ */
+function signPruneIntent(
+  rootPostHash: string,
+  authorId: Uint8Array,
+  authorPrivKey: KeyObject,
+): PruneIntent {
+  // Collect all posts in the reply subtree from the store
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `WITH RECURSIVE subtree AS (
+         SELECT id FROM dag_posts WHERE id = ?
+         UNION
+         SELECT dp.id FROM dag_posts dp
+         JOIN dag_parent_refs dpr ON dp.id = dpr.post_id
+         JOIN subtree s ON dpr.parent_id = s.id
+       )
+       SELECT id FROM subtree`,
+    )
+    .all(rootPostHash) as Array<{ id: string }>;
 
-/** Insert a like box for a target post. */
-function insertLikeBox(likerId: Uint8Array, targetPostId: string, value: number, createdAtBlock: number): string {
-  const box = {
-    boxType: 'like' as const,
-    value,
-    createdAtBlock,
-    likerId,
-    targetPostId,
-    guard: 'epoch_tally' as const,
+  const subtreePostIds = rows.map(r => r.id).sort();
+
+  // Compute Merkle root over leafHash('stump', postId) for each post
+  const leaves = subtreePostIds
+    .map(id => leafHash('stump', hexToBuf(id)));
+  const merkleRoot = buildMerkleRoot(leaves);
+
+  // Sign intent payload: blake2b512(rootPostHash ++ subtreeMerkleRoot).subarray(0,32)
+  const payload = createHash('blake2b512')
+    .update(rootPostHash)
+    .update(merkleRoot)
+    .digest()
+    .subarray(0, 32);
+  const sig = cryptoSign(null, payload, authorPrivKey);
+
+  return {
+    rootPostHash,
+    trigger: 'author',
+    authorId,
+    subtreeMerkleRoot: merkleRoot,
+    subtreePostIds,
+    signature: new Uint8Array(sig),
   };
-  const id = computeBoxId(box);
-  insertBox({ ...box, id });
-  return id;
 }
 
 // ---------------------------------------------------------------------------
@@ -101,16 +121,14 @@ function insertLikeBox(likerId: Uint8Array, targetPostId: string, value: number,
 // ---------------------------------------------------------------------------
 
 describe('stump-engine', () => {
-  let db: Database.Database;
   let authorPubKey: Uint8Array;
   let authorPrivKey: KeyObject;
   let authorId: Uint8Array;
   let otherPubKey: Uint8Array;
-  let otherId: string;
+  let otherId: Uint8Array;
 
   beforeEach(() => {
     initDb(':memory:');
-    db = getDb();
 
     // Generate author keypair
     const authorKeys = generateKeyPairSync('ed25519');
@@ -129,21 +147,9 @@ describe('stump-engine', () => {
   });
 
   // -----------------------------------------------------------------------
-  // 1. createPruneIntent produces correct unsigned intent
+  // 1. executePrune on root post with replies returns PruneEntry
   // -----------------------------------------------------------------------
-  it('createPruneIntent produces correct unsigned intent', () => {
-    const intent = createPruneIntent('deadbeef', authorId, 'author');
-
-    expect(intent.rootPostHash).toBe('deadbeef');
-    expect(intent.trigger).toBe('author');
-    expect(intent.authorId).toEqual(authorId);
-    expect(intent.signature).toEqual(new Uint8Array(64));
-  });
-
-  // -----------------------------------------------------------------------
-  // 2. executePrune on root post with replies stores stump, defers pruning
-  // -----------------------------------------------------------------------
-  it('executePrune on root post with replies stores stump, defers pruning', () => {
+  it('executePrune on root post with replies returns PruneEntry', () => {
     // Create root post
     const rootPost = makePost('Root post', authorId, []);
     const rootId = insertTestPost(rootPost);
@@ -157,48 +163,36 @@ describe('stump-engine', () => {
 
     // Create nested reply (grandchild)
     const reply3 = makePost('Nested reply', otherId, [reply1Id]);
-    const reply3Id = insertTestPost(reply3);
+    insertTestPost(reply3);
 
-    // Create PruneIntent
-    const intent: PruneIntent = {
-      rootPostHash: rootId,
-      trigger: 'author',
-      authorId,
-      signature: new Uint8Array(64),
-    };
+    const intent = signPruneIntent(rootId, authorId, authorPrivKey);
 
-    // Generate a signature (simulate author signing)
-    const sigBuffer = cryptoSign(null, Buffer.from('prune'), authorPrivKey);
-    const signature = new Uint8Array(sigBuffer);
+    const entry = executePrune(intent);
 
-    const stump = executePrune(intent, signature);
+    // Should return a PruneEntry
+    expect(entry.rootPostHash).toBe(rootId);
+    expect(entry.authorId).toEqual(authorId);
+    expect(entry.trigger).toBe('author');
+    expect(entry.subtreePostIds.length).toBeGreaterThanOrEqual(3); // root + replies
+    expect(entry.authorSignature).toEqual(intent.signature);
 
-    // Stump should be stored
-    const stumpId = computeStumpId(stump);
-    const storedStump = getStump(stumpId);
-    expect(storedStump).not.toBeNull();
-    expect(storedStump!.rootPostHash).toBe(rootId);
+    // computePruneEntryId should work
+    const entryId = computePruneEntryId(entry);
+    expect(typeof entryId).toBe('string');
+    expect(entryId.length).toBe(64);
 
     // Posts are NOT pruned — pruning is deferred to block application
     const retrieved = storeGetPost(rootId);
     expect(retrieved).not.toBeNull();
-    expect('content' in retrieved!).toBe(true); // still a Post, not a Stump
+    expect('content' in retrieved!).toBe(true);
 
     // Descendants are still present (not pruned)
     expect(storeGetPost(reply1Id)).not.toBeNull();
     expect(storeGetPost(reply2Id)).not.toBeNull();
-    expect(storeGetPost(reply3Id)).not.toBeNull();
-
-    // Stump should have correct fields
-    expect(stump.rootPostHash).toBe(rootId);
-    expect(stump.authorId).toEqual(authorId);
-    expect(stump.replyCount).toBe(3); // reply1, reply2, reply3
-    expect(stump.trigger).toBe('author');
-    expect(stump.protocolVersion).toBe(PROTOCOL_VERSION);
   });
 
   // -----------------------------------------------------------------------
-  // 3. executePrune on non-root post succeeds (guard removed)
+  // 2. executePrune on non-root post (reply) succeeds
   // -----------------------------------------------------------------------
   it('executePrune on non-root post succeeds', () => {
     // Create a root post
@@ -209,173 +203,132 @@ describe('stump-engine', () => {
     const replyPost = makePost('Reply', authorId, [rootId]);
     const replyId = insertTestPost(replyPost);
 
-    const intent: PruneIntent = {
-      rootPostHash: replyId, // pruning a reply is now allowed
-      trigger: 'author',
-      authorId,
-      signature: new Uint8Array(64),
-    };
+    const intent = signPruneIntent(replyId, authorId, authorPrivKey);
 
-    const sigBuffer = cryptoSign(null, Buffer.from('prune'), authorPrivKey);
-    const signature = new Uint8Array(sigBuffer);
-
-    // Should no longer throw — any post (root or reply) can be pruned
-    const stump = executePrune(intent, signature);
-    expect(stump.rootPostHash).toBe(replyId);
-    expect(stump.replyCount).toBe(0); // reply has no children of its own
+    // Should succeed — any post can be pruned
+    const entry = executePrune(intent);
+    expect(entry.rootPostHash).toBe(replyId);
+    expect(entry.subtreePostIds).toContain(replyId);
   });
 
   // -----------------------------------------------------------------------
-  // 4. executePrune with wrong author throws
+  // 3. executePrune with wrong author throws
   // -----------------------------------------------------------------------
   it('executePrune with wrong author throws', () => {
     const rootPost = makePost('Root', authorId, []);
     const rootId = insertTestPost(rootPost);
 
-    const intent: PruneIntent = {
-      rootPostHash: rootId,
-      trigger: 'author',
-      authorId: otherId, // wrong author
-      signature: new Uint8Array(64),
-    };
+    // Create reply so subtree is not empty
+    insertTestPost(makePost('Reply', authorId, [rootId]));
 
-    const sigBuffer = cryptoSign(null, Buffer.from('prune'), authorPrivKey);
-    const signature = new Uint8Array(sigBuffer);
+    const intent = signPruneIntent(rootId, authorId, authorPrivKey);
+    // Tamper: replace authorId with otherId
+    intent.authorId = otherId;
 
-    expect(() => executePrune(intent, signature)).toThrow('Author mismatch');
+    expect(() => executePrune(intent)).toThrow('Author mismatch');
   });
 
   // -----------------------------------------------------------------------
-  // 5. Stump contains correct replyCount and upvoteCount
+  // 4. executePrune with invalid signature throws
   // -----------------------------------------------------------------------
-  it('Stump contains correct replyCount and upvoteCount', () => {
+  it('executePrune with invalid signature throws', () => {
     const rootPost = makePost('Root', authorId, []);
     const rootId = insertTestPost(rootPost);
 
-    const reply1 = makePost('Reply 1', authorId, [rootId]);
-    const reply1Id = insertTestPost(reply1);
+    // Create reply so subtree is not empty
+    insertTestPost(makePost('Reply', authorId, [rootId]));
 
-    const reply2 = makePost('Reply 2', otherId, [rootId]);
-    const reply2Id = insertTestPost(reply2);
+    const intent = signPruneIntent(rootId, authorId, authorPrivKey);
+    // Tamper: replace signature with all zeros
+    intent.signature = new Uint8Array(64);
 
-    // Add like boxes
-    insertLikeBox(otherId, rootId, 2, 1);
-    insertLikeBox(otherId, reply1Id, 2, 1);
-    insertLikeBox(authorId, reply2Id, 2, 1);
-
-    const intent: PruneIntent = {
-      rootPostHash: rootId,
-      trigger: 'author',
-      authorId,
-      signature: new Uint8Array(64),
-    };
-
-    const sigBuffer = cryptoSign(null, Buffer.from('prune'), authorPrivKey);
-    const signature = new Uint8Array(sigBuffer);
-
-    const stump = executePrune(intent, signature);
-
-    expect(stump.replyCount).toBe(2); // reply1, reply2
-    expect(stump.upvoteCount).toBe(3); // 3 like boxes total
+    expect(() => executePrune(intent)).toThrow('Invalid prune signature');
   });
 
   // -----------------------------------------------------------------------
-  // 6. Stump karmaDeltas reflect collected like boxes
+  // 5. executePrune with mismatched subtreePostIds throws
   // -----------------------------------------------------------------------
-  it('Stump karmaDeltas reflect collected like boxes', () => {
+  it('executePrune with mismatched subtreePostIds throws', () => {
     const rootPost = makePost('Root', authorId, []);
     const rootId = insertTestPost(rootPost);
 
-    const reply1 = makePost('Reply 1', authorId, [rootId]);
-    const reply1Id = insertTestPost(reply1);
+    // Add a reply so the real subtree is non-empty
+    insertTestPost(makePost('Reply', authorId, [rootId]));
 
-    // Add like boxes by different users
-    insertLikeBox(otherId, rootId, 2, 1);
-    insertLikeBox(otherId, reply1Id, 2, 1); // otherId liked twice = delta 4
-    insertLikeBox(authorId, rootId, 2, 1); // authorId liked once = delta 2
+    const intent = signPruneIntent(rootId, authorId, authorPrivKey);
+    // Tamper: remove a post from the list
+    intent.subtreePostIds = [rootId]; // missing the reply
 
-    const intent: PruneIntent = {
-      rootPostHash: rootId,
-      trigger: 'author',
-      authorId,
-      signature: new Uint8Array(64),
-    };
-
-    const sigBuffer = cryptoSign(null, Buffer.from('prune'), authorPrivKey);
-    const signature = new Uint8Array(sigBuffer);
-
-    const stump = executePrune(intent, signature);
-
-    expect(stump.karmaDeltas).toHaveLength(2);
-
-    // Find each user's delta
-    const otherDelta = stump.karmaDeltas.find((d) => Buffer.from(d.userId).equals(Buffer.from(otherId)));
-    const authorDelta = stump.karmaDeltas.find((d) => Buffer.from(d.userId).equals(Buffer.from(authorId)));
-
-    expect(otherDelta).toBeDefined();
-    expect(otherDelta!.delta).toBe(4); // 2 + 2
-
-    expect(authorDelta).toBeDefined();
-    expect(authorDelta!.delta).toBe(2); // 2
+    expect(() => executePrune(intent)).toThrow('subtreePostIds does not match');
   });
 
   // -----------------------------------------------------------------------
-  // 7. After executePrune, posts remain un-pruned (deferred to block apply)
+  // 6. executePrune with incorrect Merkle root throws
   // -----------------------------------------------------------------------
-  it('After executePrune, posts remain un-pruned (deferred to block apply)', () => {
+  it('executePrune with incorrect Merkle root throws', () => {
     const rootPost = makePost('Root', authorId, []);
     const rootId = insertTestPost(rootPost);
 
-    const intent: PruneIntent = {
-      rootPostHash: rootId,
-      trigger: 'author',
-      authorId,
-      signature: new Uint8Array(64),
-    };
+    // Add a reply so subtree is non-empty
+    insertTestPost(makePost('Reply', authorId, [rootId]));
 
-    const sigBuffer = cryptoSign(null, Buffer.from('prune'), authorPrivKey);
-    const signature = new Uint8Array(sigBuffer);
+    const intent = signPruneIntent(rootId, authorId, authorPrivKey);
+    // Tamper: replace merkle root with garbage AND re-sign
+    const fakeRoot = new Uint8Array(32).fill(0xde);
+    intent.subtreeMerkleRoot = fakeRoot;
+    const payload = createHash('blake2b512')
+      .update(intent.rootPostHash)
+      .update(fakeRoot)
+      .digest()
+      .subarray(0, 32);
+    intent.signature = new Uint8Array(cryptoSign(null, payload, authorPrivKey));
 
-    const stump = executePrune(intent, signature);
-
-    // Posts are NOT pruned — pruning is deferred to block application
-    const retrieved = storeGetPost(rootId);
-    expect(retrieved).not.toBeNull();
-    expect('content' in retrieved!).toBe(true); // still a Post, not a Stump
-    const post = retrieved as Post;
-    expect(post.content).toBe('Root');
-
-    // But the stump IS stored for block inclusion
-    const stumpId = computeStumpId(stump);
-    expect(getStump(stumpId)).not.toBeNull();
+    expect(() => executePrune(intent)).toThrow('subtreeMerkleRoot does not match');
   });
 
   // -----------------------------------------------------------------------
-  // 8. Subtree with no likes produces empty karmaDeltas
+  // 7. executePrune on non-existent post throws
   // -----------------------------------------------------------------------
-  it('Subtree with no likes produces empty karmaDeltas', () => {
+  it('executePrune on non-existent post throws', () => {
+    const fakeRootId = 'deadbeef'.repeat(8); // 64 hex chars
+
+    // Build a valid PruneIntent with a signature using a fake merkle root
+    const subtreePostIds = [fakeRootId];
+    const leaves = subtreePostIds.map(id => leafHash('stump', hexToBuf(id)));
+    const merkleRoot = buildMerkleRoot(leaves);
+
+    const payload = createHash('blake2b512')
+      .update(fakeRootId)
+      .update(merkleRoot)
+      .digest()
+      .subarray(0, 32);
+    const sig = cryptoSign(null, payload, authorPrivKey);
+
+    const intent: PruneIntent = {
+      rootPostHash: fakeRootId,
+      trigger: 'author',
+      authorId,
+      subtreeMerkleRoot: merkleRoot,
+      subtreePostIds,
+      signature: new Uint8Array(sig),
+    };
+
+    expect(() => executePrune(intent)).toThrow('Post not found');
+  });
+
+  // -----------------------------------------------------------------------
+  // 8. Subtree with no replies succeeds (leaf node prune)
+  // -----------------------------------------------------------------------
+  it('Subtree with no replies succeeds (leaf node prune)', () => {
     const rootPost = makePost('Root', authorId, []);
     const rootId = insertTestPost(rootPost);
 
-    const reply1 = makePost('Reply 1', authorId, [rootId]);
-    insertTestPost(reply1);
+    // No replies — subtree is just the root itself
+    const intent = signPruneIntent(rootId, authorId, authorPrivKey);
 
-    // No like boxes
-
-    const intent: PruneIntent = {
-      rootPostHash: rootId,
-      trigger: 'author',
-      authorId,
-      signature: new Uint8Array(64),
-    };
-
-    const sigBuffer = cryptoSign(null, Buffer.from('prune'), authorPrivKey);
-    const signature = new Uint8Array(sigBuffer);
-
-    const stump = executePrune(intent, signature);
-
-    expect(stump.karmaDeltas).toEqual([]);
-    expect(stump.upvoteCount).toBe(0);
-    expect(stump.replyCount).toBe(1);
+    const entry = executePrune(intent);
+    expect(entry.rootPostHash).toBe(rootId);
+    expect(entry.subtreePostIds).toEqual([rootId]);
+    expect(entry.authorId).toEqual(authorId);
   });
 });

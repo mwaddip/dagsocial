@@ -11,6 +11,7 @@ import {
   getSubtree,
   pruneSubtree,
 } from '../../src/store/posts.js';
+import { insertStump } from '../../src/store/stumps.js';
 import { computePostId } from '@dagsocial/types';
 import { randomBytes } from 'node:crypto';
 import { unlinkSync } from 'node:fs';
@@ -39,17 +40,14 @@ function makePost(overrides: Partial<Post> = {}): Post {
 function makeStump(rootPostHash: string, overrides: Partial<Stump> = {}): Stump {
   return {
     rootPostHash,
-    subtreeMerkleRoot: bytes(32),
     authorId: uid('author-integration'),
-    pruneSignature: bytes(64),
-    karmaDeltas: [],
     replyCount: 0,
     upvoteCount: 0,
     trigger: 'author',
     protocolVersion: 1,
     compactedAtBlockHeight: 1,
     ...overrides,
-  } as Stump;
+  };
 }
 
 describe('posts store (integration)', () => {
@@ -167,7 +165,8 @@ describe('posts store (integration)', () => {
       compactedAtBlockHeight: 10,
     });
 
-    pruneSubtree(rootId, stump);
+    pruneSubtree(rootId);
+    insertStump(stump);
 
     // Root post should now return a Stump
     const rootResult = getPost(rootId);

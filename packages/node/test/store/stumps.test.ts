@@ -1,7 +1,7 @@
 import { uid } from '../helpers.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type Database from 'better-sqlite3';
-import type { Stump, KarmaDelta } from '@dagsocial/types';
+import type { Stump } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
 // Dynamic import helpers
@@ -31,13 +31,7 @@ async function importStumpsFresh() {
 function makeStump(overrides: Partial<Stump> = {}): Stump {
   return {
     rootPostHash: 'root-post-hash-abc123',
-    subtreeMerkleRoot: new Uint8Array(32).fill(0x11),
     authorId: uid('author-alice'),
-    pruneSignature: new Uint8Array(64).fill(0x22),
-    karmaDeltas: [
-      { userId: uid('user-1'), delta: 10 },
-      { userId: uid('user-2'), delta: -5 },
-    ] satisfies KarmaDelta[],
     replyCount: 3,
     upvoteCount: 7,
     trigger: 'author',
@@ -60,39 +54,33 @@ describe('stumps store', () => {
     vi.resetModules();
   });
 
-  it('insertStump + getStump round-trip (all fields including karmaDeltas)', async () => {
+  it('insertStump + getStump round-trip (all fields)', async () => {
     const { initDb } = await importDbFresh();
     const { insertStump, getStump } = await importStumpsFresh();
-    const { computeStumpId } = await import('@dagsocial/types');
 
     initDb(':memory:');
 
     const stump = makeStump({
       rootPostHash: 'hash-roundtrip',
-      subtreeMerkleRoot: new Uint8Array(32).fill(0x33),
       authorId: uid('author-bob'),
-      pruneSignature: new Uint8Array(64).fill(0x44),
-      karmaDeltas: [{ userId: uid('user-x'), delta: 100 }],
       replyCount: 5,
       upvoteCount: 12,
-      trigger: 'drep',
+      trigger: 'storage_prune',
       protocolVersion: 1,
       compactedAtBlockHeight: 99,
     });
 
-    const stumpId = computeStumpId(stump);
     insertStump(stump);
 
+    // stump ID is rootPostHash
+    const stumpId = stump.rootPostHash;
     const result = getStump(stumpId);
     expect(result).not.toBeNull();
     expect(result!.rootPostHash).toBe('hash-roundtrip');
-    expect(result!.subtreeMerkleRoot).toEqual(new Uint8Array(32).fill(0x33));
     expect(result!.authorId).toEqual(uid('author-bob'));
-    expect(result!.pruneSignature).toEqual(new Uint8Array(64).fill(0x44));
-    expect(result!.karmaDeltas).toEqual([{ userId: uid('user-x'), delta: 100 }]);
     expect(result!.replyCount).toBe(5);
     expect(result!.upvoteCount).toBe(12);
-    expect(result!.trigger).toBe('drep');
+    expect(result!.trigger).toBe('storage_prune');
     expect(result!.protocolVersion).toBe(1);
     expect(result!.compactedAtBlockHeight).toBe(99);
   });
