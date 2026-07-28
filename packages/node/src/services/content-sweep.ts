@@ -1,4 +1,4 @@
-import { verifyPostId, encodePost, decodeSubBlockTree, computeStumpId } from '@dagsocial/types';
+import { verifyPostId, encodePost, decodeSubBlockTree } from '@dagsocial/types';
 import type { NetNode } from '@dagsocial/net';
 import { verifyPostForRelay, type VerifierDeps } from './verifier.js';
 import { insertPost } from '../store/posts.js';
@@ -127,7 +127,7 @@ export async function sweepPlaceholders(
   return { success: false, remaining };
 }
 
-/** Check if any stumps referenced in blocks are missing from local dag_stumps. */
+/** Check if any prune entries referenced in blocks are missing from local dag_stumps. */
 export function hasMissingStumps(): boolean {
   const db = getDb();
   const rows = db.prepare(
@@ -136,8 +136,8 @@ export function hasMissingStumps(): boolean {
   ).all() as Array<{ subblock_tree_cbor: Buffer }>;
   for (const row of rows) {
     const tree = decodeSubBlockTree(new Uint8Array(row.subblock_tree_cbor));
-    for (const stumpId of tree.stumpIds) {
-      const existing = db.prepare('SELECT 1 FROM dag_stumps WHERE id = ?').get(stumpId);
+    for (const entry of tree.pruneEntries) {
+      const existing = db.prepare('SELECT 1 FROM dag_stumps WHERE root_post_hash = ?').get(entry.rootPostHash);
       if (!existing) return true;
     }
   }
@@ -154,11 +154,11 @@ function getMissingStumpIds(): string[] {
   const seen = new Set<string>();
   for (const row of rows) {
     const tree = decodeSubBlockTree(new Uint8Array(row.subblock_tree_cbor));
-    for (const stumpId of tree.stumpIds) {
-      if (seen.has(stumpId)) continue;
-      seen.add(stumpId);
-      const existing = db.prepare('SELECT 1 FROM dag_stumps WHERE id = ?').get(stumpId);
-      if (!existing) missing.push(stumpId);
+    for (const entry of tree.pruneEntries) {
+      if (seen.has(entry.rootPostHash)) continue;
+      seen.add(entry.rootPostHash);
+      const existing = db.prepare('SELECT 1 FROM dag_stumps WHERE root_post_hash = ?').get(entry.rootPostHash);
+      if (!existing) missing.push(entry.rootPostHash);
     }
   }
   return missing;
@@ -199,8 +199,8 @@ export async function sweepStumps(
           if (seen.has(entry.stumpId)) continue;
           seen.add(entry.stumpId);
 
-          // Verify stump ID matches
-          if (computeStumpId(entry.stump) !== entry.stumpId) {
+          // Verify stump ID matches rootPostHash
+          if (entry.stump.rootPostHash !== entry.stumpId) {
             console.warn(
               `[content-sweep] stump ID mismatch for claimed ${entry.stumpId}, dropping`,
             );
@@ -210,9 +210,10 @@ export async function sweepStumps(
           // Store the stump and replay the prune
           insertStump(entry.stump);
           const rootPost = getPost(entry.stump.rootPostHash);
-          if (rootPost && !('subtreeMerkleRoot' in rootPost)) {
+          // Check if the post still needs pruning (has content = not yet pruned)
+          if (rootPost && 'content' in rootPost) {
             try {
-              pruneSubtree(entry.stump.rootPostHash, entry.stump);
+              pruneSubtree(entry.stump.rootPostHash);
             } catch (err) {
               console.warn(
                 `[content-sweep] failed to replay prune for stump ${entry.stumpId}: ${String(err)}`,

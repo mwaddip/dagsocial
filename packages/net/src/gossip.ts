@@ -1,6 +1,15 @@
-import { decodeSubBlock, decodeOrderingBlock, decodeTx, POST_POW_TARGET_BITS, postPowPreimage } from '@dagsocial/types';
-import { encodeSubBlock, encodeOrderingBlock, encodeTx, encodeStump } from '@dagsocial/types';
-import { decodeStump, computeStumpId } from '@dagsocial/types';
+import {
+  decodeSubBlock,
+  decodeOrderingBlock,
+  decodeTx,
+  decodeStump,
+  encodeSubBlock,
+  encodeOrderingBlock,
+  encodeTx,
+  encodeStump,
+  POST_POW_TARGET_BITS,
+  postPowPreimage,
+} from '@dagsocial/types';
 import {
   verifyContentLimits,
   verifyContentCharacters,
@@ -136,10 +145,9 @@ export function subscribeTopics(
     try {
       const raw = new Uint8Array(msg.data);
       const stump = decodeStump(raw);
-      // Structural check: computeStumpId must produce a valid hex ID
-      const stumpId = computeStumpId(stump);
-      if (!/^[0-9a-f]{64}$/.test(stumpId)) {
-        peerMgr.recordPenalty('misbehavior', _peer.toString(), 100, 'invalid stump ID');
+      // Structural check: rootPostHash must be a valid 64-char hex string
+      if (!/^[0-9a-f]{64}$/.test(stump.rootPostHash)) {
+        peerMgr.recordPenalty('misbehavior', _peer.toString(), 100, 'invalid stump');
         return TopicValidatorResult.Reject;
       }
       return TopicValidatorResult.Accept;
