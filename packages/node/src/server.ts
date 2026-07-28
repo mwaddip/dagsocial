@@ -180,6 +180,9 @@ export function createApp(config: Config): express.Express {
     pruningRoutes({
       executePrune,
       computeStumpId,
+      getActiveChallenge: store.getActiveChallenge,
+      consumeChallenge: store.consumeChallenge,
+      getCurrentHeight: store.getCurrentHeight,
     }),
   );
 

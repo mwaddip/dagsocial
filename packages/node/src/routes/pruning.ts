@@ -1,12 +1,14 @@
 import { Router } from 'express';
 import { computeStumpId } from '@dagsocial/types';
 import type { PruneIntent, Stump } from '@dagsocial/types';
+import { verifyAuthorSignature } from '../services/verifier.js';
+import type { AuthorVerifierDeps } from '../services/verifier.js';
 
 // ---------------------------------------------------------------------------
 // Dependency types
 // ---------------------------------------------------------------------------
 
-export interface PruningDeps {
+export interface PruningDeps extends AuthorVerifierDeps {
   executePrune(intent: PruneIntent, signature: Uint8Array): Stump;
   computeStumpId(stump: Stump): string;
 }
@@ -25,12 +27,13 @@ export function createRouter(deps: PruningDeps): Router {
       authorId?: string;
       trigger?: string;
       signature?: string;
+      challenge?: string;
     };
 
-    if (!body.authorId || !body.signature) {
+    if (!body.authorId || !body.signature || !body.challenge) {
       res
         .status(400)
-        .json({ error: 'authorId and signature required' });
+        .json({ error: 'authorId, challenge, and signature required' });
       return;
     }
 
@@ -45,14 +48,24 @@ export function createRouter(deps: PruningDeps): Router {
       return;
     }
 
-    // Decode authorId and signature from hex
+    // Decode authorId from hex
     let authorId: Uint8Array;
-    let signature: Uint8Array;
     try {
       authorId = new Uint8Array(Buffer.from(body.authorId, 'hex'));
-      signature = new Uint8Array(Buffer.from(body.signature, 'hex'));
     } catch {
-      res.status(400).json({ error: 'Invalid hex encoding in authorId or signature' });
+      res.status(400).json({ error: 'Invalid hex encoding in authorId' });
+      return;
+    }
+
+    // Verify author ownership via challenge-response
+    const authResult = verifyAuthorSignature(
+      deps,
+      authorId,
+      body.challenge,
+      body.signature,
+    );
+    if (!authResult.valid) {
+      res.status(403).json({ error: authResult.error });
       return;
     }
 
@@ -61,11 +74,11 @@ export function createRouter(deps: PruningDeps): Router {
       rootPostHash: rootPostId,
       trigger: trigger as PruneIntent['trigger'],
       authorId,
-      signature: new Uint8Array(64), // placeholder; real sig passed to executePrune
+      signature: new Uint8Array(64), // placeholder; sig already verified above
     };
 
     try {
-      const stump = deps.executePrune(intent, signature);
+      const stump = deps.executePrune(intent, new Uint8Array(64));
       const stumpId = deps.computeStumpId(stump);
       res.status(201).json({ stumpId });
     } catch (err) {

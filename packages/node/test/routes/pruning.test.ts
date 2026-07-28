@@ -2,6 +2,7 @@ import { uid } from '../helpers.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import express from 'express';
 import http from 'http';
+import { createHash, createPrivateKey, sign as cryptoSign } from 'node:crypto';
 import { initDb, closeDb } from '../../src/store/db.js';
 import { insertPost, getPost } from '../../src/store/posts.js';
 import { executePrune } from '../../src/services/stump-engine.js';
@@ -11,11 +12,25 @@ import {
   generateKeyPair,
   PROTOCOL_VERSION,
 } from '@dagsocial/types';
-import type { Post } from '@dagsocial/types';
+import type { Post, KeyPair } from '@dagsocial/types';
 import { createRouter } from '../../src/routes/pruning.js';
 import { unlinkSync } from 'fs';
 
 const TEST_DB = '/tmp/dagsocial-test-routes-pruning.sqlite';
+
+// ---------------------------------------------------------------------------
+// Challenge + signature helpers
+// ---------------------------------------------------------------------------
+
+function signChallenge(challenge: Uint8Array, secretKey: Uint8Array): Uint8Array {
+  const hash = createHash('blake2b512').update(challenge).digest().subarray(0, 32);
+  const privKeyObj = createPrivateKey({
+    key: Buffer.from(secretKey),
+    format: 'der',
+    type: 'pkcs8',
+  });
+  return new Uint8Array(cryptoSign(null, hash, privKeyObj));
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -37,9 +52,20 @@ function makePost(authorId: Uint8Array, parentRefs: string[] = []): Post {
 async function request(
   postId: string,
   body: unknown,
+  mockDeps?: {
+    getActiveChallenge?: (userId: Uint8Array) => { challenge: Uint8Array; expiresAtBlock: number } | null;
+    consumeChallenge?: (userId: Uint8Array, challenge: Uint8Array) => void;
+    getCurrentHeight?: () => number;
+  },
 ): Promise<{ status: number; data: unknown }> {
   return new Promise((resolve) => {
-    const deps = { executePrune, computeStumpId };
+    const deps = {
+      executePrune,
+      computeStumpId,
+      getActiveChallenge: mockDeps?.getActiveChallenge ?? (() => null),
+      consumeChallenge: mockDeps?.consumeChallenge ?? (() => {}),
+      getCurrentHeight: mockDeps?.getCurrentHeight ?? (() => 0),
+    };
     const app = express();
     app.use(express.json());
     app.use(createRouter(deps));
@@ -80,14 +106,37 @@ describe('pruning routes', () => {
   let rootPostId: string;
   let childPostId: string;
   let authorId: Uint8Array;
+  let authorKeypair: KeyPair;
+  let testChallenge: Uint8Array;
+  let testChallengeHex: string;
+  let testSignatureHex: string;
+  let testHeight = 100;
+
+  function makeMockDeps() {
+    return {
+      getActiveChallenge: () => ({
+        challenge: testChallenge,
+        expiresAtBlock: testHeight + 10,
+      }),
+      consumeChallenge: () => {},
+      getCurrentHeight: () => testHeight,
+    };
+  }
 
   beforeAll(() => {
     try { unlinkSync(TEST_DB); } catch { /* ignore */ }
     initDb(TEST_DB);
 
     // Create an author
-    const kp = generateKeyPair();
-    authorId = kp.publicKey;
+    authorKeypair = generateKeyPair();
+    authorId = authorKeypair.publicKey;
+
+    // Create a challenge + signature for challenge-response auth
+    testChallenge = new Uint8Array(32);
+    crypto.getRandomValues(testChallenge);
+    testChallengeHex = Buffer.from(testChallenge).toString('hex');
+    const sig = signChallenge(testChallenge, authorKeypair.secretKey);
+    testSignatureHex = Buffer.from(sig).toString('hex');
 
     // Create a root post (empty parentRefs)
     const rootPost = makePost(authorId, []);
@@ -107,10 +156,11 @@ describe('pruning routes', () => {
 
   it('POST /posts/:id/prune on root post returns 201', async () => {
     const res = await request(rootPostId, {
-      authorId,
+      authorId: Buffer.from(authorId).toString('hex'),
       trigger: 'author',
-      signature: 'ff'.repeat(64),
-    });
+      challenge: testChallengeHex,
+      signature: testSignatureHex,
+    }, makeMockDeps());
     expect(res.status).toBe(201);
     const body = res.data as Record<string, unknown>;
     expect(typeof body.stumpId).toBe('string');
@@ -118,10 +168,11 @@ describe('pruning routes', () => {
 
   it('POST /posts/:id/prune on non-root post returns 400', async () => {
     const res = await request(childPostId, {
-      authorId,
+      authorId: Buffer.from(authorId).toString('hex'),
       trigger: 'author',
-      signature: 'ff'.repeat(64),
-    });
+      challenge: testChallengeHex,
+      signature: testSignatureHex,
+    }, makeMockDeps());
     expect(res.status).toBe(400);
   });
 
@@ -135,11 +186,14 @@ describe('pruning routes', () => {
     insertPost(otherRoot, new Uint8Array(16));
 
     // Try to prune as the first author (not the post's author)
+    // verifyAuthorSignature passes (we sign with authorId's key), but
+    // executePrune rejects because authorId != the post's author.
     const res = await request(otherRootId, {
-      authorId, // wrong author!
+      authorId: Buffer.from(authorId).toString('hex'),
       trigger: 'author',
-      signature: 'ff'.repeat(64),
-    });
+      challenge: testChallengeHex,
+      signature: testSignatureHex,
+    }, makeMockDeps());
     expect(res.status).toBe(403);
   });
 });
