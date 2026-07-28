@@ -51,13 +51,7 @@ function makePost(): Post {
 function makeStump(): Stump {
   return {
     rootPostHash: 'a'.repeat(64),
-    subtreeMerkleRoot: new Uint8Array(32).fill(0x11),
     authorId: 'user456',
-    pruneSignature: sig64,
-    karmaDeltas: [
-      { userId: 'user1', delta: 5 },
-      { userId: 'user2', delta: -3 },
-    ],
     replyCount: 7,
     upvoteCount: 12,
     trigger: 'author',
@@ -97,7 +91,7 @@ function makeSubBlockTree(): SubBlockTree {
     subBlockEntries: [
       { postId: 'b'.repeat(64), parentRefs: [] },
     ],
-    stumpIds: [],
+    pruneEntries: [],
   };
 }
 
@@ -235,13 +229,13 @@ describe('CBOR serialization', () => {
           { postId: 'aa'.repeat(32), parentRefs: [] },
           { postId: 'bb'.repeat(32), parentRefs: ['aa'.repeat(32)] },
         ],
-        stumpIds: [],
+        pruneEntries: [],
       };
       const encoded = encodeSubBlockTree(tree);
       const decoded = decodeSubBlockTree(encoded);
       expect(decoded.subBlockEntries).toEqual(tree.subBlockEntries);
       expect(decoded.subBlockRefs).toEqual(tree.subBlockRefs);
-      expect(decoded.stumpIds).toEqual(tree.stumpIds);
+      expect(decoded.pruneEntries).toEqual(tree.pruneEntries);
     });
   });
 

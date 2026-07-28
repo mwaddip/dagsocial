@@ -1,7 +1,7 @@
 import type { UserId } from './identity.js';
 import type { Post, PostId } from './post.js';
 import type { BoxId, TxId, LikeBox, PostLockBox } from './utxo.js';
-import type { StumpId } from './stump.js';
+import type { PruneEntry } from './stump.js';
 
 // ---------------------------------------------------------------------------
 // Like reward (computed during epoch tally)
@@ -106,7 +106,7 @@ export interface SubBlockEntry {
 export interface SubBlockTree {
   subBlockRefs: PostId[];           // derived from subBlockEntries, kept for ordering
   subBlockEntries: SubBlockEntry[]; // topology committed in the block
-  stumpIds: StumpId[];              // stumps committed in this block
+  pruneEntries: PruneEntry[];       // prune entries committed in this block
 }
 
 export interface UtxoTxTree {

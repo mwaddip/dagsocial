@@ -73,8 +73,8 @@ export type {
 } from './utxo.js';
 
 // Stumps
-export { computeStumpId } from './stump.js';
-export type { PruneIntent, KarmaDelta, Stump, StumpId } from './stump.js';
+export { computePruneEntryId, serializePruneEntry } from './stump.js';
+export type { PruneIntent, KarmaDelta, Stump, StumpId, PruneEntry } from './stump.js';
 
 // Blocks
 export { EMPTY_STATE_ROOT, cumulativeWork, subBlockFromPost } from './block.js';
