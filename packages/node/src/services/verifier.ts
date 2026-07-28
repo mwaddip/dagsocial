@@ -1,3 +1,4 @@
+import { createHash, createPublicKey, verify as cryptoVerify } from 'node:crypto';
 import {
   PROTOCOL_VERSION,
   MAX_CONTENT_BYTES,
@@ -242,6 +243,79 @@ export function verifyPostForRelay(
     const hashCheck = verifyParentHash(deps, parentId);
     if (!hashCheck.valid) return hashCheck;
   }
+
+  return { valid: true };
+}
+
+// ---------------------------------------------------------------------------
+// Author signature verification (challenge-response)
+// ---------------------------------------------------------------------------
+
+/**
+ * Dependencies for verifying an author challenge-response.
+ */
+export interface AuthorVerifierDeps {
+  getActiveChallenge: (userId: Uint8Array) => { challenge: Uint8Array; expiresAtBlock: number } | null;
+  consumeChallenge: (userId: Uint8Array) => void;
+  getCurrentHeight: () => number;
+}
+
+/**
+ * Verify that a signature proves ownership of the Ed25519 keypair whose
+ * public key is `authorId`.
+ *
+ * The caller must have requested a challenge via POST /challenge, then
+ * signed blake2b-32(challenge) with their Ed25519 private key.
+ *
+ * On success the challenge is consumed (one-time use).
+ */
+export function verifyAuthorSignature(
+  deps: AuthorVerifierDeps,
+  authorId: Uint8Array,
+  challengeHex: string,
+  signatureHex: string,
+): { valid: true } | { valid: false; error: string } {
+  // 1. Challenge must exist and be active for this author
+  const record = deps.getActiveChallenge(authorId);
+  if (!record) {
+    return { valid: false, error: 'No active challenge — request one via POST /challenge' };
+  }
+  const currentHeight = deps.getCurrentHeight();
+  if (record.expiresAtBlock < currentHeight) {
+    return { valid: false, error: 'Challenge expired' };
+  }
+
+  // 2. Decode challenge and signature from hex
+  let challenge: Uint8Array;
+  let signature: Uint8Array;
+  try {
+    challenge = new Uint8Array(Buffer.from(challengeHex, 'hex'));
+    signature = new Uint8Array(Buffer.from(signatureHex, 'hex'));
+  } catch {
+    return { valid: false, error: 'Invalid hex encoding' };
+  }
+
+  // 3. Challenge must match the active one byte-for-byte
+  if (
+    challenge.length !== record.challenge.length ||
+    !Buffer.from(challenge).equals(Buffer.from(record.challenge))
+  ) {
+    return { valid: false, error: 'Challenge mismatch' };
+  }
+
+  // 4. Verify Ed25519 signature over blake2b-32(challenge)
+  const hash = createHash('blake2b512').update(challenge).digest().subarray(0, 32);
+  const pubKeyObj = createPublicKey({
+    key: { kty: 'OKP', crv: 'Ed25519', x: Buffer.from(authorId).toString('base64url') },
+    format: 'jwk',
+  });
+  const valid = cryptoVerify(null, hash, pubKeyObj, Buffer.from(signature));
+  if (!valid) {
+    return { valid: false, error: 'Invalid signature' };
+  }
+
+  // 5. Consume the challenge (one-time use)
+  deps.consumeChallenge(authorId);
 
   return { valid: true };
 }
