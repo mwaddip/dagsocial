@@ -25,6 +25,7 @@ import {
   computeTxId,
   leafHash,
   buildMerkleRoot,
+  serializePruneEntry,
   hexToBuf,
 } from '@dagsocial/types';
 import {
@@ -45,6 +46,7 @@ import type {
   PostLockBox,
   UtxoTransaction,
   AnyBox,
+  PruneEntry,
   UserId,
 } from '@dagsocial/types';
 import type { Config } from '../config.js';
@@ -59,7 +61,7 @@ import {
   getPendingEntries,
   purgeExpired,
   removeEntry,
-  drainMempoolStumps,
+  drainMempoolPrunes,
   type PoolEntry,
 } from '../store/mempool.js';
 import {
@@ -91,8 +93,8 @@ export function computeSubBlockRoot(tree: SubBlockTree): string {
         postId: entry.postId,
         parentRefs: entry.parentRefs,
       })))),
-    ...tree.stumpIds.map((id) =>
-      leafHash('stump', hexToBuf(id))),
+    ...tree.pruneEntries.map((entry) =>
+      leafHash('prune', Buffer.from(serializePruneEntry(entry)))),
   ];
   return Buffer.from(buildMerkleRoot(leaves)).toString('hex');
 }
@@ -518,15 +520,15 @@ export function createOrderingBlock(): OrderingBlock | null {
     }
   }
 
-  // Drain queued stump IDs for block inclusion
-  const MAX_STUMPS_PER_BLOCK = 32;
-  const stumpIds = drainMempoolStumps(MAX_STUMPS_PER_BLOCK);
+  // Drain queued prune entries for block inclusion
+  const MAX_PRUNES_PER_BLOCK = 32;
+  const pruneEntries = drainMempoolPrunes(MAX_PRUNES_PER_BLOCK);
 
   // 17. Build the body trees
   const subBlockTree: SubBlockTree = {
     subBlockRefs,
     subBlockEntries: subBlockEntriesForBlock,
-    stumpIds,
+    pruneEntries,
   };
   const utxoTxTree: UtxoTxTree = {
     utxoTxIds,
