@@ -1180,6 +1180,10 @@ function renderPost(p, id, depth) {
   const liked = likedPosts.has(id);
   const likeCount = typeof p.likeCount === 'number' ? p.likeCount : 0;
   const indent = depth * 20;
+  const isOwn = userId && p.author === userId;
+  const deleteBtn = isOwn
+    ? `<button class="like-btn delete-btn" data-post-id="${id}" style="color:#f85149">&#10005; Delete</button>`
+    : '';
   return `
     <div class="post" data-post-id="${id}" style="margin-left:${indent}px;border-left:${depth > 0 ? '2px solid #30363d' : 'none'};padding-left:${depth > 0 ? '10px' : '12px'}">
       <div class="post-author">${esc(p.author.slice(0, 12))}...</div>
@@ -1192,6 +1196,7 @@ function renderPost(p, id, depth) {
         <button class="like-btn${liked ? ' liked' : ''}" data-post-id="${id}" data-liked="${liked ? '1' : '0'}">
           ${liked ? '&#10084;&#65039; Liked' : '&#10084;&#65039; Like'} (${likeCount})
         </button>
+        ${deleteBtn}
       </div>
     </div>
   `;
@@ -1281,6 +1286,60 @@ async function loadFeed() {
           }
           btn.disabled = false;
           loadFeed();
+        }
+      });
+    });
+
+    // Attach delete handlers
+    feed.querySelectorAll('.delete-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const postId = btn.dataset.postId;
+        if (!postId || !userId || !privKey) return;
+
+        if (!confirm('Delete this post and all replies? This will return any locked karma to each reply author.')) {
+          return;
+        }
+
+        btn.disabled = true;
+        btn.textContent = '...';
+
+        try {
+          // Get a challenge from the server
+          const chalRes = await fetch(API + '/challenge', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId }),
+          });
+          if (!chalRes.ok) {
+            throw new Error('Failed to get challenge');
+          }
+          const { challenge } = await chalRes.json();
+
+          // Sign the challenge to prove authorship
+          const chalBytes = hex2buf(challenge);
+          const hash = blake2b(chalBytes, null, 64).slice(0, 32);
+          const sigBuf = await crypto.subtle.sign('Ed25519', privKey, hash);
+          const signature = buf2hex(new Uint8Array(sigBuf));
+
+          const res = await fetch(API + '/posts/' + encodeURIComponent(postId), {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ authorId: userId, signature }),
+          });
+
+          if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.error || 'Delete failed');
+          }
+
+          const result = await res.json();
+          console.log('Post deleted:', result);
+          loadFeed();
+        } catch (e) {
+          console.error('Delete failed:', e);
+          alert('Delete failed: ' + (e.message || 'unknown error'));
+          btn.disabled = false;
+          btn.textContent = '✕ Delete';
         }
       });
     });
