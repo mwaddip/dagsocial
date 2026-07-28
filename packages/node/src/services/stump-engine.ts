@@ -1,151 +1,135 @@
 import {
   computePostId,
-  computeStumpId,
+  computePruneEntryId,
+  serializePruneEntry,
   PROTOCOL_VERSION,
   leafHash,
-  nodeHash,
   buildMerkleRoot,
   hexToBuf,
   MEMPOOL_EXPIRY_BLOCKS,
 } from '@dagsocial/types';
-import type { Stump, PruneIntent, KarmaDelta, Post, LikeBox, UserId } from '@dagsocial/types';
+import type { PruneEntry, PruneIntent, Post, LikeBox } from '@dagsocial/types';
 import {
   getPost,
   getSubtree,
   getLockedLikeBoxes,
-  insertStump,
   getCurrentHeight,
-  insertMempoolStump,
+  insertMempoolPrune,
 } from '../store/index.js';
 import { getNet } from './net-instance.js';
+import { createHash, createPublicKey, verify } from 'crypto';
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /**
- * Create an unsigned prune intent.
- * The caller (author) signs this intent to authorize pruning of their root post.
- */
-export function createPruneIntent(
-  rootPostId: string,
-  authorId: UserId,
-  trigger: 'author' | 'drep' | 'storage_prune',
-): PruneIntent {
-  return {
-    rootPostHash: rootPostId,
-    trigger,
-    authorId,
-    signature: new Uint8Array(64),
-  };
-}
-
-/**
- * Execute a prune operation on a root post's reply subtree.
+ * Execute a prune operation: verify a client-signed PruneIntent and build a
+ * PruneEntry to be included in a SubBlock.
  *
- * 1. Verify the post exists and is a root (parentRefs empty)
- * 2. Verify the author matches
- * 3. Walk the reply subtree
- * 4. Collect like boxes for all posts in the subtree
- * 5. Compute karma deltas (per-user sum of like box values)
- * 6. Compute subtree Merkle root
- * 7. Build and store the Stump
- * 8. Prune the subtree via store
+ * Verification steps:
+ *  1. Post exists
+ *  2. Not already pruned
+ *  3. Author matches intent.authorId
+ *  4. Client Ed25519 signature over (rootPostHash, subtreeMerkleRoot)
+ *  5. subtreePostIds match the actual reply tree
+ *  6. Merkle root over postId list is correct
  *
- * @param intent  The prune intent (unsigned, with author info)
- * @param signature  Ed25519 signature from the root post author (64 bytes)
- * @returns The constructed Stump
+ * @param intent  The client-signed prune intent
+ * @returns The constructed PruneEntry
  */
-export function executePrune(
-  intent: PruneIntent,
-  signature: Uint8Array,
-): Stump {
-  // ---- 1. Verify post exists ----
-  const rootPost = getPost(intent.rootPostHash);
-  if (!rootPost) {
-    throw new Error(`Post not found: ${intent.rootPostHash}`);
+export function executePrune(intent: PruneIntent): PruneEntry {
+  // 1. Verify post exists
+  const post = getPost(intent.rootPostHash) as Post | null;
+  if (!post) {
+    throw Object.assign(new Error('Post not found'), { statusCode: 404 });
   }
 
-  // Check it's not a Stump (already pruned)
-  if ('subtreeMerkleRoot' in rootPost) {
-    throw new Error('Post is already pruned');
+  // 2. Check not already pruned
+  if ('subtreeMerkleRoot' in post) {
+    throw Object.assign(new Error('Post already pruned'), { statusCode: 400 });
   }
 
-  const post = rootPost as Post;
-
-  // ---- 2. Verify author matches ----
+  // 3. Verify author matches
   if (!Buffer.from(post.author).equals(Buffer.from(intent.authorId))) {
-    throw new Error('Author mismatch: post author does not match intent authorId');
+    throw Object.assign(new Error('Author mismatch'), { statusCode: 403 });
   }
 
-  // ---- 3. Walk the reply subtree ----
+  // 4. Verify client signature over (rootPostHash, subtreeMerkleRoot)
+  const payload = createHash('blake2b512')
+    .update(intent.rootPostHash)
+    .update(intent.subtreeMerkleRoot)
+    .digest()
+    .subarray(0, 32);
+
+  const keyObject = createPublicKey({
+    key: {
+      kty: 'OKP',
+      crv: 'Ed25519',
+      x: Buffer.from(intent.authorId).toString('base64url'),
+    },
+    format: 'jwk',
+  });
+
+  const valid = verify(null, payload, keyObject, intent.signature);
+  if (!valid) {
+    throw Object.assign(new Error('Invalid prune signature'), { statusCode: 403 });
+  }
+
+  // 5. Verify subtreePostIds match the actual reply tree
   const descendants = getSubtree(intent.rootPostHash);
-  const subtreePosts = [post, ...descendants];
-  const replyCount = descendants.length;
-
-  // ---- 4. Collect like boxes for all posts in the subtree ----
-  const allLikeBoxes: LikeBox[] = [];
-  for (const subtreePost of subtreePosts) {
-    const postId = computePostId(subtreePost);
-    const likeBoxes = getLockedLikeBoxes(postId);
-    allLikeBoxes.push(...likeBoxes);
+  const expectedIds = new Set([
+    intent.rootPostHash,
+    ...descendants.map(p => computePostId(p)),
+  ]);
+  const actualIds = new Set(intent.subtreePostIds);
+  if (expectedIds.size !== actualIds.size ||
+      ![...expectedIds].every(id => actualIds.has(id))) {
+    throw Object.assign(
+      new Error('subtreePostIds does not match actual reply subtree'),
+      { statusCode: 400 },
+    );
   }
 
-  // ---- 5. Compute karma deltas (per-user sum of like box values) ----
-  const karmaMap = new Map<string, number>();
-  let upvoteCount = 0;
-  for (const likeBox of allLikeBoxes) {
-    upvoteCount += 1;
-    const key = Buffer.from(likeBox.likerId).toString('hex');
-    const current = karmaMap.get(key) ?? 0;
-    karmaMap.set(key, current + likeBox.value);
+  // 6. Verify Merkle root
+  const leaves = intent.subtreePostIds
+    .sort()
+    .map(id => leafHash('stump', hexToBuf(id)));
+  const computedRoot = buildMerkleRoot(leaves);
+  if (Buffer.from(computedRoot).toString('hex') !==
+      Buffer.from(intent.subtreeMerkleRoot).toString('hex')) {
+    throw Object.assign(
+      new Error('subtreeMerkleRoot does not match postId list'),
+      { statusCode: 400 },
+    );
   }
 
-  const karmaDeltas: KarmaDelta[] = [];
-  for (const [hexUserId, delta] of karmaMap) {
-    karmaDeltas.push({ userId: new Uint8Array(hexToBuf(hexUserId)), delta });
-  }
-
-  // ---- 6. Compute subtree Merkle root ----
-  // Leaf for each post in the pruned set (root + descendants)
-  const leafHashes: Uint8Array[] = [];
-  for (const subtreePost of subtreePosts) {
-    const postId = computePostId(subtreePost);
-    leafHashes.push(leafHash('stump', hexToBuf(postId)));
-  }
-
-  const merkleRoot = buildMerkleRoot(leafHashes);
-  const currentHeight = getCurrentHeight();
-
-  // ---- 7. Build the Stump ----
-  const stump: Stump = {
+  // 7. Build PruneEntry
+  const entry: PruneEntry = {
     rootPostHash: intent.rootPostHash,
-    subtreeMerkleRoot: merkleRoot,
+    subtreePostIds: intent.subtreePostIds,
+    subtreeMerkleRoot: intent.subtreeMerkleRoot,
     authorId: intent.authorId,
-    pruneSignature: signature,
-    karmaDeltas,
-    replyCount,
-    upvoteCount,
+    authorSignature: intent.signature,
     trigger: intent.trigger,
-    protocolVersion: PROTOCOL_VERSION,
-    compactedAtBlockHeight: currentHeight,
   };
 
-  // ---- 8. Store stump (pruning deferred to block application
-  //     so PostLockBox settlement runs against un-pruned posts) ----
-  insertStump(stump);
-
-  // Enqueue stump for block inclusion
-  const stumpId = computeStumpId(stump);
-  insertMempoolStump(stumpId, currentHeight + MEMPOOL_EXPIRY_BLOCKS);
-
-  // Broadcast stump to peers (gossip push)
+  // 8. Broadcast and enqueue
   const net = getNet();
   if (net) {
-    net.broadcastStump(stump).catch((err: Error) => {
-      console.warn(`Failed to broadcast stump ${stumpId}: ${err.message}`);
+    net.broadcastStump({
+      rootPostHash: entry.rootPostHash,
+      authorId: entry.authorId,
+      replyCount: descendants.length,
+      upvoteCount: 0,
+      trigger: entry.trigger,
+      protocolVersion: PROTOCOL_VERSION,
+      compactedAtBlockHeight: getCurrentHeight(),
     });
   }
 
-  return stump;
+  const currentHeight = getCurrentHeight();
+  insertMempoolPrune(entry, currentHeight + MEMPOOL_EXPIRY_BLOCKS);
+
+  return entry;
 }
