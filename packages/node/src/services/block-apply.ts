@@ -240,17 +240,11 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
       continue;
     }
 
-    // Prune the DAG subtree
-    try {
-      pruneSubtree(stump.rootPostHash, stump);
-    } catch (err) {
-      console.warn(`Failed to replay prune for stump ${stumpId}: ${String(err)}`);
-      continue;
-    }
-
-    // Settle PostLockBoxes: walk the pruned subtree and return locked karma
-    // to each author. Uses the same DAG walk pattern as executePrune so
-    // every node derives the same settlement deterministically.
+    // Settle PostLockBoxes FIRST (before pruneSubtree).
+    // After pruning, getPost(rootPostHash) returns a Stump, so the guard
+    // !('subtreeMerkleRoot' in root) would exclude the root from settlement.
+    // By running settlement before pruning, getPost still returns the Post
+    // and the root is correctly included alongside its descendants.
     try {
       const subtreePosts = getSubtree(stump.rootPostHash);
       // Include the root post itself (getSubtree returns only descendants)
@@ -280,6 +274,14 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
       }
     } catch (err) {
       console.warn(`Failed to settle PostLockBoxes for stump ${stumpId}: ${String(err)}`);
+    }
+
+    // Prune the DAG subtree (marks posts as stumps after settlement)
+    try {
+      pruneSubtree(stump.rootPostHash, stump);
+    } catch (err) {
+      console.warn(`Failed to replay prune for stump ${stumpId}: ${String(err)}`);
+      continue;
     }
   }
 
