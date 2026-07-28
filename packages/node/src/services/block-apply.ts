@@ -10,6 +10,7 @@ import { revalidateTxInContext, applyTx } from './utxo-engine.js';
 import {
   getKarmaBox,
   getKarmaBoxes,
+  getCreditBoxes,
   getPost,
   getPostLockBox,
   getStump,
@@ -30,6 +31,7 @@ import {
 } from '../store/index.js';
 import { getDb } from '../store/db.js';
 import { insertBlockJournal, purgeOldJournals } from '../store/journal.js';
+import { tryGetAvlProver, applyBlockMutations, checkpointProver } from '../state/avl-prover.js';
 import {
   encodeTx,
   decodeTx,
@@ -58,6 +60,8 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
     karmaMints: [],
     appliedUtxoTxs: [],
     decayBurns: [],
+    consumedBoxIds: [],
+    createdBoxIds: [],
   };
 
   // 1. Chain-link check
@@ -157,9 +161,15 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
 
   // 7. Apply coinbase — mint credits for each output
   for (const out of block.utxoTxTree.coinbaseOutputs) {
+    // Track existing credit boxes that will be consumed by mintCredits
+    const existingCredits = getCreditBoxes(out.owner);
+    for (const cb of existingCredits) {
+      if (cb.id) currentJournal.consumedBoxIds.push(cb.id);
+    }
     const boxId = mintCredits(out.owner, out.value, block.header.height, out.lockedUntilBlock);
     if (boxId) {
       currentJournal.creditBoxIds.push(boxId);
+      currentJournal.createdBoxIds.push(boxId);
     }
   }
 
@@ -261,6 +271,7 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
           authorRefunds.set(key, (authorRefunds.get(key) ?? 0) + lockBox.value);
           // Consume the PostLockBox — karma is being returned
           consumeBox(lockBox.id!, block.header.height);
+          currentJournal.consumedBoxIds.push(lockBox.id!);
           console.log(
             `Stump ${stumpId.slice(0, 8)}: returned ${lockBox.value} locked karma ` +
             `to ${key.slice(0, 12)}... (post ${postId.slice(0, 8)}...)`,
@@ -270,7 +281,14 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
 
       // Mint refunded karma back to each author
       for (const [hexUserId, amount] of authorRefunds) {
-        mintKarma(new Uint8Array(Buffer.from(hexUserId, 'hex')), amount, block.header.height);
+        const userId = new Uint8Array(Buffer.from(hexUserId, 'hex'));
+        // Track existing karma boxes that will be consumed
+        const existingKarma = getKarmaBoxes(userId);
+        for (const kb of existingKarma) {
+          if (kb.id) currentJournal.consumedBoxIds.push(kb.id);
+        }
+        const newBoxId = mintKarma(userId, amount, block.header.height);
+        if (newBoxId) currentJournal.createdBoxIds.push(newBoxId);
       }
     } catch (err) {
       console.warn(`Failed to settle PostLockBoxes for stump ${stumpId}: ${String(err)}`);
@@ -302,7 +320,12 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
       if (reward.authorReward > 0) {
         const post = getPost(postId);
         if (post && 'author' in post) {
+          const existingKarma = getKarmaBoxes(post.author);
+          for (const kb of existingKarma) {
+            if (kb.id) currentJournal.consumedBoxIds.push(kb.id);
+          }
           const boxId = mintKarma(post.author, reward.authorReward, block.header.height);
+          if (boxId) currentJournal.createdBoxIds.push(boxId);
           currentJournal.karmaMints.push({ userId: post.author, amount: reward.authorReward, boxId });
         }
       }
@@ -312,7 +335,12 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
         const refund = reward.likerRefunds[likerId];
         if (refund !== undefined && refund !== 0) {
           const likerBytes = new Uint8Array(Buffer.from(likerId, "hex"));
+          const existingKarma = getKarmaBoxes(likerBytes);
+          for (const kb of existingKarma) {
+            if (kb.id) currentJournal.consumedBoxIds.push(kb.id);
+          }
           const boxId = mintKarma(likerBytes, refund, block.header.height);
+          if (boxId) currentJournal.createdBoxIds.push(boxId);
           currentJournal.karmaMints.push({ userId: likerBytes, amount: refund, boxId });
         }
       }
@@ -321,7 +349,12 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
       if (reward.postLockKarmaUnlocked && reward.postLockKarmaUnlocked > 0) {
         const post = getPost(postId);
         if (post && 'author' in post) {
+          const existingKarma = getKarmaBoxes(post.author);
+          for (const kb of existingKarma) {
+            if (kb.id) currentJournal.consumedBoxIds.push(kb.id);
+          }
           const boxId = mintKarma(post.author, reward.postLockKarmaUnlocked, block.header.height);
+          if (boxId) currentJournal.createdBoxIds.push(boxId);
           currentJournal.karmaMints.push({ userId: post.author, amount: reward.postLockKarmaUnlocked, boxId });
         }
       }
@@ -343,9 +376,11 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
     // Consume old post lock boxes and insert replacement boxes
     for (const boxId of tally.consumedPostLockBoxIds) {
       consumeBox(boxId, block.header.height);
+      currentJournal.consumedBoxIds.push(boxId);
     }
     for (const newBox of tally.newPostLockBoxes) {
       insertBox(newBox);
+      if (newBox.id) currentJournal.createdBoxIds.push(newBox.id);
     }
   }
 
@@ -414,12 +449,15 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
     if (mempoolEntry) removeEntry(mempoolEntry.rowid);
 
     // Record in journal
-    currentJournal.appliedUtxoTxs.push({
+    const appliedTx = {
       txId,
       txCbor: encodeTx(tx),
       inputBoxIds: tx.inputs,
       outputBoxIds: computedOutputs.map((o) => o.id!),
-    });
+    };
+    currentJournal.appliedUtxoTxs.push(appliedTx);
+    currentJournal.consumedBoxIds.push(...appliedTx.inputBoxIds);
+    currentJournal.createdBoxIds.push(...appliedTx.outputBoxIds);
   }
 
   // 12. Apply periodic karma decay
@@ -446,7 +484,51 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
   });
   currentJournal.decayBurns.push(...journalEntries);
 
-  // 13. Persist journal and purge old ones
+  // Track decay mutations
+  for (const burn of currentJournal.decayBurns) {
+    currentJournal.consumedBoxIds.push(...burn.consumedBoxIds);
+    currentJournal.createdBoxIds.push(burn.newBoxId);
+  }
+
+  // 13. AVL state root update (skipped if prover not initialized)
+  const handle = tryGetAvlProver();
+  if (handle) {
+    // Collect all consumed box IDs (deduplicated)
+    const allConsumed = new Set(currentJournal.consumedBoxIds);
+
+    // Collect all created boxes by fetching from store
+    const allCreated: AnyBox[] = [];
+    for (const boxId of currentJournal.createdBoxIds) {
+      const box = getBox(boxId);
+      if (box) allCreated.push(box);
+    }
+
+    // Apply to prover
+    const computedDigest = applyBlockMutations(
+      handle.prover,
+      [...allConsumed],
+      allCreated,
+    );
+
+    // Verify against block header (gated)
+    if (config.verifyStateRoot) {
+      const expectedHex = Buffer.from(computedDigest).toString('hex');
+      if (block.header.stateRoot !== expectedHex) {
+        console.warn(
+          `stateRoot mismatch at height ${block.header.height}: ` +
+          `computed=${expectedHex.slice(0, 16)}... ` +
+          `header=${block.header.stateRoot.slice(0, 16)}...`,
+        );
+        currentJournal = null;
+        return false;
+      }
+    }
+
+    // Checkpoint prover state at this height
+    checkpointProver(handle, block.header.height);
+  }
+
+  // 14. Persist journal and purge old ones
   insertBlockJournal(currentJournal);
   purgeOldJournals(block.header.height - 20);
   currentJournal = null;

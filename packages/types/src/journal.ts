@@ -28,4 +28,7 @@ export interface BlockJournal {
   karmaMints: KarmaMint[];
   appliedUtxoTxs: AppliedUtxoTx[];
   decayBurns: DecayJournalEntry[];
+  // AVL state root tracking — all box IDs consumed and created during block apply
+  consumedBoxIds: string[];
+  createdBoxIds: string[];
 }

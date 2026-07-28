@@ -131,3 +131,9 @@ export function getAvlProver(): AvlProverHandle {
   }
   return { prover: persistentProver, storage };
 }
+
+/** Get the singleton prover handle, or null if not initialized. */
+export function tryGetAvlProver(): AvlProverHandle | null {
+  if (!persistentProver || !storage) return null;
+  return { prover: persistentProver, storage };
+}

@@ -33,6 +33,7 @@ export {
   getUnspentPostLockBoxes,
   getPostLockBox,
   getPostTotalLikes,
+  getUnspentBoxes,
   insertBox,
   consumeBox,
   unconsumeBox,

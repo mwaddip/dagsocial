@@ -18,6 +18,7 @@ import { sweepPlaceholders, hasPlaceholders, sweepStumps, hasMissingStumps } fro
 import { validateTx } from './services/utxo-engine.js';
 import { setNet } from './services/net-instance.js';
 import { applyOrderingBlock } from './services/block-apply.js';
+import { createAvlProver, bootstrapAvlProver } from './state/avl-prover.js';
 import { DagService } from './services/dag-service.js';
 import { SqlitePostStore } from './store/sqlite-store.js';
 import { extendsOurTip, findForkPoint, reorg, MAX_REORG_DEPTH } from './services/fork-resolution.js';
@@ -27,6 +28,7 @@ import {
   getPost,
   insertPost,
   getBox,
+  getUnspentBoxes,
   getCurrentHeight,
   insertMempoolSubBlock,
   insertUtxoTx,
@@ -77,6 +79,19 @@ if (config.networkMode === 'testnet') {
     `System keypair: ${Buffer.from(systemKeypair.publicKey).toString('hex').slice(0, 12)}... ` +
     `(faucet source)`,
   );
+}
+
+// 1c. Initialize AVL prover
+const avlHandle = createAvlProver();
+const currentHeight = getCurrentHeight();
+if (currentHeight > 0) {
+  const unspent = getUnspentBoxes();
+  if (unspent.length > 0) {
+    bootstrapAvlProver(avlHandle, unspent, currentHeight);
+    console.log(
+      `AVL prover bootstrapped from ${unspent.length} unspent boxes at height ${currentHeight}`,
+    );
+  }
 }
 
 // 2. Create NetNode

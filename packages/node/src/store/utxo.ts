@@ -549,6 +549,24 @@ export function deleteBox(boxId: string): void {
 }
 
 /**
+ * Return all unspent boxes from the UTXO set.
+ * Used to bootstrap the AVL prover on startup.
+ */
+export function getUnspentBoxes(): AnyBox[] {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT id, box_type, value, created_at_block, spent_at_block,
+              owner, guard, proof_source, extra_data, last_touch_block
+       FROM utxo_boxes
+       WHERE spent_at_block IS NULL
+       ORDER BY created_at_block ASC`,
+    )
+    .all() as UtxoRow[];
+  return rows.map(rowToBox);
+}
+
+/**
  * Bulk-mark like boxes as tallied (spent) in a single statement.
  *
  * Uses a temporary table-less approach with a variable number of ? placeholders.
