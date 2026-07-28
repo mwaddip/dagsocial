@@ -53,6 +53,7 @@ import { mintKarma } from './karma.js';
 import { mintCredits } from './credits.js';
 import { revalidateTxInContext, applyTx } from './utxo-engine.js';
 import { applyOrderingBlock } from './block-apply.js';
+import { tryGetAvlProver } from '../state/avl-prover.js';
 import { getDb } from '../store/db.js';
 import {
   getPendingEntries,
@@ -541,21 +542,31 @@ export function createOrderingBlock(): OrderingBlock | null {
   const subBlockRoot = computeSubBlockRoot(subBlockTree);
   const utxoTxRoot = computeUtxoTxRoot(utxoTxTree);
 
-  // 19. Build header template (powNonce=0)
+  // 19. Compute current AVL state root
+  let stateRoot = EMPTY_STATE_ROOT; // fallback if prover not initialized
+  const handle = tryGetAvlProver();
+  if (handle) {
+    const digest = handle.prover.digest();
+    if (digest) {
+      stateRoot = Buffer.from(digest).toString('hex');
+    }
+  }
+
+  // 20. Build header template (powNonce=0)
   const headerTemplate: BlockHeader = {
     protocolVersion: PROTOCOL_VERSION,
     height: newHeight,
     prevBlockHash,
     subBlockRoot,
     utxoTxRoot,
-    stateRoot: EMPTY_STATE_ROOT,
+    stateRoot,
     validatorId,
     powNonce: 0,
     powTargetBits,
     createdAt: Date.now(),
   };
 
-  // 20. Internal vs external mining
+  // 21. Internal vs external mining
   if (config.miningMode === 'external') {
     // Store the full block template (header + bodies) for external miners
     const template: OrderingBlock = {
@@ -568,7 +579,7 @@ export function createOrderingBlock(): OrderingBlock | null {
     return null; // Block not finalized yet
   }
 
-  // 21. Internal: mine PoW against the header
+  // 22. Internal: mine PoW against the header
   const powPreimage = computePowHash(headerTemplate);
   const powNonce = solvePoW(powPreimage, powTargetBits);
 
@@ -577,7 +588,7 @@ export function createOrderingBlock(): OrderingBlock | null {
     powNonce,
   };
 
-  // 22. Sign the header hash
+  // 23. Sign the header hash
   const hh = blockHash(header);
   const sig = cryptoSign(null, Buffer.from(hh, 'hex'), validatorPrivKey);
 
@@ -588,7 +599,7 @@ export function createOrderingBlock(): OrderingBlock | null {
     validatorSignature: new Uint8Array(sig),
   };
 
-  // 23. Finalize
+  // 24. Finalize
   finalizeBlock(block);
 
   return block;
