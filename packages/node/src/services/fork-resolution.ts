@@ -14,6 +14,7 @@ import {
   insertMempoolSubBlock,
   insertMempoolStump,
   removeMempoolStumps,
+  rollbackBlockTopology,
 } from '../store/index.js';
 import { getDb } from '../store/db.js';
 import { tryGetAvlProver } from '../state/avl-prover.js';
@@ -112,6 +113,9 @@ export function revertBlock(height: number): void {
   for (const subBlockId of journal.confirmedSubBlockIds) {
     unconfirmPost(subBlockId);
   }
+
+  // 5b. Roll back block_topology entries for reverted blocks
+  rollbackBlockTopology(height);
 
   // 6. Delete block + journal
   deleteOrderingBlock(height);

@@ -33,6 +33,7 @@ export {
   getUnspentPostLockBoxes,
   getPostLockBox,
   getPostTotalLikes,
+  getUnspentLikeBoxes,
   getUnspentBoxes,
   insertBox,
   consumeBox,
@@ -69,6 +70,12 @@ export {
   insertStump,
   getStump,
 } from './stumps.js';
+
+export {
+  insertBlockTopology,
+  getSubtreeTopology,
+  rollbackBlockTopology,
+} from './topology.js';
 
 export {
   insertSubBlock as insertMempoolSubBlock,

@@ -1,3 +1,4 @@
+import { createHash, createPublicKey, verify } from 'crypto';
 import * as validation from '@dagsocial/validation';
 import { mintKarma } from './karma.js';
 import { mintCredits } from './credits.js';
@@ -13,8 +14,8 @@ import {
   getCreditBoxes,
   getPost,
   getPostLockBox,
-  getStump,
-  getSubtree,
+  getUnspentLikeBoxes,
+  insertStump,
   insertPostPlaceholder,
   insertBox,
   getBox,
@@ -28,6 +29,8 @@ import {
   getOrderingBlock,
   getPendingEntries,
   removeEntry,
+  insertBlockTopology,
+  getSubtreeTopology,
 } from '../store/index.js';
 import { getDb } from '../store/db.js';
 import { insertBlockJournal, purgeOldJournals } from '../store/journal.js';
@@ -36,11 +39,13 @@ import {
   encodeTx,
   decodeTx,
   PROTOCOL_VERSION,
-  computePostId,
   computeTxId,
   computeBoxId,
+  leafHash,
+  buildMerkleRoot,
+  hexToBuf,
 } from '@dagsocial/types';
-import type { AnyBox, BlockJournal, OrderingBlock, Post, UtxoTransaction } from '@dagsocial/types';
+import type { AnyBox, BlockJournal, OrderingBlock, UtxoTransaction } from '@dagsocial/types';
 
 let currentJournal: BlockJournal | null = null;
 
@@ -237,69 +242,140 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
     }
   }
 
-  // Replay prune commits from this block's stumpIds
-  for (const stumpId of block.subBlockTree.stumpIds) {
-    const stump = getStump(stumpId);
-    if (!stump) {
-      console.warn(`Stump ${stumpId} not found locally — will backfill via content sweep`);
-      continue;
-    }
-    const rootPost = getPost(stump.rootPostHash);
-    if (rootPost && 'subtreeMerkleRoot' in rootPost) {
-      // Already pruned — skip duplicate stump
-      continue;
-    }
+  // 8b. Populate block_topology from this block's subBlockEntries
+  for (const entry of block.subBlockTree.subBlockEntries) {
+    insertBlockTopology(entry.postId, entry.parentRefs, block.header.height);
+  }
 
-    // Settle PostLockBoxes FIRST (before pruneSubtree).
-    // After pruning, getPost(rootPostHash) returns a Stump, so the guard
-    // !('subtreeMerkleRoot' in root) would exclude the root from settlement.
-    // By running settlement before pruning, getPost still returns the Post
-    // and the root is correctly included alongside its descendants.
-    try {
-      const subtreePosts = getSubtree(stump.rootPostHash);
-      // Include the root post itself (getSubtree returns only descendants)
-      const root = getPost(stump.rootPostHash);
-      const allPosts = root && !('subtreeMerkleRoot' in root) ? [root as Post, ...subtreePosts] : subtreePosts;
+  // 8c. UTXO-driven prune settlement closure
+  // Captures store functions from outer scope for deterministic settlement
+  // keyed solely by postId list — no DAG walk, no getSubtree calls.
+  function settlePruneUtxo(postIds: string[], blockHeight: number, journal: BlockJournal): void {
+    const authorRefunds = new Map<string, number>();
+    const likerRefunds = new Map<string, number>();
 
-      // Sum remaining locked value per author
-      const authorRefunds = new Map<string, number>();
-      for (const post of allPosts) {
-        const postId = computePostId(post);
-        const lockBox = getPostLockBox(postId);
-        if (lockBox && lockBox.value > 0) {
-          const key = Buffer.from(lockBox.owner).toString('hex');
-          authorRefunds.set(key, (authorRefunds.get(key) ?? 0) + lockBox.value);
-          // Consume the PostLockBox — karma is being returned
-          consumeBox(lockBox.id!, block.header.height);
-          currentJournal.consumedBoxIds.push(lockBox.id!);
-          console.log(
-            `Stump ${stumpId.slice(0, 8)}: returned ${lockBox.value} locked karma ` +
-            `to ${key.slice(0, 12)}... (post ${postId.slice(0, 8)}...)`,
-          );
-        }
+    for (const postId of postIds) {
+      // Consume PostLockBox (author's locked karma)
+      const lockBox = getPostLockBox(postId);
+      if (lockBox && lockBox.value > 0) {
+        const key = Buffer.from(lockBox.owner).toString('hex');
+        authorRefunds.set(key, (authorRefunds.get(key) ?? 0) + lockBox.value);
+        consumeBox(lockBox.id!, blockHeight);
+        journal.consumedBoxIds.push(lockBox.id!);
       }
 
-      // Mint refunded karma back to each author
-      for (const [hexUserId, amount] of authorRefunds) {
-        const userId = new Uint8Array(Buffer.from(hexUserId, 'hex'));
-        // Track existing karma boxes that will be consumed
-        const existingKarma = getKarmaBoxes(userId);
-        for (const kb of existingKarma) {
-          if (kb.id) currentJournal.consumedBoxIds.push(kb.id);
+      // Consume unspent LikeBoxes (likers' locked karma)
+      const likeBoxes = getUnspentLikeBoxes(postId);
+      for (const likeBox of likeBoxes) {
+        if (likeBox.value > 0) {
+          const key = Buffer.from(likeBox.likerId).toString('hex');
+          likerRefunds.set(key, (likerRefunds.get(key) ?? 0) + likeBox.value);
+          consumeBox(likeBox.id!, blockHeight);
+          journal.consumedBoxIds.push(likeBox.id!);
         }
-        const newBoxId = mintKarma(userId, amount, block.header.height);
-        if (newBoxId) currentJournal.createdBoxIds.push(newBoxId);
       }
-    } catch (err) {
-      console.warn(`Failed to settle PostLockBoxes for stump ${stumpId}: ${String(err)}`);
     }
 
-    // Prune the DAG subtree (marks posts as stumps after settlement)
+    // Mint refund karma for authors
+    for (const [hexUserId, amount] of authorRefunds) {
+      const userId = new Uint8Array(Buffer.from(hexUserId, 'hex'));
+      const existingKarma = getKarmaBoxes(userId);
+      for (const kb of existingKarma) {
+        if (kb.id) journal.consumedBoxIds.push(kb.id);
+      }
+      const newBoxId = mintKarma(userId, amount, blockHeight);
+      if (newBoxId) journal.createdBoxIds.push(newBoxId);
+    }
+
+    // Mint refund karma for likers
+    for (const [hexUserId, amount] of likerRefunds) {
+      const userId = new Uint8Array(Buffer.from(hexUserId, 'hex'));
+      const existingKarma = getKarmaBoxes(userId);
+      for (const kb of existingKarma) {
+        if (kb.id) journal.consumedBoxIds.push(kb.id);
+      }
+      const newBoxId = mintKarma(userId, amount, blockHeight);
+      if (newBoxId) journal.createdBoxIds.push(newBoxId);
+    }
+  }
+
+  // 8d. Process prune entries from this block
+  // Five verification + settlement steps per entry:
+  //   1. Verify Ed25519 author signature over (rootPostHash || subtreeMerkleRoot)
+  //   2. Verify postId set against block_topology (deterministic, no DAG walk)
+  //   3. Verify Merkle root from entry.subtreePostIds
+  //   4. Settle UTXO — consume PostLockBox + LikeBox, mint refund karma
+  //   5. Prune DAG content, insert simplified Stump for historical record
+  for (const entry of block.subBlockTree.pruneEntries) {
+    // 1. Verify authorization
+    const payload = createHash('blake2b512')
+      .update(entry.rootPostHash)
+      .update(entry.subtreeMerkleRoot)
+      .digest()
+      .subarray(0, 32);
+
+    const keyObject = createPublicKey({
+      key: {
+        kty: 'OKP',
+        crv: 'Ed25519',
+        x: Buffer.from(entry.authorId).toString('base64url'),
+      },
+      format: 'jwk',
+    });
+
+    if (!verify(null, payload, keyObject, entry.authorSignature)) {
+      console.error(`Block ${block.header.height}: invalid prune signature for ${entry.rootPostHash}`);
+      currentJournal = null;
+      return false;
+    }
+
+    // 2. Verify postId set against block_topology
+    const topologyIds = getSubtreeTopology(entry.rootPostHash);
+    const entryIds = new Set(entry.subtreePostIds);
+    if (topologyIds.size !== entryIds.size ||
+        ![...topologyIds].every(id => entryIds.has(id))) {
+      console.error(`Block ${block.header.height}: prune postId set mismatch for ${entry.rootPostHash}`);
+      currentJournal = null;
+      return false;
+    }
+
+    // 3. Verify Merkle root
+    const leaves = [...entry.subtreePostIds]
+      .sort()
+      .map(id => leafHash('stump', hexToBuf(id)));
+    const computedRoot = Buffer.from(buildMerkleRoot(leaves)).toString('hex');
+    const entryRoot = Buffer.from(entry.subtreeMerkleRoot).toString('hex');
+    if (computedRoot !== entryRoot) {
+      console.error(`Block ${block.header.height}: prune Merkle root mismatch for ${entry.rootPostHash}`);
+      currentJournal = null;
+      return false;
+    }
+
+    // 4. Settle UTXO — deterministic from post IDs
     try {
-      pruneSubtree(stump.rootPostHash, stump);
+      settlePruneUtxo(entry.subtreePostIds, block.header.height, currentJournal);
     } catch (err) {
-      console.warn(`Failed to replay prune for stump ${stumpId}: ${String(err)}`);
-      continue;
+      console.error(`Block ${block.header.height}: prune settlement failed for ${entry.rootPostHash}: ${String(err)}`);
+      currentJournal = null;
+      return false;
+    }
+
+    // 5. Prune DAG content (when present)
+    try {
+      pruneSubtree(entry.rootPostHash);
+      // Insert simplified Stump for historical record
+      insertStump({
+        rootPostHash: entry.rootPostHash,
+        authorId: entry.authorId,
+        replyCount: entry.subtreePostIds.length - 1, // exclude root
+        upvoteCount: 0, // can be derived from like boxes if needed
+        trigger: entry.trigger,
+        protocolVersion: PROTOCOL_VERSION,
+        compactedAtBlockHeight: block.header.height,
+      });
+    } catch (err) {
+      console.warn(`Failed to prune DAG subtree for ${entry.rootPostHash}: ${String(err)}`);
+      // Non-fatal — DAG content may not be present
     }
   }
 

@@ -337,6 +337,23 @@ export function getBondBoxes(inviterId: Uint8Array): BondBox[] {
 }
 
 /**
+ * Return all unspent (unconsumed) like boxes targeting the given post.
+ * Used by prune settlement to refund likers' locked karma.
+ */
+export function getUnspentLikeBoxes(targetPostId: string): LikeBox[] {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT * FROM utxo_boxes
+       WHERE box_type = 'like'
+         AND json_extract(extra_data, '$.targetPostId') = ?
+         AND spent_at_block IS NULL`,
+    )
+    .all(targetPostId) as UtxoRow[];
+  return rows.map(rowToBox) as LikeBox[];
+}
+
+/**
  * Return all locked like boxes targeting the given post.
  */
 export function getLockedLikeBoxes(targetPostId: string): LikeBox[] {
