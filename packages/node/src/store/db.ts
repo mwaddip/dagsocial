@@ -167,6 +167,28 @@ function migrateMempoolForStumps(database: Database.Database): void {
   `);
 }
 
+function migrateAvlTree(database: Database.Database): void {
+  const tables = database
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='avl_tree_versions'")
+    .all() as Array<{ name: string }>;
+  if (tables.length > 0) return;
+
+  database.exec(`
+    CREATE TABLE avl_tree_versions (
+      version BLOB PRIMARY KEY,
+      height INTEGER NOT NULL,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+
+    CREATE TABLE avl_tree_nodes (
+      version BLOB NOT NULL REFERENCES avl_tree_versions(version),
+      label BLOB NOT NULL,
+      node_data BLOB NOT NULL,
+      PRIMARY KEY (version, label)
+    );
+  `);
+}
+
 export function initDb(path: string): void {
   db = new Database(path);
   db.pragma('journal_mode = WAL');
@@ -175,6 +197,7 @@ export function initDb(path: string): void {
     db.exec(sql);
   }
   migrateMempoolForStumps(db);
+  migrateAvlTree(db);
 }
 
 export function getDb(): Database.Database {

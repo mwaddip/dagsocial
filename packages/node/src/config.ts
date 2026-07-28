@@ -35,6 +35,10 @@ export interface Config {
   karmaDecayIntervalBlocks: number;
   karmaDecayAmount: number;
   karmaMinimum: number;
+  // AVL state root
+  verifyStateRoot: boolean;
+  maxProofHistory: number;
+  avlKeyLength: number;
   // Net settings
   bootstrapPeers: string[];
   listenAddrs: string;
@@ -103,6 +107,16 @@ export function loadConfig(): Readonly<Config> {
     ),
     karmaMinimum: parseInt(
       process.env['KARMA_MINIMUM'] ?? String(KARMA_MINIMUM),
+      10,
+    ),
+    // AVL state root
+    verifyStateRoot: process.env['VERIFY_STATE_ROOT'] === 'true',
+    maxProofHistory: parseInt(
+      process.env['MAX_PROOF_HISTORY'] ?? '1440',
+      10,
+    ),
+    avlKeyLength: parseInt(
+      process.env['AVL_KEY_LENGTH'] ?? '32',
       10,
     ),
     // Net settings

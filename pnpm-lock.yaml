@@ -75,6 +75,9 @@ importers:
       '@dagsocial/validation':
         specifier: workspace:*
         version: link:../validation
+      '@ergots/avltree':
+        specifier: ^0.3.1
+        version: 0.3.1
       better-sqlite3:
         specifier: ^11.0.0
         version: 11.10.0
@@ -209,6 +212,10 @@ packages:
   '@dnsquery/dns-packet@6.1.1':
     resolution: {integrity: sha512-WXTuFvL3G+74SchFAtz3FgIYVOe196ycvGsMgvSH/8Goptb1qpIQtIuM4SOK9G9lhMWYpHxnXyy544ZhluFOew==}
     engines: {node: '>=6'}
+
+  '@ergots/avltree@0.3.1':
+    resolution: {integrity: sha512-gsJ9eJytgpdonv0qUiwAEWKa2cPQp5BCBTywLxBqhPsa6ZExX45YF7JNSbxLwFNP/J9T11bYemrlYKXIaQ71SA==}
+    engines: {node: '>=20'}
 
   '@esbuild/aix-ppc64@0.21.5':
     resolution: {integrity: sha512-1SDgH6ZSPTlggy1yI6+Dbkiz8xzpHJEVAlF/AM1tHPLsf5STom9rwtjE4hKAF20FfXXNTFqEYXyJNWh1GiZedQ==}
@@ -2012,6 +2019,10 @@ snapshots:
     dependencies:
       '@leichtgewicht/ip-codec': 2.0.5
       utf8-codec: 1.0.0
+
+  '@ergots/avltree@0.3.1':
+    dependencies:
+      '@noble/hashes': 2.2.0
 
   '@esbuild/aix-ppc64@0.21.5':
     optional: true
