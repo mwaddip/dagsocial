@@ -4,8 +4,7 @@ import { createRouter as postRoutes } from './routes/posts.js';
 import { createRouter as likeRoutes } from './routes/likes.js';
 import { createRouter as inviteRoutes } from './routes/invites.js';
 import { createRouter as faucetRoutes } from './routes/faucet.js';
-import { createRouter as pruningRoutes } from './routes/pruning.js';
-import { createRouter as deleteRoutes } from './routes/delete.js';
+import { deleteRoutes } from './routes/delete.js';
 import { createRouter as utxoRoutes } from './routes/utxo.js';
 import { createRouter as blockRoutes } from './routes/blocks.js';
 import { createRouter as miningRoutes } from './routes/mining.js';
@@ -16,8 +15,8 @@ import { verifyPost } from './services/verifier.js';
 import { onSubBlockReceived, getCurrentTemplate, submitMinedBlock } from './services/block-creator.js';
 import { castLike, removeLike } from './services/likes.js';
 import { createInvite, claimInvite, cancelInvite, commitInvite } from './services/invites.js';
-import { createPruneIntent, executePrune } from './services/stump-engine.js';
-import { computeStumpId, encodePost } from '@dagsocial/types';
+import { executePrune } from './services/stump-engine.js';
+import { encodePost } from '@dagsocial/types';
 import { getDb } from './store/db.js';
 import { validateTx } from './services/utxo-engine.js';
 import { createAdminRouter } from './routes/admin.js';
@@ -177,27 +176,11 @@ export function createApp(config: Config): express.Express {
     });
   }
 
-  // Pruning — mounts at /, routes include /posts/:id/prune
-  app.use(
-    '/',
-    pruningRoutes({
-      executePrune,
-      computeStumpId,
-      getActiveChallenge: store.getActiveChallenge,
-      consumeChallenge: store.consumeChallenge,
-      getCurrentHeight: store.getCurrentHeight,
-    }),
-  );
-
-  // Delete — mounts at /, routes include DELETE /posts/:id
+  // Delete — POST /posts/:id/prune
   app.use(
     '/',
     deleteRoutes({
       executePrune,
-      computeStumpId,
-      getActiveChallenge: store.getActiveChallenge,
-      consumeChallenge: store.consumeChallenge,
-      getCurrentHeight: store.getCurrentHeight,
     }),
   );
 
