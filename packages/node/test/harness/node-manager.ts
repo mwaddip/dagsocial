@@ -17,9 +17,9 @@ export interface NodeProcess {
   peerId?: string;
 }
 
-const HTTP_BASE = 10300;
-const LIBP2P_BASE = 10400;
-const ADMIN_BASE = 10500;
+const HTTP_BASE = 11000;
+const LIBP2P_BASE = 11100;
+const ADMIN_BASE = 11200;
 
 const PROJECT_ROOT = new URL('../../../..', import.meta.url).pathname;
 
@@ -37,7 +37,7 @@ function buildEnv(config: NodeConfig): Record<string, string> {
     MINING_MODE: 'internal',
     LISTEN_ADDRS: `/ip4/0.0.0.0/tcp/${lpPort}`,
     ORDERING_BLOCK_INTERVAL_MS: '2000',
-    KARMA_STALE_THRESHOLD_BLOCKS: '5',
+    KARMA_STALE_THRESHOLD_BLOCKS: '500',
     KARMA_DECAY_INTERVAL_BLOCKS: '3',
     KARMA_DECAY_AMOUNT: '5',
     KARMA_MINIMUM: '10',

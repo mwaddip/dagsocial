@@ -166,7 +166,13 @@ export class ApiClient {
     // 4. Build karma lock tx
     const lockAmount = parentRefs.length > 0 ? POST_LOCK_REPLY_COST : POST_LOCK_THREAD_COST;
     const k = await this.getKarma(author.publicKeyHex);
-    const lockTx = postLockTx(k.boxes, lockAmount, 'pre-compute', author.publicKey);
+    // Filter to only spendable karma boxes — post_lock boxes have
+    // guard=epoch_tally and can't be spent with owner_signature.
+    const spendableBoxes = k.boxes.filter(b => (b as any).boxType === 'karma' || !(b as any).boxType);
+    if (spendableBoxes.length === 0) {
+      throw new Error(`No spendable karma boxes for ${author.publicKeyHex.slice(0, 12)}...`);
+    }
+    const lockTx = postLockTx(spendableBoxes, lockAmount, 'pre-compute', author.publicKey);
     // Pre-compute post ID so lockTx can reference it
     const preId = computePostId({
       content,
@@ -179,7 +185,7 @@ export class ApiClient {
       signature: unhex(sig),
     } as any);
     // Rebuild with correct targetPostId
-    const finalLockTx = postLockTx(k.boxes, lockAmount, preId, author.publicKey);
+    const finalLockTx = postLockTx(spendableBoxes, lockAmount, preId, author.publicKey);
     signTx(finalLockTx, author.keyObject, author.publicKeyHex);
 
     // 5. Submit
@@ -201,7 +207,13 @@ export class ApiClient {
     targetPostId: string,
   ): Promise<LikeResponse> {
     const k = await this.getKarma(liker.publicKeyHex);
-    const tx = likeTx(k.boxes, targetPostId, liker.publicKey);
+    // Filter to only spendable karma boxes — post_lock boxes have
+    // guard=epoch_tally and can't be spent with owner_signature.
+    const karmaBoxes = k.boxes.filter(b => (b as any).boxType === 'karma' || !(b as any).boxType);
+    if (karmaBoxes.length === 0) {
+      throw new Error(`No spendable karma boxes for ${liker.publicKeyHex.slice(0, 12)}...`);
+    }
+    const tx = likeTx(karmaBoxes, targetPostId, liker.publicKey);
     signTx(tx, liker.keyObject, liker.publicKeyHex);
     return this.post<LikeResponse>('/likes', { tx: txToApi(tx) });
   }
