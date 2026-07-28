@@ -44,7 +44,10 @@ function buildEnv(config: NodeConfig): Record<string, string> {
     EPOCH_BLOCKS: '10',
     CHALLENGE_WINDOW_BLOCKS: '100',
     ORDERING_BLOCK_POW_TARGET_BITS: '4',
-    POST_POW_TARGET_BITS: '4',
+    // NOTE: POST_POW_TARGET_BITS is intentionally NOT overridden here.
+    // The verifier hardcodes POST_POW_TARGET_BITS=20 from @dagsocial/types.
+    // Setting a different value via env causes a mismatch: the challenge
+    // endpoint tells clients N bits but the verifier checks 20 bits.
     ...(config.bootstrapPeer ? { BOOTSTRAP_PEERS: config.bootstrapPeer } : {}),
   };
 }

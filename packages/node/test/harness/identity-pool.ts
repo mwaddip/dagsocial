@@ -55,27 +55,53 @@ export function createIdentityPool(roles: string[]): IdentityPool {
       return [...identities.values()];
     },
     async fundAll(client: ApiClient, waitBlocks: number = 2): Promise<void> {
-      // Faucet all unfunded identities
+      // Faucet identities one at a time, polling for karma confirmation
+      // before proceeding. This avoids TX conflicts where multiple faucet
+      // calls reference the same unspent system karma box.
       for (const id of identities.values()) {
         if (id.funded) continue;
-        await client.faucet(id.userId);
-        console.log(`  Faucet: ${id.role} (${id.userId.slice(0, 12)}...)`);
+
+        let confirmed = false;
+        for (let attempt = 0; attempt < 5; attempt++) {
+          // Request faucet (idempotent — the server may have already processed
+          // a prior request for this userId)
+          await client.faucet(id.userId);
+
+          // Poll for karma to appear (confirms the TX was mined).
+          // Each attempt waits up to 4 block intervals (~8s at 2s blocks).
+          for (let poll = 0; poll < 20; poll++) {
+            try {
+              const k = await client.getKarma(id.userId);
+              if (k.total > 0) {
+                id.funded = true;
+                console.log(`  Faucet: ${id.role} (${id.userId.slice(0, 12)}...) — ${k.total} karma (confirmed in ${poll * 500}ms)`);
+                confirmed = true;
+                break;
+              }
+            } catch {
+              // getKarma throws 404 if no karma box exists yet — expected during polling
+            }
+            await new Promise(r => setTimeout(r, 500));
+          }
+          if (confirmed) break;
+          console.warn(`  Faucet: ${id.role} — retry attempt ${attempt + 1}/5`);
+          // Wait a block before retrying to let the system box replenish
+          await client.waitForBlocks(1);
+        }
+
+        if (!confirmed) {
+          console.warn(`  Faucet: ${id.role} — FAILED after 5 attempts`);
+        }
       }
-      // Wait for confirmation
+
+      // Extra wait for any trailing TXs to settle
       if (waitBlocks > 0) {
         await client.waitForBlocks(waitBlocks);
       }
-      // Verify all funded
-      for (const id of identities.values()) {
-        if (id.funded) continue;
-        const k = await client.getKarma(id.userId);
-        if (k.total > 0) {
-          id.funded = true;
-          console.log(`  ${id.role}: ${k.total} karma`);
-        } else {
-          console.warn(`  ${id.role}: karma still 0 after faucet + ${waitBlocks} blocks`);
-        }
-      }
+
+      // Log final state
+      const funded = [...identities.values()].filter(i => i.funded).length;
+      console.log(`  Funded: ${funded}/${identities.size} identities`);
     },
   };
 }
