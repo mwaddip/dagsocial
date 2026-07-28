@@ -189,7 +189,7 @@ describe('pruning routes', () => {
     insertPost(otherRoot, new Uint8Array(16));
 
     // Try to prune as the first author (not the post's author)
-    // verifyAuthorSignature passes (we sign with authorId's key), but
+    // The signature is valid (we sign with authorId's key), but
     // executePrune rejects because authorId != the post's author.
     const res = await request(otherRootId, {
       authorId: Buffer.from(authorId).toString('hex'),
