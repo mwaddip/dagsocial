@@ -12,13 +12,9 @@ import type Database from 'better-sqlite3';
  */
 export class SqliteAvlStorage implements VersionedAVLStorage {
   private db: Database.Database;
-  private keyLength: number;
-  private valueLengthOpt: number | null;
 
-  constructor(db: Database.Database, keyLength: number, valueLengthOpt: number | null) {
+  constructor(db: Database.Database) {
     this.db = db;
-    this.keyLength = keyLength;
-    this.valueLengthOpt = valueLengthOpt;
   }
 
   update(prover: BatchAVLProver, additionalData: [Uint8Array, Uint8Array][]): void {
@@ -134,8 +130,11 @@ export class SqliteAvlStorage implements VersionedAVLStorage {
     return rows.map(r => new Uint8Array(r.version));
   }
 
-  /** Return the version digest at or before `maxHeight` (block height), or null. */
-  versionAtHeight(maxHeight: number): Uint8Array | null {
+  /**
+   * Return the version digest at or before the given block height.
+   * Returns the version with the highest height <= maxHeight, or null if none.
+   */
+  versionAtOrBeforeHeight(maxHeight: number): Uint8Array | null {
     const row = this.db
       .prepare('SELECT version FROM avl_tree_versions WHERE height <= ? ORDER BY height DESC LIMIT 1')
       .get(maxHeight) as { version: Buffer } | undefined;

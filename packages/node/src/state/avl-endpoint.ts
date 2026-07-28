@@ -9,6 +9,12 @@ export function registerProofEndpoint(app: Express, handle: AvlProverHandle): vo
       ? parseInt(req.query['atHeight'] as string, 10)
       : null;
 
+    // Validate atHeight if provided
+    if (atHeight !== null && (!Number.isInteger(atHeight) || atHeight < 0)) {
+      res.status(400).json({ error: 'atHeight must be a non-negative integer' });
+      return;
+    }
+
     // Validate boxId: must be 64 hex chars (32 bytes)
     if (!boxId || boxId.length !== 64 || !/^[0-9a-fA-F]+$/.test(boxId)) {
       res.status(400).json({ error: 'boxId must be 64 hex characters' });
@@ -21,7 +27,7 @@ export function registerProofEndpoint(app: Express, handle: AvlProverHandle): vo
       // Determine which version to query
       let version: Uint8Array;
       if (atHeight !== null) {
-        const v = handle.storage.versionAtHeight(atHeight);
+        const v = handle.storage.versionAtOrBeforeHeight(atHeight);
         // Strict height matching: only accept if a checkpoint exists at
         // exactly the requested height.
         if (!v || handle.storage.versionHeight(v) !== atHeight) {

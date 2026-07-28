@@ -31,12 +31,12 @@ describe('SqliteAvlStorage', () => {
   afterEach(() => { db.close(); });
 
   it('version() returns null on empty storage', () => {
-    const storage = new SqliteAvlStorage(db, 32, null);
+    const storage = new SqliteAvlStorage(db);
     expect(storage.version()).toBeNull();
   });
 
   it('update() then version() returns the digest', () => {
-    const storage = new SqliteAvlStorage(db, 32, null);
+    const storage = new SqliteAvlStorage(db);
     const prover = new BatchAVLProver(32, null);
 
     // Insert a single key-value pair
@@ -52,7 +52,7 @@ describe('SqliteAvlStorage', () => {
   });
 
   it('update() -> rollback() roundtrip with single insert', () => {
-    const storage = new SqliteAvlStorage(db, 32, null);
+    const storage = new SqliteAvlStorage(db);
     const prover = new BatchAVLProver(32, null);
 
     const key = new Uint8Array(32);
@@ -71,7 +71,7 @@ describe('SqliteAvlStorage', () => {
   });
 
   it('update() -> rollback() roundtrip with 100 inserts', () => {
-    const storage = new SqliteAvlStorage(db, 32, null);
+    const storage = new SqliteAvlStorage(db);
     const prover = new BatchAVLProver(32, null);
 
     // Start at 1 to avoid all-zeros key (AVL negative-infinity sentinel).
@@ -99,7 +99,7 @@ describe('SqliteAvlStorage', () => {
   });
 
   it('pruneVersionsBefore() deletes old versions and their nodes', () => {
-    const storage = new SqliteAvlStorage(db, 32, null);
+    const storage = new SqliteAvlStorage(db);
     const prover = new BatchAVLProver(32, null);
 
     // Create 5 versions
@@ -125,7 +125,7 @@ describe('SqliteAvlStorage', () => {
   });
 
   it('rollbackVersions() returns all versions', () => {
-    const storage = new SqliteAvlStorage(db, 32, null);
+    const storage = new SqliteAvlStorage(db);
 
     // Insert at version 1
     const prover1 = new BatchAVLProver(32, null);

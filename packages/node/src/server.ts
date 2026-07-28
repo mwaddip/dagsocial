@@ -274,6 +274,8 @@ export function createApp(config: Config): express.Express {
   const proverHandle = tryGetAvlProver();
   if (proverHandle) {
     registerProofEndpoint(app, proverHandle);
+  } else {
+    console.warn('AVL prover not initialized — /api/v1/proof endpoint unavailable');
   }
 
   // ---- Error handler ----

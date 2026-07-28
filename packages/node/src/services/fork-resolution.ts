@@ -143,7 +143,7 @@ export function reorg(forkHeight: number, newBlocks: OrderingBlock[], dagService
   // Phase 1b: roll back AVL prover to fork point
   const avlHandle = tryGetAvlProver();
   if (avlHandle) {
-    const version = avlHandle.storage.versionAtHeight(forkHeight);
+    const version = avlHandle.storage.versionAtOrBeforeHeight(forkHeight);
     if (version) {
       avlHandle.prover.rollback(version);
     }

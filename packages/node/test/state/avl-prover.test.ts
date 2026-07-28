@@ -10,7 +10,6 @@ import {
   encodeHeight,
 } from '../../src/state/avl-prover.js';
 import { serializeBox } from '../../src/state/serialize-box.js';
-import { SqliteAvlStorage } from '../../src/state/avl-storage.js';
 
 describe('avl-prover', () => {
   let db: Database.Database;
@@ -113,13 +112,13 @@ describe('block-apply integration', () => {
     const box2 = makeKarmaBox('22'.repeat(32), 50, 1);
 
     applyBlockMutations(handle, [], [box1, box2]);
-    checkpointProver({ prover: handle, storage: new SqliteAvlStorage(db, 32, null) }, 1);
+    checkpointProver({ prover: handle, storage: new SqliteAvlStorage(db) }, 1);
     const digestAfterCreate = handle.digest()!;
 
     // Consume box1, create box3
     const box3 = makeKarmaBox('33'.repeat(32), 25, 2);
     applyBlockMutations(handle, ['11'.repeat(32)], [box3]);
-    checkpointProver({ prover: handle, storage: new SqliteAvlStorage(db, 32, null) }, 2);
+    checkpointProver({ prover: handle, storage: new SqliteAvlStorage(db) }, 2);
     const digestAfterConsume = handle.digest()!;
 
     expect(Buffer.from(digestAfterCreate).equals(Buffer.from(digestAfterConsume))).toBe(false);
@@ -130,7 +129,7 @@ describe('block-apply integration', () => {
 
     const box1 = makeKarmaBox('aa'.repeat(32), 100, 1);
     applyBlockMutations(handle, [], [box1]);
-    checkpointProver({ prover: handle, storage: new SqliteAvlStorage(db, 32, null) }, 1);
+    checkpointProver({ prover: handle, storage: new SqliteAvlStorage(db) }, 1);
 
     // After checkpoint, digest should still be accessible
     const digest = handle.digest();
