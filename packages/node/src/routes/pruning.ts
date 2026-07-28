@@ -86,8 +86,6 @@ export function createRouter(deps: PruningDeps): Router {
       if (msg.includes('Author mismatch') || msg.includes('author does not match')) {
         res.status(403).json({ error: msg });
       } else if (
-        msg.includes('Only root posts') ||
-        msg.includes('parentRefs') ||
         msg.includes('not found') ||
         msg.includes('already pruned')
       ) {

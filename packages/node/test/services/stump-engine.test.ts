@@ -193,9 +193,9 @@ describe('stump-engine', () => {
   });
 
   // -----------------------------------------------------------------------
-  // 3. executePrune on non-root post throws
+  // 3. executePrune on non-root post succeeds (guard removed)
   // -----------------------------------------------------------------------
-  it('executePrune on non-root post throws', () => {
+  it('executePrune on non-root post succeeds', () => {
     // Create a root post
     const rootPost = makePost('Root', authorId, []);
     const rootId = insertTestPost(rootPost);
@@ -205,7 +205,7 @@ describe('stump-engine', () => {
     const replyId = insertTestPost(replyPost);
 
     const intent: PruneIntent = {
-      rootPostHash: replyId, // trying to prune a reply, not a root
+      rootPostHash: replyId, // pruning a reply is now allowed
       trigger: 'author',
       authorId,
       signature: new Uint8Array(64),
@@ -214,9 +214,10 @@ describe('stump-engine', () => {
     const sigBuffer = cryptoSign(null, Buffer.from('prune'), authorPrivKey);
     const signature = new Uint8Array(sigBuffer);
 
-    expect(() => executePrune(intent, signature)).toThrow(
-      'Only root posts (empty parentRefs) can be pruned',
-    );
+    // Should no longer throw — any post (root or reply) can be pruned
+    const stump = executePrune(intent, signature);
+    expect(stump.rootPostHash).toBe(replyId);
+    expect(stump.replyCount).toBe(0); // reply has no children of its own
   });
 
   // -----------------------------------------------------------------------

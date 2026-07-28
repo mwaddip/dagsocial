@@ -60,7 +60,7 @@ export function executePrune(
   intent: PruneIntent,
   signature: Uint8Array,
 ): Stump {
-  // ---- 1. Verify post exists and is a root ----
+  // ---- 1. Verify post exists ----
   const rootPost = getPost(intent.rootPostHash);
   if (!rootPost) {
     throw new Error(`Post not found: ${intent.rootPostHash}`);
@@ -72,9 +72,6 @@ export function executePrune(
   }
 
   const post = rootPost as Post;
-  if (post.parentRefs.length > 0) {
-    throw new Error('Only root posts (empty parentRefs) can be pruned');
-  }
 
   // ---- 2. Verify author matches ----
   if (!Buffer.from(post.author).equals(Buffer.from(intent.authorId))) {
@@ -139,8 +136,7 @@ export function executePrune(
 
   // Enqueue stump for block inclusion
   const stumpId = computeStumpId(stump);
-  const ch = getCurrentHeight();
-  insertMempoolStump(stumpId, ch + MEMPOOL_EXPIRY_BLOCKS);
+  insertMempoolStump(stumpId, currentHeight + MEMPOOL_EXPIRY_BLOCKS);
 
   // Broadcast stump to peers (gossip push)
   const net = getNet();
