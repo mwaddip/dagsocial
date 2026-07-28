@@ -1,6 +1,6 @@
 // packages/node/test/harness/crypto-helpers.ts
 import { createHash, sign as cryptoSign, type KeyObject } from 'node:crypto';
-import { computeTxId, PROTOCOL_VERSION, LIKE_COST, POST_LOCK_THREAD_COST, POST_LOCK_REPLY_COST } from '@dagsocial/types';
+import { computeTxId, PROTOCOL_VERSION, LIKE_COST } from '@dagsocial/types';
 import type { UtxoTransaction } from '@dagsocial/types';
 
 const encoder = new TextEncoder();

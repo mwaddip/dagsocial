@@ -1,5 +1,5 @@
 // packages/node/test/harness/identity-pool.ts
-import { generateKeyPairSync, type KeyObject } from 'node:crypto';
+import { generateKeyPairSync } from 'node:crypto';
 import type { ApiClient, IdentityKey } from './api-client.js';
 
 export interface PoolIdentity {

@@ -14,9 +14,9 @@
 //   consuming karma during the slow 11-identity serial funding sequence.
 //   This means Chapter 9 logs karma values but does not assert decay.
 import { describe, it, expect } from 'vitest';
-import { spawnNode, waitForReady, type NodeProcess } from '../harness/node-manager.js';
-import { ApiClient, type IdentityKey } from '../harness/api-client.js';
-import { createIdentityPool, type IdentityPool } from '../harness/identity-pool.js';
+import { spawnNode, waitForReady } from '../harness/node-manager.js';
+import { ApiClient } from '../harness/api-client.js';
+import { createIdentityPool } from '../harness/identity-pool.js';
 import { runChapters, type HarnessState, type Chapter } from '../harness/chapter-runner.js';
 
 const ROLES = [

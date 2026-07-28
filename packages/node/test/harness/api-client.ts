@@ -1,15 +1,14 @@
 // packages/node/test/harness/api-client.ts
-import { createHash, generateKeyPairSync, sign as cryptoSign, type KeyObject } from 'node:crypto';
+import { sign as cryptoSign, type KeyObject } from 'node:crypto';
 import {
   computePostId,
   PROTOCOL_VERSION,
   POST_LOCK_THREAD_COST,
   POST_LOCK_REPLY_COST,
 } from '@dagsocial/types';
-import type { UtxoTransaction } from '@dagsocial/types';
 import {
   hex, unhex, blake32, powInput, solve, signPost,
-  signTx, txToApi, karmaTx, postLockTx, likeTx,
+  signTx, txToApi, postLockTx, likeTx,
 } from './crypto-helpers.js';
 
 export interface IdentityKey {
