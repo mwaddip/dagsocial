@@ -117,6 +117,12 @@ export function checkpointProver(
   handle.prover.generateProofAndUpdateStorage([
     [HEIGHT_SENTINEL, encodeHeight(height)],
   ]);
+
+  // Prune versions older than the retention window
+  const cutoff = height - config.maxProofHistory;
+  if (cutoff > 0) {
+    handle.storage.pruneVersionsBefore(cutoff);
+  }
 }
 
 /** Decode hex string to bytes. */

@@ -98,6 +98,32 @@ describe('SqliteAvlStorage', () => {
     }
   });
 
+  it('pruneVersionsBefore() deletes old versions and their nodes', () => {
+    const storage = new SqliteAvlStorage(db, 32, null);
+    const prover = new BatchAVLProver(32, null);
+
+    // Create 5 versions
+    for (let h = 1; h <= 5; h++) {
+      const key = new Uint8Array(32);
+      key[0] = h;
+      prover.performOneOperation({ tag: 'Insert', key, value: new Uint8Array([h]) });
+      storage.update(prover, [[HEIGHT_SENTINEL, encodeHeight(h)]]);
+    }
+
+    expect(storage.rollbackVersions().length).toBe(5);
+
+    // Prune versions before height 3
+    storage.pruneVersionsBefore(3);
+    const remaining = storage.rollbackVersions();
+    expect(remaining.length).toBe(3); // heights 3, 4, 5 remain
+
+    // Verify pruned versions don't have orphaned nodes
+    const orphanCount = db.prepare(
+      'SELECT COUNT(*) as cnt FROM avl_tree_nodes WHERE version NOT IN (SELECT version FROM avl_tree_versions)',
+    ).get() as { cnt: number };
+    expect(orphanCount.cnt).toBe(0);
+  });
+
   it('rollbackVersions() returns all versions', () => {
     const storage = new SqliteAvlStorage(db, 32, null);
 

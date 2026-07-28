@@ -150,6 +150,21 @@ export class SqliteAvlStorage implements VersionedAVLStorage {
     return row ? row.height : null;
   }
 
+  pruneVersionsBefore(cutoffHeight: number): void {
+    const transaction = this.db.transaction(() => {
+      // Delete nodes first (FK to versions)
+      this.db.prepare(
+        'DELETE FROM avl_tree_nodes WHERE version IN ' +
+        '(SELECT version FROM avl_tree_versions WHERE height < ?)',
+      ).run(cutoffHeight);
+      // Delete versions
+      this.db.prepare(
+        'DELETE FROM avl_tree_versions WHERE height < ?',
+      ).run(cutoffHeight);
+    });
+    transaction();
+  }
+
   flush(): void {
     // SQLite WAL is auto-flushed; explicit checkpoint for durability
     this.db.pragma('wal_checkpoint(TRUNCATE)');
