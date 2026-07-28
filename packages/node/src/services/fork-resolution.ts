@@ -16,6 +16,7 @@ import {
   removeMempoolStumps,
 } from '../store/index.js';
 import { getDb } from '../store/db.js';
+import { tryGetAvlProver } from '../state/avl-prover.js';
 import { applyOrderingBlock } from './block-apply.js';
 import type { DagService } from './dag-service.js';
 
@@ -137,6 +138,15 @@ export function reorg(forkHeight: number, newBlocks: OrderingBlock[], dagService
       revertedStumpIds.push(...block.subBlockTree.stumpIds);
     }
     revertBlock(h);
+  }
+
+  // Phase 1b: roll back AVL prover to fork point
+  const avlHandle = tryGetAvlProver();
+  if (avlHandle) {
+    const version = avlHandle.storage.versionAtHeight(forkHeight);
+    if (version) {
+      avlHandle.prover.rollback(version);
+    }
   }
 
   // Phase 2: re-insert reverted txs and sub-blocks to mempool

@@ -493,6 +493,9 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
   // 13. AVL state root update (skipped if prover not initialized)
   const handle = tryGetAvlProver();
   if (handle) {
+    // Snapshot pre-mutation digest for rollback on verification failure
+    const preMutationDigest = handle.prover.digest();
+
     // Collect all consumed box IDs (deduplicated)
     const allConsumed = new Set(currentJournal.consumedBoxIds);
 
@@ -519,6 +522,10 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
           `computed=${expectedHex.slice(0, 16)}... ` +
           `header=${block.header.stateRoot.slice(0, 16)}...`,
         );
+        // Roll back prover to pre-mutation state
+        if (preMutationDigest) {
+          handle.prover.rollback(preMutationDigest);
+        }
         currentJournal = null;
         return false;
       }
