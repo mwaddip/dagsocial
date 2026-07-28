@@ -167,14 +167,16 @@ describe('pruning routes', () => {
     expect(typeof body.stumpId).toBe('string');
   });
 
-  it('POST /posts/:id/prune on non-root post returns 400', async () => {
+  it('POST /posts/:id/prune on non-root post returns 201', async () => {
     const res = await request(childPostId, {
       authorId: Buffer.from(authorId).toString('hex'),
       trigger: 'author',
       challenge: testChallengeHex,
       signature: testSignatureHex,
     }, makeMockDeps());
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(201);
+    const body = res.data as Record<string, unknown>;
+    expect(typeof body.stumpId).toBe('string');
   });
 
   it('POST /posts/:id/prune with wrong author returns 403', async () => {

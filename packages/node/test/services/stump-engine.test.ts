@@ -8,6 +8,7 @@ import {
 } from 'crypto';
 import {
   computePostId,
+  computeStumpId,
   computeBoxId,
   encodePost,
   PROTOCOL_VERSION,
@@ -21,6 +22,7 @@ import {
   getDb,
   insertPost,
   getPost as storeGetPost,
+  getStump,
   insertBox,
 } from '../../src/store/index.js';
 import { createPruneIntent, executePrune } from '../../src/services/stump-engine.js';
@@ -139,9 +141,9 @@ describe('stump-engine', () => {
   });
 
   // -----------------------------------------------------------------------
-  // 2. executePrune on root post with replies prunes all descendants
+  // 2. executePrune on root post with replies stores stump, defers pruning
   // -----------------------------------------------------------------------
-  it('executePrune on root post with replies prunes all descendants', () => {
+  it('executePrune on root post with replies stores stump, defers pruning', () => {
     // Create root post
     const rootPost = makePost('Root post', authorId, []);
     const rootId = insertTestPost(rootPost);
@@ -171,18 +173,21 @@ describe('stump-engine', () => {
 
     const stump = executePrune(intent, signature);
 
-    // Root post should now be a Stump
+    // Stump should be stored
+    const stumpId = computeStumpId(stump);
+    const storedStump = getStump(stumpId);
+    expect(storedStump).not.toBeNull();
+    expect(storedStump!.rootPostHash).toBe(rootId);
+
+    // Posts are NOT pruned — pruning is deferred to block application
     const retrieved = storeGetPost(rootId);
     expect(retrieved).not.toBeNull();
-    expect('subtreeMerkleRoot' in retrieved!).toBe(true);
+    expect('content' in retrieved!).toBe(true); // still a Post, not a Stump
 
-    // Replies should not be found (they were pruned, getPost returns null for pruned non-root)
-    // Actually for descendant posts that are pruned but not root, getPost would look
-    // for them in dag_posts (status='pruned') and try to find a stump row where root_post_hash = their id.
-    // Since they aren't root posts, getPost will return null.
-    expect(storeGetPost(reply1Id)).toBeNull();
-    expect(storeGetPost(reply2Id)).toBeNull();
-    expect(storeGetPost(reply3Id)).toBeNull();
+    // Descendants are still present (not pruned)
+    expect(storeGetPost(reply1Id)).not.toBeNull();
+    expect(storeGetPost(reply2Id)).not.toBeNull();
+    expect(storeGetPost(reply3Id)).not.toBeNull();
 
     // Stump should have correct fields
     expect(stump.rootPostHash).toBe(rootId);
@@ -315,9 +320,9 @@ describe('stump-engine', () => {
   });
 
   // -----------------------------------------------------------------------
-  // 7. After prune, getPost(rootId) returns Stump not Post
+  // 7. After executePrune, posts remain un-pruned (deferred to block apply)
   // -----------------------------------------------------------------------
-  it('After prune, getPost(rootId) returns Stump not Post', () => {
+  it('After executePrune, posts remain un-pruned (deferred to block apply)', () => {
     const rootPost = makePost('Root', authorId, []);
     const rootId = insertTestPost(rootPost);
 
@@ -331,15 +336,18 @@ describe('stump-engine', () => {
     const sigBuffer = cryptoSign(null, Buffer.from('prune'), authorPrivKey);
     const signature = new Uint8Array(sigBuffer);
 
-    executePrune(intent, signature);
+    const stump = executePrune(intent, signature);
 
+    // Posts are NOT pruned — pruning is deferred to block application
     const retrieved = storeGetPost(rootId);
     expect(retrieved).not.toBeNull();
-    expect('subtreeMerkleRoot' in retrieved!).toBe(true);
+    expect('content' in retrieved!).toBe(true); // still a Post, not a Stump
+    const post = retrieved as Post;
+    expect(post.content).toBe('Root');
 
-    const stump = retrieved as Stump;
-    expect(stump.rootPostHash).toBe(rootId);
-    expect(stump.authorId).toEqual(authorId);
+    // But the stump IS stored for block inclusion
+    const stumpId = computeStumpId(stump);
+    expect(getStump(stumpId)).not.toBeNull();
   });
 
   // -----------------------------------------------------------------------

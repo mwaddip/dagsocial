@@ -13,7 +13,7 @@ import {
   getPost,
   getSubtree,
   getLockedLikeBoxes,
-  pruneSubtree,
+  insertStump,
   getCurrentHeight,
   insertMempoolStump,
 } from '../store/index.js';
@@ -131,8 +131,9 @@ export function executePrune(
     compactedAtBlockHeight: currentHeight,
   };
 
-  // ---- 8. Prune the subtree ----
-  pruneSubtree(intent.rootPostHash, stump);
+  // ---- 8. Store stump (pruning deferred to block application
+  //     so PostLockBox settlement runs against un-pruned posts) ----
+  insertStump(stump);
 
   // Enqueue stump for block inclusion
   const stumpId = computeStumpId(stump);
