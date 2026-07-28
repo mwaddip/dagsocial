@@ -43,7 +43,7 @@ export function createRouter(deps: MiningDeps): Router {
       },
       subBlockRefs: tpl.subBlockTree.subBlockRefs,
       subBlockEntries: tpl.subBlockTree.subBlockEntries,
-      stumpIds: tpl.subBlockTree.stumpIds,
+      pruneEntries: tpl.subBlockTree.pruneEntries,
       likeBoxIds: tpl.utxoTxTree.likeBoxIds,
       utxoTxIds: tpl.utxoTxTree.utxoTxIds,
       coinbaseOutputs: tpl.utxoTxTree.coinbaseOutputs.map((o) => ({

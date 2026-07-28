@@ -36,7 +36,7 @@ import {
   insertStump,
   getStump,
 } from './store/index.js';
-import { encodePost, cumulativeWork, MEMPOOL_EXPIRY_BLOCKS, subBlockFromPost, verifyPostId, computeStumpId } from '@dagsocial/types';
+import { encodePost, cumulativeWork, MEMPOOL_EXPIRY_BLOCKS, subBlockFromPost, verifyPostId } from '@dagsocial/types';
 import type { BlockHeader, Stump } from '@dagsocial/types';
 
 const config = loadConfig();
@@ -276,10 +276,9 @@ net.onTx((tx) => {
 });
 
 net.onStump((stump) => {
-  const stumpId = computeStumpId(stump);
-  if (getStump(stumpId)) return;
+  if (getStump(stump.rootPostHash)) return;
   insertStump(stump);
-  console.log(`Relayed stump stored: ${stumpId}`);
+  console.log(`Relayed stump stored: ${stump.rootPostHash}`);
 });
 
 // 4. Start net

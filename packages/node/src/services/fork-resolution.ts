@@ -1,6 +1,6 @@
 import { blockHash } from '@dagsocial/validation';
-import type { BlockHeader, OrderingBlock, BlockJournal } from '@dagsocial/types';
-import { decodeTx, MEMPOOL_EXPIRY_BLOCKS } from '@dagsocial/types';
+import type { BlockHeader, OrderingBlock, BlockJournal, PruneEntry } from '@dagsocial/types';
+import { decodeTx, MEMPOOL_EXPIRY_BLOCKS, computePruneEntryId } from '@dagsocial/types';
 import {
   getOrderingBlock,
   getCurrentHeight,
@@ -12,8 +12,8 @@ import {
   unconfirmPost,
   insertUtxoTx,
   insertMempoolSubBlock,
-  insertMempoolStump,
-  removeMempoolStumps,
+  insertMempoolPrune,
+  removeMempoolPrunes,
   rollbackBlockTopology,
 } from '../store/index.js';
 import { getDb } from '../store/db.js';
@@ -132,14 +132,14 @@ export function reorg(forkHeight: number, newBlocks: OrderingBlock[], dagService
 
   // Phase 1: revert our blocks, collecting journals and stump IDs for re-insertion
   const revertedJournals: BlockJournal[] = [];
-  const revertedStumpIds: string[] = [];
+  const revertedPruneEntries: PruneEntry[] = [];
   for (let h = currentHeight; h > forkHeight; h--) {
     const journal = getBlockJournal(h);
     if (journal) revertedJournals.push(journal);
-    // Collect stump IDs before the block is deleted
+    // Collect prune entries before the block is deleted
     const block = getOrderingBlock(h);
-    if (block?.subBlockTree.stumpIds.length) {
-      revertedStumpIds.push(...block.subBlockTree.stumpIds);
+    if (block?.subBlockTree.pruneEntries.length) {
+      revertedPruneEntries.push(...block.subBlockTree.pruneEntries);
     }
     revertBlock(h);
   }
@@ -168,11 +168,12 @@ export function reorg(forkHeight: number, newBlocks: OrderingBlock[], dagService
     }
   }
 
-  // Re-insert stumps from reverted blocks (defensive cleanup + re-enqueue)
-  if (revertedStumpIds.length > 0) {
-    removeMempoolStumps(revertedStumpIds);
-    for (const stumpId of revertedStumpIds) {
-      insertMempoolStump(stumpId, mempoolExpiry);
+  // Re-insert prune entries from reverted blocks
+  if (revertedPruneEntries.length > 0) {
+    const entryIds = revertedPruneEntries.map(e => computePruneEntryId(e));
+    removeMempoolPrunes(entryIds);
+    for (const entry of revertedPruneEntries) {
+      insertMempoolPrune(entry, mempoolExpiry);
     }
   }
 

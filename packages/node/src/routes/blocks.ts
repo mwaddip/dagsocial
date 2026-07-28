@@ -41,7 +41,7 @@ function blockToJson(block: OrderingBlock): Record<string, unknown> {
     subBlockTree: {
       subBlockRefs: block.subBlockTree.subBlockRefs,
       subBlockEntries: block.subBlockTree.subBlockEntries,
-      stumpIds: block.subBlockTree.stumpIds,
+      pruneEntries: block.subBlockTree.pruneEntries,
     },
     utxoTxTree: {
       utxoTxIds: block.utxoTxTree.utxoTxIds,
