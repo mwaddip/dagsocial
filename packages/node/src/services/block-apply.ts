@@ -3,6 +3,7 @@ import * as validation from '@dagsocial/validation';
 import { mintKarma } from './karma.js';
 import { mintCredits } from './credits.js';
 import { applyKarmaDecay } from './decay.js';
+import { settlePruneUtxo } from './settle-prune-utxo.js';
 import type { DecayDeps } from './decay.js';
 import { config } from '../config.js';
 import { computeBlockReward, computeSubBlockRoot, computeUtxoTxRoot, clearTemplate, computeEpochTally } from './block-creator.js';
@@ -13,8 +14,6 @@ import {
   getKarmaBoxes,
   getCreditBoxes,
   getPost,
-  getPostLockBox,
-  getUnspentLikeBoxes,
   insertStump,
   insertPostPlaceholder,
   insertBox,
@@ -247,59 +246,7 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
     insertBlockTopology(entry.postId, entry.parentRefs, block.header.height);
   }
 
-  // 8c. UTXO-driven prune settlement closure
-  // Captures store functions from outer scope for deterministic settlement
-  // keyed solely by postId list — no DAG walk, no getSubtree calls.
-  function settlePruneUtxo(postIds: string[], blockHeight: number, journal: BlockJournal): void {
-    const authorRefunds = new Map<string, number>();
-    const likerRefunds = new Map<string, number>();
-
-    for (const postId of postIds) {
-      // Consume PostLockBox (author's locked karma)
-      const lockBox = getPostLockBox(postId);
-      if (lockBox && lockBox.value > 0) {
-        const key = Buffer.from(lockBox.owner).toString('hex');
-        authorRefunds.set(key, (authorRefunds.get(key) ?? 0) + lockBox.value);
-        consumeBox(lockBox.id!, blockHeight);
-        journal.consumedBoxIds.push(lockBox.id!);
-      }
-
-      // Consume unspent LikeBoxes (likers' locked karma)
-      const likeBoxes = getUnspentLikeBoxes(postId);
-      for (const likeBox of likeBoxes) {
-        if (likeBox.value > 0) {
-          const key = Buffer.from(likeBox.likerId).toString('hex');
-          likerRefunds.set(key, (likerRefunds.get(key) ?? 0) + likeBox.value);
-          consumeBox(likeBox.id!, blockHeight);
-          journal.consumedBoxIds.push(likeBox.id!);
-        }
-      }
-    }
-
-    // Mint refund karma for authors
-    for (const [hexUserId, amount] of authorRefunds) {
-      const userId = new Uint8Array(Buffer.from(hexUserId, 'hex'));
-      const existingKarma = getKarmaBoxes(userId);
-      for (const kb of existingKarma) {
-        if (kb.id) journal.consumedBoxIds.push(kb.id);
-      }
-      const newBoxId = mintKarma(userId, amount, blockHeight);
-      if (newBoxId) journal.createdBoxIds.push(newBoxId);
-    }
-
-    // Mint refund karma for likers
-    for (const [hexUserId, amount] of likerRefunds) {
-      const userId = new Uint8Array(Buffer.from(hexUserId, 'hex'));
-      const existingKarma = getKarmaBoxes(userId);
-      for (const kb of existingKarma) {
-        if (kb.id) journal.consumedBoxIds.push(kb.id);
-      }
-      const newBoxId = mintKarma(userId, amount, blockHeight);
-      if (newBoxId) journal.createdBoxIds.push(newBoxId);
-    }
-  }
-
-  // 8d. Process prune entries from this block
+  // 8c. Process prune entries from this block
   // Five verification + settlement steps per entry:
   //   1. Verify Ed25519 author signature over (rootPostHash || subtreeMerkleRoot)
   //   2. Verify postId set against block_topology (deterministic, no DAG walk)
