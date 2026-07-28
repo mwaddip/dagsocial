@@ -380,6 +380,23 @@ export function getUnspentPostLockBoxes(): PostLockBox[] {
 }
 
 /**
+ * Return the unspent PostLockBox for a specific post, if any.
+ */
+export function getPostLockBox(targetPostId: string): PostLockBox | null {
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT * FROM utxo_boxes
+       WHERE box_type = 'post_lock'
+         AND json_extract(extra_data, '$.targetPostId') = ?
+         AND spent_at_block IS NULL`,
+    )
+    .get(targetPostId) as UtxoRow | undefined;
+  if (!row) return null;
+  return rowToBox(row) as PostLockBox;
+}
+
+/**
  * Return the total lifetime like count for a post.
  * Counts ALL like boxes (including spent/tallied) plus ALL free likes
  * (including processed). This is needed because post lock unlocking is
