@@ -141,9 +141,9 @@ const MIGRATIONS = [
 ];
 
 function migrateMempoolForStumps(database: Database.Database): void {
-  // Check if migration already applied
+  // Check if migration already applied, or if verifiablePrune migration has superseded this
   const cols = database.prepare("PRAGMA table_info('mempool')").all() as Array<{ name: string }>;
-  if (cols.some(c => c.name === 'stump_id')) return;
+  if (cols.some(c => c.name === 'stump_id' || c.name === 'prune_entry_cbor')) return;
 
   database.exec(`
     ALTER TABLE mempool RENAME TO mempool_old;
@@ -189,6 +189,61 @@ function migrateAvlTree(database: Database.Database): void {
   `);
 }
 
+function migrateBlockTopology(database: Database.Database): void {
+  const tables = database
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='block_topology'")
+    .all() as Array<{ name: string }>;
+  if (tables.length > 0) return;
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS block_topology (
+      post_id TEXT PRIMARY KEY,
+      parent_refs TEXT NOT NULL,
+      block_height INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_block_topology_height
+      ON block_topology(block_height);
+  `);
+}
+
+function migrateVerifiablePrune(database: Database.Database): void {
+  // Check if migration already applied (prune_entry_cbor column exists in mempool)
+  const cols = database.prepare("PRAGMA table_info('mempool')").all() as Array<{ name: string }>;
+  if (cols.some(c => c.name === 'prune_entry_cbor')) return;
+
+  // Drop and recreate mempool with prune_entry_cbor, entry_type 'prune' instead of 'stump'
+  database.exec(`
+    DROP TABLE IF EXISTS mempool;
+    CREATE TABLE mempool (
+      rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+      entry_type TEXT NOT NULL CHECK(entry_type IN ('subblock', 'utxo_tx', 'prune')),
+      subblock_id TEXT,
+      utxo_tx_cbor BLOB,
+      prune_entry_cbor BLOB,
+      batch_id TEXT,
+      expires_at_height INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
+  // Drop and recreate dag_stumps with simplified schema
+  // Removed columns: subtree_merkle_root, prune_signature, karma_deltas
+  database.exec(`
+    DROP TABLE IF EXISTS dag_stumps;
+    CREATE TABLE dag_stumps (
+      id TEXT PRIMARY KEY,
+      root_post_hash TEXT NOT NULL,
+      author_id BLOB NOT NULL,
+      reply_count INTEGER NOT NULL,
+      upvote_count INTEGER NOT NULL,
+      trigger TEXT NOT NULL,
+      protocol_version INTEGER NOT NULL,
+      compacted_at_block_height INTEGER NOT NULL,
+      raw_cbor BLOB NOT NULL
+    );
+  `);
+}
+
 export function initDb(path: string): void {
   db = new Database(path);
   db.pragma('journal_mode = WAL');
@@ -198,6 +253,8 @@ export function initDb(path: string): void {
   }
   migrateMempoolForStumps(db);
   migrateAvlTree(db);
+  migrateBlockTopology(db);
+  migrateVerifiablePrune(db);
 }
 
 export function getDb(): Database.Database {
