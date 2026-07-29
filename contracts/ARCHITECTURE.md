@@ -1,7 +1,7 @@
 # DAGsocial Architecture
 
-**Protocol version:** 2
-**Last updated:** 2026-07-26
+**Protocol version:** 1
+**Last updated:** 2026-07-29
 
 ## Overview
 
@@ -114,17 +114,17 @@ The root author may prune their entire subtree at any time. Pruning:
 3. Replaces the entire subtree with a **stump** (see §3)
 4. Is authorized by a signed prune transaction from the root author's key
 
-The prune is authorized **solely** by the root author's Ed25519 signature.
-No validator attestation is required — karma deltas are deterministically
-computable from the UTXO state (like boxes). Any node can verify the stump
-independently.
+The prune is authorized **solely** by the root author's Ed25519 signature
+over `(rootPostHash, subtreeMerkleRoot)`. The signature travels in the block
+as a PruneEntry. No validator attestation is required — settlement is
+deterministically computable from the UTXO state (PostLockBoxes, LikeBoxes).
+Any node can verify the prune independently.
 
 Pruning is irreversible. Once content is pruned, it cannot be recovered.
 Nodes propagate stumps, not the original content.
 
-Future stump triggers beyond author deletion (dRep governance removal,
-storage pruning for lean nodes) will use their own authorization paths
-but produce the same stump data structure.
+Future stump triggers beyond author deletion (storage pruning for lean nodes)
+will use their own authorization paths but produce the same stump data structure.
 
 **Privacy rationale:** Even if only the root post is deleted, replies in the
 subtree contain signals (tone, specificity, timing) that can leak what the
@@ -223,6 +223,21 @@ boxes either fully commits or fully fails. The ledger enforces:
 - Guard scripts evaluate to true for every consumed box
 - New boxes are valid under protocol rules
 
+#### AVL+ State Root
+
+The UTXO set is indexed by an AVL+ authenticated dictionary. Every ordering
+block header carries a `stateRoot` — the root hash of the AVL+ tree over all
+unspent boxes at that height. This enables light clients to verify box
+existence or absence without storing the full UTXO set.
+
+- **Module:** `packages/node/src/state/` (avl-storage, avl-prover, avl-endpoint)
+- **Proof endpoint:** `GET /api/v1/proof/:boxId?atHeight=N` — returns an
+  inclusion or exclusion proof for a box at a given block height
+- **Config flags:** `VERIFY_STATE_ROOT` (validate stateRoot at block apply) and
+  `MAX_PROOF_HISTORY` (prune old proof versions)
+- **Deterministic:** Every node computing the AVL+ over the same UTXO set at
+  the same height produces the identical stateRoot
+
 ### 3. Stumps (Binding Layer)
 
 A stump is what remains after a post subtree is pruned. It is a compact,
@@ -231,21 +246,11 @@ value was earned inside it.
 
 ```
 Stump {
-  rootPostHash: PostId         // Identity of the pruned root post
-  subtreeMerkleRoot: Hash      // Merkle root over all posts in the pruned subtree
-  authorId: UserId             // Account that authorized the prune
-  pruneSignature: bytes        // Ed25519 signature from the root author's key
-  trigger: "author" | "drep" | "storage_prune"  // What initiated the compaction
-
-  // Crystallized value — what the subtree contributed to the ledger
-  karmaDeltas: {
-    userId: UserId
-    delta: number              // Net karma earned in this subtree
-  }[]
-
-  replyCount: number           // Total replies in the pruned subtree
-  upvoteCount: number          // Total upvotes the root post received
-
+  rootPostHash: PostId
+  authorId: UserId
+  replyCount: number
+  upvoteCount: number
+  trigger: "author" | "storage_prune"
   protocolVersion: number
   compactedAtBlockHeight: number
 }
@@ -253,30 +258,33 @@ Stump {
 
 #### Prune lifecycle
 
-1. Root author signs a prune intent: `{ rootPostHash, trigger: "author" }`
+1. Author's client walks reply subtree locally, builds Merkle root over
+   postIds
+2. Author signs `blake2b512(rootPostHash || subtreeMerkleRoot).subarray(0,32)`
    with their Ed25519 key
-2. Node computes karma deltas from UTXO state (like boxes associated with
-   posts in the subtree are deterministically resolved)
-3. Node constructs the stump, embeds karma deltas, includes the author's
-   signature
-4. The stump is committed in an ordering block
-5. All nodes replace the full subtree data with the stump
-6. Karma deltas are credited to the ledger, referencing the stump hash
+3. Client submits signed PruneIntent to node via `POST /posts/:id/prune`
+4. Node verifies signature, subtree completeness, and Merkle root
+5. Node enqueues PruneEntry in mempool — included in next ordering block via
+   `SubBlockTree.pruneEntries`
+6. At block application, every node independently verifies: Ed25519 signature,
+   postId set against block_topology, Merkle root, then settles UTXO
+   deterministically (consumes PostLockBoxes and LikeBoxes, mints refund karma)
+7. DAG content pruned (when present) — simplified Stump stored for
+   historical/gossip purposes
 
 No validator attestation is needed — the author's signature authorizes the
-prune, and the karma deltas are deterministically verifiable from UTXO state.
+prune, and the settlement is deterministically computable from UTXO state.
 
 #### Cryptographic guarantees
 
-- Karma deltas are deterministically computable from UTXO like boxes — any node
-  can verify the stump independently
-- A node that held the full subtree can verify the merkle root against the
+- Settlement is deterministic from UTXO state + block's PruneEntry — any node
+  can verify independently without DAG content
+- The author's signature over `(rootPostHash, subtreeMerkleRoot)` in the block
+  is the single point of authorization
+- A node that held the full subtree can verify the Merkle root against the
   original content
-- The ledger's karma entries reference specific stumps — a disputed stump (e.g.,
-  fraudulently signed) invalidates downstream ledger entries
 - Parent hashes remain valid — a reply referencing a pruned post still has a
   valid `parentRefs` entry; the parent is just a stump now
-- The author's prune signature is the single point of authorization
 
 ---
 
@@ -672,7 +680,7 @@ Every post, stump, ordering block, sub-block, and UTXO transaction carries a
   validators, libp2p networking, two-stage validation (`@dagsocial/validation`
   + `@dagsocial/net`), unified mempool.
 - **Future versions:** Credit sinks, reply earning, karma-proportional PoW,
-  dRep governance pruning, storage pruning, view keys.
+  storage pruning, view keys.
 
 An object with an old version is validated against that version's rules
 forever. A node rejects objects with an unsupported protocol version.
@@ -706,7 +714,7 @@ forever. A node rejects objects with an unsupported protocol version.
 - Pruning cascades to all descendants — replying is consent to this
 - Pruning requires root author's signature (sole authorization)
 - Pruning is irreversible
-- Future prune triggers (dRep, storage pruning) use their own auth paths
+- Future prune triggers (storage pruning) use their own auth paths
 
 ### Identity
 
@@ -804,6 +812,11 @@ fresh. Namespacing keeps the option open to split into separate stores later
 - Invite system: hash-locked bearer invites, bond/probation, cancel
 - Post karma locking with gradual unlock at epoch boundaries
 - Sub-blocks + ordering blocks with PoW (user PoW + validator PoW)
+- Verifiable prune: block-level PruneEntry, Ed25519-signed, UTXO-deterministic
+  settlement (consumes PostLockBoxes and LikeBoxes, mints refund karma)
+- AVL+ state root: authenticated dictionary over UTXO set, stateRoot in block
+  headers, `GET /api/v1/proof/:boxId` for light-client proofs
+- block_topology table for efficient subtree topology lookups
 - libp2p networking with two-stage validation (stateless + stateful)
 - Credit emission: Ergo-style linear decay, treasury split, miner reward delay
 - Difficulty adjustment for ordering block PoW
@@ -820,7 +833,6 @@ fresh. Namespacing keeps the option open to split into separate stores later
 - **Reply earning:** Proportion of downstream likes flowing to upstream
   contributors
 - **Karma-proportional PoW:** High-karma accounts do less work
-- **dRep governance pruning:** Stump trigger via governance vote
 - **Storage pruning:** Automatic compaction for lean nodes (archive nodes
   retain full content)
 - **View keys / private content:** Reader spending credits to unlock content

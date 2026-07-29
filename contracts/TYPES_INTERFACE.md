@@ -2,7 +2,7 @@
 
 **Component:** `@dagsocial/types`
 **Protocol version:** 1
-**Last updated:** 2026-07-24
+**Last updated:** 2026-07-29
 
 ## Scope
 
@@ -239,38 +239,38 @@ recompute the hash and check the signature.
 ```
 PruneIntent {
   rootPostHash: PostId
-  trigger: "author" | "drep" | "storage_prune"
   authorId: UserId
-  signature: Uint8Array(64)    // Ed25519 from root author's key
+  subtreeMerkleRoot: Uint8Array(32)  // Merkle root over subtree postIds
+  subtreePostIds: PostId[]           // All postIds in the subtree
+  signature: Uint8Array(64)           // Ed25519 over blake2b512(rootPostHash || subtreeMerkleRoot)
+  trigger?: "author" | "storage_prune"
+}
+
+PruneEntry {
+  rootPostHash: PostId
+  authorId: UserId
+  subtreeMerkleRoot: Uint8Array(32)  // Merkle root over subtree postIds
+  subtreePostIds: PostId[]           // All postIds in the subtree
+  signature: Uint8Array(64)           // Ed25519 over blake2b512(rootPostHash || subtreeMerkleRoot)
+  trigger: "author" | "storage_prune"
+  protocolVersion: number
 }
 
 Stump {
   rootPostHash: PostId
-  subtreeMerkleRoot: Uint8Array(32)  // Merkle root over all pruned posts
   authorId: UserId
-  pruneSignature: Uint8Array(64)     // From PruneIntent
-
-  karmaDeltas: KarmaDelta[]
   replyCount: number
   upvoteCount: number
-
-  trigger: "author" | "drep" | "storage_prune"
+  trigger: "author" | "storage_prune"
   protocolVersion: number
   compactedAtBlockHeight: number
 }
-
-KarmaDelta {
-  userId: UserId
-  delta: number
-}
-
-StumpId = blake2b512(rootPostHash || compactedAtBlockHeight || authorId)
-          .subarray(0, 32).toString('hex')
 ```
 
 | Export | Signature | Description |
 |--------|-----------|-------------|
-| `computeStumpId(stump)` | `(Stump) => StumpId` | Deterministic stump ID |
+| `computePruneEntryId(entry)` | `(PruneEntry) => string` | Deterministic PruneEntry ID |
+| `serializePruneEntry(entry)` | `(PruneEntry) => Uint8Array` | Canonical CBOR encoding |
 
 ---
 
@@ -302,7 +302,7 @@ OrderingBlock {
   subBlockRefs: PostId[]           // Sub-blocks anchored by this block
   likeBoxIds: BoxId[]              // Standalone likes (no sub-block to ride)
   utxoTxIds: TxId[]                // UTXO transactions in this block
-  stumpIds: StumpId[]              // Stumps committed in this block
+  pruneEntries: PruneEntry[]      // Prune entries committed in this block
   validatorId: UserId              // Block producer
   validatorSignature: Uint8Array(64)  // Ed25519 over body hash
   powNonce: number                 // PoW solution

@@ -2,7 +2,7 @@
 
 **Component:** `@dagsocial/node`
 **Protocol version:** 1
-**Last updated:** 2026-07-24
+**Last updated:** 2026-07-29
 
 ## Scope
 
@@ -28,7 +28,7 @@ included in an ordering block, and applied atomically when the block is
 finalized. See `MEMPOOL_INTERFACE.md` for the full contract.
 
 **Key properties:**
-- Single SQLite table `mempool` with type discriminator (`subblock` | `utxo_tx`)
+- Single SQLite table `mempool` with type discriminator (`subblock` | `utxo_tx` | `prune`)
 - FIFO ordering by insertion (`ORDER BY rowid ASC`)
 - TTL: 720 blocks (~12h at 60s block time)
 - Batch linking: sub-blocks and their linked UTXO payloads share a `batch_id`
@@ -199,20 +199,20 @@ They count toward the total for author rewards.
 
 | Method | Path | Request | Response | Errors |
 |--------|------|---------|----------|--------|
-| `POST` | `/posts/:id/prune` | `{ authorId: hex, signature: hex }` | `{ stumpId }` (201) | 400 if post is not root (has parent), 403 if not author, 404 |
+| `POST` | `/posts/:id/prune` | `{ rootPostHash: hex, authorId: hex, subtreeMerkleRoot: hex, subtreePostIds: hex[], signature: hex(128), trigger?: "author"\|"storage_prune" }` | `{ status: "deleted", entryId: hex, postId: hex, replyCount: number }` (201) | 400 if post is not root (has parent), 403 if not author, 404 |
 
 **Prune flow:**
 
-1. Verify post exists, is live, and `parentRefs` is empty (it's a root post)
-2. Verify signature matches post author's key
-3. Walk the reply subtree — collect all descendant posts
-4. Walk associated UTXO state — collect all like boxes referencing posts in
-   the subtree
-5. Compute karma deltas from like boxes (deterministic, verifiable)
-6. Compute subtree merkle root over all pruned posts
-7. Construct stump, commit via ordering block
-8. Mark all subtree posts as pruned (they become stumps)
-9. Return `{ stumpId }`
+1. Client walks reply subtree locally, builds Merkle root over postIds,
+   signs `blake2b512(rootPostHash || subtreeMerkleRoot).subarray(0,32)`
+   with Ed25519 key
+2. Node verifies: post exists and is live, author matches, signature valid,
+   subtreePostIds match actual reply tree, Merkle root matches postId list
+3. Node builds PruneEntry, enqueues in mempool, broadcasts simplified Stump
+   to peers
+4. At block application: verify signature, verify topology via block_topology
+   CTE, verify Merkle root, settle UTXO deterministically (consume
+   PostLockBoxes and LikeBoxes, mint refund karma), prune DAG content
 
 ### UTXO queries
 
@@ -542,7 +542,7 @@ Fresh schema — no Phase 1 migration.
 | `confirmPost(postId, blockHeight)` | `(string, number) => void` |
 | `getParentRefs(postId)` | `(string) => PostId[]` |
 | `getSubtree(postId)` | `(string) => Post[]` — all descendants (recursive walk) |
-| `pruneSubtree(rootPostId, stump)` | `(string, Stump) => void` — mark subtree as pruned, insert stump |
+| `pruneSubtree(rootPostId)` | `(string) => void` — mark subtree as pruned, insert simplified Stump |
 
 ### Likes (DAG)
 
@@ -569,6 +569,7 @@ Fresh schema — no Phase 1 migration.
 | `getBondBoxes(inviterId)` | `(UserId) => BondBox[]` — active bonds |
 | `getUnspentLikeForLiker(targetPostId, likerId)` | `(PostId, UserId) => LikeBox \| null` |
 | `getLockedLikeBoxes(postId)` | `(PostId) => LikeBox[]` — all locked like boxes for a post |
+| `getUnspentLikeBoxes(targetPostId)` | `(PostId) => LikeBox[]` — unspent LikeBoxes for a post (prune settlement) |
 | `getUnprocessedLockedLikeBoxes()` | `() => LikeBox[]` — pending epoch tally |
 | `getUnspentPostLockBoxes()` | `() => PostLockBox[]` |
 | `getPostTotalLikes(postId)` | `(PostId) => number` — locked + free |
@@ -576,12 +577,23 @@ Fresh schema — no Phase 1 migration.
 | `consumeBox(boxId, consumedAtBlock)` | `(string, number) => void` — mark as spent |
 | `markLikeBoxesTallied(boxIds)` | `(string[]) => void` — after epoch processing |
 
+### Block Topology
+
+| Function | Signature |
+|----------|-----------|
+| `insertBlockTopology(postId, parentRefs, blockHeight)` | `(string, string[], number) => void` |
+| `getSubtreeTopology(rootPostId)` | `(string) => Set<string>` |
+| `rollbackBlockTopology(blockHeight)` | `(number) => void` |
+
 ### Mempool
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `insertMempoolSubBlock(sb, expiresAtHeight, batchId?)` | `(SubBlock, number, string?) => number` | Queue sub-block, returns rowid |
 | `insertUtxoTx(tx, batchId, expiresAtHeight)` | `(UtxoTransaction, string?, number) => number` | Queue UTXO tx, returns rowid |
+| `insertMempoolPrune(entry, expiresAtHeight)` | `(PruneEntry, number) => number` | Queue prune entry, returns rowid |
+| `drainMempoolPrunes(limit)` | `(number) => PruneEntry[]` | Decode and return prune entries in FIFO order |
+| `removeMempoolPrunes(entryIds)` | `(string[]) => void` | Remove confirmed prune entries by rowid |
 | `getPendingEntries(limit)` | `(number) => PoolEntry[]` | FIFO-ordered pending entries |
 | `purgeExpired(currentHeight)` | `(number) => number` | Remove entries past expiry, returns count |
 | `removeEntry(rowid)` | `(number) => void` | Remove confirmed entry by rowid |
@@ -591,9 +603,10 @@ Fresh schema — no Phase 1 migration.
 ```
 {
   rowid: number
-  entryType: "subblock" | "utxo_tx"
+  entryType: "subblock" | "utxo_tx" | "prune"
   subblockCbor: Uint8Array | null
   utxoTxCbor: Uint8Array | null
+  pruneEntryCbor: Uint8Array | null
   batchId: string | null
   expiresAtHeight: number
   createdAt: string
@@ -614,8 +627,21 @@ See `MEMPOOL_INTERFACE.md` for the full mempool contract.
 
 | Function | Signature |
 |----------|-----------|
-| `insertStump(stump)` | `(Stump) => void` |
+| `insertStump(stump)` | `(Stump) => void` — simplified Stump (rootPostHash, authorId, replyCount, upvoteCount, trigger, protocolVersion, compactedAtBlockHeight) |
 | `getStump(stumpId)` | `(string) => Stump \| null` |
+
+### AVL+ State Root
+
+The `packages/node/src/state/` module provides an authenticated dictionary over
+the UTXO set using AVL+ trees.
+
+- **avl-storage:** Persistent AVL+ tree over UTXO boxes, stateRoot computed at
+  each block application and included in block headers
+- **avl-prover:** Generates inclusion/exclusion proofs for any boxId
+- **avl-endpoint:** `GET /api/v1/proof/:boxId?atHeight=N` — serves proofs to
+  light clients
+- **Config:** `VERIFY_STATE_ROOT` (validate on apply) and `MAX_PROOF_HISTORY`
+  (prune old proof versions)
 
 ### dag_meta Table
 

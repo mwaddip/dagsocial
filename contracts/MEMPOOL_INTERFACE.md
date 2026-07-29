@@ -2,7 +2,7 @@
 
 **Component:** `@dagsocial/node` (store subsystem)
 **Protocol version:** 1
-**Last updated:** 2026-07-24
+**Last updated:** 2026-07-29
 
 ## Scope
 
@@ -22,9 +22,10 @@ Single SQLite table:
 
 ```sql
 CREATE TABLE mempool (
-    entry_type        TEXT NOT NULL CHECK (entry_type IN ('subblock', 'utxo_tx')),
-    subblock_cbor     BLOB,            -- CBOR-encoded SubBlock (null for utxo_tx)
-    utxo_tx_cbor      BLOB,            -- CBOR-encoded UtxoTransaction (null for subblock)
+    entry_type        TEXT NOT NULL CHECK (entry_type IN ('subblock', 'utxo_tx', 'prune')),
+    subblock_cbor     BLOB,            -- CBOR-encoded SubBlock (null for non-subblock)
+    utxo_tx_cbor      BLOB,            -- CBOR-encoded UtxoTransaction (null for non-utxo_tx)
+    prune_entry_cbor  BLOB,            -- CBOR-encoded PruneEntry (null for non-prune)
     batch_id          TEXT,            -- Links sub-block + UTXO payloads from same operation
     expires_at_height INTEGER NOT NULL, -- Block height after which entry is purged
     created_at        TEXT NOT NULL DEFAULT (datetime('now'))
@@ -39,9 +40,10 @@ entries.
 ```typescript
 interface PoolEntry {
   rowid: number;
-  entryType: 'subblock' | 'utxo_tx';
+  entryType: 'subblock' | 'utxo_tx' | 'prune';
   subblockCbor: Uint8Array | null;
   utxoTxCbor: Uint8Array | null;
+  pruneEntryCbor: Uint8Array | null;
   batchId: string | null;
   expiresAtHeight: number;
   createdAt: string;
@@ -82,6 +84,33 @@ the SQLite `rowid`.
   Set to a post ID for batch-linked transactions (karma-lock on post creation).
 - `expiresAtHeight` is the block height at which the entry becomes invalid.
 
+### insertMempoolPrune
+
+```
+insertMempoolPrune(entry: PruneEntry, expiresAtHeight: number): number
+```
+
+Encodes the PruneEntry as CBOR and inserts a `prune` entry. Returns the
+SQLite `rowid`.
+
+### drainMempoolPrunes
+
+```
+drainMempoolPrunes(limit: number): PruneEntry[]
+```
+
+Decodes and returns prune entries in FIFO order (`ORDER BY rowid ASC`), up
+to `limit`. Returns decoded PruneEntry objects (not raw CBOR).
+
+### removeMempoolPrunes
+
+```
+removeMempoolPrunes(entryIds: string[]): void
+```
+
+Deletes prune entries by rowid. Called during block finalization for each
+confirmed prune entry.
+
 ### getPendingEntries
 
 ```
@@ -89,7 +118,7 @@ getPendingEntries(limit: number): PoolEntry[]
 ```
 
 Returns pending entries in FIFO order (`ORDER BY rowid ASC`), up to `limit`.
-All entries are returned — both `subblock` and `utxo_tx` types. The caller
+All entries are returned — `subblock`, `utxo_tx`, and `prune` types. The caller
 (block creator) is responsible for decoding and organizing entries by type
 and batch.
 
@@ -239,8 +268,11 @@ pending entries:
      sub-blocks (likes by targetPostId) or listed as standalone `utxoTxIds`
    - `utxo_tx` entries with `batch_id ≠ null` → resolved against their batch's
      sub-block, included as `utxoTxIds`
+   - `prune` entries → decoded via `drainMempoolPrunes`, included as
+     `pruneEntries`
 4. Tracks `confirmedRowids` (set of rowids included in the block)
-5. After block finalization: `removeEntry(rowid)` for each confirmed rowid
+5. After block finalization: `removeEntry(rowid)` for each confirmed rowid,
+   `removeMempoolPrunes(entryIds)` for confirmed prune entries
 
 ### Like attachment during assembly
 
