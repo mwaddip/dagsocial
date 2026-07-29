@@ -81,9 +81,9 @@ export function serializePruneEntry(entry: PruneEntry): Uint8Array {
   return toBuffer({
     rootPostHash: entry.rootPostHash,
     subtreePostIds: entry.subtreePostIds,
-    subtreeMerkleRoot: Buffer.from(entry.subtreeMerkleRoot).toString('hex'),
-    authorId: Buffer.from(entry.authorId).toString('hex'),
-    authorSignature: Buffer.from(entry.authorSignature).toString('hex'),
+    subtreeMerkleRoot: entry.subtreeMerkleRoot,
+    authorId: entry.authorId,
+    authorSignature: entry.authorSignature,
     trigger: entry.trigger,
   });
 }

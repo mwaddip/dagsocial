@@ -255,22 +255,14 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
   //   5. Prune DAG content, insert simplified Stump for historical record
   for (const entry of block.subBlockTree.pruneEntries) {
     // 1. Verify authorization
-    // Binary fields may arrive as hex strings (from CBOR) or raw Uint8Array
-    const rootBytes =
-      typeof entry.subtreeMerkleRoot === 'string'
-        ? Buffer.from(entry.subtreeMerkleRoot, 'hex')
-        : Buffer.from(entry.subtreeMerkleRoot);
+    const rootBytes = Buffer.from(entry.subtreeMerkleRoot);
     const payload = createHash('blake2b512')
       .update(entry.rootPostHash)
       .update(rootBytes)
       .digest()
       .subarray(0, 32);
 
-    // authorId may be a hex string (from CBOR) or raw Uint8Array
-    const authorKeyBytes =
-      typeof entry.authorId === 'string'
-        ? Buffer.from(entry.authorId, 'hex')
-        : Buffer.from(entry.authorId);
+    const authorKeyBytes = Buffer.from(entry.authorId);
     const keyObject = createPublicKey({
       key: {
         kty: 'OKP',
@@ -280,11 +272,7 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
       format: 'jwk',
     });
 
-    // authorSignature may be a hex string (from CBOR) or raw Uint8Array
-    const sigBytes =
-      typeof entry.authorSignature === 'string'
-        ? Buffer.from(entry.authorSignature, 'hex')
-        : Buffer.from(entry.authorSignature);
+    const sigBytes = Buffer.from(entry.authorSignature);
     if (!verify(null, payload, keyObject, sigBytes)) {
       console.error(`Block ${block.header.height}: invalid prune signature for ${entry.rootPostHash}`);
       currentJournal = null;
@@ -306,11 +294,7 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
       .sort()
       .map(id => leafHash('stump', hexToBuf(id)));
     const computedRoot = Buffer.from(buildMerkleRoot(leaves)).toString('hex');
-    // subtreeMerkleRoot may arrive as hex string (CBOR) or raw bytes
-    const entryRoot =
-      typeof entry.subtreeMerkleRoot === 'string'
-        ? entry.subtreeMerkleRoot
-        : Buffer.from(entry.subtreeMerkleRoot).toString('hex');
+    const entryRoot = Buffer.from(entry.subtreeMerkleRoot).toString('hex');
     if (computedRoot !== entryRoot) {
       console.error(`Block ${block.header.height}: prune Merkle root mismatch for ${entry.rootPostHash}`);
       currentJournal = null;
@@ -330,13 +314,9 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
     try {
       pruneSubtree(entry.rootPostHash);
       // Insert simplified Stump for historical record
-      const stumpAuthorId =
-        typeof entry.authorId === 'string'
-          ? new Uint8Array(Buffer.from(entry.authorId, 'hex'))
-          : entry.authorId;
       insertStump({
         rootPostHash: entry.rootPostHash,
-        authorId: stumpAuthorId,
+        authorId: entry.authorId,
         replyCount: entry.subtreePostIds.length - 1, // exclude root
         upvoteCount: 0, // can be derived from like boxes if needed
         trigger: entry.trigger,
