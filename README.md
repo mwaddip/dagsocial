@@ -3,10 +3,10 @@
 Decentralized social network — no tokens to buy, no ads, no corporate servers.
 Content lives in a prunable DAG controlled by authors. Karma and credits live in
 a Bitcoin-style UTXO ledger secured by Ed25519 signatures. Phase 2: local HTTP
-node with identity, PoW posting, DAG storage, UTXO engine, libp2p networking,
-and a demo UI.
+node with identity, PoW posting, DAG storage, UTXO engine, AVL+ state root,
+verifiable prune consensus, libp2p networking, and a demo UI.
 
-**483 tests pass** across 4 packages. Node.js ≥ 22, TypeScript, pnpm.
+**872 tests pass** across 5 packages. Node.js ≥ 22, TypeScript, pnpm.
 
 ---
 
@@ -109,6 +109,8 @@ testnet mode.
        │                         │
        └──────────┬──────────────┘
                   │
+        @dagsocial/wire (frame codec)
+                  │
              @dagsocial/net (libp2p + Gossipsub + headers sync)
                   │
           ┌───────┴───────┐
@@ -116,16 +118,19 @@ testnet mode.
     @dagsocial/node  (future: @dagsocial/web)
 ```
 
-**Four packages:**
+**Five packages:**
 - **`@dagsocial/types`** — data structures, base58, CBOR encoding, protocol
   constants, UTXO selection. Pure functions only.
 - **`@dagsocial/validation`** — pure stateless checks (PoW verification,
   block validation, Merkle root verification).
+- **`@dagsocial/wire`** — stream framing (VLQ, blake2b checksums, CBOR),
+  message codec, magic-byte discrimination. Shared by net and node.
 - **`@dagsocial/net`** — libp2p networking with Gossipsub (sub-blocks,
   ordering blocks, UTXO transactions) and a headers-sync protocol for fork
   resolution.
 - **`@dagsocial/node`** — Express server, PoW challenges, UTXO engine,
-  SQLite store, block creator, coinbase emission, karma decay, demo UI.
+  SQLite store, AVL+ state root prover, block creator, coinbase emission,
+  karma decay, demo UI.
 
 ---
 
@@ -206,13 +211,29 @@ lives under your subtree. You control everything under your root:
 Posts link via `parentRefs` — a post can reference up to 8 parents, creating a
 DAG rather than a strict tree. Content is 1–300 UTF-8 bytes.
 
-#### Stumps
+#### Stumps and Verifiable Pruning
 
 When you prune your content, the DAG subtree vanishes but the karma earned from
-likes in that subtree survives. A **stump** is a compact cryptographic proof
-containing the pruned root's hash, a Merkle root over the pruned content, the
-net karma earned by each participant, and the author's signature. Stumps bridge
-the prunable DAG to the immutable UTXO ledger.
+likes in that subtree must be refunded. Pruning is consensus-critical — every
+node must agree on who gets what karma back, even nodes that never had the
+original content.
+
+A **PruneEntry** in the ordering block carries everything needed for independent
+verification: the list of pruned post IDs committed by a Merkle root, and an
+Ed25519 signature from the root author over `blake2b512(rootPostHash,
+subtreeMerkleRoot)`. At block application, every node:
+
+1. Verifies the author's signature
+2. Checks the post ID set matches the reply tree via `block_topology`
+3. Verifies the Merkle root over the post IDs
+4. Deterministically settles UTXO state — consuming PostLockBoxes and LikeBoxes,
+   minting refund karma to authors and likers
+
+No DAG content is required. A node syncing UTXO-only verifies prune settlements
+identically to a full node. The DAG-side **Stump** becomes a lightweight
+historical record for gossip purposes — the block is the settlement authority.
+
+See [docs/CONSENSUS.md](docs/CONSENSUS.md) for the full consensus model.
 
 ### Posting: Sub-blocks and PoW
 
@@ -306,8 +327,8 @@ The UTXO engine validates every box transition:
 ## Development
 
 ```bash
-pnpm build          # Build all 4 packages
-pnpm test           # Run all 483 tests
+pnpm build          # Build all 5 packages
+pnpm test           # Run all 872 tests
 pnpm typecheck      # Type-check all packages
 ```
 
@@ -322,13 +343,17 @@ pnpm --filter @dagsocial/node vitest
 Design-by-contract workflow. The `contracts/` directory is the source of truth
 for interfaces. Contracts are updated before implementation code.
 
-| Contract | Status |
-|---|---|
-| `ARCHITECTURE.md` | Current |
-| `TYPES_INTERFACE.md` | Current |
-| `VALIDATION_INTERFACE.md` | Current |
-| `NODE_INTERFACE.md` | Current |
-| `MEMPOOL_INTERFACE.md` | Current |
-| `MINING_INTERFACE.md` | Current |
-| `NET_INTERFACE.md` | Current |
-| `WEB_INTERFACE.md` | Future (Phase 3) |
+| Document | Type | Status |
+|---|---|---|---|
+| `contracts/ARCHITECTURE.md` | System architecture & invariants | Current (2026-07-29) |
+| `contracts/TYPES_INTERFACE.md` | Types package contract | Current (2026-07-29) |
+| `contracts/VALIDATION_INTERFACE.md` | Validation package contract | Current |
+| `contracts/NODE_INTERFACE.md` | Node package contract | Current (2026-07-29) |
+| `contracts/MEMPOOL_INTERFACE.md` | Mempool contract | Current (2026-07-29) |
+| `contracts/MINING_INTERFACE.md` | Mining contract | Current |
+| `contracts/NET_INTERFACE.md` | Networking contract | Current |
+| `contracts/SUBBLOCK_INTERFACE.md` | Sub-block contract | Current |
+| `contracts/WIRE_INTERFACE.md` | Wire framing contract | Current |
+| `contracts/JOURNAL_EVENTS.md` | Journal events contract | Current |
+| `contracts/WEB_INTERFACE.md` | Web client contract | Future (Phase 3) |
+| `docs/CONSENSUS.md` | Consensus model | Current (2026-07-29) |
