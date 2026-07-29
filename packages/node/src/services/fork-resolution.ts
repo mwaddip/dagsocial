@@ -66,12 +66,19 @@ export function findForkPoint(
 
 /**
  * Reverse all mutations from a single block using its journal.
+ * Returns the PruneEntry array from the reverted block so callers can
+ * re-insert them into the mempool without relying on read-before-delete
+ * ordering.
  */
-export function revertBlock(height: number): void {
+export function revertBlock(height: number): PruneEntry[] {
   const journal = getBlockJournal(height);
   if (!journal) {
     throw new Error(`No journal for height ${height} — cannot revert`);
   }
+
+  // Collect prune entries before the block is deleted
+  const block = getOrderingBlock(height);
+  const pruneEntries: PruneEntry[] = block?.subBlockTree.pruneEntries ?? [];
 
   // 1. Reverse UTXO txs (reverse order)
   for (let i = journal.appliedUtxoTxs.length - 1; i >= 0; i--) {
@@ -120,6 +127,8 @@ export function revertBlock(height: number): void {
   // 6. Delete block + journal
   deleteOrderingBlock(height);
   deleteBlockJournal(height);
+
+  return pruneEntries;
 }
 
 /**
@@ -130,18 +139,15 @@ export function reorg(forkHeight: number, newBlocks: OrderingBlock[], dagService
   getDb().transaction(() => {
   const currentHeight = getCurrentHeight();
 
-  // Phase 1: revert our blocks, collecting journals and stump IDs for re-insertion
+  // Phase 1: revert our blocks, collecting journals and prune entries for re-insertion
   const revertedJournals: BlockJournal[] = [];
   const revertedPruneEntries: PruneEntry[] = [];
   for (let h = currentHeight; h > forkHeight; h--) {
     const journal = getBlockJournal(h);
     if (journal) revertedJournals.push(journal);
-    // Collect prune entries before the block is deleted
-    const block = getOrderingBlock(h);
-    if (block?.subBlockTree.pruneEntries.length) {
-      revertedPruneEntries.push(...block.subBlockTree.pruneEntries);
-    }
-    revertBlock(h);
+    // revertBlock() returns prune entries from the deleted block — no implicit
+    // read-before-delete ordering dependency between caller and callee
+    revertedPruneEntries.push(...revertBlock(h));
   }
 
   // Phase 1b: roll back AVL prover to fork point

@@ -94,6 +94,7 @@ export function computeSubBlockRoot(tree: SubBlockTree): string {
         parentRefs: entry.parentRefs,
       })))),
     ...tree.pruneEntries.map((entry) =>
+      // Tag changed from 'stump' to 'prune' (intentional breaking change, per verifiable-prune spec)
       leafHash('prune', Buffer.from(serializePruneEntry(entry)))),
   ];
   return Buffer.from(buildMerkleRoot(leaves)).toString('hex');

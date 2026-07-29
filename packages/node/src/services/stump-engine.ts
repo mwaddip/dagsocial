@@ -1,18 +1,15 @@
 import {
   computePostId,
-  computePruneEntryId,
-  serializePruneEntry,
   PROTOCOL_VERSION,
   leafHash,
   buildMerkleRoot,
   hexToBuf,
   MEMPOOL_EXPIRY_BLOCKS,
 } from '@dagsocial/types';
-import type { PruneEntry, PruneIntent, Post, LikeBox } from '@dagsocial/types';
+import type { PruneEntry, PruneIntent, Post } from '@dagsocial/types';
 import {
   getPost,
   getSubtree,
-  getLockedLikeBoxes,
   getCurrentHeight,
   insertMempoolPrune,
 } from '../store/index.js';

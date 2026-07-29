@@ -28,8 +28,8 @@ export function getSubtreeTopology(rootPostId: string): Set<string> {
        SELECT post_id FROM block_topology WHERE post_id = ?
        UNION
        SELECT bt.post_id FROM block_topology bt
-       JOIN subtree s ON (
-         bt.parent_refs LIKE '%' || s.post_id || '%'
+       JOIN subtree s ON EXISTS (
+         SELECT 1 FROM json_each(bt.parent_refs) WHERE value = s.post_id
        )
      )
      SELECT DISTINCT post_id FROM subtree`,

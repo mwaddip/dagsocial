@@ -211,6 +211,8 @@ function migrateVerifiablePrune(database: Database.Database): void {
   const cols = database.prepare("PRAGMA table_info('mempool')").all() as Array<{ name: string }>;
   if (cols.some(c => c.name === 'prune_entry_cbor')) return;
 
+  console.warn('migrateVerifiablePrune: dropping and recreating mempool and dag_stumps tables — data loss expected during development');
+
   // Drop and recreate mempool with prune_entry_cbor, entry_type 'prune' instead of 'stump'
   database.exec(`
     DROP TABLE IF EXISTS mempool;

@@ -121,6 +121,11 @@ export function drainMempoolPrunes(limit: number): PruneEntry[] {
   return rows.map(r => cborDecode(r.prune_entry_cbor) as PruneEntry);
 }
 
+/**
+ * Remove prune entries from the mempool by their computed entry IDs.
+ * O(n) full scan over all prune entries in mempool — callsite is reorg(),
+ * which is infrequent and typically operates on a small mempool.
+ */
 export function removeMempoolPrunes(entryIds: string[]): void {
   if (entryIds.length === 0) return;
   const db = getDb();
