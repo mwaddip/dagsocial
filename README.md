@@ -344,7 +344,7 @@ Design-by-contract workflow. The `contracts/` directory is the source of truth
 for interfaces. Contracts are updated before implementation code.
 
 | Document | Type | Status |
-|---|---|---|---|
+|---|---|---|
 | `contracts/ARCHITECTURE.md` | System architecture & invariants | Current (2026-07-29) |
 | `contracts/TYPES_INTERFACE.md` | Types package contract | Current (2026-07-29) |
 | `contracts/VALIDATION_INTERFACE.md` | Validation package contract | Current |
