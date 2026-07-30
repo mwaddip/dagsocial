@@ -234,6 +234,28 @@ rewards for producing ordering blocks. Credit sinks (ads, author boosts, tips)
 are deferred to future protocol versions. For Phase 2, the credit supply grows
 with each ordering block — the reward amount is a protocol parameter.
 
+#### Vouch boxes
+
+```
+VouchBox {
+  id: BoxId
+  value: 1                    // VOUCH_KARMA_AMOUNT — always 1
+  voucherId: UserId           // Who staked the karma
+  targetId: UserId            // Who is being vouched for
+  createdAtBlock: number      // Block height when vouch was cast
+  guard: "owner_signature"    // Only the voucher may spend (unvouch)
+}
+```
+
+A vouch is a 1-karma endorsement from one identity to another. Casting a vouch
+consumes 1 karma from the voucher's KarmaBox and creates a VouchBox. The karma
+is escrowed — not burned, not transferred to the target. Unvouching (spending
+the VouchBox) triggers a cooldown: the karma is not immediately returned to the
+voucher but is held for `VOUCH_COOLDOWN_BLOCKS` before release.
+
+Each identity may vouch for at most one target at a time. The minimum karma
+balance to cast a vouch is `VOUCH_MIN_BALANCE` (11).
+
 #### Box lifecycle
 
 All box transitions are atomic — a transaction consuming N boxes and creating M
@@ -677,7 +699,9 @@ Bootstrap uses a **two-phase genesis committee** model:
    like boxes, free likes, post lock box unlocks, mints author rewards
 8. **Pruning:** Author signs prune intent → stump constructed with deterministic
    karma deltas → committed in ordering block → DAG compacted
-9. **Net:** libp2p gossips sub-blocks, ordering blocks, and UTXO transactions.
+9. **Vouch cooldown:** Every block, matured vouch cooldowns release escrowed karma
+   back to the voucher via mintKarma
+10. **Net:** libp2p gossips sub-blocks, ordering blocks, and UTXO transactions.
    Stage 1 (stateless) validation via `@dagsocial/validation` runs before
    forwarding. Stage 2 (stateful) validation runs in the node after receipt.
    Relay handlers insert into mempool — state applied at block application.

@@ -195,6 +195,16 @@ They count toward the total for author rewards.
 4. Insert into mempool: `insertUtxoTx(tx, null, expiresAtHeight)`
 5. Return `{ status: "pending", txId, expiresAtHeight }`
 
+### Vouches
+
+| Method | Path | Handler | Description |
+|--------|------|---------|-------------|
+| `POST` | `/vouches` | `castVouch` | Signed UTXO tx (KarmaBox to KarmaBox + VouchBox) |
+| `DELETE` | `/vouches/:targetId` | `initiateUnvouch` | Signed UTXO tx (VouchBox to none) |
+| `GET` | `/vouches?target=X` | `getVouchesForTarget` | List vouchers for identity |
+| `GET` | `/vouches?voucher=X` | `getVouchesByVoucher` | List who identity vouches for |
+| `GET` | `/vouches?voucher=X&cooldowns=1` | `getVouchCooldowns` | Active cooldowns |
+
 ### Pruning
 
 | Method | Path | Request | Response | Errors |
@@ -576,6 +586,14 @@ Fresh schema — no Phase 1 migration.
 | `insertBox(box)` | `(AnyBox) => void` |
 | `consumeBox(boxId, consumedAtBlock)` | `(string, number) => void` — mark as spent |
 | `markLikeBoxesTallied(boxIds)` | `(string[]) => void` — after epoch processing |
+
+### Vouch Cooldowns
+
+| Function | Signature |
+|----------|-----------|
+| `insertVouchCooldown(voucherId, targetId, releaseAtBlock, karmaAmount)` | `(UserId, UserId, number, number) => void` |
+| `getMaturedVouchCooldowns(currentHeight)` | `(number) => Cooldown[]` |
+| `deleteVouchCooldown(voucherId, targetId)` | `(UserId, UserId) => void` |
 
 ### Block Topology
 

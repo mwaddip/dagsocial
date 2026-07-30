@@ -98,7 +98,7 @@ All box types share a common envelope:
 ```
 interface BoxBase {
   id?: BoxId           // Computed via computeBoxId; optional during construction
-  boxType: "karma" | "credit" | "like" | "invite" | "bond" | "post_lock"
+  boxType: "karma" | "credit" | "like" | "invite" | "bond" | "post_lock" | "vouch"
   value: number
   createdAtBlock: number
 }
@@ -200,6 +200,18 @@ PostLockBox extends BoxBase {
 Post lock karma is gradually unlocked at epoch boundaries: every
 `POST_LOCK_UNLOCK_PER_LIKES` (10) lifetime likes on the target post unlocks
 1 karma back to the author.
+
+### VouchBox
+
+```
+VouchBox extends BoxBase {
+  boxType: "vouch"
+  value: 1                     // VOUCH_KARMA_AMOUNT — always 1
+  voucherId: UserId            // 32 raw bytes — who staked the karma
+  targetId: UserId             // 32 raw bytes — who is being vouched for
+  guard: "owner_signature"     // Only the voucher may spend (unvouch)
+}
+```
 
 ### BoxGuard
 
@@ -437,6 +449,14 @@ export const INVITE_MIN_KARMA = KARMA_POSTING_MINIMUM;
 export const INVITE_BOND_KARMA = 10;               // Karma deposit locked during probation
 export const INVITE_PROBATION_BLOCKS = 1000;        // Probation window in blocks
 export const INVITE_KARMA_THRESHOLD = 20;          // Invitee karma target for early bond return
+```
+
+### Vouch
+
+```typescript
+export const VOUCH_KARMA_AMOUNT = 1;              // Karma escrowed per vouch
+export const VOUCH_MIN_BALANCE = 11;               // Minimum karma balance to cast a vouch
+export const VOUCH_COOLDOWN_BLOCKS = 60;           // Blocks before escrowed karma is released on unvouch
 ```
 
 ### Genesis
