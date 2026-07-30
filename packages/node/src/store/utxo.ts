@@ -7,6 +7,7 @@ import type {
   InviteBox,
   BondBox,
   PostLockBox,
+  VouchBox,
 } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
@@ -63,6 +64,11 @@ interface PostLockExtra {
   originalValue: number;
   owner: number[];
   targetPostId: string;
+}
+
+interface VouchExtra {
+  voucherId: string;    // hex-encoded pubkey
+  targetId: string;     // hex-encoded pubkey
 }
 
 // ---------------------------------------------------------------------------
@@ -182,6 +188,19 @@ function rowToBox(row: UtxoRow): AnyBox {
         targetPostId: e.targetPostId,
         guard: 'epoch_tally',
       } satisfies PostLockBox as PostLockBox;
+    }
+
+    case 'vouch': {
+      const e = extra as VouchExtra;
+      return {
+        id: row.id,
+        boxType: 'vouch',
+        value: 1,
+        createdAtBlock: row.created_at_block,
+        voucherId: hexToPubkey(e.voucherId),
+        targetId: hexToPubkey(e.targetId),
+        guard: 'owner_signature',
+      } satisfies VouchBox as VouchBox;
     }
 
     default:
@@ -518,6 +537,14 @@ export function insertBox(box: AnyBox): void {
         owner: Array.from(p.owner),
         targetPostId: p.targetPostId,
       } satisfies PostLockExtra;
+      break;
+    }
+    case 'vouch': {
+      const v = box as VouchBox;
+      extraData = {
+        voucherId: pubkeyToHex(v.voucherId),
+        targetId: pubkeyToHex(v.targetId),
+      } satisfies VouchExtra;
       break;
     }
     default:
