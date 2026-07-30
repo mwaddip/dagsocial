@@ -140,7 +140,8 @@ async function main() {
         continue;
       }
 
-      const { powPreimage, powTargetBits, header } = tpl;
+      const { powPreimage, header } = tpl;
+      const powTargetBits = header.powTargetBits;
       const preimageBuf = Buffer.from(powPreimage, 'hex');
 
       log(`Mining block ${header.height} at ${powTargetBits} bits...`);
