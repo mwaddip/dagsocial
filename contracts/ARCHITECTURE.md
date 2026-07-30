@@ -53,6 +53,26 @@ trigger epoch transitions (like tallies), and distribute credit rewards.
 
 ---
 
+## Design Principles
+
+### Node as record-keeper, not ranker
+
+The node's job is to faithfully record, validate, and serve data — posts, likes,
+vouches, karma state, blocks. **Feed ranking, algorithmic curation, reputation
+scores, and any interpretation of on-chain data are the responsibility of client
+implementations and indexers.** The node provides the raw, verifiable dataset;
+clients decide what to surface and how to weight it.
+
+This means:
+- On-chain primitives (likes, vouches) exist to be queried and aggregated, not
+  to drive built-in ranking logic
+- The built-in feed endpoint (`GET /feed`) is for testing convenience only —
+  production feeds come from indexers
+- New primitives are designed for what they record, not for how a client might
+  interpret them
+
+---
+
 ## The Three Layers
 
 ### 1. Posts DAG (Content Layer)
