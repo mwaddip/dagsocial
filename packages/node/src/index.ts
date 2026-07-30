@@ -36,7 +36,7 @@ import {
   insertStump,
   getStump,
 } from './store/index.js';
-import { encodePost, cumulativeWork, MEMPOOL_EXPIRY_BLOCKS, subBlockFromPost, verifyPostId } from '@dagsocial/types';
+import { encodePost, cumulativeWork, MEMPOOL_EXPIRY_BLOCKS, subBlockFromPost, verifyPostId, VOUCH_COOLDOWN_BLOCKS } from '@dagsocial/types';
 import type { BlockHeader, Stump } from '@dagsocial/types';
 
 const config = loadConfig();
@@ -68,7 +68,34 @@ if (storedVersion < CURRENT_SCHEMA_VERSION) {
   writeSchemaVersion(CURRENT_SCHEMA_VERSION);
 }
 
-// 1b. Init system keypair (testnet faucet source). Must happen after DB init,
+// ---------------------------------------------------------------------------
+// Protocol constant sanity checks
+// ---------------------------------------------------------------------------
+
+function validateProtocolConstants(): void {
+  const checks: Array<{ condition: boolean; message: string }> = [
+    {
+      condition: MAX_REORG_DEPTH >= VOUCH_COOLDOWN_BLOCKS,
+      message:
+        `MAX_REORG_DEPTH (${MAX_REORG_DEPTH}) must be less than ` +
+        `VOUCH_COOLDOWN_BLOCKS (${VOUCH_COOLDOWN_BLOCKS}). ` +
+        `Otherwise, cooldown maturation can be reorged without journaling, ` +
+        `causing double karma mints and permanent cooldown loss.`,
+    },
+  ];
+
+  for (const check of checks) {
+    if (check.condition) {
+      console.error(`Protocol constant invariant violated: ${check.message}`);
+      process.exit(1);
+    }
+  }
+}
+
+// 1b. Protocol constant sanity checks
+validateProtocolConstants();
+
+// 1c. Init system keypair (testnet faucet source). Must happen after DB init,
 //     before any route that might need the system box.
 const systemKeypair = initSystemKeypair();
 if (config.networkMode === 'testnet') {
