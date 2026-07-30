@@ -34,7 +34,7 @@ export type BoxGuard = 'owner_signature' | 'epoch_tally' | 'hash_preimage' | 'in
 
 export interface BoxBase {
   id?: BoxId;           // Computed via computeBoxId; optional during construction
-  boxType: 'karma' | 'credit' | 'like' | 'invite' | 'bond' | 'post_lock';
+  boxType: 'karma' | 'credit' | 'like' | 'invite' | 'bond' | 'post_lock' | 'vouch';
   value: number;
   createdAtBlock: number;
 }
@@ -104,11 +104,21 @@ export interface PostLockBox extends BoxBase {
   guard: 'epoch_tally';       // Only consumable by epoch processing
 }
 
+// --- Vouch ---
+
+export interface VouchBox extends BoxBase {
+  boxType: 'vouch';
+  value: 1;                          // always 1 karma
+  voucherId: UserId;                 // who staked the karma
+  targetId: UserId;                  // who is being vouched for
+  guard: 'owner_signature';          // voucher controls spend
+}
+
 // ---------------------------------------------------------------------------
 // Union type
 // ---------------------------------------------------------------------------
 
-export type AnyBox = KarmaBox | CreditBox | LikeBox | InviteBox | BondBox | PostLockBox;
+export type AnyBox = KarmaBox | CreditBox | LikeBox | InviteBox | BondBox | PostLockBox | VouchBox;
 
 // ---------------------------------------------------------------------------
 // UTXO transaction

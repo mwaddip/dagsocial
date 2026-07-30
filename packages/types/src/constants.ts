@@ -27,6 +27,11 @@ export const LIKE_THRESHOLD = 5;
 export const LIKE_MAX_AUTHOR_REWARD = 10;
 export const LIKE_FREE_THRESHOLD = 10;  // 10x LIKE_THRESHOLD; beyond this, likes are free
 
+// Vouch
+export const VOUCH_KARMA_AMOUNT = 1;          // Karma locked per vouch
+export const VOUCH_MIN_BALANCE = 11;           // Must have >= this to vouch
+export const VOUCH_COOLDOWN_BLOCKS = 60;       // Blocks before karma returned
+
 // Epoch
 export const EPOCH_BLOCKS = 60;  // Like processing every N ordering blocks
 
