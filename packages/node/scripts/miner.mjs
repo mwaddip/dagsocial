@@ -5,6 +5,8 @@ import { createHash } from 'crypto';
 // Configuration
 // ---------------------------------------------------------------------------
 
+// Points to the API base path where /mining/template and /mining/submit are reachable.
+// When running behind nginx, this must include the /api prefix (e.g. https://node.example/testnet/api).
 const NODE_URL = (process.env.NODE_URL ?? 'http://localhost:3000').replace(/\/+$/, '');
 const MINER_PCT = Math.max(0, Math.min(100, parseInt(process.env.MINER_PCT ?? '25', 10)));
 const MINING_SECRET = process.env.MINING_SECRET ?? '';
@@ -159,8 +161,10 @@ async function main() {
         log('Block rejected (stale or invalid PoW), repolling immediately');
         backoff = 1000;
       } else {
-        log(`Unexpected submit response: ${res.status}`);
-        backoff = 5000;
+        const waitMs = 5000;
+        log(`Unexpected submit response: ${res.status}, retrying in ${waitMs / 1000}s...`);
+        await sleep(waitMs);
+        backoff = waitMs;
       }
     } catch (err) {
       log(`Error: ${err.message}`);
