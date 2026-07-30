@@ -167,14 +167,15 @@ function checkTransitions(
       const bondOutputs = outputs.filter((o) => o.boxType === 'bond');
       const likeOutputs = outputs.filter((o) => o.boxType === 'like');
       const postLockOutputs = outputs.filter((o) => o.boxType === 'post_lock');
+      const vouchOutputs = outputs.filter((o) => o.boxType === 'vouch');
 
       const totalOutputs =
-        karmaOutputs.length + inviteOutputs.length + bondOutputs.length + likeOutputs.length + postLockOutputs.length;
+        karmaOutputs.length + inviteOutputs.length + bondOutputs.length + likeOutputs.length + postLockOutputs.length + vouchOutputs.length;
 
       if (totalOutputs !== outputs.length) {
         return {
           valid: false,
-          error: `Illegal karma transition: outputs contain non-karma/invite/bond/like/post_lock boxes`,
+          error: `Illegal karma transition: outputs contain non-karma/invite/bond/like/post_lock/vouch boxes`,
         };
       }
 
@@ -217,7 +218,7 @@ function checkTransitions(
 
       if (likeOutputs.length > 0) {
         // karma → karma + like
-        if (likeOutputs.length !== 1 || inviteOutputs.length > 0 || bondOutputs.length > 0 || postLockOutputs.length > 0) {
+        if (likeOutputs.length !== 1 || inviteOutputs.length > 0 || bondOutputs.length > 0 || postLockOutputs.length > 0 || vouchOutputs.length > 0) {
           return {
             valid: false,
             error: `Invalid like transition: exactly 1 karma + 1 like output expected`,
@@ -225,15 +226,25 @@ function checkTransitions(
         }
       } else if (postLockOutputs.length > 0) {
         // karma → karma + post_lock (post creation lock)
-        if (postLockOutputs.length !== 1 || inviteOutputs.length > 0 || bondOutputs.length > 0 || likeOutputs.length > 0) {
+        if (postLockOutputs.length !== 1 || inviteOutputs.length > 0 || bondOutputs.length > 0 || likeOutputs.length > 0 || vouchOutputs.length > 0) {
           return {
             valid: false,
             error: `Invalid post-lock transition: exactly 1 karma + 1 post_lock output expected`,
           };
         }
+      } else if (vouchOutputs.length > 0) {
+        // karma → karma + vouch
+        if (vouchOutputs.length !== 1 || inviteOutputs.length > 0 ||
+            bondOutputs.length > 0 || likeOutputs.length > 0 ||
+            postLockOutputs.length > 0) {
+          return {
+            valid: false,
+            error: `Invalid vouch transition: exactly 1 karma + 1 vouch output expected`,
+          };
+        }
       } else if (inviteOutputs.length > 0 || bondOutputs.length > 0) {
         // karma → karma + invite + bond
-        if (inviteOutputs.length !== 1 || bondOutputs.length !== 1) {
+        if (inviteOutputs.length !== 1 || bondOutputs.length !== 1 || vouchOutputs.length > 0) {
           return {
             valid: false,
             error: `Invite creation requires exactly 1 invite + 1 bond output`,
@@ -338,6 +349,19 @@ function checkTransitions(
       };
     }
 
+    // ------------------------------------------------------------------
+    // VouchBox → (none) — unvouch, karma returned via cooldown
+    // ------------------------------------------------------------------
+    case 'vouch': {
+      if (outputs.length !== 0) {
+        return {
+          valid: false,
+          error: `VouchBox can only be spent to produce no outputs (unvouch)`,
+        };
+      }
+      return { valid: true };
+    }
+
     default:
       return { valid: false, error: `Unknown box type: ${inputType}` };
   }
@@ -362,7 +386,7 @@ function checkValueConservation(
 
   if (inputType === 'bond' && outputs.length === 0) {
     // BondBox burn — no outputs, value deliberately destroyed. Skip conservation.
-  } else if (inputType === 'karma' || inputType === 'like') {
+  } else if (inputType === 'karma' || inputType === 'like' || inputType === 'vouch') {
     // Karma conservation is handled by the periodic decay engine.
     // Face values differ legitimately — decay burns karma, and like/invite
     // creation splits value across multiple output boxes.
@@ -392,8 +416,9 @@ function checkGuards(
   for (const box of inputBoxes) {
     switch (box.guard) {
       case 'owner_signature': {
-        const ownerBox = box as { owner: Uint8Array };
-        if (!verifyGuardSignature(tx, txHash, ownerBox.owner)) {
+        const ownerBox = box as { owner?: Uint8Array; voucherId?: Uint8Array };
+        const pubKey = ownerBox.owner ?? ownerBox.voucherId;
+        if (!pubKey || !verifyGuardSignature(tx, txHash, pubKey)) {
           return {
             valid: false,
             error: `Missing or invalid owner signature for box ${box.id}`,
