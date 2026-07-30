@@ -1,0 +1,18 @@
+[Unit]
+Description=DAGsocial miner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment="NODE_URL=https://notis.blockhost.io/testnet"
+Environment="MINER_PCT=25"
+Environment="MINING_SECRET=letmetest"
+ExecStart=/usr/bin/node /opt/dagsocial-miner/miner.mjs
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
