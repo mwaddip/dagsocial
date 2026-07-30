@@ -102,3 +102,11 @@ export type { PostStore, StoreEntry, PeerRecord } from './post-store.js';
 export { SqlitePostStore } from './sqlite-store.js';
 
 export { metaGet, metaPut, metaDelete, metaHas } from './meta.js';
+
+export {
+  insertVouchCooldown,
+  getVouchCooldowns,
+  getMaturedVouchCooldowns,
+  deleteVouchCooldown,
+  hasActiveVouchCooldown,
+} from './vouch-cooldowns.js';

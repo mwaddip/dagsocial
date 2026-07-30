@@ -246,6 +246,23 @@ function migrateVerifiablePrune(database: Database.Database): void {
   `);
 }
 
+function migrateVouchCooldowns(database: Database.Database): void {
+  const tables = database
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='vouch_cooldowns'")
+    .all() as Array<{ name: string }>;
+  if (tables.length > 0) return;
+
+  database.exec(`
+    CREATE TABLE vouch_cooldowns (
+      voucher_id BLOB NOT NULL,
+      target_id BLOB NOT NULL,
+      release_at_block INTEGER NOT NULL,
+      karma_amount INTEGER NOT NULL,
+      PRIMARY KEY (voucher_id, target_id)
+    );
+  `);
+}
+
 export function initDb(path: string): void {
   db = new Database(path);
   db.pragma('journal_mode = WAL');
@@ -257,6 +274,7 @@ export function initDb(path: string): void {
   migrateAvlTree(db);
   migrateBlockTopology(db);
   migrateVerifiablePrune(db);
+  migrateVouchCooldowns(db);
 }
 
 export function getDb(): Database.Database {
