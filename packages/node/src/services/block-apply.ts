@@ -491,6 +491,13 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
             block.header.height + VOUCH_COOLDOWN_BLOCKS,
             VOUCH_KARMA_AMOUNT,
           );
+          if (!currentJournal.vouchCooldownInsertions) {
+            currentJournal.vouchCooldownInsertions = [];
+          }
+          currentJournal.vouchCooldownInsertions.push({
+            voucherId: vb.voucherId,
+            targetId: vb.targetId,
+          });
         }
         break;
       }

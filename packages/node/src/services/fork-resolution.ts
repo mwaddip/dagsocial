@@ -17,6 +17,7 @@ import {
   rollbackBlockTopology,
 } from '../store/index.js';
 import { getDb } from '../store/db.js';
+import { deleteVouchCooldown } from '../store/vouch-cooldowns.js';
 import { tryGetAvlProver } from '../state/avl-prover.js';
 import { applyOrderingBlock } from './block-apply.js';
 import type { DagService } from './dag-service.js';
@@ -103,6 +104,13 @@ export function revertBlock(height: number): PruneEntry[] {
     deleteBox(decay.newBoxId);
     for (const boxId of decay.consumedBoxIds) {
       unconsumeBox(boxId);
+    }
+  }
+
+  // 2c. Reverse vouch cooldown insertions
+  if (journal.vouchCooldownInsertions) {
+    for (const cd of journal.vouchCooldownInsertions) {
+      deleteVouchCooldown(cd.voucherId, cd.targetId);
     }
   }
 

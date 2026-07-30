@@ -31,4 +31,6 @@ export interface BlockJournal {
   // AVL state root tracking — all box IDs consumed and created during block apply
   consumedBoxIds: string[];
   createdBoxIds: string[];
+  // Vouch cooldown rows inserted during this block (for fork rollback)
+  vouchCooldownInsertions?: Array<{ voucherId: Uint8Array; targetId: Uint8Array }>;
 }
