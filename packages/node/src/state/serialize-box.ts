@@ -9,6 +9,7 @@ const BOX_TYPE_TAG: Record<AnyBox['boxType'], number> = {
   invite: 0x04,
   bond: 0x05,
   post_lock: 0x06,
+  vouch: 0x07,
 };
 
 const TAG_TO_BOX_TYPE: Record<number, AnyBox['boxType']> = {
@@ -18,6 +19,7 @@ const TAG_TO_BOX_TYPE: Record<number, AnyBox['boxType']> = {
   0x04: 'invite',
   0x05: 'bond',
   0x06: 'post_lock',
+  0x07: 'vouch',
 };
 
 /**
@@ -30,6 +32,8 @@ const UINT8ARRAY_FIELDS = new Set([
   'secretHash',
   'inviterId',
   'inviteePublicKey',
+  'voucherId',
+  'targetId',
 ]);
 
 /**
