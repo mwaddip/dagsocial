@@ -14,4 +14,5 @@ export {
   blockHash,
   computePowHash,
   ed25519PublicKeyToKeyObject,
+  isValidVouchTarget,
 } from './verify.js';

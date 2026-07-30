@@ -234,6 +234,25 @@ export function verifyOrderingBlockStructure(
 }
 
 // ---------------------------------------------------------------------------
+// isValidVouchTarget
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate that a target UserId for a vouch is a well-formed 32-byte
+ * Ed25519 public key.  Does NOT check whether the identity exists on-chain
+ * — vouching for unknown public keys is allowed.
+ */
+export function isValidVouchTarget(userId: Uint8Array): boolean {
+  if (!(userId instanceof Uint8Array)) return false;
+  if (userId.length !== 32) return false;
+  let allZero = true;
+  for (let i = 0; i < 32; i++) {
+    if (userId[i] !== 0) { allZero = false; break; }
+  }
+  return !allZero;
+}
+
+// ---------------------------------------------------------------------------
 // Block hash
 // ---------------------------------------------------------------------------
 
