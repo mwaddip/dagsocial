@@ -3,6 +3,12 @@ import * as validation from '@dagsocial/validation';
 import { mintKarma } from './karma.js';
 import { mintCredits } from './credits.js';
 import { applyKarmaDecay } from './decay.js';
+import {
+  getMaturedVouchCooldowns,
+  deleteVouchCooldown,
+  insertVouchCooldown,
+} from '../store/vouch-cooldowns.js';
+import { VOUCH_COOLDOWN_BLOCKS, VOUCH_KARMA_AMOUNT } from '@dagsocial/types';
 import { settlePruneUtxo } from './settle-prune-utxo.js';
 import type { DecayDeps } from './decay.js';
 import { config } from '../config.js';
@@ -50,6 +56,14 @@ let currentJournal: BlockJournal | null = null;
 
 export function getCurrentJournal(): BlockJournal | null {
   return currentJournal;
+}
+
+function processVouchCooldowns(currentHeight: number): void {
+  const matured = getMaturedVouchCooldowns(currentHeight);
+  for (const row of matured) {
+    mintKarma(row.voucherId, row.karmaAmount, currentHeight);
+    deleteVouchCooldown(row.voucherId, row.targetId);
+  }
 }
 
 export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService): boolean {
@@ -464,6 +478,24 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
       ...box,
       id: computeBoxId(box),
     })) as AnyBox[];
+
+    // Detect vouch unvouch before the VouchBox is consumed
+    for (const inputId of tx.inputs) {
+      const inputBox = getBox(inputId);
+      if (inputBox && inputBox.boxType === 'vouch') {
+        const vb = inputBox as import('@dagsocial/types').VouchBox;
+        if (tx.outputs.length === 0) {
+          insertVouchCooldown(
+            vb.voucherId,
+            vb.targetId,
+            block.header.height + VOUCH_COOLDOWN_BLOCKS,
+            VOUCH_KARMA_AMOUNT,
+          );
+        }
+        break;
+      }
+    }
+
     applyTx(utxoDeps, tx, computedOutputs, block.header.height);
 
     // Remove from local mempool if present
@@ -515,6 +547,9 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
     currentJournal.consumedBoxIds.push(...burn.consumedBoxIds);
     currentJournal.createdBoxIds.push(burn.newBoxId);
   }
+
+  // 12b. Process vouch cooldowns
+  processVouchCooldowns(block.header.height);
 
   // 13. AVL state root update (skipped if prover not initialized)
   const handle = tryGetAvlProver();
