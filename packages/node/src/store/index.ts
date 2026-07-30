@@ -110,3 +110,10 @@ export {
   deleteVouchCooldown,
   hasActiveVouchCooldown,
 } from './vouch-cooldowns.js';
+
+export {
+  getVouchBox,
+  getVouchesForTarget,
+  getVouchesByVoucher,
+  hasActiveVouch,
+} from './vouch-queries.js';
