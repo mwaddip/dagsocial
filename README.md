@@ -6,7 +6,7 @@ a Bitcoin-style UTXO ledger secured by Ed25519 signatures. Phase 2: local HTTP
 node with identity, PoW posting, DAG storage, UTXO engine, AVL+ state root,
 verifiable prune consensus, libp2p networking, and a demo UI.
 
-**872 tests pass** across 5 packages. Node.js ≥ 22, TypeScript, pnpm.
+**905 tests pass** across 5 packages. Node.js ≥ 22, TypeScript, pnpm. MIT licensed.
 
 ---
 
@@ -20,14 +20,38 @@ pnpm build
 pnpm typecheck
 ```
 
-### Single node (testnet, miner)
+### Single node (local dev)
 
 ```bash
 NETWORK_MODE=testnet NODE_ROLE=miner node packages/node/dist/index.js
 ```
 
 This starts a miner node on `http://localhost:3000` with the demo UI at the
-same address. It produces ordering blocks every 60 seconds.
+same address. It produces ordering blocks every 60 seconds and mines PoW
+in-process.
+
+### Devnet (split mining)
+
+For running a node on a VPS without PoW (ToS compliance, etc.), DAGsocial
+supports external mining. The node builds block templates and exposes them
+over HTTP; a separate miner script solves PoW and submits.
+
+**VPS node:**
+
+```bash
+NODE_ROLE=miner MINING_MODE=external MINING_SECRET=<secret> node packages/node/dist/index.js
+```
+
+**Laptop miner:**
+
+```bash
+NODE_URL=https://your-node.example.com/testnet/api MINER_PCT=25 MINING_SECRET=<secret> node packages/node/scripts/miner.mjs
+```
+
+`MINER_PCT` controls CPU usage (0–100, default 25). The miner ships as a
+single zero-dependency script — no repo or `pnpm install` needed, just Node.js ≥ 22.
+
+A reference systemd unit is at `packages/node/scripts/dagsocial-miner.service`.
 
 ### Multi-node cluster
 
@@ -75,13 +99,106 @@ kill $(cat /tmp/dagsocial-cluster/pids)
 | `KARMA_DECAY_INTERVAL_BLOCKS` | 720 | Blocks between decay burns |
 | `KARMA_DECAY_AMOUNT` | 5 | Karma burned per interval |
 | `KARMA_MINIMUM` | 10 | Decay floor |
+| `MINING_MODE` | `internal` | `internal` or `external` (node builds templates, miner solves PoW remotely) |
+| `MINING_SECRET` | (empty) | Bearer token for mining API auth (empty = no auth) |
+| `ORDERING_BLOCK_POW_TARGET_BITS` | 12 | Ordering block PoW difficulty |
+| `EPOCH_BLOCKS` | 60 | Blocks per epoch (like processing + difficulty adjustment) |
+
+---
+
+## API
+
+All endpoints are JSON. POST/PUT bodies are JSON. Auth is Bearer token only
+on `/mining/*` when `MINING_SECRET` is set.
+
+### Node status
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/status` | Node status (block height, post count, karma, credits) |
+| GET | `/health` | Admin health check (port 3001) |
+
+### Identity
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/karma/:id` | Karma balance for an identity |
+| GET | `/credits/:id` | Credit boxes for an identity |
+| GET | `/invites/:id` | Invite state for an identity |
+
+### Posts
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/posts?limit=50` | Recent posts |
+| GET | `/posts/:id` | Single post by ID |
+| POST | `/posts` | Create a post (requires PoW challenge first) |
+| DELETE | `/posts/:id` | Delete a post |
+| POST | `/posts/:id/prune` | Prune a subtree (author only) |
+
+### Challenges
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/challenge` | Get a PoW challenge for posting |
+
+### Likes
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/likes` | Like a post |
+| DELETE | `/likes/remove` | Unlike a post |
+
+### Invites
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/invites` | Create an invite |
+| POST | `/invites/:id/claim` | Claim an invite |
+| POST | `/invites/:id/cancel` | Cancel an unclaimed invite |
+
+### Credits (testnet)
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/credits/send` | Transfer credits between identities |
+| POST | `/credits/faucet` | Testnet credit faucet |
+
+### Karma faucet (testnet)
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/faucet` | Testnet karma faucet |
+
+### Mining (auth required)
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/mining/template` | Current block template (PoW preimage, target bits, header) |
+| POST | `/mining/submit` | Submit `{ powNonce, height }` — returns block hash on success |
+
+### Vouches
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/vouches` | Query vouches (`?target=` or `?voucher=` or `?cooldowns`) |
+| POST | `/vouches` | Cast a vouch for another identity |
+| DELETE | `/vouches/:targetId` | Initiate unvouch (cooldown starts) |
+
+### AVL proofs
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/v1/proof/:boxId?atHeight=N` | AVL+ proof for a UTXO box |
 
 ---
 
 ## Demo UI
 
 Open `http://localhost:3000` (or the bootstrap node's port in a cluster).
-The UI is a single HTML page with vanilla JS — no build step.
+When behind nginx with path isolation, the UI is at `/testnet/` and the
+API at `/testnet/api/`. The UI is a single HTML page with vanilla JS — no
+build step.
 
 **Getting started:**
 
@@ -328,7 +445,7 @@ The UTXO engine validates every box transition:
 
 ```bash
 pnpm build          # Build all 5 packages
-pnpm test           # Run all 872 tests
+pnpm test           # Run all 905 tests
 pnpm typecheck      # Type-check all packages
 ```
 
