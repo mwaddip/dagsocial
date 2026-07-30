@@ -6,6 +6,7 @@ import { createRouter as inviteRoutes } from './routes/invites.js';
 import { createRouter as faucetRoutes } from './routes/faucet.js';
 import { deleteRoutes } from './routes/delete.js';
 import { createRouter as utxoRoutes } from './routes/utxo.js';
+import { createRouter as vouchRoutes } from './routes/vouches.js';
 import { createRouter as blockRoutes } from './routes/blocks.js';
 import { createRouter as miningRoutes } from './routes/mining.js';
 import * as store from './store/index.js';
@@ -14,6 +15,7 @@ import { generateChallenge } from './services/pow.js';
 import { verifyPost } from './services/verifier.js';
 import { onSubBlockReceived, getCurrentTemplate, submitMinedBlock } from './services/block-creator.js';
 import { castLike, removeLike } from './services/likes.js';
+import { castVouch, initiateUnvouch } from './services/vouch.js';
 import { createInvite, claimInvite, cancelInvite, commitInvite } from './services/invites.js';
 import { executePrune } from './services/stump-engine.js';
 import { encodePost } from '@dagsocial/types';
@@ -130,6 +132,21 @@ export function createApp(config: Config): express.Express {
     likeRoutes({
       castLike,
       removeLike,
+      getCurrentHeight: store.getCurrentHeight,
+      getBox: store.getBox,
+      insertBox: store.insertBox,
+      consumeBox: store.consumeBox,
+      getKarmaBox: store.getKarmaBox,
+      runInTransaction: (fn: () => void) => getDb().transaction(fn)(),
+    }),
+  );
+
+  // Vouches — /vouches
+  app.use(
+    '/vouches',
+    vouchRoutes({
+      castVouch,
+      initiateUnvouch,
       getCurrentHeight: store.getCurrentHeight,
       getBox: store.getBox,
       insertBox: store.insertBox,
