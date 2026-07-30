@@ -9,6 +9,26 @@ import type { OrderingBlock } from '@dagsocial/types';
 export interface MiningDeps {
   getCurrentTemplate(): OrderingBlock | null;
   submitMinedBlock(powNonce: number, height: number): string | null;
+  miningSecret: string;
+}
+
+// ---------------------------------------------------------------------------
+// Auth middleware
+// ---------------------------------------------------------------------------
+
+function authMiddleware(secret: string): import('express').RequestHandler {
+  if (!secret) {
+    // No auth configured — passthrough
+    return (_req, _res, next) => next();
+  }
+  return (req, res, next) => {
+    const auth = req.headers.authorization;
+    if (!auth || auth !== `Bearer ${secret}`) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    next();
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -17,6 +37,10 @@ export interface MiningDeps {
 
 export function createRouter(deps: MiningDeps): Router {
   const router = Router();
+  const { miningSecret } = deps;
+
+  // Auth middleware on all mining routes
+  router.use(authMiddleware(miningSecret));
 
   // GET /mining/template — return current block template
   router.get('/template', (_req, res) => {

@@ -10,6 +10,7 @@ const TEST_KEYS = [
   'MAX_SUB_BLOCKS_PER_BLOCK',
   'EPOCH_BLOCKS',
   'NETWORK_MODE',
+  'MINING_SECRET',
 ];
 
 function clearTestEnv() {
@@ -38,6 +39,7 @@ describe('config', () => {
       expect(cfg.maxSubBlocksPerBlock).toBe(1000);
       expect(cfg.epochBlocks).toBe(60);
       expect(cfg.networkMode).toBe('testnet');
+      expect(cfg.miningSecret).toBe('');
     });
   });
 
@@ -52,6 +54,7 @@ describe('config', () => {
       process.env['MAX_SUB_BLOCKS_PER_BLOCK'] = '500';
       process.env['EPOCH_BLOCKS'] = '120';
       process.env['NETWORK_MODE'] = 'mainnet';
+      process.env['MINING_SECRET'] = 'sekret';
 
       const { loadConfig } = await import('../src/config.js');
       const cfg = loadConfig();
@@ -65,6 +68,7 @@ describe('config', () => {
       expect(cfg.maxSubBlocksPerBlock).toBe(500);
       expect(cfg.epochBlocks).toBe(120);
       expect(cfg.networkMode).toBe('mainnet');
+      expect(cfg.miningSecret).toBe('sekret');
     });
   });
 

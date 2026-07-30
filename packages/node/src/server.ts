@@ -223,6 +223,7 @@ export function createApp(config: Config): express.Express {
       miningRoutes({
         getCurrentTemplate,
         submitMinedBlock,
+        miningSecret: config.miningSecret,
       }),
     );
   }

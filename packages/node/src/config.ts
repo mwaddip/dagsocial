@@ -26,6 +26,7 @@ export interface Config {
   epochBlocks: number;
   // Mining
   miningMode: 'internal' | 'external';
+  miningSecret: string;          // bearer token for mining API, empty = no auth
   orderingBlockPowTargetBits: number;
   creditInitialReward: number;
   creditTreasuryPct: number;
@@ -79,6 +80,7 @@ export function loadConfig(): Readonly<Config> {
     ),
     // Mining
     miningMode: parseMiningMode(process.env['MINING_MODE'] ?? 'internal'),
+    miningSecret: process.env['MINING_SECRET'] ?? '',
     orderingBlockPowTargetBits: parseInt(
       process.env['ORDERING_BLOCK_POW_TARGET_BITS'] ?? String(ORDERING_BLOCK_POW_TARGET_BITS),
       10,
