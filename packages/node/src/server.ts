@@ -13,7 +13,7 @@ import * as store from './store/index.js';
 import { getSystemKeypair } from './store/system.js';
 import { generateChallenge } from './services/pow.js';
 import { verifyPost } from './services/verifier.js';
-import { onSubBlockReceived, getCurrentTemplate, submitMinedBlock } from './services/block-creator.js';
+import { onSubBlockReceived, getCurrentTemplate, submitMinedBlock, setMinerPubkey } from './services/block-creator.js';
 import { castLike, removeLike } from './services/likes.js';
 import { castVouch, initiateUnvouch } from './services/vouch.js';
 import { createInvite, claimInvite, cancelInvite, commitInvite } from './services/invites.js';
@@ -223,6 +223,7 @@ export function createApp(config: Config): express.Express {
       miningRoutes({
         getCurrentTemplate,
         submitMinedBlock,
+        setMinerPubkey,
         miningSecret: config.miningSecret,
       }),
     );

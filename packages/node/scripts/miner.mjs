@@ -10,6 +10,7 @@ import { createHash } from 'crypto';
 const NODE_URL = (process.env.NODE_URL ?? 'http://localhost:3000').replace(/\/+$/, '');
 const MINER_PCT = Math.max(0, Math.min(100, parseInt(process.env.MINER_PCT ?? '25', 10)));
 const MINING_SECRET = process.env.MINING_SECRET ?? '';
+const MINER_PUBKEY = (process.env.MINER_PUBKEY ?? '').trim();
 const DUTY_WINDOW_MS = 1000;
 
 // ---------------------------------------------------------------------------
@@ -94,7 +95,10 @@ const headers = {
 };
 
 async function fetchTemplate() {
-  const res = await fetch(`${NODE_URL}/mining/template`, { headers });
+  const url = MINER_PUBKEY
+    ? `${NODE_URL}/mining/template?miner=${MINER_PUBKEY}`
+    : `${NODE_URL}/mining/template`;
+  const res = await fetch(url, { headers });
   if (res.status === 401) {
     throw new Error('Mining API returned 401 — check MINING_SECRET');
   }

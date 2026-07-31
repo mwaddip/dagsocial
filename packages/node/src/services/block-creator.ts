@@ -180,6 +180,21 @@ export function onSubBlockReceived(): void {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Miner pubkey override (external mining)
+// ---------------------------------------------------------------------------
+
+let currentMinerPubkey: Uint8Array | null = null;
+
+/**
+ * Set the pubkey that receives coinbase rewards. Called when an external
+ * miner requests a template with their own wallet address.
+ * Pass null to revert to the node's validator key.
+ */
+export function setMinerPubkey(pubkey: Uint8Array | null): void {
+  currentMinerPubkey = pubkey;
+}
+
 /**
  * Return the current block template for external miners.
  * Returns null if no template has been built yet or the block creator
@@ -657,9 +672,9 @@ function buildCoinbaseOutputs(height: number): CoinbaseOutput[] {
 
   const lockedUntilBlock = height + CREDIT_MINER_REWARD_DELAY;
 
-  // Miner output
+  // Miner output — use external miner's pubkey if provided, else validator key
   outputs.push({
-    owner: validatorId,
+    owner: currentMinerPubkey ?? validatorId,
     value: minerAmount,
     lockedUntilBlock,
     isTreasury: false,

@@ -9,6 +9,7 @@ import type { OrderingBlock } from '@dagsocial/types';
 export interface MiningDeps {
   getCurrentTemplate(): OrderingBlock | null;
   submitMinedBlock(powNonce: number, height: number): string | null;
+  setMinerPubkey(pubkey: Uint8Array | null): void;
   miningSecret: string;
 }
 
@@ -43,7 +44,17 @@ export function createRouter(deps: MiningDeps): Router {
   router.use(authMiddleware(miningSecret));
 
   // GET /mining/template — return current block template
-  router.get('/template', (_req, res) => {
+  router.get('/template', (req, res) => {
+    // Optional miner pubkey override for coinbase reward destination
+    const minerHex = typeof req.query.miner === 'string' ? req.query.miner : null;
+    if (minerHex) {
+      if (minerHex.length !== 64 || !/^[0-9a-fA-F]+$/.test(minerHex)) {
+        res.status(400).json({ error: 'Invalid miner pubkey — must be 64 hex chars' });
+        return;
+      }
+      deps.setMinerPubkey(new Uint8Array(Buffer.from(minerHex, 'hex')));
+    }
+
     const tpl = deps.getCurrentTemplate();
     if (!tpl) {
       res.status(404).json({ error: 'No block template available' });

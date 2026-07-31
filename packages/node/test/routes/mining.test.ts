@@ -8,6 +8,7 @@ function makeDeps(overrides: Partial<MiningDeps> = {}): MiningDeps {
   return {
     getCurrentTemplate: () => null,
     submitMinedBlock: () => null,
+    setMinerPubkey: () => {},
     miningSecret: '',
     ...overrides,
   };
