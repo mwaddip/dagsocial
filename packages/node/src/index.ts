@@ -111,7 +111,9 @@ if (config.networkMode === 'testnet') {
 // 1c. Initialize AVL prover
 const avlHandle = createAvlProver();
 const currentHeight = getCurrentHeight();
-if (currentHeight > 0) {
+// Only bootstrap if storage is empty — the PersistentBatchAVLProver
+// constructor already loads existing state via rollback.
+if (currentHeight > 0 && avlHandle.storage.version() === null) {
   const unspent = getUnspentBoxes();
   if (unspent.length > 0) {
     bootstrapAvlProver(avlHandle, unspent, currentHeight);
