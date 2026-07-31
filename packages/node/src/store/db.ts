@@ -3,17 +3,6 @@ import Database from 'better-sqlite3';
 let db: Database.Database | null = null;
 
 const MIGRATIONS = [
-  // Drop Phase 1 identities table (had secret_key NOT NULL)
-  'DROP TABLE IF EXISTS identities',
-  // Drop tables with TEXT id columns — rebuilt as BLOB below
-  'DROP TABLE IF EXISTS challenges',
-  'DROP TABLE IF EXISTS dag_posts',
-  'DROP TABLE IF EXISTS dag_parent_refs',
-  'DROP TABLE IF EXISTS dag_stumps',
-  'DROP TABLE IF EXISTS dag_likes',
-  'DROP TABLE IF EXISTS ordering_blocks',
-  'DROP TABLE IF EXISTS utxo_boxes',
-  'DROP TABLE IF EXISTS block_journal',
   // Challenges
   `CREATE TABLE IF NOT EXISTS challenges (
     user_id BLOB PRIMARY KEY,
@@ -211,7 +200,7 @@ function migrateVerifiablePrune(database: Database.Database): void {
   const cols = database.prepare("PRAGMA table_info('mempool')").all() as Array<{ name: string }>;
   if (cols.some(c => c.name === 'prune_entry_cbor')) return;
 
-  console.warn('migrateVerifiablePrune: dropping and recreating mempool and dag_stumps tables — data loss expected during development');
+  console.warn('migrateVerifiablePrune: applying one-time mempool and dag_stumps schema migration');
 
   // Drop and recreate mempool with prune_entry_cbor, entry_type 'prune' instead of 'stump'
   database.exec(`
