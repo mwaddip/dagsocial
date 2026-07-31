@@ -90,6 +90,8 @@ export function insertPost(post: Post, rawCbor: Uint8Array): void {
     if (existing && existing.content === '') {
       // Upgrade placeholder to real content. parent_refs and dag_parent_refs
       // were already populated by insertPostPlaceholder.
+      // Preserve confirmed status if block already applied before content arrived.
+      const newStatus = existing.status === 'confirmed' ? 'confirmed' : 'pending';
       db.prepare(
         `UPDATE dag_posts SET
            content = ?,
@@ -100,7 +102,7 @@ export function insertPost(post: Post, rawCbor: Uint8Array): void {
            timestamp = ?,
            signature = ?,
            raw_cbor = ?,
-           status = 'pending'
+           status = ?
          WHERE id = ?`,
       ).run(
         post.content,
@@ -111,6 +113,7 @@ export function insertPost(post: Post, rawCbor: Uint8Array): void {
         post.timestamp,
         Buffer.from(post.signature),
         Buffer.from(rawCbor),
+        newStatus,
         postId,
       );
     } else {
