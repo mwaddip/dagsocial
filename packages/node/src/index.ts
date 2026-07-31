@@ -13,7 +13,7 @@ import {
 } from './journal.js';
 import { NetNode, type PostsEntry } from '@dagsocial/net';
 import * as validation from '@dagsocial/validation';
-import { verifyPostForRelay } from './services/verifier.js';
+import { verifyPostForRelay, type VerifierDeps } from './services/verifier.js';
 import { sweepPlaceholders, hasPlaceholders, sweepStumps, hasMissingStumps } from './services/content-sweep.js';
 import { validateTx } from './services/utxo-engine.js';
 import { setNet } from './services/net-instance.js';
@@ -362,10 +362,9 @@ try {
   console.warn(`Net startup failed (continuing without networking): ${String(err)}`);
 }
 
-// Register content sweep on sync completion (gap 1)
-net.onSyncComplete(() => {
+function runContentSweep(net: NetNode, deps: VerifierDeps): void {
   if (hasPlaceholders()) {
-    console.log('[content-sweep] Sync complete, sweeping placeholders...');
+    console.log('[content-sweep] Sweeping placeholders...');
     sweepPlaceholders(net, deps).then((result) => {
       if (result.success) {
         console.log('[content-sweep] All placeholders resolved.');
@@ -379,7 +378,7 @@ net.onSyncComplete(() => {
     });
   }
   if (hasMissingStumps()) {
-    console.log('[content-sweep] Sync complete, sweeping missing stumps...');
+    console.log('[content-sweep] Sweeping missing stumps...');
     sweepStumps(net).then((result) => {
       if (result.success) {
         console.log('[content-sweep] All stumps resolved.');
@@ -390,7 +389,17 @@ net.onSyncComplete(() => {
       console.error(`[content-sweep] Stump sweep failed: ${err.message}`);
     });
   }
-});
+}
+
+// Register content sweep on sync completion
+net.onSyncComplete(() => runContentSweep(net, deps));
+
+// Re-run content sweep when a new peer becomes active
+net.onPeerActive((_peerId: string) => runContentSweep(net, deps));
+
+// Also sweep on startup if placeholders already exist (e.g. from a
+// previous run where content never arrived, or a race with sync).
+runContentSweep(net, deps);
 
 // Re-run content sweep when a new peer becomes active and we have pending placeholders
 net.onPeerActive((_peerId: string) => {

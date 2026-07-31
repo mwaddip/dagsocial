@@ -15,11 +15,11 @@ const MAX_PEERS_PER_BATCH = 3;
 const DEFAULT_MAX_RETRIES = 5;
 const BASE_DELAY_MS = 2000;
 
-/** Check if any placeholder posts exist (content is empty, status is pending). */
+/** Check if any placeholder posts exist (content is empty, never filled). */
 export function hasPlaceholders(): boolean {
   const db = getDb();
   const row = db
-    .prepare("SELECT COUNT(*) as count FROM dag_posts WHERE status = 'pending' AND content = ''")
+    .prepare("SELECT COUNT(*) as count FROM dag_posts WHERE content = ''")
     .get() as { count: number } | undefined;
   return (row?.count ?? 0) > 0;
 }
@@ -27,7 +27,7 @@ export function hasPlaceholders(): boolean {
 function getPlaceholderIds(): string[] {
   const db = getDb();
   const rows = db
-    .prepare("SELECT id FROM dag_posts WHERE status = 'pending' AND content = ''")
+    .prepare("SELECT id FROM dag_posts WHERE content = ''")
     .all() as Array<{ id: string }>;
   return rows.map((r) => r.id);
 }
