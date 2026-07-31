@@ -1,7 +1,7 @@
 import { loadConfig } from './config.js';
 import { initDb, closeDb } from './store/db.js';
 import { schemaVersion, writeSchemaVersion, CURRENT_SCHEMA_VERSION } from './store/meta.js';
-import { initSystemKeypair, ensureSystemKarmaBox, ensureFaucetCreditBox } from './store/system.js';
+import { getSystemKeypair, initSystemKeypair, ensureSystemKarmaBox, ensureFaucetCreditBox } from './store/system.js';
 import { startBlockCreator, stopBlockCreator, setDagServiceForMiner } from './services/block-creator.js';
 import { createApp, createAdminApp } from './server.js';
 import {
@@ -285,6 +285,15 @@ net.onTx((tx) => {
     getKarmaBox,
     getKarmaBoxes,
     runInTransaction: (fn: () => void) => fn(),
+    isSystemBox: (boxId: string) => {
+      const sysKey = getSystemKeypair();
+      if (!sysKey) return false;
+      const box = getBox(boxId);
+      if (!box || box.boxType !== 'karma') return false;
+      return Buffer.from((box as import('@dagsocial/types').KarmaBox).owner).equals(
+        Buffer.from(sysKey.publicKey),
+      );
+    },
   };
   const currentHeight = getCurrentHeight();
   const result = validateTx(deps, tx, currentHeight);

@@ -47,6 +47,14 @@
   .result-msg.ok { color: #3fb950; }
   .result-msg.err { color: #f85149; }
   hr { border: none; border-top: 1px solid #21262d; margin: 8px 0; }
+
+  /* Mobile: stack panels vertically, let body scroll */
+  @media (max-width: 768px) {
+    body { flex-direction: column; height: auto; min-height: 100vh; }
+    .left { width: 100%; min-width: 0; border-right: none; border-bottom: 1px solid #30363d; flex-shrink: 0; }
+    .right { flex: none; }
+    .panel { overflow-y: visible; }
+  }
 </style>
 </head>
 <body>
