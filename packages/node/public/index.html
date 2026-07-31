@@ -150,7 +150,8 @@
 <script type="module">
 import { blake2b } from 'https://cdn.jsdelivr.net/npm/blakejs@1.2.1/+esm';
 
-const API = '/testnet/api';
+// Auto-detect: behind nginx with /testnet/ prefix, or direct node access
+const API = window.location.pathname.startsWith('/testnet') ? '/testnet/api' : '';
 const encoder = new TextEncoder();
 
 // ===========================================================================
