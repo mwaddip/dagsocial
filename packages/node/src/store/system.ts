@@ -1,4 +1,4 @@
-import { generateKeyPairSync, createPrivateKey, createPublicKey, sign } from 'crypto';
+import { createPrivateKey, sign } from 'crypto';
 import { computeBoxId } from '@dagsocial/types';
 import type { KarmaBox, CreditBox } from '@dagsocial/types';
 import { getDb } from './db.js';
@@ -36,28 +36,32 @@ export function getSystemKeypair(): SystemKeypair | null {
   return { publicKey, secretKey };
 }
 
+// Deterministic system keypair derived from blake2b-256("dagsocial-testnet-system-v1").
+// All testnet nodes share this identity so that system box IDs match and
+// faucet/invite signatures are verifiable by every peer.
+//
+// Pre-computed rather than derived at runtime to avoid Node.js version
+// differences in PKCS8 JWK export across vitest worker threads.
+const SYSTEM_PUBKEY_HEX = '5468d985c3924a95f3d3dc98b67a41ac2c7cc4cfca4fcbf7c5627452f1617f36';
+const SYSTEM_PKCS8_HEX = '302e020100300506032b6570042204204504541a393fe199a143e47fbf10cb32ef7ef349eecd2f0997a310487b03abf4';
+
 /**
- * Generate and persist the system keypair. Idempotent — returns existing
- * keypair if already initialized.
+ * Return the deterministic system keypair. Idempotent — returns the
+ * stored keypair if already persisted, otherwise derives and persists
+ * the hardcoded deterministic identity.
  */
 export function initSystemKeypair(): SystemKeypair {
   const existing = getSystemKeypair();
   if (existing) return existing;
 
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const pubDer = publicKey.export({ type: 'spki', format: 'der' }) as Buffer;
-  const privDer = privateKey.export({ type: 'pkcs8', format: 'der' }) as Buffer;
+  const pubBytes = new Uint8Array(Buffer.from(SYSTEM_PUBKEY_HEX, 'hex'));
+  const privBytes = new Uint8Array(Buffer.from(SYSTEM_PKCS8_HEX, 'hex'));
 
-  // Extract raw 32-byte public key from SPKI DER
-  const pubBytes = new Uint8Array(pubDer.subarray(pubDer.length - 32));
-  const privBytes = new Uint8Array(privDer);
-
-  // Store concatenated: publicKey (32) || secretKey (PKCS8 DER)
-  const value = Buffer.concat([Buffer.from(pubBytes), Buffer.from(privBytes)]);
+  // Persist: publicKey (32 raw bytes) || secretKey (PKCS8 DER).
   const db = getDb();
   db.prepare('INSERT INTO system_config (key, value) VALUES (?, ?)').run(
     SYSTEM_KEYPAIR_KEY,
-    value,
+    Buffer.concat([Buffer.from(pubBytes), Buffer.from(privBytes)]),
   );
 
   return { publicKey: pubBytes, secretKey: privBytes };
