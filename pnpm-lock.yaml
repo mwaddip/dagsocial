@@ -119,6 +119,9 @@ importers:
         specifier: ^1.6.0
         version: 1.6.4
     devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.1
       tsup:
         specifier: ^8.0.0
         version: 8.5.1(postcss@8.5.20)(typescript@5.9.3)
@@ -127,7 +130,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^1.6.0
-        version: 1.6.1(@types/node@26.1.1)
+        version: 1.6.1(@types/node@22.20.1)
 
   packages/validation:
     dependencies:
