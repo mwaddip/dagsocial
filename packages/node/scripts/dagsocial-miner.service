@@ -8,6 +8,7 @@ Type=simple
 Environment="NODE_URL=https://notis.blockhost.io/testnet/api"
 Environment="MINER_PCT=25"
 Environment="MINING_SECRET=letmetest"
+Environment="MINER_PUBKEY=a1580bf92e5ffb81a7193c5c658339609f3dc63829e0a850fd12a9e873b58c7a"
 ExecStart=/usr/bin/node /opt/dagsocial-miner/miner.mjs
 Restart=always
 RestartSec=5
