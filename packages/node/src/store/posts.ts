@@ -87,7 +87,7 @@ export function insertPost(post: Post, rawCbor: Uint8Array): void {
       "SELECT status, content FROM dag_posts WHERE id = ?",
     ).get(postId) as { status: string; content: string } | undefined;
 
-    if (existing && existing.status === 'pending' && existing.content === '') {
+    if (existing && existing.content === '') {
       // Upgrade placeholder to real content. parent_refs and dag_parent_refs
       // were already populated by insertPostPlaceholder.
       db.prepare(
