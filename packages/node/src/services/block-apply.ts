@@ -462,17 +462,15 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
       continue;
     }
 
+    // For txs in confirmed blocks: run a best-effort liveness check but
+    // never skip the transaction.  If inputs are missing, log a warning
+    // and still apply — consuming whatever inputs exist and creating all
+    // outputs.  This breaks the cascade (where a single missing-input tx
+    // prevents its outputs from being created, which causes every
+    // downstream dependent tx to fail too).
     const revalResult = revalidateTxInContext(utxoDeps, tx, block.header.height);
     if (!revalResult.valid) {
-      console.warn(`UTXO tx ${txId} failed revalidation: ${revalResult.error}`);
-      // Remove from local mempool if present (stale entry)
-      const mempoolEntry = pendingEntries.find((e) => {
-        if (e.entryType !== 'utxo_tx' || !e.utxoTxCbor) return false;
-        const et = decodeTx(e.utxoTxCbor);
-        return computeTxId(et) === txId;
-      });
-      if (mempoolEntry) removeEntry(mempoolEntry.rowid);
-      continue;
+      console.warn(`UTXO tx ${txId} in block ${block.header.height}: input liveness check failed (${revalResult.error}), applying anyway`);
     }
     const computedOutputs = tx.outputs.map((box) => ({
       ...box,

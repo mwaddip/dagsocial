@@ -310,6 +310,13 @@ net.onStump((stump) => {
   console.log(`Relayed stump stored: ${stump.rootPostHash}`);
 });
 
+  // Register blocks handler — bridges sync machine's pull path
+  // (ModifierResponse) to the node's applyOrderingBlock pipeline.
+  net.setBlocksHandler((block) => {
+    applyOrderingBlock(block, dagService);
+  });
+  net.setHeadersHandler(getOrderingBlock);
+
 // 4. Start net
 try {
   await net.start();
@@ -350,14 +357,7 @@ try {
     return entries;
   });
 
-  // Register headers handler for fork resolution sync
-  net.setHeadersHandler(getOrderingBlock);
 
-  // Register blocks handler — bridges sync machine's pull path
-  // (ModifierResponse) to the node's applyOrderingBlock pipeline.
-  net.setBlocksHandler((block) => {
-    applyOrderingBlock(block, dagService);
-  });
 } catch (err) {
   console.warn(`Net startup failed (continuing without networking): ${String(err)}`);
 }

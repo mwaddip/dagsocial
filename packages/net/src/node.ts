@@ -227,6 +227,7 @@ export class NetNode {
   private stumpsHandler: ((stumpIds: string[]) => StumpsEntry[]) | null = null;
   private syncCompleteHandlers: Array<() => void> = [];
   private peerActiveHandlers: Array<(peerId: string) => void> = [];
+  private pendingBootstrapDials: Set<string> = new Set();
 
   constructor(config: NetConfig, validators: NetValidators) {
     this.config = config;
@@ -377,53 +378,28 @@ export class NetNode {
     // Log listen addresses
     console.log(`[net] listening on: ${listenAddrs.map(a => a.toString()).join(', ')}`);
 
-    // Connect to bootstrap peers
+    // Connect to bootstrap peers (awaited — must complete before caller
+    // registers blocksHandler so the initial sync burst isn't dropped).
     for (const addr of this.config.bootstrapPeers) {
-      console.log(`[net] dialing bootstrap peer: ${addr}`);
-      try {
-        const conn = await this.libp2p.dial(multiaddr(addr));
-        console.log(`[net] bootstrap dial succeeded: ${addr} -> peer=${conn.remotePeer.toString()}`);
-
-        // Run handshake exchange with the newly connected peer
-        try {
-          const result = await this.runOutboundHandshake(conn.remotePeer.toString());
-          if (result.ok) {
-            this.peerMgr.setPeerState(conn.remotePeer.toString(), PeerState.Active);
-
-            // Record in PeerDb
-            this.peerDb?.record({
-              address: addr,
-              lastSeenMs: Date.now(),
-              agentName: 'bootstrap',
-              nodeName: '',
-              protocolVersion: PROTOCOL_VERSION,
-              capabilities: result.peerCapabilities,
-            });
-            // Notify sync machine
-            this.syncMachine?.onPeerActive(conn.remotePeer.toString(), result.peerHeight);
-            // Notify registered peer-active callbacks
-            for (const cb of this.peerActiveHandlers) {
-              try { cb(conn.remotePeer.toString()); } catch (err) {
-                console.warn(`[net] peerActive handler error: ${String(err)}`);
-              }
-            }
-          }
-        } catch (handshakeErr: any) {
-          console.warn(`[net] handshake with bootstrap peer ${addr} failed: ${handshakeErr?.message ?? handshakeErr}`);
-        }
-      } catch (err: any) {
-        // Bootstrap peer unreachable — not fatal
-        console.warn(`[net] bootstrap dial FAILED: ${addr} — ${err?.message ?? err}`);
-        this.outboundMgr?.recordDialResult(addr, false);
-      }
+      await this.dialBootstrapPeer(addr);
     }
 
     // Start periodic timer: sync machine tick + outbound manager
     this.syncTimer = setInterval(() => {
       this.syncMachine?.onTimerTick();
-      // Outbound manager: check if we should dial more peers
       if (this.libp2p && this.outboundMgr) {
         const connectedOutbound = this.peerMgr.getPeerCount();
+
+        // Floor phase: re-dial bootstrap peers when below minPeers.
+        // The OutboundManager.pickCandidate returns null below minPeers
+        // (caller handles bootstrap seed dialing separately).
+        if (connectedOutbound < (this.config.minPeers ?? 3)) {
+          for (const addr of this.config.bootstrapPeers) {
+            this.dialBootstrapPeer(addr);
+          }
+        }
+
+        // Fill phase: use PeerDb candidates above minPeers
         const candidate = this.outboundMgr.pickCandidate(connectedOutbound);
         if (candidate) {
           console.log(`[net] outbound manager dialing: ${candidate}`);
@@ -447,6 +423,7 @@ export class NetNode {
       clearInterval(this.syncTimer);
       this.syncTimer = null;
     }
+    this.pendingBootstrapDials.clear();
     await this.libp2p.stop();
     this.libp2p = null;
     this.peerDb = null;
@@ -454,6 +431,59 @@ export class NetNode {
     this.syncMachine = null;
     this.outboundMgr = null;
     this.started = false;
+  }
+
+  /**
+   * Dial a bootstrap peer (or any multiaddr), run the outbound handshake,
+   * and notify the sync machine + peer-active callbacks on success.
+   *
+   * Returns a Promise that resolves to `true` when the handshake succeeds,
+   * `false` otherwise.  Safe to call from the periodic timer without
+   * awaiting — concurrent dials to the same address are deduplicated via
+   * `pendingBootstrapDials`.
+   */
+  private async dialBootstrapPeer(addr: string): Promise<boolean> {
+    if (!this.libp2p || !this.outboundMgr) return false;
+    if (this.pendingBootstrapDials.has(addr)) return false;
+    this.pendingBootstrapDials.add(addr);
+
+    console.log(`[net] dialing bootstrap peer: ${addr}`);
+    try {
+      const conn = await this.libp2p.dial(multiaddr(addr));
+      this.pendingBootstrapDials.delete(addr);
+      console.log(`[net] bootstrap dial succeeded: ${addr} -> peer=${conn.remotePeer.toString()}`);
+
+      try {
+        const result = await this.runOutboundHandshake(conn.remotePeer.toString());
+        if (result.ok) {
+          this.peerMgr.setPeerState(conn.remotePeer.toString(), PeerState.Active);
+          this.peerDb?.record({
+            address: addr,
+            lastSeenMs: Date.now(),
+            agentName: 'bootstrap',
+            nodeName: '',
+            protocolVersion: PROTOCOL_VERSION,
+            capabilities: result.peerCapabilities,
+          });
+          this.syncMachine?.onPeerActive(conn.remotePeer.toString(), result.peerHeight);
+          for (const cb of this.peerActiveHandlers) {
+            try { cb(conn.remotePeer.toString()); } catch (err) {
+              console.warn(`[net] peerActive handler error: ${String(err)}`);
+            }
+          }
+          return true;
+        }
+        return false;
+      } catch (handshakeErr: any) {
+        console.warn(`[net] handshake with bootstrap peer ${addr} failed: ${handshakeErr?.message ?? handshakeErr}`);
+        return false;
+      }
+    } catch (err: any) {
+      this.pendingBootstrapDials.delete(addr);
+      console.warn(`[net] bootstrap dial FAILED: ${addr} — ${err?.message ?? err}`);
+      this.outboundMgr?.recordDialResult(addr, false);
+      return false;
+    }
   }
 
   // -----------------------------------------------------------------------
