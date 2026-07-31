@@ -397,9 +397,17 @@ net.onSyncComplete(() => runContentSweep(net, deps));
 // Re-run content sweep when a new peer becomes active
 net.onPeerActive((_peerId: string) => runContentSweep(net, deps));
 
-// Also sweep on startup if placeholders already exist (e.g. from a
-// previous run where content never arrived, or a race with sync).
+// Sweep on startup if placeholders already exist
 runContentSweep(net, deps);
+
+// Periodic sweep to catch placeholders that were created after sync
+// completed (race between sync finishing and handler registration).
+const SWEEP_INTERVAL_MS = 30_000;
+setInterval(() => {
+  if (hasPlaceholders() || hasMissingStumps()) {
+    runContentSweep(net, deps);
+  }
+}, SWEEP_INTERVAL_MS);
 
 // Re-run content sweep when a new peer becomes active and we have pending placeholders
 net.onPeerActive((_peerId: string) => {
