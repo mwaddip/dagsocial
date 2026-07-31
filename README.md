@@ -1,4 +1,4 @@
-# DAGsocial
+# Notis
 
 Decentralized social network — no tokens to buy, no ads, no corporate servers.
 Content lives in a prunable DAG controlled by authors. Karma and credits live in
@@ -6,7 +6,7 @@ a Bitcoin-style UTXO ledger secured by Ed25519 signatures. Phase 2: local HTTP
 node with identity, PoW posting, DAG storage, UTXO engine, AVL+ state root,
 verifiable prune consensus, libp2p networking, and a demo UI.
 
-**905 tests pass** across 5 packages. Node.js ≥ 22, TypeScript, pnpm. MIT licensed.
+**492 tests pass** across 5 packages. Node.js ≥ 22, TypeScript, pnpm. MIT licensed.
 
 ---
 
@@ -32,7 +32,7 @@ in-process.
 
 ### Devnet (split mining)
 
-For running a node on a VPS without PoW (ToS compliance, etc.), DAGsocial
+For running a node on a VPS without PoW (ToS compliance, etc.), Notis
 supports external mining. The node builds block templates and exposes them
 over HTTP; a separate miner script solves PoW and submits.
 
@@ -253,7 +253,7 @@ testnet mode.
 
 ## How It Works
 
-DAGsocial splits decentralized social networking into two layers, each doing
+Notis splits decentralized social networking into two layers, each doing
 what it's good at:
 
 | | Posts DAG | UTXO Ledger |
