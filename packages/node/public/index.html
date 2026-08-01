@@ -157,7 +157,14 @@
 </div>
 
 <div class="panel right">
-  <h2>Feed</h2>
+  <div id="profileBar" class="status-bar" style="display:none;margin-bottom:12px;align-items:center;gap:8px">
+    <span><strong id="profileName"></strong></span>
+    <button id="vouchBtn" class="small" style="display:none">Vouch</button>
+    <button id="unvouchBtn" class="small danger" style="display:none">Unvouch</button>
+    <span id="vouchStatus" style="font-size:11px"></span>
+    <button id="profileBackBtn" class="small" style="margin-left:auto">← All posts</button>
+  </div>
+  <h2>Feed <button id="feedFilterBtn" class="small" style="margin-left:8px;font-size:10px">All posts</button></h2>
   <div id="feed"><div class="empty">Loading...</div></div>
 </div>
 
@@ -189,7 +196,8 @@ let identities = [];
 let activeIndex = -1;
 let userId, pubKeyRaw, privKey;
 let networkMode = 'mainnet';
-const likedPosts = new Set();
+/** Feed filter: 'all' or the hex userId to show only that author's posts. */
+let feedFilter = 'all';
 /** Set of post IDs with a pending like/unlike tx (spinner shown). */
 const pendingLikes = new Set();
 /** Map of targetPostId → { likeBoxId, isFree } for unlike */
@@ -791,6 +799,7 @@ function setStatus(text, cls) {
 }
 
 function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function escWithBreaks(s) { return esc(s).replace(/\n/g, '<br>'); }
 
 // ===========================================================================
 // Identity management
@@ -826,8 +835,7 @@ async function activateIdentity(index) {
   document.getElementById('currentUserId').textContent = userId;
   document.getElementById('postBtn').disabled = false;
 
-  // Clear per-session liked tracking for this identity
-  likedPosts.clear();
+  // Clear per-session tracking for this identity
   pendingLikes.clear();
   likeBoxes.clear();
 
@@ -1069,6 +1077,124 @@ document.getElementById('postBtn').addEventListener('click', async () => {
   }
 });
 
+// Feed filter toggle
+document.getElementById('feedFilterBtn').addEventListener('click', () => {
+  if (feedFilter === 'all') {
+    feedFilter = userId || 'all';
+    showProfileBar(userId, 'Your posts');
+  } else {
+    feedFilter = 'all';
+    hideProfileBar();
+  }
+  updateFilterBtn();
+  loadFeed();
+});
+
+// View another author's profile/feed
+window.viewProfile = async (authorHex) => {
+  feedFilter = authorHex;
+  showProfileBar(authorHex, authorHex.slice(0, 16) + '...');
+  updateFilterBtn();
+  loadFeed();
+};
+
+function updateFilterBtn() {
+  const btn = document.getElementById('feedFilterBtn');
+  if (feedFilter === userId) {
+    btn.textContent = 'My posts';
+    btn.style.background = '#1f6feb';
+  } else if (feedFilter !== 'all') {
+    btn.textContent = "Author's posts";
+    btn.style.background = '#1f6feb';
+  } else {
+    btn.textContent = 'All posts';
+    btn.style.background = '';
+  }
+}
+
+function showProfileBar(authorHex, label) {
+  const bar = document.getElementById('profileBar');
+  document.getElementById('profileName').textContent = label;
+  bar.style.display = 'flex';
+  // Vouch controls (hidden for own identity)
+  const isOwn = userId && authorHex === userId;
+  document.getElementById('vouchBtn').style.display = (userId && !isOwn) ? '' : 'none';
+  document.getElementById('unvouchBtn').style.display = 'none';
+  document.getElementById('vouchStatus').textContent = '';
+  if (userId && !isOwn) checkVouchStatus(authorHex);
+}
+
+function hideProfileBar() {
+  document.getElementById('profileBar').style.display = 'none';
+}
+
+async function checkVouchStatus(targetId) {
+  try {
+    const res = await fetch(API + '/vouches?target=' + encodeURIComponent(targetId));
+    const data = await res.json();
+    const hasVouch = data.vouches && data.vouches.some(v => v.voucherId === userId);
+    if (hasVouch) {
+      document.getElementById('vouchBtn').style.display = 'none';
+      document.getElementById('unvouchBtn').style.display = '';
+    }
+  } catch {}
+}
+
+document.getElementById('vouchBtn').addEventListener('click', async () => {
+  if (!userId || feedFilter === 'all' || feedFilter === userId) return;
+  const btn = document.getElementById('vouchBtn');
+  btn.disabled = true;
+  btn.textContent = '...';
+  try {
+    const res = await fetch(API + '/vouches', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, targetId: feedFilter }),
+    });
+    const data = await res.json();
+    document.getElementById('vouchStatus').textContent = res.ok ? 'Vouched!' : (data.reason || data.error || 'failed');
+    if (res.ok) {
+      btn.style.display = 'none';
+      document.getElementById('unvouchBtn').style.display = '';
+    }
+  } catch (e) {
+    document.getElementById('vouchStatus').textContent = 'error';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Vouch';
+  }
+});
+
+document.getElementById('unvouchBtn').addEventListener('click', async () => {
+  if (!userId || feedFilter === 'all') return;
+  const btn = document.getElementById('unvouchBtn');
+  btn.disabled = true;
+  btn.textContent = '...';
+  try {
+    const res = await fetch(API + '/vouches/' + encodeURIComponent(feedFilter), {
+      method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId }),
+    });
+    const data = await res.json();
+    document.getElementById('vouchStatus').textContent = res.ok ? 'Unvouched.' : (data.reason || data.error || 'failed');
+    if (res.ok) {
+      btn.style.display = 'none';
+      document.getElementById('vouchBtn').style.display = '';
+    }
+  } catch (e) {
+    document.getElementById('vouchStatus').textContent = 'error';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Unvouch';
+  }
+});
+
+document.getElementById('profileBackBtn').addEventListener('click', () => {
+  feedFilter = 'all';
+  hideProfileBar();
+  updateFilterBtn();
+  loadFeed();
+});
+
 // ===========================================================================
 // Like / Unlike flow (tx-based)
 // ===========================================================================
@@ -1096,7 +1222,7 @@ async function doLike(targetPostId) {
     });
     const data = await res.json();
     if (!res.ok) {
-      setStatus(data.error || 'like failed', 'error');
+      setStatus(data.reason || data.error || 'like failed', 'error');
       return false;
     }
 
@@ -1158,7 +1284,7 @@ async function doUnlike(targetPostId) {
       });
       const data = await res.json();
       if (!res.ok) {
-        setStatus(data.error || 'unlike failed', 'error');
+        setStatus(data.reason || data.error || 'unlike failed', 'error');
         return false;
       }
       return true;
@@ -1178,7 +1304,7 @@ async function doUnlike(targetPostId) {
       });
       const data = await res.json();
       if (!res.ok) {
-        setStatus(data.error || 'unlike failed', 'error');
+        setStatus(data.reason || data.error || 'unlike failed', 'error');
         return false;
       }
       return true;
@@ -1195,7 +1321,7 @@ async function doUnlike(targetPostId) {
 
 function renderPost(p, id, depth) {
   const shortId = id.slice(0, 16);
-  const liked = likedPosts.has(id);
+  const liked = userId && p.likers && p.likers.includes(userId);
   const likeCount = typeof p.likeCount === 'number' ? p.likeCount : 0;
   const indent = depth * 20;
   const isOwn = userId && p.author === userId;
@@ -1204,8 +1330,8 @@ function renderPost(p, id, depth) {
     : '';
   return `
     <div class="post" data-post-id="${id}" style="margin-left:${indent}px;border-left:${depth > 0 ? '2px solid #30363d' : 'none'};padding-left:${depth > 0 ? '10px' : '12px'}">
-      <div class="post-author">${esc(p.author.slice(0, 12))}...</div>
-      <div class="post-content">${esc(p.content)}</div>
+      <div class="post-author" style="cursor:pointer" onclick="event.stopPropagation();viewProfile('${esc(p.author)}')" title="View posts by this author">${esc(p.author.slice(0, 12))}...</div>
+      <div class="post-content">${escWithBreaks(p.content)}</div>
       <div class="post-meta">
         <span>${new Date(p.timestamp).toLocaleTimeString()}</span>
         <span>${p.parentRefs.length ? p.parentRefs.length + ' parent(s)' : 'genesis'}</span>
@@ -1234,7 +1360,9 @@ function renderThread(roots, postMap, children, depth) {
 async function loadFeed() {
   const feed = document.getElementById('feed');
   try {
-    const res = await fetch(API + '/posts?limit=50');
+    let url = API + '/posts?limit=50';
+    if (feedFilter !== 'all') url += '&author=' + feedFilter;
+    const res = await fetch(url);
     const posts = await res.json();
     if (!posts.length) { feed.innerHTML = '<div class="empty">No posts yet. Write something!</div>'; return; }
 
@@ -1284,25 +1412,26 @@ async function loadFeed() {
         const isLiked = btn.dataset.liked === '1';
         if (!postId) return;
 
+        // Show spinner immediately on the clicked button
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span>Pending...';
         pendingLikes.add(postId);
-        loadFeed(); // re-render immediately to show spinner
 
         if (isLiked) {
           const ok = await doUnlike(postId);
           if (ok) {
-            likedPosts.delete(postId);
-            likeBoxes.delete(postId);
+                        likeBoxes.delete(postId);
             loadIdentityStatus();
           }
         } else {
           const ok = await doLike(postId);
           if (ok) {
-            likedPosts.add(postId);
-            loadIdentityStatus();
+                        loadIdentityStatus();
           }
         }
 
         pendingLikes.delete(postId);
+        btn.disabled = false;
         loadFeed(); // re-render to update button state
       });
     });
@@ -1454,7 +1583,7 @@ document.getElementById('faucetBtn').addEventListener('click', async () => {
       loadIdentityStatus();
       loadStatus();
     } else {
-      result.innerHTML = `<span class="result-msg err">${esc(data.error || 'faucet failed')}</span>`;
+      result.innerHTML = `<span class="result-msg err">${esc(data.reason || data.error || 'faucet failed')}</span>`;
     }
   } catch (e) {
     result.innerHTML = `<span class="result-msg err">${esc(e.message)}</span>`;
@@ -1486,7 +1615,7 @@ document.getElementById('creditFaucetBtn').addEventListener('click', async () =>
       loadIdentityStatus();
       loadStatus();
     } else {
-      result.innerHTML = `<span class="result-msg err">${esc(data.error || 'faucet failed')}</span>`;
+      result.innerHTML = `<span class="result-msg err">${esc(data.reason || data.error || 'faucet failed')}</span>`;
     }
   } catch (e) {
     result.innerHTML = `<span class="result-msg err">${esc(e.message)}</span>`;
@@ -1588,7 +1717,7 @@ document.getElementById('creditTransferBtn').addEventListener('click', async () 
       loadIdentityStatus();
       loadStatus();
     } else {
-      result.innerHTML = `<span class="result-msg err">${esc(data.error || 'transfer failed')}</span>`;
+      result.innerHTML = `<span class="result-msg err">${esc(data.reason || data.error || 'transfer failed')}</span>`;
     }
   } catch (e) {
     result.innerHTML = `<span class="result-msg err">${esc(e.message)}</span>`;
@@ -1657,7 +1786,7 @@ document.getElementById('createInviteBtn').addEventListener('click', async () =>
       loadStatus();
       loadIdentityStatus();
     } else {
-      result.innerHTML = `<span class="result-msg err">${esc(data.error || 'invite creation failed')}</span>`;
+      result.innerHTML = `<span class="result-msg err">${esc(data.reason || data.error || 'invite creation failed')}</span>`;
     }
   } catch (e) {
     result.innerHTML = `<span class="result-msg err">${esc(e.message)}</span>`;
@@ -1828,7 +1957,7 @@ document.getElementById('cancelInviteBtn').addEventListener('click', async () =>
       loadStatus();
       loadIdentityStatus();
     } else {
-      result.innerHTML = `<span class="result-msg err">${esc(data.error || 'cancel failed')}</span>`;
+      result.innerHTML = `<span class="result-msg err">${esc(data.reason || data.error || 'cancel failed')}</span>`;
     }
   } catch (e) {
     result.innerHTML = `<span class="result-msg err">${esc(e.message)}</span>`;

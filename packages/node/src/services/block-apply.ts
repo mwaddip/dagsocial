@@ -14,7 +14,7 @@ import type { DecayDeps } from './decay.js';
 import { config } from '../config.js';
 import { computeBlockReward, computeSubBlockRoot, computeUtxoTxRoot, clearTemplate, computeEpochTally } from './block-creator.js';
 import { DagService } from './dag-service.js';
-import { revalidateTxInContext, applyTx } from './utxo-engine.js';
+import { applyTx } from './utxo-engine.js';
 import {
   getKarmaBox,
   getKarmaBoxes,
@@ -424,7 +424,12 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
     }
   }
 
-  // 11. Apply UTXO transactions from the block
+  // 11. Apply UTXO transactions from the block.
+  // Use a multi-pass approach: txs whose inputs don't exist yet are
+  // deferred and retried after other txs in the same block may have
+  // created those inputs.  This resolves intra-block dependencies
+  // without inflating the UTXO set (unlike permissive single-pass).
+  // Txs whose inputs still don't exist after all retries are skipped.
   const utxoDeps = {
     getBox,
     insertBox,
@@ -435,6 +440,14 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
     },
   };
   const pendingEntries = getPendingEntries(1000);
+
+  // Decode and validate all txs first (CBOR / txId checks are fatal).
+  interface QueuedTx {
+    txId: string;
+    tx: UtxoTransaction;
+    outputs: AnyBox[];
+  }
+  const queue: QueuedTx[] = [];
   for (let i = 0; i < block.utxoTxTree.utxoTxIds.length; i++) {
     const txId = block.utxoTxTree.utxoTxIds[i]!;
     const txCbor = block.utxoTxTree.utxoTxs[i];
@@ -452,75 +465,99 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
       continue;
     }
 
-    // Verify the CBOR decodes to the declared utxoTxIds entry.
-    // Prevents a malicious miner from swapping UTXO tx CBOR entries.
     const decodedTxId = computeTxId(tx);
     if (decodedTxId !== txId) {
-      console.warn(
-        `Rejected UTXO tx ${txId}: CBOR decodes to ${decodedTxId}`,
-      );
+      console.warn(`Rejected UTXO tx ${txId}: CBOR decodes to ${decodedTxId}`);
       continue;
     }
 
-    // For txs in confirmed blocks: run a best-effort liveness check but
-    // never skip the transaction.  If inputs are missing, log a warning
-    // and still apply — consuming whatever inputs exist and creating all
-    // outputs.  This breaks the cascade (where a single missing-input tx
-    // prevents its outputs from being created, which causes every
-    // downstream dependent tx to fail too).
-    const revalResult = revalidateTxInContext(utxoDeps, tx, block.header.height);
-    if (!revalResult.valid) {
-      console.warn(`UTXO tx ${txId} in block ${block.header.height}: input liveness check failed (${revalResult.error}), applying anyway`);
-    }
-    const computedOutputs = tx.outputs.map((box) => ({
+    const outputs = tx.outputs.map((box) => ({
       ...box,
       id: computeBoxId(box),
     })) as AnyBox[];
+    queue.push({ txId, tx, outputs });
+  }
 
-    // Detect vouch unvouch before the VouchBox is consumed
-    for (const inputId of tx.inputs) {
-      const inputBox = getBox(inputId);
-      if (inputBox && inputBox.boxType === 'vouch') {
-        const vb = inputBox as import('@dagsocial/types').VouchBox;
-        if (tx.outputs.length === 0) {
-          insertVouchCooldown(
-            vb.voucherId,
-            vb.targetId,
-            block.header.height + VOUCH_COOLDOWN_BLOCKS,
-            VOUCH_KARMA_AMOUNT,
-          );
-          if (!currentJournal.vouchCooldownInsertions) {
-            currentJournal.vouchCooldownInsertions = [];
-          }
-          currentJournal.vouchCooldownInsertions.push({
-            voucherId: vb.voucherId,
-            targetId: vb.targetId,
-          });
-        }
-        break;
+  // Multi-pass: try to apply txs, retrying those whose inputs aren't
+  // available yet (may have been created by an earlier tx in this block).
+  const MAX_PASSES = 20;
+  for (let pass = 0; pass < MAX_PASSES && queue.length > 0; pass++) {
+    const remaining: QueuedTx[] = [];
+    let applied = 0;
+
+    for (const item of queue) {
+      const allInputsExist = item.tx.inputs.every((id) => getBox(id) !== null);
+      if (!allInputsExist) {
+        remaining.push(item);
+        continue;
       }
+
+      // Detect vouch unvouch before the VouchBox is consumed
+      for (const inputId of item.tx.inputs) {
+        const inputBox = getBox(inputId);
+        if (inputBox && inputBox.boxType === 'vouch') {
+          const vb = inputBox as import('@dagsocial/types').VouchBox;
+          if (item.tx.outputs.length === 0) {
+            insertVouchCooldown(
+              vb.voucherId,
+              vb.targetId,
+              block.header.height + VOUCH_COOLDOWN_BLOCKS,
+              VOUCH_KARMA_AMOUNT,
+            );
+            if (!currentJournal.vouchCooldownInsertions) {
+              currentJournal.vouchCooldownInsertions = [];
+            }
+            currentJournal.vouchCooldownInsertions.push({
+              voucherId: vb.voucherId,
+              targetId: vb.targetId,
+            });
+          }
+          break;
+        }
+      }
+
+      applyTx(utxoDeps, item.tx, item.outputs, block.header.height);
+      applied++;
+
+      // Remove from local mempool if present
+      const mempoolEntry = pendingEntries.find((e) => {
+        if (e.entryType !== 'utxo_tx' || !e.utxoTxCbor) return false;
+        const et = decodeTx(e.utxoTxCbor);
+        return computeTxId(et) === item.txId;
+      });
+      if (mempoolEntry) removeEntry(mempoolEntry.rowid);
+
+      // Record in journal
+      const appliedTx = {
+        txId: item.txId,
+        txCbor: encodeTx(item.tx),
+        inputBoxIds: item.tx.inputs,
+        outputBoxIds: item.outputs.map((o) => o.id!),
+      };
+      currentJournal.appliedUtxoTxs.push(appliedTx);
+      currentJournal.consumedBoxIds.push(...appliedTx.inputBoxIds);
+      currentJournal.createdBoxIds.push(...appliedTx.outputBoxIds);
     }
 
-    applyTx(utxoDeps, tx, computedOutputs, block.header.height);
+    if (applied === 0) {
+      // No progress — remaining txs have inputs that truly don't exist.
+      for (const item of remaining) {
+        console.warn(
+          `UTXO tx ${item.txId} in block ${block.header.height}: ` +
+          `input liveness check failed after ${pass + 1} passes, skipping`,
+        );
+      }
+      break;
+    }
+    queue.length = 0;
+    queue.push(...remaining);
+  }
 
-    // Remove from local mempool if present
-    const mempoolEntry = pendingEntries.find((e) => {
-      if (e.entryType !== 'utxo_tx' || !e.utxoTxCbor) return false;
-      const et = decodeTx(e.utxoTxCbor);
-      return computeTxId(et) === txId;
-    });
-    if (mempoolEntry) removeEntry(mempoolEntry.rowid);
-
-    // Record in journal
-    const appliedTx = {
-      txId,
-      txCbor: encodeTx(tx),
-      inputBoxIds: tx.inputs,
-      outputBoxIds: computedOutputs.map((o) => o.id!),
-    };
-    currentJournal.appliedUtxoTxs.push(appliedTx);
-    currentJournal.consumedBoxIds.push(...appliedTx.inputBoxIds);
-    currentJournal.createdBoxIds.push(...appliedTx.outputBoxIds);
+  if (queue.length > 0) {
+    console.warn(
+      `Block ${block.header.height}: ${queue.length} UTXO tx(s) could not be applied ` +
+      `after ${MAX_PASSES} passes`,
+    );
   }
 
   // 12. Apply periodic karma decay

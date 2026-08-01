@@ -13,6 +13,7 @@ export interface FeedServiceDeps {
     offset?: number;
   }) => Post[];
   getLikeCount: (postId: string) => { locked: number; free: number };
+  getLikersForPost: (postId: string) => string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -31,6 +32,7 @@ export interface PostJson {
   signature: string;
   status: string;
   likeCount: number;
+  likers: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -43,6 +45,7 @@ export interface PostJson {
 export function postToJson(
   post: Post & { status?: string },
   likeCount: number,
+  likers: string[],
 ): PostJson {
   const postId = computePostId(post);
   return {
@@ -57,6 +60,7 @@ export function postToJson(
     signature: Buffer.from(post.signature).toString('hex'),
     status: post.status ?? 'unknown',
     likeCount,
+    likers,
   };
 }
 
@@ -90,7 +94,8 @@ export class FeedService {
 
     const post = result as Post;
     const counts = this.deps.getLikeCount(id);
-    return postToJson(post, counts.locked + counts.free);
+    const likers = this.deps.getLikersForPost(id);
+    return postToJson(post, counts.locked + counts.free, likers);
   }
 
   /**
@@ -107,7 +112,8 @@ export class FeedService {
     return posts.map((post) => {
       const postId = computePostId(post);
       const counts = this.deps.getLikeCount(postId);
-      return postToJson(post, counts.locked + counts.free);
+      const likers = this.deps.getLikersForPost(postId);
+      return postToJson(post, counts.locked + counts.free, likers);
     });
   }
 }

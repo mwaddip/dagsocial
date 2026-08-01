@@ -356,6 +356,23 @@ export function getBondBoxes(inviterId: Uint8Array): BondBox[] {
 }
 
 /**
+ * Return the hex-encoded liker IDs for all unspent LikeBoxes targeting
+ * the given post. Used by the feed API to tell clients who has liked.
+ */
+export function getLikersForPost(targetPostId: string): string[] {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT json_extract(extra_data, '$.likerId') AS likerId FROM utxo_boxes
+       WHERE box_type = 'like'
+         AND json_extract(extra_data, '$.targetPostId') = ?
+         AND spent_at_block IS NULL`,
+    )
+    .all(targetPostId) as { likerId: string }[];
+  return rows.map((r) => r.likerId);
+}
+
+/**
  * Return all unspent (unconsumed) like boxes targeting the given post.
  * Used by prune settlement to refund likers' locked karma.
  */

@@ -115,6 +115,7 @@ export function createApp(config: Config): express.Express {
       getKarmaBoxes: store.getKarmaBoxes,
       getCurrentHeight: store.getCurrentHeight,
       getLikeCount: store.getLikeCount,
+      getLikersForPost: store.getLikersForPost,
       insertMempoolSubBlock: store.insertMempoolSubBlock,
       insertUtxoTx: store.insertUtxoTx,
       onSubBlockReceived,

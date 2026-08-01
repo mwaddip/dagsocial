@@ -34,6 +34,7 @@ export {
   getPostLockBox,
   getPostTotalLikes,
   getUnspentLikeBoxes,
+  getLikersForPost,
   getUnspentBoxes,
   insertBox,
   consumeBox,
