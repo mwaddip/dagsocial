@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DAGsocial Demo</title>
+<title>Notis DEMO UI</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: system-ui, sans-serif; background: #0d1117; color: #c9d1d9; display: flex; height: 100vh; }
@@ -39,6 +39,12 @@
   .like-btn:hover { border-color: #f85149; color: #f85149; background: #3b1616; }
   .like-btn:disabled { opacity: 0.4; cursor: not-allowed; }
   .like-btn.liked { border-color: #f85149; color: #f85149; background: #2d1216; }
+  .like-btn .spinner {
+    display: inline-block; width: 10px; height: 10px; border: 2px solid #30363d;
+    border-top-color: #f85149; border-radius: 50%; animation: spin 0.6s linear infinite;
+    margin-right: 4px; vertical-align: middle;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
   .status-bar { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 10px; font-size: 12px; line-height: 1.6; }
   .status-bar span { color: #8b949e; }
   .status-bar strong { color: #c9d1d9; }
@@ -184,6 +190,8 @@ let activeIndex = -1;
 let userId, pubKeyRaw, privKey;
 let networkMode = 'mainnet';
 const likedPosts = new Set();
+/** Set of post IDs with a pending like/unlike tx (spinner shown). */
+const pendingLikes = new Set();
 /** Map of targetPostId → { likeBoxId, isFree } for unlike */
 const likeBoxes = new Map();
 /** Current block height from /status */
@@ -820,6 +828,7 @@ async function activateIdentity(index) {
 
   // Clear per-session liked tracking for this identity
   likedPosts.clear();
+  pendingLikes.clear();
   likeBoxes.clear();
 
   // Load per-identity balances
@@ -1202,8 +1211,10 @@ function renderPost(p, id, depth) {
         <span>${p.parentRefs.length ? p.parentRefs.length + ' parent(s)' : 'genesis'}</span>
         <span style="font-family:monospace;font-size:10px">${esc(shortId)}...</span>
         <button class="like-btn reply-btn" data-post-id="${id}">&#8617; Reply</button>
-        <button class="like-btn${liked ? ' liked' : ''}" data-post-id="${id}" data-liked="${liked ? '1' : '0'}">
-          ${liked ? '&#10084;&#65039; Liked' : '&#10084;&#65039; Like'} (${likeCount})
+        <button class="like-btn${liked ? ' liked' : ''}" data-post-id="${id}" data-liked="${liked ? '1' : '0'}"${pendingLikes.has(id) ? ' disabled' : ''}>
+          ${pendingLikes.has(id)
+            ? '<span class="spinner"></span>Pending...'
+            : (liked ? '&#10084;&#65039; Liked' : '&#10084;&#65039; Like') + ` (${likeCount})`}
         </button>
         ${deleteBtn}
       </div>
@@ -1273,8 +1284,8 @@ async function loadFeed() {
         const isLiked = btn.dataset.liked === '1';
         if (!postId) return;
 
-        btn.disabled = true;
-        btn.textContent = '...';
+        pendingLikes.add(postId);
+        loadFeed(); // re-render immediately to show spinner
 
         if (isLiked) {
           const ok = await doUnlike(postId);
@@ -1283,19 +1294,16 @@ async function loadFeed() {
             likeBoxes.delete(postId);
             loadIdentityStatus();
           }
-          btn.disabled = false;
-          loadFeed();
         } else {
           const ok = await doLike(postId);
           if (ok) {
             likedPosts.add(postId);
-            btn.classList.add('liked');
-            btn.dataset.liked = '1';
             loadIdentityStatus();
           }
-          btn.disabled = false;
-          loadFeed();
         }
+
+        pendingLikes.delete(postId);
+        loadFeed(); // re-render to update button state
       });
     });
 
