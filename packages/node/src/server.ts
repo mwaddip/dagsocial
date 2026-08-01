@@ -18,7 +18,9 @@ import { castLike, removeLike } from './services/likes.js';
 import { castVouch, initiateUnvouch } from './services/vouch.js';
 import { createInvite, claimInvite, cancelInvite, commitInvite } from './services/invites.js';
 import { executePrune } from './services/stump-engine.js';
+import { readFileSync } from 'fs';
 import { encodePost } from '@dagsocial/types';
+import { computePostId } from '@dagsocial/types';
 import { getDb } from './store/db.js';
 import { validateTx } from './services/utxo-engine.js';
 import { createAdminRouter } from './routes/admin.js';
@@ -63,7 +65,96 @@ export function createApp(config: Config): express.Express {
 
   // Demo UI
   const publicDir = new URL('../public', import.meta.url).pathname;
+  const indexPath = new URL('../public/index.html', import.meta.url).pathname;
+  const indexHtml = readFileSync(indexPath, 'utf-8');
+
+  // Inject OG meta tags into index.html when ?post=<id> is present.
+  // This handles the case where a user copies the browser URL bar to share.
+  app.get('/', (req, res, next) => {
+    const postId = req.query['post'] as string | undefined;
+    if (!postId) return next();
+
+    const result = store.getPost(postId);
+    if (!result || !('content' in result)) return next();
+
+    const post = result as import('@dagsocial/types').Post;
+    const authorHex = Buffer.from(post.author).toString('hex');
+    const shortAuthor = authorHex.slice(0, 12);
+    const descRaw = post.content.length > 200
+      ? post.content.slice(0, 197).replace(/\s+\S*$/, '') + '...'
+      : post.content;
+    const desc = descRaw.replace(/\s+/g, ' ').replace(/"/g, '&quot;').trim();
+
+    const publicBase = config.publicUrl.replace(/\/$/, '');
+    const apiBase = publicBase ? `${publicBase}/api` : '';
+    const proto = (req.headers['x-forwarded-proto'] as string) ?? req.protocol;
+    const host = (req.headers['x-forwarded-host'] as string) ?? req.get('host') ?? 'localhost';
+    const canonicalUrl = `${proto}://${host}${publicBase}/?post=${encodeURIComponent(postId)}`;
+
+    const ogTags = `
+<meta property="og:title" content="Post by ${shortAuthor}... — Notis">
+<meta name="description" content="${desc}">
+<meta property="og:description" content="${desc}">
+<meta property="og:type" content="article">
+<meta property="og:url" content="${canonicalUrl}">
+<meta property="og:site_name" content="Notis">
+<meta name="twitter:card" content="summary">`;
+
+    const html = indexHtml.replace('</head>', `${ogTags}\n</head>`);
+    res.type('html').send(html);
+  });
+
   app.use(express.static(publicDir));
+
+  // GET /preview/:id — Open Graph preview page for link sharing (Telegram, etc.)
+  app.get('/preview/:id', (req, res) => {
+    const postId = req.params['id']!;
+    const result = store.getPost(postId);
+    if (!result || !('content' in result)) {
+      res.status(404).type('html').send('<!DOCTYPE html><html><body><p>Post not found.</p></body></html>');
+      return;
+    }
+
+    const post = result as import('@dagsocial/types').Post;
+    const authorHex = Buffer.from(post.author).toString('hex');
+    const shortAuthor = authorHex.slice(0, 12);
+    // Truncate content to ~200 chars for og:description. Collapse whitespace
+    // (newlines break HTML attribute parsing) and escape for HTML.
+    const descRaw = post.content.length > 200
+      ? post.content.slice(0, 197).replace(/\s+\S*$/, '') + '...'
+      : post.content;
+    const desc = descRaw.replace(/\s+/g, ' ').replace(/"/g, '&quot;').trim();
+
+    // Build absolute URL for og:url (Telegram requires absolute URLs).
+    // The Express app may be behind nginx with a path prefix (e.g. /testnet/api).
+    const proto = (req.headers['x-forwarded-proto'] as string) ?? req.protocol;
+    const host = (req.headers['x-forwarded-host'] as string) ?? req.get('host') ?? 'localhost';
+    const publicBase = config.publicUrl.replace(/\/$/, ''); // e.g. "" or "/testnet"
+    const apiBase = publicBase ? `${publicBase}/api` : '';
+    const previewUrl = `${proto}://${host}${apiBase}/preview/${encodeURIComponent(postId)}`;
+    const uiUrl = `${publicBase}/?post=${encodeURIComponent(postId)}`;
+
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Post by ${shortAuthor}... — Notis</title>
+<meta property="og:title" content="Post by ${shortAuthor}... — Notis">
+<meta name="description" content="${desc}">
+<meta property="og:description" content="${desc}">
+<meta property="og:type" content="article">
+<meta property="og:url" content="${previewUrl.replace(/"/g, '&quot;')}">
+<meta property="og:site_name" content="Notis">
+<meta name="twitter:card" content="summary">
+<script>window.location.href = '${uiUrl.replace(/'/g, "\\'")}';</script>
+</head>
+<body>
+<p><a href="${uiUrl.replace(/"/g, '&quot;')}">View post</a></p>
+</body>
+</html>`;
+    res.type('html').send(html);
+  });
 
   // ---- Shared UTXO engine deps (curried into validateTx for routes) ----
 
@@ -116,6 +207,8 @@ export function createApp(config: Config): express.Express {
       getCurrentHeight: store.getCurrentHeight,
       getLikeCount: store.getLikeCount,
       getLikersForPost: store.getLikersForPost,
+      getAncestors: store.getAncestors,
+      getSubtree: store.getSubtree,
       insertMempoolSubBlock: store.insertMempoolSubBlock,
       insertUtxoTx: store.insertUtxoTx,
       onSubBlockReceived,

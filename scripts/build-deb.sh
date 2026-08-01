@@ -102,6 +102,9 @@ ENVEOF
 # 7. DEBIAN control files
 # ---------------------------------------------------------------------------
 
+# conffiles — mark node.env so dpkg preserves user edits on upgrade
+echo "/etc/dagsocial/node.env" > "$STAGING/DEBIAN/conffiles"
+
 # control
 cat > "$STAGING/DEBIAN/control" <<EOF
 Package: $PKG
@@ -133,6 +136,11 @@ if [ "$1" = "configure" ] && [ -z "${2:-}" ]; then
   systemctl start dagsocial-node || true
   echo "dagsocial-node installed and started."
   echo "Edit /etc/dagsocial/node.env to configure, then: systemctl restart dagsocial-node"
+elif [ "$1" = "configure" ] && [ -n "${2:-}" ]; then
+  # Upgrade — restart the service to pick up the new binary
+  systemctl daemon-reload
+  systemctl try-restart dagsocial-node || true
+  echo "dagsocial-node upgraded and restarted."
 fi
 
 exit 0

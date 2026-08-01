@@ -1,7 +1,7 @@
 # DAGsocial Architecture
 
 **Protocol version:** 1
-**Last updated:** 2026-07-29
+**Last updated:** 2026-08-01
 
 ## Overview
 
@@ -86,7 +86,7 @@ closure of `parentRefs` that trace back to this root.
 ```
 Post {
   content: string              // 1–MAX_CONTENT_BYTES UTF-8
-  author: UserId               // base58btc(blake2b512(publicKey))
+  author: UserId               // hex(publicKey) — 64 chars, raw Ed25519 key
   parentRefs: PostId[]         // 0–MAX_PARENT_REFS per post
   challenge: bytes             // Random nonce issued by node (anti-precomputation)
   powNonce: number             // PoW solution — proves work against challenge
@@ -112,14 +112,12 @@ model. The post's PoW solution IS the sub-block proof:
 2. Author constructs the post, iterates `powNonce` until:
    `blake2b512(content || author || parentRefs || challenge || protocolVersion || timestamp || powNonce)`
    meets the target difficulty
-3. Author submits the completed post → it becomes a sub-block with pending
-   likes attached as sidecars
+3. Author submits the completed post → it becomes a sub-block (likeBoxes are
+   collected separately at ordering block assembly, not attached as sidecars)
 4. Validators verify the PoW when anchoring sub-blocks in an ordering block
 
-The challenge prevents precomputation. The concurrency constraint holds:
-one outstanding challenge per account at a time. The author cannot request a
-new challenge until the current one is submitted or expires (challenge
-expiry: `CHALLENGE_WINDOW_BLOCKS`).
+The challenge prevents precomputation. Requesting a new challenge replaces
+any existing one (upsert). Challenge expires after `CHALLENGE_WINDOW_BLOCKS`.
 
 PoW difficulty is a protocol parameter (`POST_POW_TARGET_BITS`). It may
 become karma-proportional in the future (high karma → lower difficulty),
@@ -201,7 +199,7 @@ time:
 
 - **Staleness check:** An identity is stale if it has NO unspent karma box
   without `decayBurn` that was created within `KARMA_STALE_THRESHOLD_BLOCKS`
-- **Decay execution:** At each ordering block, stale identities have their karma
+- **Decay execution:** At each ordering block, stale karma boxes have their karma
   boxes consumed and replaced with a single consolidated box with value reduced
   by `KARMA_DECAY_AMOUNT` per `KARMA_DECAY_INTERVAL_BLOCKS` elapsed
 - **Floor:** Decay never reduces karma below `KARMA_MINIMUM`
@@ -335,7 +333,7 @@ prune, and the settlement is deterministically computable from UTXO state.
 An account is a cryptographic keypair. There is no separate registration step.
 
 ```
-UserId = base58btc(blake2b512(publicKey))
+UserId = hex(publicKey) — 64 hex chars, raw Ed25519 key bytes
 ```
 
 An account comes into existence the first time it appears in a committed UTXO
@@ -783,7 +781,7 @@ forever. A node rejects objects with an unsupported protocol version.
 See `SUBBLOCK_INTERFACE.md` for the full contract.
 
 - Sub-blocks are user-produced; ordering blocks are validator-produced
-- Sub-blocks carry at most one post plus queued likes as sidecars
+- Sub-blocks carry at most one post (like boxes collected at ordering time)
 - Ordering blocks anchor sub-blocks via Merkle digest
 - Like deduplication happens at ordering time
 - Epoch transitions (like tally) happen at ordering block boundaries

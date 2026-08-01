@@ -283,6 +283,39 @@ export function unconfirmPost(subBlockId: string): void {
 }
 
 /**
+ * Walk up dag_parent_refs from a post to collect all ancestors in a straight
+ * line (follows the first parent at each step). Returns posts in order from
+ * genesis → immediate parent of the target. The target post itself is NOT
+ * included. Pruned posts are skipped (they break the chain).
+ */
+export function getAncestors(postId: string): Post[] {
+  const db = getDb();
+  const ancestors: Post[] = [];
+  const seen = new Set<string>();
+  let currentId: string | null = postId;
+
+  while (currentId) {
+    const parents = getParentRefs(currentId);
+    const firstParent: string | undefined = parents[0];
+    if (!firstParent) break;
+
+    // Follow the first parent for a deterministic linear chain
+    if (seen.has(firstParent)) break; // cycle detection
+    seen.add(firstParent);
+
+    const row = db
+      .prepare("SELECT * FROM dag_posts WHERE id = ? AND status != 'pruned'")
+      .get(firstParent) as PostRow | undefined;
+    if (!row) break;
+
+    ancestors.unshift(rowToPost(row)); // prepend so order is genesis → parent
+    currentId = firstParent;
+  }
+
+  return ancestors;
+}
+
+/**
  * Return the parent IDs for a given post, in insertion order.
  */
 export function getParentRefs(postId: string): string[] {

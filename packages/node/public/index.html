@@ -54,6 +54,15 @@
   .result-msg.err { color: #f85149; }
   hr { border: none; border-top: 1px solid #21262d; margin: 8px 0; }
 
+  /* Thread view & permalink */
+  .permalink { color: #484f58; text-decoration: none; cursor: pointer; }
+  .permalink:hover { color: #58a6ff; text-decoration: underline; }
+  .post-highlighted { border-color: #d29922 !important; background: #1a1a13 !important; }
+  .thread-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+  .thread-header h2 { margin-bottom: 0; }
+  .ancestor-post { opacity: 0.75; }
+  .ancestor-connector { color: #484f58; font-size: 11px; padding: 2px 0 2px 12px; border-left: 2px solid #30363d; margin-left: 0; }
+
   /* Mobile: stack panels vertically, let body scroll */
   @media (max-width: 768px) {
     body { flex-direction: column; height: auto; min-height: 100vh; }
@@ -1319,7 +1328,30 @@ async function doUnlike(targetPostId) {
 // Feed
 // ===========================================================================
 
-function renderPost(p, id, depth) {
+/**
+ * Format a Unix-ms timestamp as a relative time string ("2m ago", "3h ago").
+ * Returns absolute date/time as the title attribute for hover.
+ */
+function formatRelativeTime(ts) {
+  const now = Date.now();
+  const diff = now - ts;
+  const seconds = Math.floor(diff / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+
+  let relative;
+  if (seconds < 60) relative = 'just now';
+  else if (minutes < 60) relative = `${minutes}m ago`;
+  else if (hours < 24) relative = `${hours}h ago`;
+  else if (days < 7) relative = `${days}d ago`;
+  else relative = new Date(ts).toLocaleDateString();
+
+  const absolute = new Date(ts).toLocaleString();
+  return { relative, absolute };
+}
+
+function renderPost(p, id, depth, highlighted = false) {
   const shortId = id.slice(0, 16);
   const liked = userId && p.likers && p.likers.includes(userId);
   const likeCount = typeof p.likeCount === 'number' ? p.likeCount : 0;
@@ -1328,12 +1360,14 @@ function renderPost(p, id, depth) {
   const deleteBtn = isOwn
     ? `<button class="like-btn delete-btn" data-post-id="${id}" style="color:#f85149">&#10005; Delete</button>`
     : '';
+  const { relative, absolute } = formatRelativeTime(p.timestamp);
+  const hlClass = highlighted ? ' post-highlighted' : '';
   return `
-    <div class="post" data-post-id="${id}" style="margin-left:${indent}px;border-left:${depth > 0 ? '2px solid #30363d' : 'none'};padding-left:${depth > 0 ? '10px' : '12px'}">
+    <div class="post${hlClass}" data-post-id="${id}" style="margin-left:${indent}px;border-left:${depth > 0 ? '2px solid #30363d' : 'none'};padding-left:${depth > 0 ? '10px' : '12px'}">
       <div class="post-author" style="cursor:pointer" onclick="event.stopPropagation();viewProfile('${esc(p.author)}')" title="View posts by this author">${esc(p.author.slice(0, 12))}...</div>
       <div class="post-content">${escWithBreaks(p.content)}</div>
       <div class="post-meta">
-        <span>${new Date(p.timestamp).toLocaleTimeString()}</span>
+        <a class="permalink" onclick="event.stopPropagation();loadThread('${esc(id)}')" title="${esc(absolute)}">${esc(relative)}</a>
         <span>${p.parentRefs.length ? p.parentRefs.length + ' parent(s)' : 'genesis'}</span>
         <span style="font-family:monospace;font-size:10px">${esc(shortId)}...</span>
         <button class="like-btn reply-btn" data-post-id="${id}">&#8617; Reply</button>
@@ -1392,106 +1426,249 @@ async function loadFeed() {
     feed.innerHTML = renderThread(rootPosts, postMap, children, 0) ||
       '<div class="empty">No root posts found. Try posting something!</div>';
 
-    // Attach reply handlers
-    feed.querySelectorAll('.reply-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const postId = btn.dataset.postId;
-        if (!postId) return;
-        const input = document.getElementById('parents');
-        const current = input.value.trim();
-        input.value = current ? current + ', ' + postId : postId;
-        input.scrollIntoView({ behavior: 'smooth' });
-        input.focus();
-      });
-    });
-
-    // Attach like/unlike handlers
-    feed.querySelectorAll('.like-btn:not(.reply-btn)').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        const postId = btn.dataset.postId;
-        const isLiked = btn.dataset.liked === '1';
-        if (!postId) return;
-
-        // Show spinner immediately on the clicked button
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner"></span>Pending...';
-        pendingLikes.add(postId);
-
-        if (isLiked) {
-          const ok = await doUnlike(postId);
-          if (ok) {
-                        likeBoxes.delete(postId);
-            loadIdentityStatus();
-          }
-        } else {
-          const ok = await doLike(postId);
-          if (ok) {
-                        loadIdentityStatus();
-          }
-        }
-
-        pendingLikes.delete(postId);
-        btn.disabled = false;
-        loadFeed(); // re-render to update button state
-      });
-    });
-
-    // Attach delete handlers
-    feed.querySelectorAll('.delete-btn').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        const postId = btn.dataset.postId;
-        if (!postId || !userId || !privKey) return;
-
-        if (!confirm('Delete this post and all replies? This will return any locked karma to each reply author.')) {
-          return;
-        }
-
-        btn.disabled = true;
-        btn.textContent = '...';
-
-        try {
-          // Get a challenge from the server
-          const chalRes = await fetch(API + '/challenge', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ userId }),
-          });
-          if (!chalRes.ok) {
-            throw new Error('Failed to get challenge');
-          }
-          const { challenge } = await chalRes.json();
-
-          // Sign the challenge to prove authorship
-          const chalBytes = hex2buf(challenge);
-          const hash = blake2b(chalBytes, null, 64).slice(0, 32);
-          const sigBuf = await crypto.subtle.sign('Ed25519', privKey, hash);
-          const signature = buf2hex(new Uint8Array(sigBuf));
-
-          const res = await fetch(API + '/posts/' + encodeURIComponent(postId), {
-            method: 'DELETE',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ authorId: userId, challenge, signature }),
-          });
-
-          if (!res.ok) {
-            const err = await res.json();
-            throw new Error(err.error || 'Delete failed');
-          }
-
-          const result = await res.json();
-          console.log('Post deleted:', result);
-          loadFeed();
-        } catch (e) {
-          console.error('Delete failed:', e);
-          alert('Delete failed: ' + (e.message || 'unknown error'));
-          btn.disabled = false;
-          btn.textContent = '✕ Delete';
-        }
-      });
-    });
+    // Attach reply/like/delete handlers
+    attachFeedHandlers(feed);
   } catch (e) {
     feed.innerHTML = '<div class="empty">Failed to load feed</div>';
   }
+}
+
+// ===========================================================================
+// Thread view (permalink)
+// ===========================================================================
+
+/** Currently viewed thread post ID, or null if showing the normal feed. */
+let threadPostId = null;
+
+/**
+ * Fetch and render a single post with its full thread context.
+ * Pushes state to browser history for permalink sharing and back-button support.
+ */
+async function loadThread(postId, pushState = true) {
+  threadPostId = postId;
+  const feed = document.getElementById('feed');
+
+  if (pushState) {
+    const url = new URL(window.location.href);
+    url.searchParams.set('post', postId);
+    window.history.pushState({ postId }, '', url.toString());
+  }
+
+  try {
+    const res = await fetch(API + '/posts/' + encodeURIComponent(postId) + '/thread');
+    if (!res.ok) {
+      feed.innerHTML = '<div class="empty">Post not found.</div>';
+      return;
+    }
+    const thread = await res.json();
+
+    // Build ancestors HTML (straight line, oldest first → immediate parent)
+    let ancestorsHtml = '';
+    if (thread.ancestors && thread.ancestors.length > 0) {
+      const parts = [];
+      for (const a of thread.ancestors) {
+        const aid = computePostId(a);
+        parts.push(renderPost(a, aid, 0, false));
+        parts.push('<div class="ancestor-connector">↓</div>');
+      }
+      ancestorsHtml = parts.join('');
+    }
+
+    // Target post (highlighted)
+    const targetHtml = renderPost(thread.post, postId, 0, true);
+
+    // Build descendants threaded view
+    let descendantsHtml = '';
+    if (thread.descendants && thread.descendants.length > 0) {
+      const allDesc = [...thread.descendants];
+      // Include target in the map so children refs to target resolve
+      const allPosts = [...allDesc, thread.post];
+
+      const postMap = new Map();
+      const children = new Map();
+      for (const p of allPosts) {
+        const pid = computePostId(p);
+        postMap.set(pid, p);
+      }
+      for (const p of allDesc) {
+        const pid = computePostId(p);
+        for (const parentId of p.parentRefs) {
+          if (postMap.has(parentId)) {
+            if (!children.has(parentId)) children.set(parentId, []);
+            children.get(parentId).push(p);
+          }
+        }
+      }
+
+      // Roots of the descendant tree: posts whose parents are all outside the
+      // descendant set (i.e., their only parent in our map is the target post)
+      const rootDesc = allDesc.filter(p => {
+        if (!p.parentRefs.length) return false;
+        return p.parentRefs.every(pid => !postMap.has(pid) || pid === postId);
+      });
+
+      if (rootDesc.length > 0) {
+        descendantsHtml = renderThread(rootDesc, postMap, children, 1);
+      }
+    }
+
+    const previewUrl = `${API}/preview/${encodeURIComponent(postId)}`;
+
+    feed.innerHTML = `
+      <div class="thread-header">
+        <button id="threadBackBtn" class="small">← Back to feed</button>
+        <button id="copyLinkBtn" class="small" style="background:#30363d">Copy link</button>
+        <span id="copyLinkMsg" style="font-size:11px;color:#3fb950;display:none">Copied!</span>
+      </div>
+      ${ancestorsHtml}
+      ${targetHtml}
+      ${descendantsHtml ? '<div style="margin-top:8px"></div>' + descendantsHtml : ''}
+    `;
+
+    // Back button handler
+    document.getElementById('threadBackBtn').addEventListener('click', () => {
+      window.history.back();
+    });
+
+    // Copy link handler
+    document.getElementById('copyLinkBtn').addEventListener('click', async () => {
+      try {
+        const fullUrl = new URL(previewUrl, window.location.href).toString();
+        await navigator.clipboard.writeText(fullUrl);
+        const msg = document.getElementById('copyLinkMsg');
+        msg.style.display = '';
+        setTimeout(() => { msg.style.display = 'none'; }, 2000);
+      } catch {
+        // Fallback for older browsers
+        const input = document.createElement('input');
+        input.value = new URL(previewUrl, window.location.href).toString();
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand('copy');
+        document.body.removeChild(input);
+      }
+    });
+
+    // Attach reply/like/delete handlers (same pattern as loadFeed)
+    attachFeedHandlers(feed);
+  } catch (e) {
+    feed.innerHTML = '<div class="empty">Failed to load thread</div>';
+  }
+}
+
+// Expose for inline onclick handlers (module scripts don't create globals)
+window.loadThread = loadThread;
+
+/** Clear thread view and return to normal feed. Called on popstate back to feed. */
+function clearThread() {
+  threadPostId = null;
+  loadFeed();
+}
+
+// ===========================================================================
+// Feed event handler attachment (shared between feed and thread views)
+// ===========================================================================
+
+function attachFeedHandlers(container) {
+  container.querySelectorAll('.reply-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const postId = btn.dataset.postId;
+      if (!postId) return;
+      const input = document.getElementById('parents');
+      const current = input.value.trim();
+      input.value = current ? current + ', ' + postId : postId;
+      input.scrollIntoView({ behavior: 'smooth' });
+      input.focus();
+    });
+  });
+
+  container.querySelectorAll('.like-btn:not(.reply-btn):not(.delete-btn)').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const postId = btn.dataset.postId;
+      const isLiked = btn.dataset.liked === '1';
+      if (!postId) return;
+
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span>Pending...';
+      pendingLikes.add(postId);
+
+      if (isLiked) {
+        const ok = await doUnlike(postId);
+        if (ok) {
+          likeBoxes.delete(postId);
+          loadIdentityStatus();
+        }
+      } else {
+        const ok = await doLike(postId);
+        if (ok) {
+          loadIdentityStatus();
+        }
+      }
+
+      pendingLikes.delete(postId);
+      btn.disabled = false;
+      // Refresh the current view
+      if (threadPostId) loadThread(threadPostId, false);
+      else loadFeed();
+    });
+  });
+
+  container.querySelectorAll('.delete-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const postId = btn.dataset.postId;
+      if (!postId || !userId || !privKey) return;
+
+      if (!confirm('Delete this post and all replies? This will return any locked karma to each reply author.')) {
+        return;
+      }
+
+      btn.disabled = true;
+      btn.textContent = '...';
+
+      try {
+        const chalRes = await fetch(API + '/challenge', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId }),
+        });
+        if (!chalRes.ok) {
+          throw new Error('Failed to get challenge');
+        }
+        const { challenge } = await chalRes.json();
+
+        const chalBytes = hex2buf(challenge);
+        const hash = blake2b(chalBytes, null, 64).slice(0, 32);
+        const sigBuf = await crypto.subtle.sign('Ed25519', privKey, hash);
+        const signature = buf2hex(new Uint8Array(sigBuf));
+
+        const res = await fetch(API + '/posts/' + encodeURIComponent(postId), {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ authorId: userId, challenge, signature }),
+        });
+
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.error || 'Delete failed');
+        }
+
+        const result = await res.json();
+        console.log('Post deleted:', result);
+        if (threadPostId) {
+          // If the deleted post was the thread target, go back to feed
+          if (threadPostId === postId) window.history.back();
+          else loadThread(threadPostId, false);
+        } else {
+          loadFeed();
+        }
+      } catch (e) {
+        console.error('Delete failed:', e);
+        alert('Delete failed: ' + (e.message || 'unknown error'));
+        btn.disabled = false;
+        btn.textContent = '✕ Delete';
+      }
+    });
+  });
 }
 
 // ===========================================================================
@@ -1983,9 +2160,36 @@ if (revealKeys.length > 0) {
 }
 
 await loadIdentities();
-loadFeed();
+
+// Check for ?post= permalink on initial load
+const initialParams = new URLSearchParams(window.location.search);
+const initialPostId = initialParams.get('post');
+if (initialPostId) {
+  // Replace state so the initial history entry has the postId
+  window.history.replaceState({ postId: initialPostId }, '', window.location.href);
+  loadThread(initialPostId, false);
+} else {
+  loadFeed();
+}
 loadStatus();
-setInterval(loadFeed, 5000);
+
+// Handle browser back/forward
+window.addEventListener('popstate', (event) => {
+  const state = event.state;
+  const params = new URLSearchParams(window.location.search);
+  const postId = params.get('post');
+  if (postId) {
+    loadThread(postId, false);
+  } else {
+    clearThread();
+  }
+});
+
+// Auto-refresh (skipped when viewing a thread)
+setInterval(() => {
+  if (!threadPostId) loadFeed();
+  loadStatus();
+}, 5000);
 setInterval(loadStatus, 15000);
 </script>
 </body>

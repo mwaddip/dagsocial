@@ -14,6 +14,8 @@ export interface FeedServiceDeps {
   }) => Post[];
   getLikeCount: (postId: string) => { locked: number; free: number };
   getLikersForPost: (postId: string) => string[];
+  getAncestors: (postId: string) => Post[];
+  getSubtree: (postId: string) => Post[];
 }
 
 // ---------------------------------------------------------------------------
@@ -33,6 +35,12 @@ export interface PostJson {
   status: string;
   likeCount: number;
   likers: string[];
+}
+
+export interface ThreadJson {
+  post: PostJson | null;
+  ancestors: PostJson[];
+  descendants: PostJson[];
 }
 
 // ---------------------------------------------------------------------------
@@ -115,5 +123,49 @@ export class FeedService {
       const likers = this.deps.getLikersForPost(postId);
       return postToJson(post, counts.locked + counts.free, likers);
     });
+  }
+
+  /**
+   * Fetch a post with its full thread context: ancestor chain (genesis →
+   * immediate parent, straight line) and descendant subtree (all replies).
+   * Returns null if the post is not found.
+   */
+  getThread(id: string): ThreadJson | null {
+    const result = this.deps.getPost(id);
+    if (!result) return null;
+
+    // Handle Stumps — no thread context available
+    if (
+      typeof result === 'object' &&
+      result !== null &&
+      'subtreeMerkleRoot' in result
+    ) {
+      return { post: result as unknown as PostJson, ancestors: [], descendants: [] };
+    }
+
+    const post = result as Post;
+    const counts = this.deps.getLikeCount(id);
+    const likers = this.deps.getLikersForPost(id);
+    const postJson = postToJson(post, counts.locked + counts.free, likers);
+
+    // Ancestors: walk up the parent chain (genesis → immediate parent)
+    const ancestorPosts = this.deps.getAncestors(id);
+    const ancestors = ancestorPosts.map((p) => {
+      const pid = computePostId(p);
+      const c = this.deps.getLikeCount(pid);
+      const l = this.deps.getLikersForPost(pid);
+      return postToJson(p, c.locked + c.free, l);
+    });
+
+    // Descendants: full reply subtree below the target
+    const descendantPosts = this.deps.getSubtree(id);
+    const descendants = descendantPosts.map((p) => {
+      const pid = computePostId(p);
+      const c = this.deps.getLikeCount(pid);
+      const l = this.deps.getLikersForPost(pid);
+      return postToJson(p, c.locked + c.free, l);
+    });
+
+    return { post: postJson, ancestors, descendants };
   }
 }

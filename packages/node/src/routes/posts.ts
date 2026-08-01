@@ -133,6 +133,16 @@ export function createRouter(deps: PostsDeps): Router {
     }
   });
 
+  // GET /posts/:id/thread — fetch a post with full thread context
+  router.get('/:id/thread', (req, res) => {
+    const thread = feedService.getThread(req.params['id']!);
+    if (!thread) {
+      res.status(404).json({ error: 404, reason: 'Post not found' });
+      return;
+    }
+    res.json(thread);
+  });
+
   // GET /posts/:id — retrieve a specific post
   router.get('/:id', (req, res) => {
     const result = feedService.getPost(req.params['id']!);

@@ -18,6 +18,8 @@ export interface Config {
   dbPath: string;
   networkMode: string;
   nodeRole: 'server' | 'miner';
+  /** Base path where the demo UI is served (e.g., "/testnet/" or "/"). */
+  publicUrl: string;
   postPowTargetBits: number;
   challengeWindowBlocks: number;
   orderingBlockIntervalMs: number;
@@ -54,6 +56,7 @@ export function loadConfig(): Readonly<Config> {
     dbPath: process.env['DB_PATH'] ?? 'dagsocial.db',
     networkMode: process.env['NETWORK_MODE'] ?? 'testnet',
     nodeRole: parseNodeRole(process.env['NODE_ROLE'] ?? 'server'),
+    publicUrl: process.env['PUBLIC_URL'] ?? '/',
     postPowTargetBits: parseInt(
       process.env['POST_POW_TARGET_BITS'] ?? String(POST_POW_TARGET_BITS),
       10,

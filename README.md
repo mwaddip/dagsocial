@@ -4,9 +4,11 @@ Decentralized social network — no tokens to buy, no ads, no corporate servers.
 Content lives in a prunable DAG controlled by authors. Karma and credits live in
 a Bitcoin-style UTXO ledger secured by Ed25519 signatures. Phase 2: local HTTP
 node with identity, PoW posting, DAG storage, UTXO engine, AVL+ state root,
-verifiable prune consensus, libp2p networking, and a demo UI.
+verifiable prune consensus, libp2p networking, and a demo UI with thread view and
+link sharing.
 
-**492 tests pass** across 5 packages. Node.js ≥ 22, TypeScript, pnpm. MIT licensed.
+**494 tests** across 5 packages (2 E2E flakes pass in isolation). Node.js ≥ 22,
+TypeScript, pnpm. MIT licensed.
 
 ---
 
@@ -103,6 +105,7 @@ kill $(cat /tmp/dagsocial-cluster/pids)
 | `MINING_SECRET` | (empty) | Bearer token for mining API auth (empty = no auth) |
 | `ORDERING_BLOCK_POW_TARGET_BITS` | 12 | Ordering block PoW difficulty |
 | `EPOCH_BLOCKS` | 60 | Blocks per epoch (like processing + difficulty adjustment) |
+| `PUBLIC_URL` | `/` | Base path where the demo UI is served (e.g. `/testnet/` when behind nginx) |
 
 ---
 
@@ -130,38 +133,39 @@ on `/mining/*` when `MINING_SECRET` is set.
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/posts?limit=50` | Recent posts |
+| GET | `/posts?limit=50&offset=0&author=<hex>` | Recent posts (paginated, optional author filter) |
 | GET | `/posts/:id` | Single post by ID |
-| POST | `/posts` | Create a post (requires PoW challenge first) |
-| DELETE | `/posts/:id` | Delete a post |
-| POST | `/posts/:id/prune` | Prune a subtree (author only) |
+| GET | `/posts/:id/thread` | Post with full thread context (ancestors + descendants) |
+| POST | `/posts` | Create a post (requires PoW challenge + karma-lock tx) |
+| POST | `/posts/:id/prune` | Prune a subtree (author-signed) |
 
 ### Challenges
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/challenge` | Get a PoW challenge for posting |
+| POST | `/challenge` | Request a PoW challenge for posting |
 
 ### Likes
 
 | Method | Path | Description |
 |---|---|---|
-| POST | `/likes` | Like a post |
-| DELETE | `/likes/remove` | Unlike a post |
+| POST | `/likes` | Like a post (submits a signed tx) |
+| POST | `/likes/remove` | Unlike a post (submits a signed tx) |
 
 ### Invites
 
 | Method | Path | Description |
 |---|---|---|
-| POST | `/invites` | Create an invite |
-| POST | `/invites/:id/claim` | Claim an invite |
-| POST | `/invites/:id/cancel` | Cancel an unclaimed invite |
+| POST | `/invites` | Create an invite (submits a signed tx) |
+| POST | `/invites/commit` | Commit to an invite (reveal intent, step 1 of 2) |
+| POST | `/invites/claim` | Claim an invite (reveal preimage, step 2 of 2) |
+| POST | `/invites/cancel` | Cancel an unclaimed invite (submits a signed tx) |
 
 ### Credits (testnet)
 
 | Method | Path | Description |
 |---|---|---|
-| POST | `/credits/send` | Transfer credits between identities |
+| POST | `/credits/transfer` | Transfer credits between identities |
 | POST | `/credits/faucet` | Testnet credit faucet |
 
 ### Karma faucet (testnet)
@@ -184,6 +188,12 @@ on `/mining/*` when `MINING_SECRET` is set.
 | GET | `/vouches` | Query vouches (`?target=` or `?voucher=` or `?cooldowns`) |
 | POST | `/vouches` | Cast a vouch for another identity |
 | DELETE | `/vouches/:targetId` | Initiate unvouch (cooldown starts) |
+
+### Link previews
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/preview/:id` | OG-tagged HTML page for link sharing (Telegram, Twitter, etc.) |
 
 ### AVL proofs
 
@@ -213,6 +223,16 @@ build step.
    Transfer form (Admin section, testnet only)
 7. **Invite** — create an invite (25 karma + 25 bond), share the secret,
    have the invitee redeem it with the Invite Box ID + Bond Box ID + secret
+
+**Thread view and link sharing:**
+
+- **Click a post's timestamp** to open its thread view — shows the full ancestor
+  chain above and the reply tree below, with the post highlighted
+- **Copy link** button in thread view copies a shareable URL with OG metadata
+- **Paste the URL** into Telegram, Twitter, or any chat app to get a rich preview
+  showing the author and post content
+- **Browser back button** returns from thread view to the normal feed
+- Timestamps show relative time ("2m ago") with absolute time on hover
 
 The admin section (faucets, invites, credit transfer) is only visible in
 testnet mode.
@@ -445,7 +465,7 @@ The UTXO engine validates every box transition:
 
 ```bash
 pnpm build          # Build all 5 packages
-pnpm test           # Run all 905 tests
+pnpm test           # Run all 494 tests
 pnpm typecheck      # Type-check all packages
 ```
 

@@ -2,7 +2,7 @@
 
 **Component:** `@dagsocial/net`
 **Protocol version:** 2
-**Last updated:** 2026-07-26
+**Last updated:** 2026-08-01
 
 ## Scope
 
@@ -80,7 +80,13 @@ to the envelope structure (not the message bodies).
 | 7 | `SubBlockResponse` | ← | Sub-block or not-found |
 | 8 | `GetPeers` | → | Request peer list |
 | 9 | `Peers` | ← | Peer list response |
+| 10 | `GetPosts` | → | Request posts by ID |
+| 11 | `Posts` | ← | Posts response |
+| 12 | `GetStumps` | → | Request stumps by ID |
+| 13 | `Stumps` | ← | Stumps response |
 
+Codes 10–11 support content-sweep (placeholder fill) for posts the node
+has headers for but not content. Codes 12–13 support missing-stump resolution.
 Codes 6-7 replace the old ad-hoc `/dagsocial/sync/1` stream protocol.
 Codes 2-5 replace the old `/dagsocial/headers/1` protocol. The old protocols
 are deleted.
@@ -97,6 +103,7 @@ Sub-block structure, lifecycle, and propagation semantics are defined in
 | `/dagsocial/subblock/1` | SubBlock (CBOR) | High | User posts + sidecar likes |
 | `/dagsocial/ordering-block/1` | OrderingBlock (CBOR) | Critical | Consensus anchors |
 | `/dagsocial/tx/1` | UtxoTransaction (CBOR) | High | Invites, claims, cancellations, credit transfers |
+| `/dagsocial/stump/1` | Stump (CBOR) | Normal | Pruned subtree records |
 
 All gossip topics carry CBOR-encoded messages directly — no framing.
 The topic version (`/1`) matches the protocol version for topic naming but
@@ -539,16 +546,16 @@ and PoW.
 | `stop()` | `() => Promise<void>` | Graceful shutdown |
 | `peerId()` | `() => string` | This node's libp2p peer ID |
 | `peers()` | `() => Peer[]` | Connected peers with metadata |
-| `allPeers()` | `() => PeerRecord[]` | All known peers (connected + PeerDb entries) |
-| `connectToPeer(addr)` | `(string) => Promise<void>` | Dial a specific multiaddr and handshake |
+| `getConnectedPeers()` | `() => string[]` | Peer IDs of currently connected peers |
 
 ### Gossip
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `broadcastSubBlock(sb)` | `(SubBlock) => void` | Gossip a newly assembled sub-block |
-| `broadcastOrderingBlock(b)` | `(OrderingBlock) => void` | Gossip a newly created ordering block |
-| `broadcastTx(tx)` | `(UtxoTransaction) => void` | Gossip a UTXO transaction |
+| `broadcastSubBlock(sb)` | `(SubBlock) => Promise<void>` | Gossip a newly assembled sub-block |
+| `broadcastOrderingBlock(b)` | `(OrderingBlock) => Promise<void>` | Gossip a newly created ordering block |
+| `broadcastTx(tx)` | `(UtxoTransaction) => Promise<void>` | Gossip a UTXO transaction |
+| `broadcastStump(stump)` | `(Stump) => Promise<void>` | Gossip a stump for pruned content |
 
 ### Inbound Processing
 
@@ -557,6 +564,28 @@ and PoW.
 | `onSubBlock(callback)` | `((SubBlock) => void) => void` | Register handler for inbound sub-blocks |
 | `onOrderingBlock(callback)` | `((OrderingBlock) => void) => void` | Register handler for inbound ordering blocks |
 | `onTx(callback)` | `((UtxoTransaction) => void) => void` | Register handler for inbound UTXO transactions |
+| `onStump(callback)` | `((Stump) => void) => void` | Register handler for inbound stumps |
+
+### Pull Requests (Peer-to-Peer)
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `requestHeaders(start, max, peerId)` | `(number, number, string) => Promise<BlockHeader[]>` | Request block headers for fork resolution |
+| `requestBlocks(start, end, peerId)` | `(number, number, string) => Promise<OrderingBlock[]>` | Request full blocks for reorg |
+| `requestPosts(peerId, postIds)` | `(string, string[]) => Promise<PostsMsg>` | Request posts by ID (content-sweep) |
+| `requestStumps(peerId, stumpIds)` | `(string, string[]) => Promise<StumpsMsg>` | Request stumps by ID |
+
+### Sync Handler Registration
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `setSyncHandler(cb)` | `((id: string) => SubBlock \| null) => void` | Provider for sub-block content (placeholder fill) |
+| `setBlocksHandler(cb)` | `((block: OrderingBlock) => void) => void` | Handler for blocks received during sync |
+| `setHeadersHandler(cb)` | `((height: number) => BlockHeader \| null) => void` | Provider for block headers |
+| `setPostsHandler(cb)` | `((ids: string[]) => PostsEntry[]) => void` | Provider for posts by ID |
+| `setStumpsHandler(cb)` | `((ids: string[]) => {stumpId, stump}[]) => void` | Provider for stumps by ID |
+| `onSyncComplete(cb)` | `(() => void) => void` | Fired when sync finishes |
+| `onPeerActive(cb)` | `((peerId: string) => void) => void` | Fired when a peer becomes active |
 
 ---
 

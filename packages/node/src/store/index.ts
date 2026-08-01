@@ -13,6 +13,7 @@ export {
   confirmPost,
   unconfirmPost,
   getParentRefs,
+  getAncestors,
   getSubtree,
   pruneSubtree,
   insertPostPlaceholder,
