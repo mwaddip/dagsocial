@@ -1302,4 +1302,157 @@ describe('validateAndApplyTx', () => {
       expect(result.error).toBeUndefined();
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // 14. Cancel-shape Invite+Bond sweep (audit H-2)
+  //
+  // The old `bond_dual` commit path accepted any non-empty `signatures` map
+  // once the preimage matched. That let anyone who learned the invite secret
+  // `s` spend their OWN KarmaBox alongside the InviteBox and the still-
+  // uncommitted BondBox in the 3-input "cancel shape" — a mixed-type
+  // combination `validateTx` step 3 explicitly permits — and sweep both boxes
+  // into their own karma with NO inviter signature. Nothing else stopped it:
+  // the total conserves, the InviteBox's `hash_preimage_with_bond` guard skips
+  // the signature check while the bond is uncommitted, and the cancel
+  // transition only requires `karmaOut.owner == karmaIn.owner`, which the
+  // attacker's own box satisfies.
+  //
+  // The sweep produces no BondBox output, so the hardened guard now rejects it.
+  // This attack never goes through `commitInvite`, so it belongs here at the
+  // consensus layer rather than in invites.test.ts.
+  // ---------------------------------------------------------------------------
+  describe('cancel-shape Invite+Bond sweep (audit H-2)', () => {
+    const KARMA_IN = 100;
+    const SWEPT_TOTAL = KARMA_IN + INVITE_KARMA_AMOUNT + INVITE_BOND_KARMA;
+
+    let inviterPubKey: Uint8Array;
+    let inviterPrivKey: KeyObject;
+    let attackerPubKey: Uint8Array;
+    let attackerPrivKey: KeyObject;
+    let secret: Uint8Array;
+    let inviteBoxId: string;
+    let bondBoxId: string;
+
+    beforeEach(() => {
+      const inviterKeys = generateKeyPairSync('ed25519');
+      inviterPubKey = rawPublicKey(inviterKeys.publicKey);
+      inviterPrivKey = inviterKeys.privateKey;
+
+      const attackerKeys = generateKeyPairSync('ed25519');
+      attackerPubKey = rawPublicKey(attackerKeys.publicKey);
+      attackerPrivKey = attackerKeys.privateKey;
+
+      secret = new Uint8Array(Buffer.from('b'.repeat(64), 'hex'));
+      const secretHash = createHash('blake2b512')
+        .update(Buffer.from(secret))
+        .digest()
+        .subarray(0, 32);
+
+      const inviteBox: InviteBox = {
+        boxType: 'invite',
+        value: INVITE_KARMA_AMOUNT,
+        createdAtBlock: 1,
+        secretHash,
+        inviterId: inviterPubKey,
+        guard: 'hash_preimage_with_bond',
+      };
+      inviteBoxId = computeBoxId(inviteBox);
+      storeInsertBox({ ...inviteBox, id: inviteBoxId });
+
+      // Uncommitted bond — the state the sweep depends on.
+      const bondBox: BondBox = {
+        boxType: 'bond',
+        value: INVITE_BOND_KARMA,
+        createdAtBlock: 1,
+        inviterId: inviterPubKey,
+        inviteBoxId,
+        inviteePublicKey: new Uint8Array(0),
+        probationStartBlock: 0,
+        probationEndBlock: 0,
+        guard: 'bond_dual',
+      };
+      bondBoxId = computeBoxId(bondBox);
+      storeInsertBox({ ...bondBox, id: bondBoxId });
+    });
+
+    /**
+     * The 3-input cancel shape: karma + invite + bond → a single KarmaBox
+     * holding the full sum, owned by `beneficiary`. Both preimage slots carry
+     * `s`, so the InviteBox guard and the bond commit path each see a matching
+     * secret. Returned unsigned — every test adds the signatures it is about.
+     */
+    function buildSweepTx(beneficiary: Uint8Array, karmaInId: string): UtxoTransaction {
+      const karmaOut: KarmaBox = {
+        boxType: 'karma',
+        value: SWEPT_TOTAL,
+        createdAtBlock: 10,
+        owner: beneficiary,
+        guard: 'owner_signature',
+        proofSource: `invite-cancel:${inviteBoxId}`,
+        lastTouchBlock: 10,
+      };
+      return {
+        inputs: [karmaInId, inviteBoxId, bondBoxId],
+        outputs: [{ ...karmaOut, id: computeBoxId(karmaOut) }],
+        signatures: {},
+        preimages: { [inviteBoxId]: secret, [bondBoxId]: secret },
+        protocolVersion: 1,
+      };
+    }
+
+    /** Sign the tx hash for `pubKey`. Signatures are not part of the hash. */
+    function addSignature(
+      tx: UtxoTransaction,
+      pubKey: Uint8Array,
+      privKey: KeyObject,
+    ): void {
+      tx.signatures[Buffer.from(pubKey).toString('hex')] = signHash(
+        computeTxHash(tx),
+        privKey,
+      );
+    }
+
+    it('rejects a preimage-only sweep of Invite+Bond into the attacker karma', () => {
+      const attackerKarma = createAndInsertKarma(attackerPubKey, KARMA_IN, 1, 'attacker');
+      const tx = buildSweepTx(attackerPubKey, attackerKarma.id!);
+      // The attacker signs only for their own KarmaBox input. The inviter
+      // authorised nothing — knowing `s` is the attacker's entire claim.
+      addSignature(tx, attackerPubKey, attackerPrivKey);
+
+      const result = validateTx(deps, tx, 10);
+
+      expect(result.valid).toBe(false);
+      // Rejected AT the bond-commit guard — not earlier for conservation, a
+      // mixed-input-type violation, or a bad preimage. The control test below
+      // proves every other check passes on this exact transaction.
+      expect(result.error).toContain('committed BondBox output');
+    });
+
+    it('non-vacuity control: the same sweep is accepted once the inviter signs it', () => {
+      const attackerKarma = createAndInsertKarma(attackerPubKey, KARMA_IN, 1, 'attacker');
+      const tx = buildSweepTx(attackerPubKey, attackerKarma.id!);
+      addSignature(tx, attackerPubKey, attackerPrivKey);
+      // One added signature is the only difference from the rejected tx above.
+      // With it, `bond_dual` Path 1 (inviter reclaim) matches and the spend is
+      // authorised — the inviter is free to direct the value anywhere. So the
+      // sweep fails for exactly one reason: missing bond authorisation.
+      addSignature(tx, inviterPubKey, inviterPrivKey);
+
+      const result = validateTx(deps, tx, 10);
+
+      expect(result.valid).toBe(true);
+      expect(result.error).toBeUndefined();
+    });
+
+    it('still accepts a legitimate inviter cancel (uncommitted bond)', () => {
+      const inviterKarma = createAndInsertKarma(inviterPubKey, KARMA_IN, 1, 'inviter');
+      const tx = buildSweepTx(inviterPubKey, inviterKarma.id!);
+      addSignature(tx, inviterPubKey, inviterPrivKey);
+
+      const result = validateTx(deps, tx, 10);
+
+      expect(result.valid).toBe(true);
+      expect(result.error).toBeUndefined();
+    });
+  });
 });
