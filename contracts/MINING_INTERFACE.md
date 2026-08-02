@@ -72,23 +72,31 @@ Additions to the existing `OrderingBlock` type:
 | `lockedUntilBlock` | `number` | Height at which credits become spendable |
 | `isTreasury` | `boolean` | Treasury or miner output |
 
-### Block hash
+### Block hash and PoW preimage (header model)
 
-The block hash covers all fields except `validatorSignature`. PoW solves for
-`hash(blockBody || powNonce)`, where `blockBody` is the CBOR-serialized block
-with `powNonce=0`. This avoids re-serializing the entire block each iteration.
+The block hash is `blockHash(header)` — the header alone commits to the whole
+block transitively (`subBlockRoot` / `utxoTxRoot` / `stateRoot`), see
+`TYPES_INTERFACE.md`. PoW is likewise header-only:
+
+```
+powPreimage = computePowHash(header)
+            = blake2b512(encodeHeader({ ...header, powNonce: 0 }))[:32]
+```
+
+The miner iterates the nonce against this fixed 32-byte preimage — no
+re-serialization per iteration, and the miner never touches CBOR.
 
 ## PoW Verification
 
 ```ts
-verifyOrderingBlockPoW(block: OrderingBlock): boolean
+verifyOrderingBlockPoW(header: BlockHeader): boolean
 ```
 
-Same algorithm as `verifyPoW` (blake2b512 → 32 bytes, check leading zero bits):
-
-1. Build `bodyBytes` = CBOR-serialize block with `powNonce=0`, `validatorSignature` zeroed
-2. `hash = blake2b512(bodyBytes || encodeLE64(block.powNonce)).subarray(0, 32)`
-3. Count leading zero bits in `hash` ≥ `block.powTargetBits`
+1. Guard: header is encodable, `powNonce`/`powTargetBits` are safe u64s
+   (no-panic — returns `false`, never throws)
+2. `preimage = computePowHash(header)` (as above)
+3. `hash = blake2b512(preimage || encodeLE64(header.powNonce)).subarray(0, 32)`
+4. Count leading zero bits in `hash` ≥ `header.powTargetBits`
 
 ## Difficulty Schedule
 
@@ -119,39 +127,64 @@ check, not a sanity floor — the target is fixed by schedule, not miner-chosen.
 
 ## Mining API
 
-Only exposed when `nodeRole === 'miner'`.
+**Exposure (audit M-7):** the `/mining` routes are mounted **only** when
+`nodeRole === 'miner'` **and** `miningMode === 'external'`. Internal mining is
+in-process and exposes no mining HTTP surface at all. On any other
+configuration the paths simply do not exist (404 from the server).
+
+**Authentication (audit M-7):** external mining REQUIRES a configured,
+non-empty `MINING_SECRET` — a miner node with `MINING_MODE=external` and an
+empty secret **fails at startup** with a configuration error; there is no
+unauthenticated passthrough mode. Every `/mining/*` request must carry
+`Authorization: Bearer <MINING_SECRET>`; the comparison is constant-time
+(`crypto.timingSafeEqual` over length-guarded buffers). Missing or wrong
+credentials → 401, before any handler logic (including `?miner=`).
 
 ### GET /mining/template
 
 Returns the current block template. The block creator assembles this on a timer
 (60s default) and whenever a sub-block arrives.
 
+`?miner=<hex(32)>` (authenticated, optional): sets the coinbase payout pubkey
+used for subsequently assembled templates. Invalid hex → 400. Because auth
+precedes it, only a holder of the mining secret can redirect the coinbase.
+
 **Response (200):**
 ```json
 {
-  "height": 123,
-  "prevBlockHash": "hex(32)",
+  "header": {
+    "protocolVersion": 1,
+    "height": 123,
+    "prevBlockHash": "hex(32)",
+    "subBlockRoot": "hex(32)",
+    "utxoTxRoot": "hex(32)",
+    "stateRoot": "hex(32)",
+    "validatorId": "hex(32)",
+    "powTargetBits": 20,
+    "createdAt": 1234567890000
+  },
   "subBlockRefs": ["hex(32)", ...],
+  "subBlockEntries": [{ "postId": "hex(32)", "parentRefs": ["hex(32)"], "author": "hex(32)" }, ...],
+  "pruneEntries": [...],
   "likeBoxIds": ["hex(32)", ...],
   "utxoTxIds": [],
-  "stumpIds": [],
   "coinbaseOutputs": [
     { "owner": "hex(32)", "value": 90, "lockedUntilBlock": 843, "isTreasury": false },
     { "owner": "hex(32)", "value": 10, "lockedUntilBlock": 843, "isTreasury": true }
   ],
-  "powTargetBits": 20,
-  "protocolVersion": 1,
-  "createdAt": 1234567890000,
-  "bodyHash": "hex(32)"
+  "powPreimage": "hex(32)"
 }
 ```
 
-`bodyHash` is `blake2b512(blockBody).subarray(0, 32).toString('hex')` — the
-preimage the miner hashes with the nonce. The miner never touches CBOR.
+`powPreimage` is `computePowHash(header)` (see "Block hash and PoW preimage") —
+the fixed 32-byte preimage the miner hashes with the nonce. The miner never
+touches CBOR. 404 when no template is available yet.
 
 ### POST /mining/submit
 
-Submits a solved nonce.
+Submits a solved nonce. The node rebuilds the block from its own stored
+template — the request carries **only** `{ height, powNonce }`, so an external
+miner cannot substitute entries, coinbase outputs, or any body content.
 
 **Request:**
 ```json
@@ -170,9 +203,9 @@ Submits a solved nonce.
 ```
 
 **Errors:**
+- 401: missing/wrong bearer token
 - 400: missing fields
-- 409: height mismatch with current template
-- 422: PoW invalid
+- 422: PoW invalid or template stale (height no longer matches the current template)
 
 On success, the node assembles the final block (inserts `powNonce`, signs with
 validator key), stores it, broadcasts it, and applies coinbase mints.
@@ -196,7 +229,8 @@ validator key), stores it, broadcasts it, and applies coinbase mints.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `MINING_MODE` | `internal` | `internal` (mine in-process) or `external` (expose template API) |
+| `MINING_MODE` | `internal` | `internal` (mine in-process, no mining HTTP surface) or `external` (expose the authenticated template API) |
+| `MINING_SECRET` | — | Bearer token for the mining API. **Required non-empty when `MINING_MODE=external` on a miner node — startup fails otherwise.** Ignored (routes unmounted) in internal mode. There is no unauthenticated mode. |
 | `ORDERING_BLOCK_POW_TARGET_BITS` | `12` | Initial PoW difficulty (12 bits = fast on CPU, ~4K hashes) |
 | `CREDIT_INITIAL_REWARD` | `100` | Credits per block in fixed-rate period |
 | `CREDIT_TREASURY_PCT` | `10` | Percent to treasury |
@@ -221,16 +255,24 @@ hashes, sub-second on modern CPU). Production would use 30+.
 7. Old blocks verify against the scheduled difficulty for their height; since the
    schedule is a pure function of height, that is the same value on every node and
    for all time.
+8. The mining API is never served unauthenticated: external mode requires a
+   configured `MINING_SECRET` (enforced at startup, not per-request), every
+   request is bearer-authenticated with a constant-time comparison, and the
+   coinbase payout override (`?miner=`) is reachable only behind that auth.
+   Internal mode mounts no mining routes. (audit M-7)
 
 ## Miner Script
 
-`packages/node/scripts/miner.js` — standalone Node.js process:
+`packages/node/scripts/miner.mjs` — standalone Node.js process (the only miner
+script; deployed via `scripts/dagsocial-miner.service`):
 
-1. `GET /mining/template` → `{ bodyHash, powTargetBits, height }`
-2. Loop: `nonce++`, `hash = blake2b512(hex2buf(bodyHash) || encodeLE64(nonce))`, check leading zeros
-3. `POST /mining/submit` with `{ height, powNonce }`
+1. `GET /mining/template` (Bearer `MINING_SECRET`; `?miner=MINER_PUBKEY` when
+   set) → reads `powPreimage`, `header.powTargetBits`, `header.height`
+2. Loop: `nonce++`, `hash = blake2b512(hex2buf(powPreimage) || encodeLE64(nonce))`,
+   check leading zeros
+3. `POST /mining/submit` (Bearer) with `{ height, powNonce }`
 4. Repeat
 
-Config via env: `NODE_URL` (default `http://localhost:3000`), `THROTTLE_MS`
-(default 0 = full speed). Throttling inserts `setTimeout` between batches for
-CPU-friendly mining during development.
+Config via env: `NODE_URL` (default `http://localhost:3000`), `MINING_SECRET`
+(required — the node refuses unauthenticated mining), `MINER_PUBKEY` (optional
+coinbase payout override), `MINER_PCT` (duty-cycle CPU throttle, default 25).

@@ -28,7 +28,7 @@ export interface Config {
   epochBlocks: number;
   // Mining
   miningMode: 'internal' | 'external';
-  miningSecret: string;          // bearer token for mining API, empty = no auth
+  miningSecret: string;          // bearer token for mining API, required non-empty in external mode
   orderingBlockPowTargetBits: number;
   creditInitialReward: number;
   creditTreasuryPct: number;
@@ -130,7 +130,25 @@ export function loadConfig(): Readonly<Config> {
     maxPeers: parseInt(process.env['MAX_PEERS'] ?? '50', 10),
   };
 
+  assertMiningAuthConfigured(cfg);
+
   return Object.freeze(cfg);
+}
+
+/**
+ * External mining serves the coinbase payout override (`?miner=`) over HTTP, so
+ * the bearer secret is load-bearing — there is no unauthenticated mode. A miner
+ * configured for external mining without a secret fails at startup rather than
+ * opening the endpoints (MINING_INTERFACE invariant 8, audit M-7).
+ */
+function assertMiningAuthConfigured(cfg: Config): void {
+  if (cfg.nodeRole !== 'miner' || cfg.miningMode !== 'external') return;
+  if (cfg.miningSecret.trim().length === 0) {
+    throw new Error(
+      'MINING_SECRET must be set and non-empty when NODE_ROLE=miner and ' +
+        'MINING_MODE=external — the mining API has no unauthenticated mode',
+    );
+  }
 }
 
 function parseMiningMode(raw: string): 'internal' | 'external' {

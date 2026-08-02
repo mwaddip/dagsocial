@@ -11,6 +11,8 @@ const TEST_KEYS = [
   'EPOCH_BLOCKS',
   'NETWORK_MODE',
   'MINING_SECRET',
+  'MINING_MODE',
+  'NODE_ROLE',
 ];
 
 function clearTestEnv() {
@@ -96,6 +98,70 @@ describe('config', () => {
       const cfg = loadConfig();
 
       expect(Number.isInteger(cfg.port)).toBe(true);
+    });
+  });
+
+  // Each throwing case below has a control differing only in the guarded field.
+  describe('5. mining auth fail-fast (audit M-7)', () => {
+    it('throws when an external-mode miner has no MINING_SECRET', async () => {
+      // Import under a safe env so module-level `config` builds, then flip.
+      const { loadConfig } = await import('../src/config.js');
+
+      process.env['NODE_ROLE'] = 'miner';
+      process.env['MINING_MODE'] = 'external';
+      delete process.env['MINING_SECRET'];
+
+      expect(() => loadConfig()).toThrow(/MINING_SECRET/);
+    });
+
+    it('throws when MINING_SECRET is whitespace only', async () => {
+      const { loadConfig } = await import('../src/config.js');
+
+      process.env['NODE_ROLE'] = 'miner';
+      process.env['MINING_MODE'] = 'external';
+      process.env['MINING_SECRET'] = '   ';
+
+      expect(() => loadConfig()).toThrow(/MINING_SECRET/);
+    });
+
+    it('fails at startup: importing config with that env rejects', async () => {
+      process.env['NODE_ROLE'] = 'miner';
+      process.env['MINING_MODE'] = 'external';
+      delete process.env['MINING_SECRET'];
+
+      await expect(import('../src/config.js')).rejects.toThrow(/MINING_SECRET/);
+    });
+
+    it('control: same env with a secret loads', async () => {
+      process.env['NODE_ROLE'] = 'miner';
+      process.env['MINING_MODE'] = 'external';
+      process.env['MINING_SECRET'] = 'sekret';
+
+      const { loadConfig } = await import('../src/config.js');
+      const cfg = loadConfig();
+
+      expect(cfg.miningMode).toBe('external');
+      expect(cfg.miningSecret).toBe('sekret');
+    });
+
+    it('control: internal-mode miner loads without a secret', async () => {
+      process.env['NODE_ROLE'] = 'miner';
+      process.env['MINING_MODE'] = 'internal';
+
+      const { loadConfig } = await import('../src/config.js');
+      const cfg = loadConfig();
+
+      expect(cfg.miningMode).toBe('internal');
+      expect(cfg.miningSecret).toBe('');
+    });
+
+    it('control: server role in external mode loads without a secret', async () => {
+      process.env['NODE_ROLE'] = 'server';
+      process.env['MINING_MODE'] = 'external';
+
+      const { loadConfig } = await import('../src/config.js');
+
+      expect(() => loadConfig()).not.toThrow();
     });
   });
 });

@@ -286,13 +286,16 @@ The same one-grant rule applies to `POST /credits/faucet`.
 
 | Method | Path | Request | Response | Errors |
 |--------|------|---------|----------|--------|
-| `GET` | `/mining/template` | — | OrderingBlock template (powNonce=0, no signature) or 404 if not miner role | — |
-| `POST` | `/mining/submit` | `{ powNonce: number, height: number }` | `{ accepted: true, hash }` or `{ accepted: false, reason }` | 400 |
+| `GET` | `/mining/template` | `?miner=hex(32)` optional payout override | Template (nested header + body sections + `powPreimage`) — see `MINING_INTERFACE.md` | 400, 401, 404 |
+| `POST` | `/mining/submit` | `{ powNonce: number, height: number }` | `{ blockHash, height }` (201) | 400, 401, 422 |
 
-Available when `NODE_ROLE=miner` (both `internal` and `external` mining modes).
-Auth gated by `MINING_SECRET` when set. `GET /mining/template` returns the
-current block template for miners to solve. `POST /mining/submit` accepts a
-mined nonce, verifies PoW, finalizes the block, and broadcasts.
+Mounted **only** when `NODE_ROLE=miner` **and** `MINING_MODE=external`
+(internal mining is in-process and exposes no mining HTTP surface). External
+mode requires a configured non-empty `MINING_SECRET` — startup fails
+otherwise; there is no unauthenticated passthrough. Every request needs
+`Authorization: Bearer <MINING_SECRET>` (constant-time comparison), and the
+`?miner=` coinbase payout override sits behind that auth (audit M-7). Full
+endpoint semantics in `MINING_INTERFACE.md`.
 ### Status
 
 | Method | Path | Response |
@@ -484,7 +487,7 @@ Architecture document for the full model. Key properties:
 15. Adjust difficulty at epoch boundaries (credit epochs, not like epochs)
 16. Build block template (powNonce=0, empty signature)
 17. **Internal mode:** mine PoW, sign the header hash (`blockHash(header)`), finalize
-18. **External mode:** store template for `GET /mining/block-template`,
+18. **External mode:** store template for `GET /mining/template`,
     return null (block finalized when miner submits via `submitMinedBlock`)
 
 ### Block finalization
@@ -510,8 +513,8 @@ Architecture document for the full model. Key properties:
 
 | Mode | Block creator | Block finalization | Template endpoint |
 |------|--------------|-------------------|-------------------|
-| `internal` (default) | Timer + trigger | PoW solved internally | N/A |
-| `external` | Timer + trigger | Via `submitMinedBlock` | `GET /mining/block-template` |
+| `internal` (default) | Timer + trigger | PoW solved internally | N/A (routes unmounted) |
+| `external` | Timer + trigger | Via `submitMinedBlock` | `GET /mining/template` (bearer-authed) |
 
 In external mode, the block creator builds a template with `powNonce=0` and
 stores it. External miners poll the template endpoint, solve PoW, and submit
@@ -530,18 +533,15 @@ else:
 Coinbase outputs are locked for `CREDIT_MINER_REWARD_DELAY` (720) blocks.
 If `treasuryPubKey` is configured, `CREDIT_TREASURY_PCT` (10%) goes to treasury.
 
-### Difficulty adjustment
+### Difficulty schedule
 
-At each credit epoch boundary (`height % CREDIT_EPOCH_BLOCKS === 0`):
-
-```
-ratio = actualDuration / expectedDuration
-newTarget = round(currentTarget * ratio)
-finalTarget = clamp(newTarget, currentTarget * 0.5, currentTarget * 1.5)
-finalTarget = max(finalTarget, ORDERING_BLOCK_POW_TARGET_FLOOR (4))
-```
-
-Window is tracked from the first block of the current epoch.
+`powTargetBits` is a deterministic function of block height — Phase 1 is a
+fixed target (`expectedTarget(height) = ORDERING_BLOCK_POW_TARGET_BITS`),
+enforced at apply on every path: a block whose header target differs from the
+schedule is rejected. There is **no wall-clock retargeting** — the previous
+duration-ratio adjustment was removed because it made the target a function of
+local wall time (audit M-2). Normative spec: `MINING_INTERFACE.md`
+("Difficulty Schedule").
 
 ### Epoch tally (like processing)
 

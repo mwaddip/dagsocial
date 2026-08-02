@@ -310,8 +310,9 @@ export function createApp(config: Config): express.Express {
     }),
   );
 
-  // Mining — /mining (miner role only)
-  if (config.nodeRole === 'miner') {
+  // Mining — /mining (external-mode miners only; internal mining is in-process
+  // and exposes no mining HTTP surface at all — audit M-7)
+  if (config.nodeRole === 'miner' && config.miningMode === 'external') {
     app.use(
       '/mining',
       miningRoutes({

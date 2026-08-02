@@ -1,5 +1,6 @@
 import { Router } from 'express';
-import { blockHash, computePowHash } from '@dagsocial/validation';
+import { timingSafeEqual } from 'crypto';
+import { computePowHash } from '@dagsocial/validation';
 import type { OrderingBlock } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
@@ -17,14 +18,23 @@ export interface MiningDeps {
 // Auth middleware
 // ---------------------------------------------------------------------------
 
+/**
+ * Bearer auth for every mining route. There is no unauthenticated mode: the
+ * `?miner=` coinbase payout override is reachable only behind this check
+ * (MINING_INTERFACE invariant 8, audit M-7).
+ */
 function authMiddleware(secret: string): import('express').RequestHandler {
-  if (!secret) {
-    // No auth configured — passthrough
-    return (_req, _res, next) => next();
-  }
+  const expected = Buffer.from(`Bearer ${secret}`, 'utf8');
   return (req, res, next) => {
     const auth = req.headers.authorization;
-    if (!auth || auth !== `Bearer ${secret}`) {
+    if (typeof auth !== 'string') {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    // timingSafeEqual throws on unequal lengths, so the length check gates it.
+    // A differing length is not a secret worth hiding — the secret's length is.
+    const provided = Buffer.from(auth, 'utf8');
+    if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) {
       res.status(401).json({ error: 'Unauthorized' });
       return;
     }
@@ -39,6 +49,11 @@ function authMiddleware(secret: string): import('express').RequestHandler {
 export function createRouter(deps: MiningDeps): Router {
   const router = Router();
   const { miningSecret } = deps;
+
+  // Enforced at startup, not per-request: a router with no secret must not exist.
+  if (!miningSecret) {
+    throw new Error('Mining routes require a non-empty mining secret');
+  }
 
   // Auth middleware on all mining routes
   router.use(authMiddleware(miningSecret));
