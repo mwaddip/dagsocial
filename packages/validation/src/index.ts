@@ -2,6 +2,7 @@ export {
   blake2b32,
   verifyPoW,
   verifyPostSignature,
+  verifyValidatorSignature,
   verifyProtocolVersion,
   verifyContentLimits,
   verifyContentCharacters,

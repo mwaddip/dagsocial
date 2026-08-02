@@ -202,6 +202,38 @@ export function verifyPostSignature(post: Post, publicKey: Uint8Array): boolean 
 }
 
 // ---------------------------------------------------------------------------
+// verifyValidatorSignature
+// ---------------------------------------------------------------------------
+
+/**
+ * Verify that `signature` is a valid raw Ed25519 signature over the block hash,
+ * made by the key declared in `header.validatorId`.
+ *
+ * The signed message is `Buffer.from(blockHash(header), 'hex')` — the 32 raw
+ * bytes of `blake2b512(encodeHeader(header))[:32]`, exactly what the block
+ * creator signs. `validatorSignature` lives on the block, not in the header, so
+ * `blockHash(header)` is stable before and after signing.
+ *
+ * PoW proves work was spent; it does not prove who spent it. This is the check
+ * that binds a block to the holder of `validatorId`'s private key.
+ */
+export function verifyValidatorSignature(header: BlockHeader, signature: Uint8Array): boolean {
+  // `blockHash` runs `encodeHeader(header)`; `isEncodableHeader` guards every
+  // field it reads, so a malformed header returns false rather than throwing
+  // (same guard style as `verifyOrderingBlockPoW`).
+  if (!isEncodableHeader(header)) return false;
+  // `createPublicKey` throws unless the SPKI envelope carries exactly 32 raw
+  // bytes. `isEncodableHeader` already proved `validatorId` is a byte view.
+  if (header.validatorId.length !== 32) return false;
+  // A non-byte signature throws in `Buffer.from`; a wrong-*length* signature is
+  // left to `crypto.verify`, which rejects it cleanly (as in verifyPostSignature).
+  if (!isBytes(signature)) return false;
+  const pubKeyObj = ed25519PublicKeyToKeyObject(header.validatorId);
+  const message = Buffer.from(blockHash(header), 'hex');
+  return cryptoVerify(null, message, pubKeyObj, Buffer.from(signature));
+}
+
+// ---------------------------------------------------------------------------
 // verifyProtocolVersion
 // ---------------------------------------------------------------------------
 

@@ -9,6 +9,7 @@ import {
 import {
   generateKeyPairSync,
   createHash,
+  sign as cryptoSign,
   type KeyObject,
 } from 'crypto';
 import {
@@ -21,7 +22,7 @@ import {
   KARMA_STALE_THRESHOLD_BLOCKS,
   CREDIT_MINER_REWARD_DELAY,
 } from '@dagsocial/types';
-import { verifyOrderingBlockPoW } from '@dagsocial/validation';
+import { verifyOrderingBlockPoW, blockHash } from '@dagsocial/validation';
 import type {
   Post,
   LikeBox,
@@ -320,15 +321,36 @@ function unsolvedHeaderPow(header: BlockHeader): number {
 }
 
 /**
+ * The validator signature a block creator produces: raw Ed25519 over the 32
+ * bytes of `blockHash(header)` (block-creator.ts:238, :556).
+ *
+ * Hand-built blocks have to carry a real signature now that apply verifies it
+ * (H-1) — an all-zero placeholder is rejected before any check behind it, which
+ * would make every post-signature rejection test assert its own reason
+ * vacuously. Call this only once `powNonce` is final: the nonce is a header
+ * field, so it is inside the hash being signed.
+ */
+function signHeader(header: BlockHeader, privateKey: KeyObject): Uint8Array {
+  return new Uint8Array(cryptoSign(null, Buffer.from(blockHash(header), 'hex'), privateKey));
+}
+
+/**
  * A hand-built block that passes every apply check: chain-linked at genesis,
  * correct Merkle roots, coinbase paying exactly the scheduled emission with the
- * scheduled maturity lock, and a real PoW solution at the scheduled target.
+ * scheduled maturity lock, a real PoW solution at the scheduled target, and a
+ * real validator signature from the key its header names.
  *
  * Each override deviates in exactly one respect, so what a test measures is
  * that deviation and nothing else.
  */
 async function makeApplicableBlock(
-  opts: { powTargetBits?: number; lockedUntilBlock?: number } = {},
+  opts: {
+    powTargetBits?: number;
+    lockedUntilBlock?: number;
+    /** Sign with this key instead of the miner's — a block whose signature does
+     *  not come from the key its `validatorId` names (H-1 forged authorship). */
+    signWith?: KeyObject;
+  } = {},
 ): Promise<OrderingBlock> {
   const { computeSubBlockRoot, computeUtxoTxRoot, computeBlockReward } = await import(
     '../../src/services/block-creator.js'
@@ -371,7 +393,7 @@ async function makeApplicableBlock(
     header,
     subBlockTree,
     utxoTxTree,
-    validatorSignature: new Uint8Array(64),
+    validatorSignature: signHeader(header, opts.signWith ?? miner.privateKey),
   } as unknown as OrderingBlock;
 }
 
@@ -639,6 +661,7 @@ describe('block-apply journal recording', () => {
     // fails on the solution: the target is the scheduled one, the nonce is the
     // first that does not satisfy it. Picking the nonce deterministically is
     // what keeps this off a 1-in-2^targetBits coin flip.
+    const miner = makeTestIdentity();
     const block: OrderingBlock = {
       header: {
         protocolVersion: PROTOCOL_VERSION,
@@ -647,7 +670,7 @@ describe('block-apply journal recording', () => {
         subBlockRoot: '0000000000000000000000000000000000000000000000000000000000000000',
         utxoTxRoot: '0000000000000000000000000000000000000000000000000000000000000000',
         stateRoot: '0000000000000000000000000000000000000000000000000000000000000000000',
-        validatorId: new Uint8Array(32),
+        validatorId: miner.userId,
         powNonce: 0,
         powTargetBits: expectedTarget(1),
         createdAt: Date.now(),
@@ -663,6 +686,9 @@ describe('block-apply journal recording', () => {
     };
     block.header.powNonce = unsolvedHeaderPow(block.header);
     expect(verifyOrderingBlockPoW(block.header)).toBe(false);
+    // Properly signed even though PoW rejects first, so the unsolved nonce is
+    // the only thing wrong with this block.
+    block.validatorSignature = signHeader(block.header, miner.privateKey);
 
     const result = blockApply.applyOrderingBlock(block);
     expect(result).toBe(false);
@@ -683,6 +709,7 @@ describe('block-apply journal recording', () => {
 
     const blockApply = await importBlockApply();
 
+    const miner = makeTestIdentity();
     const block: OrderingBlock = {
       header: {
         protocolVersion: PROTOCOL_VERSION,
@@ -691,7 +718,7 @@ describe('block-apply journal recording', () => {
         subBlockRoot: '0000000000000000000000000000000000000000000000000000000000000000',
         utxoTxRoot: '0000000000000000000000000000000000000000000000000000000000000000',
         stateRoot: '0000000000000000000000000000000000000000000000000000000000000000000',
-        validatorId: new Uint8Array(32),
+        validatorId: miner.userId,
         powNonce: 0,
         powTargetBits: 4,
         createdAt: Date.now(),
@@ -705,6 +732,8 @@ describe('block-apply journal recording', () => {
       },
       validatorSignature: new Uint8Array(64),
     };
+    // Signed, so the height is the only thing wrong with this block.
+    block.validatorSignature = signHeader(block.header, miner.privateKey);
 
     const result = blockApply.applyOrderingBlock(block);
     expect(result).toBe(false);
@@ -724,6 +753,7 @@ describe('block-apply journal recording', () => {
 
     const blockApply = await importBlockApply();
 
+    const miner = makeTestIdentity();
     const block: OrderingBlock = {
       header: {
         protocolVersion: PROTOCOL_VERSION,
@@ -732,7 +762,7 @@ describe('block-apply journal recording', () => {
         subBlockRoot: '0000000000000000000000000000000000000000000000000000000000000000',
         utxoTxRoot: '0000000000000000000000000000000000000000000000000000000000000000',
         stateRoot: '0000000000000000000000000000000000000000000000000000000000000000000',
-        validatorId: new Uint8Array(32),
+        validatorId: miner.userId,
         powNonce: 0,
         powTargetBits: 4,
         createdAt: Date.now(),
@@ -746,6 +776,8 @@ describe('block-apply journal recording', () => {
       },
       validatorSignature: new Uint8Array(64),
     };
+    // Signed, so the prevBlockHash is the only thing wrong with this block.
+    block.validatorSignature = signHeader(block.header, miner.privateKey);
 
     const result = blockApply.applyOrderingBlock(block);
     expect(result).toBe(false);
@@ -781,6 +813,7 @@ describe('block-apply journal recording', () => {
       subBlockEntries: [],
       pruneEntries: [],
     };
+    const miner = makeTestIdentity();
     const utxoTxTree = {
       utxoTxIds: [],
       utxoTxs: [],
@@ -796,7 +829,7 @@ describe('block-apply journal recording', () => {
       subBlockRoot: computeSubBlockRoot(subBlockTree),
       utxoTxRoot: computeUtxoTxRoot(utxoTxTree),
       stateRoot: '0000000000000000000000000000000000000000000000000000000000000000',
-      validatorId: new Uint8Array(32),
+      validatorId: miner.userId,
       powNonce: 0,
       powTargetBits: expectedTarget(1),
       createdAt: Date.now(),
@@ -806,7 +839,9 @@ describe('block-apply journal recording', () => {
       header,
       subBlockTree,
       utxoTxTree,
-      validatorSignature: new Uint8Array(64),
+      // Signed: the coinbase check sits behind the validator-signature gate, so
+      // an unsigned block would reject at the gate and test nothing here.
+      validatorSignature: signHeader(header, miner.privateKey),
     } as unknown as OrderingBlock;
 
     const result = blockApply.applyOrderingBlock(block);
@@ -1198,7 +1233,6 @@ describe('block-apply epoch tally ordering', () => {
 
     const { computeEpochTally, computeSubBlockRoot, computeUtxoTxRoot, computeBlockReward } =
       await import('../../src/services/block-creator.js');
-    const { blockHash } = await import('@dagsocial/validation');
 
     const height = 3;
     const localTally = computeEpochTally(height);
@@ -1256,7 +1290,7 @@ describe('block-apply epoch tally ordering', () => {
       header: peerHeader,
       subBlockTree,
       utxoTxTree,
-      validatorSignature: new Uint8Array(64),
+      validatorSignature: signHeader(peerHeader, miner.privateKey),
     } as unknown as OrderingBlock;
 
     const blockApply = await importBlockApply();
@@ -1395,5 +1429,76 @@ describe('block-apply consensus schedules', () => {
     const boxes = getCreditBoxes(block.utxoTxTree.coinbaseOutputs[0]!.owner);
     expect(boxes).toHaveLength(1);
     expect(boxes[0]!.lockedUntilBlock).toBe(1 + CREDIT_MINER_REWARD_DELAY);
+  });
+
+  // -----------------------------------------------------------------------
+  // H-1: the block must be signed by the key its validatorId names
+  // -----------------------------------------------------------------------
+
+  it('rejects a block whose validator signature is corrupted', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    const block = await makeApplicableBlock();
+    // Nothing in the header moves, so the PoW solution stays valid and the
+    // signature is the only check this block can fail.
+    expect(verifyOrderingBlockPoW(block.header)).toBe(true);
+    block.validatorSignature[0] = (block.validatorSignature[0]! + 1) % 256;
+
+    const blockApply = await importBlockApply();
+    expect(blockApply.applyOrderingBlock(block)).toBe(false);
+
+    // Rolled back whole: no block, no height, no journal, no coinbase mint.
+    const ordering = await importOrdering();
+    expect(ordering.getOrderingBlock(1)).toBeNull();
+    expect(ordering.getCurrentHeight()).toBe(0);
+
+    const journal = await importJournalStore();
+    expect(journal.getBlockJournal(1)).toBeNull();
+
+    const { getCreditBoxes } = (await import('../../src/store/utxo.js')) as {
+      getCreditBoxes: (owner: Uint8Array) => unknown[];
+    };
+    expect(getCreditBoxes(block.utxoTxTree.coinbaseOutputs[0]!.owner)).toHaveLength(0);
+  });
+
+  it('rejects a block carrying the all-zero placeholder signature', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    // What every hand-built block used to carry, and what an unsigned forgery
+    // costs nothing to produce.
+    const block = await makeApplicableBlock();
+    block.validatorSignature = new Uint8Array(64);
+
+    const blockApply = await importBlockApply();
+    expect(blockApply.applyOrderingBlock(block)).toBe(false);
+
+    const ordering = await importOrdering();
+    expect(ordering.getCurrentHeight()).toBe(0);
+  });
+
+  it('rejects a block signed by a key other than the one its validatorId names', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    // The H-1 attack in full: the forger does the (testnet-cheap) PoW and
+    // publishes under another validator's identity. Every other check passes —
+    // the block is internally consistent, on-schedule, and correctly mined.
+    // Only the signature ties block production to the key that claims it.
+    const forger = makeTestIdentity();
+    const block = await makeApplicableBlock({ signWith: forger.privateKey });
+    expect(verifyOrderingBlockPoW(block.header)).toBe(true);
+    expect(block.header.validatorId).not.toEqual(forger.userId);
+
+    const blockApply = await importBlockApply();
+    expect(blockApply.applyOrderingBlock(block)).toBe(false);
+
+    const ordering = await importOrdering();
+    expect(ordering.getOrderingBlock(1)).toBeNull();
+    expect(ordering.getCurrentHeight()).toBe(0);
+
+    const journal = await importJournalStore();
+    expect(journal.getBlockJournal(1)).toBeNull();
   });
 });

@@ -178,6 +178,17 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
     return false;
   }
 
+  // 3b. Validator signature (H-1)
+  //
+  // PoW proves work was spent; it does not prove who spent it. Without this,
+  // any miner forges a block under any validatorId. Runs in applyBlockBody — the
+  // funnel every apply path (gossip, sync, reorg) passes through — so no path skips it.
+  if (!validation.verifyValidatorSignature(block.header, block.validatorSignature)) {
+    console.warn(`Rejected block height=${block.header.height}: validator signature invalid`);
+    currentJournal = null;
+    return false;
+  }
+
   // 4. Merkle root verification
   const computedSubRoot = computeSubBlockRoot(block.subBlockTree);
   const computedUtxoRoot = computeUtxoTxRoot(block.utxoTxTree);

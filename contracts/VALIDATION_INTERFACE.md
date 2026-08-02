@@ -32,31 +32,58 @@ Used for post PoW verification in both Stage 1 (gossip) and Stage 2 (node).
 ### verifyOrderingBlockPoW
 
 ```
-verifyOrderingBlockPoW(block: OrderingBlock): boolean
+verifyOrderingBlockPoW(header: BlockHeader): boolean
 ```
 
-Computes the block body hash via `computeBlockBodyHash`, encodes `block.powNonce`
-as u64 LE, hashes `bodyHash || nonceBytes` with blake2b512, and checks that the
-result has at least `block.powTargetBits` leading zero bits. Returns false if
-`powTargetBits < ORDERING_BLOCK_POW_TARGET_FLOOR`.
+Computes the PoW preimage via `computePowHash(header)`, encodes `header.powNonce`
+as u64 LE, hashes `preimage || nonceBytes` with blake2b512, takes the first 32
+bytes, and checks that the result has at least `header.powTargetBits` leading zero
+bits. Guards its inputs (M-5 / M-6): returns `false` — never throws — if the
+header is not CBOR-encodable, or if `powNonce` / `powTargetBits` is not a
+non-negative safe integer.
 
-Used by nodes to verify ordering block PoW before applying a relayed block, and
-by the block creator to verify externally-submitted mining solutions.
+Checks the solution against the header's **own** `powTargetBits` only. It does
+**not** enforce a floor or the height-scheduled target: the
+`ORDERING_BLOCK_POW_TARGET_FLOOR` lower bound is a gossip pre-filter inside
+`verifyOrderingBlockStructure`, and the authoritative height-scheduled target is
+enforced at block apply (`@dagsocial/node`, audit M-2 — see NODE_INTERFACE
+"Ordering block apply-time authorization"). A producer that writes a low target
+into its own header still passes this function; the apply-time check is what
+rejects it.
 
-### computeBlockBodyHash
+Used by nodes to verify ordering-block PoW before applying a relayed block, and by
+the block creator to verify externally-submitted mining solutions.
+
+### computePowHash
 
 ```
-computeBlockBodyHash(block: OrderingBlock): Buffer
+computePowHash(header: BlockHeader): Buffer
 ```
 
-Computes the preimage that the PoW nonce hashes against. Serializes the block
-with `powNonce=0` and `validatorSignature` zeroed (64 zero bytes) and `hash=""`,
-encodes as CBOR, then returns `blake2b512(cbor).subarray(0, 32)`. The body hash
-excludes the PoW nonce (not yet found), the validator signature (computed after
-PoW), and the final block hash (computed after signing). It covers everything
-else: height, prevBlockHash, subBlockRefs, likeBoxIds, utxoTxIds, stumpIds,
-validatorId, powTargetBits, coinbaseOutputs, epochTallyResults, protocolVersion,
-createdAt.
+Computes the preimage the PoW nonce hashes against: takes the header with
+`powNonce` set to `0`, CBOR-encodes it (`encodeHeader`), and returns
+`blake2b512(encoded).subarray(0, 32)`. The preimage is over the **header**, not a
+separate "block body" — it covers `protocolVersion`, `height`, `prevBlockHash`,
+`subBlockRoot`, `utxoTxRoot`, `stateRoot`, `validatorId`, `powTargetBits`, and
+`createdAt`, with `powNonce` zeroed. The block *body* (sub-blocks, UTXO txs,
+coinbase outputs) is committed **transitively**: `subBlockRoot` / `utxoTxRoot` are
+Merkle roots over it and `stateRoot` is the AVL+ digest, so any body change alters
+a root and therefore the preimage. `validatorSignature` is not a header field, so
+it never enters the preimage. Exposed to external miners (hex) at
+`GET /mining/template` as `powPreimage`.
+
+### blockHash
+
+```
+blockHash(header: BlockHeader): string
+```
+
+The canonical block hash: `blake2b512(encodeHeader(header)).subarray(0, 32)` as a
+64-char hex string — the header with its **solved** `powNonce` (unlike the PoW
+preimage, which zeroes it). Used as the next block's `prevBlockHash` chain link,
+and as the message the validator signs — `verifyValidatorSignature` recomputes it.
+Because `validatorSignature` lives on the block and not in the header, `blockHash`
+is stable before and after signing.
 
 ---
 
@@ -75,6 +102,36 @@ keyObj, signature)`. Returns `true` iff the signature is valid.
 
 The caller is responsible for looking up the author's public key — this
 function receives it as a parameter and performs no I/O.
+
+### verifyValidatorSignature
+
+```
+verifyValidatorSignature(header: BlockHeader, signature: Uint8Array): boolean
+```
+
+Verifies that `signature` is a valid raw Ed25519 signature over the block hash,
+made by the key declared in `header.validatorId`. Recomputes the signed message
+as `Buffer.from(blockHash(header), 'hex')` — the 32 raw bytes of
+`blake2b512(encodeHeader(header))[:32]`, the exact value the block creator signs
+(`crypto.sign(null, Buffer.from(blockHash(header), 'hex'), validatorPrivKey)`).
+Wraps the 32-byte `header.validatorId` in an SPKI DER envelope, builds a
+`KeyObject`, and calls `crypto.verify(null, message, keyObj, signature)`. Returns
+`true` iff the signature verifies.
+
+`validatorSignature` lives on the block, **not** in the header, so
+`blockHash(header)` is stable before and after signing — verification recomputes
+it from the received header and checks the signature against `header.validatorId`.
+A block whose `validatorId` names a key the producer does not hold (a forged
+authorship) fails this check. Mirrors `verifyPostSignature`; like it, the caller
+supplies the public key (here the header's own `validatorId`) and the function
+performs no I/O.
+
+**No-panic (M-5).** Returns `false` — never throws — on malformed input: a header
+that is not CBOR-encodable (so `blockHash` / `encodeHeader` cannot run), a
+`validatorId` that is not exactly 32 bytes (the SPKI wrap / `createPublicKey`
+would otherwise throw), or a `signature` that is not a byte view. A wrong-*length*
+signature is left to `crypto.verify`, which rejects it cleanly, matching
+`verifyPostSignature`.
 
 ---
 
@@ -245,11 +302,13 @@ Stage 2 (@dagsocial/node — on* callbacks, after gossip receipt)
   ├── Parent ref existence (DB lookup)
   └── Karma sufficiency (UTXO state)
 
-Block receipt (@dagsocial/node — onOrderingBlock callback)
+Block receipt (@dagsocial/node)
   ├── verifyOrderingBlockStructure
   ├── verifyBlockChainLink (against previous block)
   ├── verifyOrderingBlockPoW
-  ├── verifyValidatorSignature (body hash signed with validatorId's key)
+  ├── verifyValidatorSignature (blockHash(header) signed with validatorId's key)
+  │     — enforced inside applyOrderingBlock, the funnel every apply path
+  │       (gossip, sync, reorg) passes through, so no path can skip it
   └── State application (UTXO, sub-block confirmation, mempool cleanup)
 ```
 
@@ -271,11 +330,12 @@ verified at receipt time only.
 - **No-panic (M-5).** No exported verify function throws on malformed or
   adversarial input — each returns `false` / `{ valid: false }` instead. Inputs
   arrive straight off the wire and may be wrongly typed or out of range
-  (non-string `content`, non-array `parentRefs`, a public key that is not 32
-  bytes, a nonce that is negative / `NaN` / float / beyond `u64`). Every such
-  case is a clean rejection, never an exception. Guard the throwing operations
-  (`Buffer.byteLength`, `createPublicKey`, `BigInt`/`writeBigUInt64LE`,
-  `.length`) with type/shape checks first.
+  (non-string `content`, non-array `parentRefs`, a public key or `validatorId`
+  that is not 32 bytes, a block header that is not CBOR-encodable, a nonce that
+  is negative / `NaN` / float / beyond `u64`). Every such case is a clean
+  rejection, never an exception. Guard the throwing operations
+  (`Buffer.byteLength`, `createPublicKey`, `encodeHeader`,
+  `BigInt`/`writeBigUInt64LE`, `.length`) with type/shape checks first.
 
 ## Invariants
 - All hashing uses `blake2b512.digest().subarray(0, 32)` — Node.js v22
@@ -291,5 +351,8 @@ verified at receipt time only.
 - Content limits measured in UTF-8 bytes, not characters
 - All functions are synchronous — no Promises, no callbacks
 - Protocol version `PROTOCOL_VERSION` from `@dagsocial/types`
-- Ordering block body hash excludes powNonce, validatorSignature, and hash
-  (computed after these are set)
+- Ordering-block hashing is over the **header**. The PoW preimage
+  (`computePowHash`) is the encoded header with `powNonce` zeroed; the canonical
+  `blockHash` is the encoded header with the solved `powNonce`. Neither includes
+  `validatorSignature` — it is not a header field. The body binds via the header's
+  `subBlockRoot` / `utxoTxRoot` / `stateRoot`.

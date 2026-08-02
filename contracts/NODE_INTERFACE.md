@@ -457,7 +457,7 @@ Architecture document for the full model. Key properties:
     treasury split if configured)
 15. Adjust difficulty at epoch boundaries (credit epochs, not like epochs)
 16. Build block template (powNonce=0, empty signature)
-17. **Internal mode:** mine PoW, sign body hash, compute final hash, finalize
+17. **Internal mode:** mine PoW, sign the header hash (`blockHash(header)`), finalize
 18. **External mode:** store template for `GET /mining/block-template`,
     return null (block finalized when miner submits via `submitMinedBlock`)
 
@@ -967,9 +967,31 @@ not fail the API request.
 - **`onTx(tx)`**: validates (read-only, `validateTx`) → inserts into mempool via
   `insertUtxoTx`
 - **`onStump(stump)`**: stores stump if not already present
-- **`onOrderingBlock(block)`**: full validation (structure, chain-link, PoW,
-  signature) → fork detection & resolution → `applyOrderingBlock` → confirms
-  posts → removes confirmed entries from mempool
+- **`onOrderingBlock(block)`**: structure / chain-link / PoW pre-filters → fork
+  detection & resolution → `applyOrderingBlock` → confirms posts → removes
+  confirmed entries from mempool. The authoritative consensus checks — including
+  **validator-signature verification (H-1)** — are enforced *inside*
+  `applyOrderingBlock` (see "Ordering block apply-time authorization" below), so
+  the sync and reorg paths, which never pass through this gossip callback, are
+  covered by the same gate.
+
+### Ordering block apply-time authorization
+
+`applyOrderingBlock` is the single funnel every apply path — gossip receipt,
+pull-sync, and reorg — passes through, so consensus authorization is enforced
+there rather than at any one entry point.
+
+**Validator signature (H-1).** Before applying any state, the block is rejected
+unless `verifyValidatorSignature(block.header, block.validatorSignature)` (from
+`@dagsocial/validation`) returns `true`. This binds block-production attribution
+(coinbase-output ownership, genesis credit distribution) to the holder of
+`validatorId`'s private key: solving the PoW no longer lets a producer forge a
+block under another validator's identity. The check is pure and deterministic —
+it recomputes `blockHash(block.header)` and verifies the raw Ed25519 signature
+against `block.header.validatorId` — so every node reaches the same verdict. It
+sits alongside the height-scheduled PoW-target and coinbase-maturity checks
+already enforced in this funnel, and precedes any mutation so a bad-signature
+block rolls back to a no-op.
 
 ### Sync handlers (pull-path)
 
