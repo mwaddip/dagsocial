@@ -13,7 +13,6 @@ import {
   CREDIT_TAIL_REWARD,
   CREDIT_MINER_REWARD_DELAY,
   CREDIT_TREASURY_PCT,
-  ORDERING_BLOCK_POW_TARGET_BITS,
   LIKE_THRESHOLD,
   LIKE_MAX_AUTHOR_REWARD,
   LIKE_COST,
@@ -51,6 +50,7 @@ import type {
 } from '@dagsocial/types';
 import type { Config } from '../config.js';
 import { canonicalEpochTallyJson } from './epoch-canonical.js';
+import { expectedTarget } from './difficulty.js';
 import { getNet } from './net-instance.js';
 import { mintKarma } from './karma.js';
 import { mintCredits } from './credits.js';
@@ -137,8 +137,6 @@ let intervalId: ReturnType<typeof setInterval> | null = null;
 let pendingSubBlockCounter = 0;
 let currentTemplate: OrderingBlock | null = null;   // For external mining mode
 let confirmedRowids: Set<number> = new Set();       // Mempool rowids included in current block
-let difficultyWindowStartMs: number | null = null;   // Timestamp of first block in current epoch
-let difficultyWindowStartTarget: number | null = null; // Target bits of first block in current epoch
 let dagService: import('./dag-service.js').DagService | undefined;
 
 // ---------------------------------------------------------------------------
@@ -154,9 +152,6 @@ export function startBlockCreator(cfg: Config): void {
   validatorPubKey = new Uint8Array(pubDer.subarray(pubDer.length - 32));
   validatorPrivKey = privateKey;
   validatorId = validatorPubKey;
-
-  // Initialize difficulty tracking from last epoch boundary
-  initDifficultyWindow();
 
   // Start interval timer
   intervalId = setInterval(() => {
@@ -273,58 +268,6 @@ export function computeBlockReward(height: number): number {
   ) + 1;
   const reward = CREDIT_INITIAL_REWARD - epochs * CREDIT_REWARD_REDUCTION;
   return Math.max(reward, CREDIT_TAIL_REWARD);
-}
-
-// ---------------------------------------------------------------------------
-// Difficulty adjustment
-// ---------------------------------------------------------------------------
-
-function initDifficultyWindow(): void {
-  // Start tracking from the current tip
-  const currentHeight = getCurrentHeight();
-  if (currentHeight > 0) {
-    const lastBlock = getOrderingBlock(currentHeight);
-    if (lastBlock) {
-      difficultyWindowStartTarget = lastBlock.header.powTargetBits;
-      difficultyWindowStartMs = lastBlock.header.createdAt;
-    }
-  }
-  if (difficultyWindowStartTarget === null) {
-    difficultyWindowStartTarget = config.orderingBlockPowTargetBits;
-  }
-}
-
-function adjustDifficulty(currentHeight: number): number {
-  if (!difficultyWindowStartMs || !difficultyWindowStartTarget) {
-    return config.orderingBlockPowTargetBits;
-  }
-
-  // Only adjust at epoch boundaries
-  if (currentHeight % CREDIT_EPOCH_BLOCKS !== 0) {
-    return difficultyWindowStartTarget;
-  }
-
-  const now = Date.now();
-  const actualDuration = now - difficultyWindowStartMs;
-  const expectedDuration = CREDIT_EPOCH_BLOCKS * 60_000; // 60s blocks
-
-  const ratio = actualDuration / expectedDuration;
-  const newTarget = Math.round(difficultyWindowStartTarget * ratio);
-
-  // Clamp to ±50%
-  const clamped = Math.max(
-    Math.min(newTarget, Math.ceil(difficultyWindowStartTarget * 1.5)),
-    Math.floor(difficultyWindowStartTarget * 0.5),
-  );
-
-  // Floor at 4
-  const final = Math.max(clamped, 4);
-
-  // Reset window
-  difficultyWindowStartMs = now;
-  difficultyWindowStartTarget = final;
-
-  return final;
 }
 
 // ---------------------------------------------------------------------------
@@ -491,8 +434,8 @@ export function createOrderingBlock(): OrderingBlock | null {
   // 13. Compute coinbase
   const coinbaseOutputs = buildCoinbaseOutputs(newHeight);
 
-  // 14. Difficulty adjustment
-  const powTargetBits = adjustDifficulty(currentHeight);
+  // 14. Difficulty — fixed by the height schedule, and enforced at apply
+  const powTargetBits = expectedTarget(newHeight);
 
   // 15. Epoch tally
   let epochTallyResults: EpochTally | undefined;

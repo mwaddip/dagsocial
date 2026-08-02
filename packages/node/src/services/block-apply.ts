@@ -13,6 +13,7 @@ import { settlePruneUtxo } from './settle-prune-utxo.js';
 import type { DecayDeps } from './decay.js';
 import { config } from '../config.js';
 import { computeBlockReward, computeSubBlockRoot, computeUtxoTxRoot, clearTemplate, computeEpochTally } from './block-creator.js';
+import { expectedTarget } from './difficulty.js';
 import { canonicalRewardsJson } from './epoch-canonical.js';
 import { DagService } from './dag-service.js';
 import { applyTx, validateTx } from './utxo-engine.js';
@@ -46,6 +47,7 @@ import {
   encodeTx,
   decodeTx,
   PROTOCOL_VERSION,
+  CREDIT_MINER_REWARD_DELAY,
   computeTxId,
   computeBoxId,
   leafHash,
@@ -153,6 +155,23 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
   }
 
   // 3. PoW verification
+  //
+  // The scheduled target is checked first, because `verifyOrderingBlockPoW`
+  // only checks the solution against the header's *own* `powTargetBits`: a
+  // producer that writes the floor target into its header mines a near-free
+  // block that satisfies its own claim, and every node accepts it. The target
+  // is a deterministic function of height (MINING contract, invariant 4), and
+  // every path into the chain — gossip, sync, reorg — funnels through here, so
+  // this is where the schedule can be enforced for all of them.
+  const scheduledTarget = expectedTarget(block.header.height);
+  if (block.header.powTargetBits !== scheduledTarget) {
+    console.warn(
+      `Rejected block height=${block.header.height}: powTargetBits ` +
+      `${block.header.powTargetBits} != scheduled ${scheduledTarget}`,
+    );
+    currentJournal = null;
+    return false;
+  }
   if (!validation.verifyOrderingBlockPoW(block.header)) {
     console.warn(`Rejected block height=${block.header.height}: PoW invalid`);
     currentJournal = null;
@@ -182,6 +201,27 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
     );
     currentJournal = null;
     return false;
+  }
+
+  // 5b. Verify coinbase maturity locks
+  //
+  // The value check above says nothing about *when* the credits become
+  // spendable, and each output's `lockedUntilBlock` travels into `mintCredits`
+  // below exactly as the producer wrote it — so an unchecked `0` mints a
+  // coinbase spendable in the block that created it, bypassing the 720-block
+  // maturity delay entirely. The lock is a pure function of height (MINING
+  // contract, invariant 3); the gossip validator's `>= height` bound is both
+  // weaker than that and absent from the sync/reorg path.
+  const expectedLock = block.header.height + CREDIT_MINER_REWARD_DELAY;
+  for (const out of block.utxoTxTree.coinbaseOutputs) {
+    if (out.lockedUntilBlock !== expectedLock) {
+      console.warn(
+        `Rejected block height=${block.header.height}: coinbase lockedUntilBlock ` +
+        `${out.lockedUntilBlock} != expected ${expectedLock}`,
+      );
+      currentJournal = null;
+      return false;
+    }
   }
 
   // 5. Verify epoch tally results (before storing the block)

@@ -861,7 +861,7 @@ fresh. Namespacing keeps the option open to split into separate stores later
 - block_topology table for efficient subtree topology lookups
 - libp2p networking with two-stage validation (stateless + stateful)
 - Credit emission: Ergo-style linear decay, treasury split, miner reward delay
-- Difficulty adjustment for ordering block PoW
+- Height-deterministic difficulty schedule for ordering block PoW (no wall clock)
 - Internal + external mining modes
 - Unified mempool: all state mutations queued, applied atomically at block
   finalization

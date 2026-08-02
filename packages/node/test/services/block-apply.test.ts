@@ -19,11 +19,14 @@ import {
   LIKE_THRESHOLD,
   LIKE_MAX_AUTHOR_REWARD,
   KARMA_STALE_THRESHOLD_BLOCKS,
+  CREDIT_MINER_REWARD_DELAY,
 } from '@dagsocial/types';
+import { verifyOrderingBlockPoW } from '@dagsocial/validation';
 import type {
   Post,
   LikeBox,
   KarmaBox,
+  BlockHeader,
   OrderingBlock,
   UtxoTransaction,
   BlockJournal,
@@ -293,6 +296,85 @@ function changeBoxOf(tx: UtxoTransaction): KarmaBox {
   return { ...change, id: computeBoxId(change) };
 }
 
+const ZERO_HASH = '0'.repeat(64);
+
+/**
+ * The first nonce that satisfies the header's declared target, found with the
+ * production verifier.
+ *
+ * Hand-built blocks have to carry a real solution now that `powTargetBits` must
+ * equal the height schedule: declaring target 0 to sail past PoW — how these
+ * tests used to reach the checks behind it — is itself a rejected block.
+ */
+function solveHeaderPow(header: BlockHeader): number {
+  for (let nonce = 0; ; nonce++) {
+    if (verifyOrderingBlockPoW({ ...header, powNonce: nonce })) return nonce;
+  }
+}
+
+/** The first nonce that does NOT satisfy the header's declared target. */
+function unsolvedHeaderPow(header: BlockHeader): number {
+  for (let nonce = 0; ; nonce++) {
+    if (!verifyOrderingBlockPoW({ ...header, powNonce: nonce })) return nonce;
+  }
+}
+
+/**
+ * A hand-built block that passes every apply check: chain-linked at genesis,
+ * correct Merkle roots, coinbase paying exactly the scheduled emission with the
+ * scheduled maturity lock, and a real PoW solution at the scheduled target.
+ *
+ * Each override deviates in exactly one respect, so what a test measures is
+ * that deviation and nothing else.
+ */
+async function makeApplicableBlock(
+  opts: { powTargetBits?: number; lockedUntilBlock?: number } = {},
+): Promise<OrderingBlock> {
+  const { computeSubBlockRoot, computeUtxoTxRoot, computeBlockReward } = await import(
+    '../../src/services/block-creator.js'
+  );
+  const { expectedTarget } = await import('../../src/services/difficulty.js');
+
+  const height = 1;
+  const miner = makeTestIdentity();
+  const subBlockTree = { subBlockRefs: [], subBlockEntries: [], pruneEntries: [] };
+  const utxoTxTree = {
+    utxoTxIds: [],
+    utxoTxs: [],
+    likeBoxIds: [],
+    coinbaseOutputs: [
+      {
+        owner: miner.userId,
+        value: computeBlockReward(height),
+        lockedUntilBlock:
+          opts.lockedUntilBlock ?? height + CREDIT_MINER_REWARD_DELAY,
+        isTreasury: false,
+      },
+    ],
+  };
+
+  const header = {
+    protocolVersion: PROTOCOL_VERSION,
+    height,
+    prevBlockHash: ZERO_HASH,
+    subBlockRoot: computeSubBlockRoot(subBlockTree),
+    utxoTxRoot: computeUtxoTxRoot(utxoTxTree),
+    stateRoot: ZERO_HASH,
+    validatorId: miner.userId,
+    powNonce: 0,
+    powTargetBits: opts.powTargetBits ?? expectedTarget(height),
+    createdAt: Date.now(),
+  } as BlockHeader;
+  header.powNonce = solveHeaderPow(header);
+
+  return {
+    header,
+    subBlockTree,
+    utxoTxTree,
+    validatorSignature: new Uint8Array(64),
+  } as unknown as OrderingBlock;
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -551,8 +633,12 @@ describe('block-apply journal recording', () => {
     db.initDb(':memory:');
 
     const blockApply = await importBlockApply();
+    const { expectedTarget } = await import('../../src/services/difficulty.js');
 
-    // Construct a block that passes genesis check but fails PoW
+    // A block that passes the genesis and difficulty-schedule checks and then
+    // fails on the solution: the target is the scheduled one, the nonce is the
+    // first that does not satisfy it. Picking the nonce deterministically is
+    // what keeps this off a 1-in-2^targetBits coin flip.
     const block: OrderingBlock = {
       header: {
         protocolVersion: PROTOCOL_VERSION,
@@ -563,7 +649,7 @@ describe('block-apply journal recording', () => {
         stateRoot: '0000000000000000000000000000000000000000000000000000000000000000000',
         validatorId: new Uint8Array(32),
         powNonce: 0,
-        powTargetBits: 20, // High difficulty — nonce 0 will not satisfy
+        powTargetBits: expectedTarget(1),
         createdAt: Date.now(),
       },
       subBlockTree: { subBlockRefs: [], subBlockEntries: [], stumpIds: [] },
@@ -575,6 +661,8 @@ describe('block-apply journal recording', () => {
       },
       validatorSignature: new Uint8Array(64),
     };
+    block.header.powNonce = unsolvedHeaderPow(block.header);
+    expect(verifyOrderingBlockPoW(block.header)).toBe(false);
 
     const result = blockApply.applyOrderingBlock(block);
     expect(result).toBe(false);
@@ -680,13 +768,14 @@ describe('block-apply journal recording', () => {
     // Genesis paying a zero coinbase when the emission schedule says 100.
     //
     // Every earlier check is made to pass so the block reaches the coinbase
-    // check on every run: powTargetBits 0 satisfies PoW unconditionally and
-    // the Merkle roots are computed rather than zeroed. With a non-zero target
-    // over a Date.now() header it was a coin flip whether PoW or the Merkle
-    // root did the rejecting, and the coinbase check went untested.
+    // check on every run: the target is the scheduled one with a mined nonce,
+    // and the Merkle roots are computed rather than zeroed. With a header that
+    // failed PoW it was a coin flip whether PoW or the Merkle root did the
+    // rejecting, and the coinbase check went untested.
     const { computeSubBlockRoot, computeUtxoTxRoot } = await import(
       '../../src/services/block-creator.js'
     );
+    const { expectedTarget } = await import('../../src/services/difficulty.js');
     const subBlockTree = {
       subBlockRefs: [],
       subBlockEntries: [],
@@ -700,19 +789,21 @@ describe('block-apply journal recording', () => {
         { value: 0, owner: new Uint8Array(32), lockedUntilBlock: null },
       ],
     };
+    const header = {
+      protocolVersion: PROTOCOL_VERSION,
+      height: 1,
+      prevBlockHash: '0000000000000000000000000000000000000000000000000000000000000000',
+      subBlockRoot: computeSubBlockRoot(subBlockTree),
+      utxoTxRoot: computeUtxoTxRoot(utxoTxTree),
+      stateRoot: '0000000000000000000000000000000000000000000000000000000000000000',
+      validatorId: new Uint8Array(32),
+      powNonce: 0,
+      powTargetBits: expectedTarget(1),
+      createdAt: Date.now(),
+    } as BlockHeader;
+    header.powNonce = solveHeaderPow(header);
     const block = {
-      header: {
-        protocolVersion: PROTOCOL_VERSION,
-        height: 1,
-        prevBlockHash: '0000000000000000000000000000000000000000000000000000000000000000',
-        subBlockRoot: computeSubBlockRoot(subBlockTree),
-        utxoTxRoot: computeUtxoTxRoot(utxoTxTree),
-        stateRoot: '0000000000000000000000000000000000000000000000000000000000000000',
-        validatorId: new Uint8Array(32),
-        powNonce: 0,
-        powTargetBits: 0,
-        createdAt: Date.now(),
-      },
+      header,
       subBlockTree,
       utxoTxTree,
       validatorSignature: new Uint8Array(64),
@@ -1080,7 +1171,7 @@ describe('block-apply epoch tally ordering', () => {
 
     const posts = await importPosts();
     const utxo = await importUtxo();
-    const { encodePost, CREDIT_MINER_REWARD_DELAY } = await import('@dagsocial/types');
+    const { encodePost } = await import('@dagsocial/types');
 
     // Three posts with different like counts, so the tally carries three
     // reward entries and the busiest one clears the refund threshold
@@ -1144,19 +1235,25 @@ describe('block-apply epoch tally ordering', () => {
       epochTallyResults: peerTally,
     };
 
+    const { expectedTarget } = await import('../../src/services/difficulty.js');
+    const peerHeader = {
+      protocolVersion: PROTOCOL_VERSION,
+      height,
+      prevBlockHash: blockHash(ordering.getOrderingBlock(2)!.header),
+      subBlockRoot: computeSubBlockRoot(subBlockTree),
+      utxoTxRoot: computeUtxoTxRoot(utxoTxTree),
+      stateRoot: '0000000000000000000000000000000000000000000000000000000000000000',
+      validatorId: miner.userId,
+      powNonce: 0,
+      // Mined at the scheduled target: PoW is not what is under test, but a
+      // block off the difficulty schedule no longer reaches the tally check.
+      powTargetBits: expectedTarget(height),
+      createdAt: Date.now(),
+    } as BlockHeader;
+    peerHeader.powNonce = solveHeaderPow(peerHeader);
+
     const peerBlock = {
-      header: {
-        protocolVersion: PROTOCOL_VERSION,
-        height,
-        prevBlockHash: blockHash(ordering.getOrderingBlock(2)!.header),
-        subBlockRoot: computeSubBlockRoot(subBlockTree),
-        utxoTxRoot: computeUtxoTxRoot(utxoTxTree),
-        stateRoot: '0000000000000000000000000000000000000000000000000000000000000000',
-        validatorId: miner.userId,
-        powNonce: 0,
-        powTargetBits: 0, // satisfied unconditionally — PoW is not what is under test
-        createdAt: Date.now(),
-      },
+      header: peerHeader,
       subBlockTree,
       utxoTxTree,
       validatorSignature: new Uint8Array(64),
@@ -1165,5 +1262,138 @@ describe('block-apply epoch tally ordering', () => {
     const blockApply = await importBlockApply();
     expect(blockApply.applyOrderingBlock(peerBlock)).toBe(true);
     expect(ordering.getCurrentHeight()).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Height-deterministic difficulty + coinbase maturity, enforced at apply
+// (audit M-2, M-3)
+// ---------------------------------------------------------------------------
+
+describe('block-apply consensus schedules', () => {
+  beforeEach(async () => {
+    vi.resetModules();
+  });
+
+  afterEach(async () => {
+    try {
+      const bc = await importBlockCreator();
+      bc.stopBlockCreator();
+    } catch {
+      // Module might not have been imported
+    }
+    vi.resetModules();
+  });
+
+  // -----------------------------------------------------------------------
+  // M-2: powTargetBits must equal expectedTarget(height)
+  // -----------------------------------------------------------------------
+
+  it('rejects a block whose powTargetBits is below the schedule', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    const { expectedTarget } = await import('../../src/services/difficulty.js');
+    const floorTarget = 4; // the gossip validator's sanity floor
+    expect(floorTarget).toBeLessThan(expectedTarget(1));
+
+    // The M-2 attack, in full: a self-declared floor target with a PoW solution
+    // that genuinely satisfies it. Nothing here is malformed — the block is
+    // internally consistent and costs ~16 hashes to produce.
+    const block = await makeApplicableBlock({ powTargetBits: floorTarget });
+    expect(verifyOrderingBlockPoW(block.header)).toBe(true);
+
+    const blockApply = await importBlockApply();
+    expect(blockApply.applyOrderingBlock(block)).toBe(false);
+
+    // Rolled back whole: no block, no height, no coinbase mint.
+    const ordering = await importOrdering();
+    expect(ordering.getOrderingBlock(1)).toBeNull();
+    expect(ordering.getCurrentHeight()).toBe(0);
+
+    const journal = await importJournalStore();
+    expect(journal.getBlockJournal(1)).toBeNull();
+  });
+
+  it('accepts a block whose powTargetBits equals the schedule', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    const { expectedTarget } = await import('../../src/services/difficulty.js');
+    const block = await makeApplicableBlock();
+    expect(block.header.powTargetBits).toBe(expectedTarget(1));
+
+    const blockApply = await importBlockApply();
+    expect(blockApply.applyOrderingBlock(block)).toBe(true);
+
+    const ordering = await importOrdering();
+    expect(ordering.getCurrentHeight()).toBe(1);
+  });
+
+  // -----------------------------------------------------------------------
+  // M-3: every coinbase lock must equal height + CREDIT_MINER_REWARD_DELAY
+  // -----------------------------------------------------------------------
+
+  it('rejects a block whose coinbase output is unlocked', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    // lockedUntilBlock 0 — spendable the moment it is minted, bypassing the
+    // 720-block maturity delay. The value is correct, so the emission check
+    // above waves it through.
+    const block = await makeApplicableBlock({ lockedUntilBlock: 0 });
+
+    const blockApply = await importBlockApply();
+    expect(blockApply.applyOrderingBlock(block)).toBe(false);
+
+    const ordering = await importOrdering();
+    expect(ordering.getOrderingBlock(1)).toBeNull();
+    expect(ordering.getCurrentHeight()).toBe(0);
+
+    // The mint is what the attack is after: no credit box, of any maturity.
+    const { getCreditBoxes } = (await import('../../src/store/utxo.js')) as {
+      getCreditBoxes: (owner: Uint8Array) => unknown[];
+    };
+    expect(getCreditBoxes(block.utxoTxTree.coinbaseOutputs[0]!.owner)).toHaveLength(0);
+  });
+
+  it('rejects a block whose coinbase lock is one block short of maturity', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    // Off by one, not obviously wrong, and still ahead of the block height the
+    // gossip validator bounds against — so only an equality check catches it.
+    const block = await makeApplicableBlock({
+      lockedUntilBlock: 1 + CREDIT_MINER_REWARD_DELAY - 1,
+    });
+
+    const blockApply = await importBlockApply();
+    expect(blockApply.applyOrderingBlock(block)).toBe(false);
+
+    const ordering = await importOrdering();
+    expect(ordering.getCurrentHeight()).toBe(0);
+  });
+
+  it('accepts a block whose coinbase lock matches the maturity delay', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    const block = await makeApplicableBlock({
+      lockedUntilBlock: 1 + CREDIT_MINER_REWARD_DELAY,
+    });
+
+    const blockApply = await importBlockApply();
+    expect(blockApply.applyOrderingBlock(block)).toBe(true);
+
+    const ordering = await importOrdering();
+    expect(ordering.getCurrentHeight()).toBe(1);
+
+    // Minted, and carrying the lock the block declared.
+    const { getCreditBoxes } = (await import('../../src/store/utxo.js')) as {
+      getCreditBoxes: (owner: Uint8Array) => Array<{ lockedUntilBlock?: number }>;
+    };
+    const boxes = getCreditBoxes(block.utxoTxTree.coinbaseOutputs[0]!.owner);
+    expect(boxes).toHaveLength(1);
+    expect(boxes[0]!.lockedUntilBlock).toBe(1 + CREDIT_MINER_REWARD_DELAY);
   });
 });

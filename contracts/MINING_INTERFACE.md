@@ -90,18 +90,32 @@ Same algorithm as `verifyPoW` (blake2b512 → 32 bytes, check leading zero bits)
 2. `hash = blake2b512(bodyBytes || encodeLE64(block.powNonce)).subarray(0, 32)`
 3. Count leading zero bits in `hash` ≥ `block.powTargetBits`
 
-## Difficulty Adjustment
+## Difficulty Schedule
 
-Recalculated at each epoch boundary (every `CREDIT_EPOCH_BLOCKS`):
+`powTargetBits` is a **deterministic function of block height** — never of wall
+clock. On-chain time is block height (ARCHITECTURE invariant), so the difficulty
+target may not depend on `Date.now()` or a header timestamp, and every node must
+compute the same expected target for a given height, for all time.
+
+Phase 1 uses a **fixed target**:
 
 ```ts
-newTarget = Math.round(prevTarget × actualDuration / expectedDuration)
-// clamp to ±50% of prevTarget
+expectedTarget(height) = ORDERING_BLOCK_POW_TARGET_BITS   // constant, Phase 1
 ```
 
-The adjustment uses the previous epoch's start timestamp and target, both stored
-in the block header. The first block after an epoch boundary carries the new
-target.
+There is no wall-clock retargeting. Rationale: the previous scheme
+(`prevTarget × actualDuration / expectedDuration`, clamped ±50%) fired only every
+`CREDIT_EPOCH_BLOCKS` (~90 days) and made the target a function of local wall
+time, so two honest nodes could compute different targets and a miner could
+self-declare a floor target for near-free blocks. A real hashrate-tracking
+retarget needs a deterministic on-chain time source (e.g. median-of-header-
+timestamps with future bounds); that is deferred, and ordering-block difficulty
+is expected to evolve (possibly karma-proportional) in a later phase. Until then
+the target is fixed by schedule and enforced.
+
+**Enforcement (apply — all paths: gossip, sync, reorg):** a block whose
+`header.powTargetBits !== expectedTarget(height)` is rejected. This is a consensus
+check, not a sanity floor — the target is fixed by schedule, not miner-chosen.
 
 ## Mining API
 
@@ -195,11 +209,18 @@ hashes, sub-second on modern CPU). Production would use 30+.
 
 1. Coinbase value per block matches `computeBlockReward(height)` exactly
 2. Treasury split matches `CREDIT_TREASURY_PCT` when treasury key is configured
-3. Coinbase outputs cannot be spent before `lockedUntilBlock`
-4. `powTargetBits` ≥ 4 (sanity floor — any lower is effectively zero-work)
-5. Difficulty adjustment is clamped to ±50% per epoch
+3. Coinbase outputs cannot be spent before `lockedUntilBlock`, and every coinbase
+   output's `lockedUntilBlock` **equals `height + CREDIT_MINER_REWARD_DELAY`** —
+   enforced at apply on all paths (gossip, sync, reorg), not only in the gossip
+   validator. A block with any other coinbase lock is rejected.
+4. `powTargetBits` **equals `expectedTarget(height)`** (a deterministic function of
+   height), enforced at apply on all paths — not a self-declared value with a
+   sanity floor. A mismatch rejects the block.
+5. Difficulty is height-deterministic; there is no wall-clock adjustment.
 6. Block hash covers PoW fields — changing `powNonce` or `powTargetBits` invalidates the block
-7. Old blocks verify against their declared difficulty, not current difficulty
+7. Old blocks verify against the scheduled difficulty for their height; since the
+   schedule is a pure function of height, that is the same value on every node and
+   for all time.
 
 ## Miner Script
 
