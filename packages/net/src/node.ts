@@ -6,7 +6,7 @@ import { identify } from '@libp2p/identify';
 import { ping } from '@libp2p/ping';
 import { gossipsub } from '@chainsafe/libp2p-gossipsub';
 import { multiaddr } from '@multiformats/multiaddr';
-import { encode, decode } from 'cbor-x';
+import { encode } from 'cbor-x';
 
 import type { Libp2p } from 'libp2p';
 import type { SubBlock, OrderingBlock, UtxoTransaction, BlockHeader, Stump } from '@dagsocial/types';
@@ -14,7 +14,7 @@ import { PROTOCOL_VERSION, encodeSubBlock, decodeSubBlock, encodeOrderingBlock, 
 import { blockHash } from '@dagsocial/validation';
 import { ReaderError } from '@dagsocial/wire';
 import type { NetConfig, NetValidators, Peer, PeerRecord, PostsMsg, PostsEntry, StumpsEntry, StumpsMsg } from './types.js';
-import { PeerState } from './types.js';
+import { PeerState, PenaltyKind } from './types.js';
 import type { Libp2pGossip, GossipHandlers } from './gossip.js';
 import { PeerManager } from './peer-mgr.js';
 import { subscribeTopics, broadcastSubBlock, broadcastOrderingBlock, broadcastTx, broadcastStump } from './gossip.js';
@@ -34,6 +34,7 @@ import {
   decodeGetStumps,
   encodeStumps,
   decodeStumps,
+  decodeLegacyHeadersRequest,
 } from './sync-codec.js';
 import { mergeUint8Arrays } from './util.js';
 import { PeerDb } from './peerdb.js';
@@ -289,6 +290,9 @@ export class NetNode {
       this.syncStore,
       (peerId: string, data: Uint8Array) => this.sendToPeer(peerId, data),
       async (peerId: string, ids: string[]) => this.requestSubBlocksFn(peerId, ids),
+      (peerId: string, reason: string) => {
+        this.peerMgr.recordPenaltyKind(PenaltyKind.ProtocolViolation, peerId, reason);
+      },
     );
     this.syncMachine.start();
 
@@ -522,12 +526,22 @@ export class NetNode {
           body = data;
         }
 
-        const msg = parseHandshakeBody(body);
-        const result = validateHandshake(msg, [PROTOCOL_VERSION]);
-        console.log(`[net] inbound handshake from ${peerId}: ok=${result.ok} height=${msg.chainHeight}`);
+        const result = validateHandshake(parseHandshakeBody(body), [PROTOCOL_VERSION]);
+        if (!result.ok || !result.msg) {
+          // Contract: validation failure → stream closed, peer banned.
+          console.warn(`[net] inbound handshake from ${peerId} rejected: ${result.error}`);
+          this.peerMgr.recordPenaltyKind(
+            PenaltyKind.ProtocolViolation,
+            peerId,
+            `handshake: ${result.error}`,
+          );
+          await stream.sink([new Uint8Array(0)]);
+          return;
+        }
 
-        // Record peer regardless of validation outcome
-        const listenAddrs = this.libp2p!.getMultiaddrs();
+        const msg = result.msg;
+        console.log(`[net] inbound handshake from ${peerId}: ok=true height=${msg.chainHeight}`);
+
         const addr = msg.declaredAddress ?? connection.remoteAddr?.toString() ?? peerId;
         this.peerDb?.record({
           address: addr,
@@ -535,16 +549,14 @@ export class NetNode {
           agentName: msg.agentName,
           nodeName: msg.nodeName,
           protocolVersion: msg.protocolVersion,
-          capabilities: msg.capabilities ?? [],
+          capabilities: msg.capabilities,
         });
 
-        if (result.ok) {
-          this.peerMgr.setPeerState(peerId, PeerState.Active);
-          this.syncMachine?.onPeerActive(peerId, msg.chainHeight);
-          for (const cb of this.peerActiveHandlers) {
-            try { cb(peerId); } catch (err) {
-              console.warn(`[net] peerActive handler error: ${String(err)}`);
-            }
+        this.peerMgr.setPeerState(peerId, PeerState.Active);
+        this.syncMachine?.onPeerActive(peerId, result.peerHeight);
+        for (const cb of this.peerActiveHandlers) {
+          try { cb(peerId); } catch (err) {
+            console.warn(`[net] peerActive handler error: ${String(err)}`);
           }
         }
 
@@ -631,6 +643,11 @@ export class NetNode {
             return;
           }
           const request = decodeGetPosts(body);
+          if (!request) {
+            console.warn(`[net] malformed GetPosts from ${peerId}, dropping`);
+            this.peerMgr.recordPenaltyKind(PenaltyKind.ProtocolViolation, peerId, 'malformed GetPosts');
+            return;
+          }
           if (request.postIds.length > 100) {
             console.warn(`[net] GetPosts request with ${request.postIds.length} IDs exceeds limit, dropping`);
             return;
@@ -648,6 +665,11 @@ export class NetNode {
             return;
           }
           const request = decodeGetStumps(body);
+          if (!request) {
+            console.warn(`[net] malformed GetStumps from ${peerId}, dropping`);
+            this.peerMgr.recordPenaltyKind(PenaltyKind.ProtocolViolation, peerId, 'malformed GetStumps');
+            return;
+          }
           if (request.stumpIds.length > 100) {
             console.warn(`[net] GetStumps request with ${request.stumpIds.length} IDs exceeds limit, dropping`);
             return;
@@ -722,9 +744,17 @@ export class NetNode {
         body = data;
       }
 
-      const msg = parseHandshakeBody(body);
-      const result = validateHandshake(msg, [PROTOCOL_VERSION]);
-      console.log(`[net] outbound handshake with ${peerId}: ok=${result.ok} height=${result.peerHeight} caps=${result.peerCapabilities.length}`);
+      const result = validateHandshake(parseHandshakeBody(body), [PROTOCOL_VERSION]);
+      if (!result.ok) {
+        console.warn(`[net] outbound handshake with ${peerId} rejected: ${result.error}`);
+        this.peerMgr.recordPenaltyKind(
+          PenaltyKind.ProtocolViolation,
+          peerId,
+          `handshake: ${result.error}`,
+        );
+        return result;
+      }
+      console.log(`[net] outbound handshake with ${peerId}: ok=true height=${result.peerHeight} caps=${result.peerCapabilities.length}`);
       return result;
     } finally {
       if (stream) await stream.close();
@@ -901,7 +931,12 @@ export class NetNode {
         console.warn(`[net] requestPosts: unexpected response code ${frame.code}`);
         return { entries: [] };
       }
-      return decodePosts(frame.body);
+      const response = decodePosts(frame.body);
+      if (!response) {
+        console.warn(`[net] requestPosts: malformed Posts response from ${peerId}`);
+        return { entries: [] };
+      }
+      return response;
     } catch (err) {
       console.warn(`[net] requestPosts failed for peer ${peerId}: ${String(err)}`);
       return { entries: [] };
@@ -941,7 +976,12 @@ export class NetNode {
         console.warn(`[net] requestStumps: unexpected response code ${frame.code}`);
         return { entries: [] };
       }
-      return decodeStumps(frame.body);
+      const response = decodeStumps(frame.body);
+      if (!response) {
+        console.warn(`[net] requestStumps: malformed Stumps response from ${peerId}`);
+        return { entries: [] };
+      }
+      return response;
     } catch (err) {
       console.warn(`[net] requestStumps failed for peer ${peerId}: ${String(err)}`);
       return { entries: [] };
@@ -1013,23 +1053,30 @@ export class NetNode {
             return;
           }
 
-          const request = decode(mergeUint8Arrays(chunks)) as {
-            startHeight: number;
-            maxCount?: number;
-            endHeight?: number;
-            mode?: string;
-          };
+          const request = decodeLegacyHeadersRequest(mergeUint8Arrays(chunks));
+          if (!request) {
+            await stream.sink([new Uint8Array(0)]);
+            return;
+          }
+
+          // Both loops below read the store once per height. Clamp them to our
+          // own tip: we cannot serve what we do not have, so this never
+          // truncates a legitimate request, and a peer asking for height 1e15
+          // costs us nothing.
+          const ourHeight = this.syncStore.chainHeight();
 
           if (request.mode === 'blocks') {
             const blocks: OrderingBlock[] = [];
-            for (let h = request.startHeight; h <= request.endHeight!; h++) {
+            const endHeight = Math.min(request.endHeight ?? ourHeight, ourHeight);
+            for (let h = request.startHeight; h <= endHeight; h++) {
               const block = getBlock(h);
               if (block) blocks.push(block);
             }
             await stream.sink([Buffer.from(encode({ blocks }))] as any);
           } else {
             const headers: BlockHeader[] = [];
-            for (let h = request.startHeight; h > 0 && headers.length < (request.maxCount || 20); h--) {
+            const maxCount = request.maxCount ?? 20;
+            for (let h = Math.min(request.startHeight, ourHeight); h > 0 && headers.length < maxCount; h--) {
               const block = getBlock(h);
               if (block) headers.push(block.header);
               else break;

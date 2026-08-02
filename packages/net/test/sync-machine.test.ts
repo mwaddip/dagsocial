@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import { encode, decode } from 'cbor-x';
+import { encode } from 'cbor-x';
 import { SyncMachine } from '../src/sync-machine.js';
 import type { SyncStore } from '../src/sync-machine.js';
 import {
@@ -851,6 +851,197 @@ describe('SyncMachine', () => {
       machine.flush();
 
       expect(sent.length).toBe(0);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Malformed messages + event-loop isolation (audit C-7)
+  // -----------------------------------------------------------------------
+
+  describe('malformed messages (audit C-7)', () => {
+    /** Let the background event loop run a few iterations. */
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 25));
+
+    function makeReportingMachine(store: Partial<SyncStore> = {}): {
+      machine: SyncMachine;
+      sent: SentMessage[];
+      violations: { peerId: string; reason: string }[];
+    } {
+      const sent: SentMessage[] = [];
+      const violations: { peerId: string; reason: string }[] = [];
+      const machine = new SyncMachine(
+        testConfig,
+        stubStore(store),
+        (peerId, data) => sent.push({ peerId, data }),
+        async () => [],
+        (peerId, reason) => violations.push({ peerId, reason }),
+      );
+      return { machine, sent, violations };
+    }
+
+    // --- decode boundary: the message never reaches a handler ---------------
+
+    it('drops a ModifierRequest with no ids and penalizes the sender', () => {
+      const { machine, sent, violations } = makeReportingMachine({ chainHeight: () => 5 });
+      // The audit payload: well-formed CBOR, but `ids` is missing.
+      machine.handleMessage('attacker', MSG_MODIFIER_REQUEST, new Uint8Array(encode({ typeId: 101 })));
+      machine.flush();
+
+      expect(sent).toHaveLength(0);
+      expect(violations).toEqual([{ peerId: 'attacker', reason: 'malformed ModifierRequest' }]);
+    });
+
+    it('drops a malformed Inv', () => {
+      const { machine, violations } = makeReportingMachine({ chainHeight: () => 0 });
+      peerActive(machine, 'peer1', 100);
+      machine.handleMessage('peer1', MSG_INV, new Uint8Array(encode({ typeId: 101, ids: 'all' })));
+      machine.flush();
+      expect(violations).toEqual([{ peerId: 'peer1', reason: 'malformed Inv' }]);
+    });
+
+    it('drops a malformed ModifierResponse', () => {
+      const appended: unknown[] = [];
+      const { machine, violations } = makeReportingMachine({
+        chainHeight: () => 0,
+        appendBlocks: (blocks: unknown[]) => { appended.push(...blocks); },
+      });
+      machine.handleMessage('peer1', MSG_MODIFIER_RESPONSE, new Uint8Array(encode({ typeId: 101 })));
+      machine.flush();
+      expect(appended).toHaveLength(0);
+      expect(violations).toEqual([{ peerId: 'peer1', reason: 'malformed ModifierResponse' }]);
+    });
+
+    it('drops non-CBOR garbage without throwing', () => {
+      const { machine, violations } = makeReportingMachine({ chainHeight: () => 0 });
+      machine.handleMessage('attacker', MSG_SYNC_INFO, new Uint8Array([0xff, 0xff, 0xff]));
+      machine.flush();
+      expect(violations).toHaveLength(1);
+      expect(machine.getState().phase).toBe('idle');
+    });
+
+    // --- height bounds: servePeer's per-height loop is never entered --------
+
+    it('never reaches servePeer for a negative advertised height', () => {
+      const reads: number[] = [];
+      const { machine, sent, violations } = makeReportingMachine({
+        chainHeight: () => 10,
+        getOrderingBlockId: (h: number) => { reads.push(h); return `block_${h}`; },
+      });
+
+      machine.onPeerActive('attacker', -1_000_000_000);
+      machine.flush();
+
+      // The ~1e9-iteration store scan never ran.
+      expect(reads).toHaveLength(0);
+      expect(sent).toHaveLength(0);
+      expect(machine.getState().phase).toBe('idle');
+      expect(violations).toHaveLength(1);
+    });
+
+    it('never reaches servePeer for a SyncInfo with a negative tipHeight', () => {
+      const reads: number[] = [];
+      const { machine, sent, violations } = makeReportingMachine({
+        chainHeight: () => 10,
+        getOrderingBlockId: (h: number) => { reads.push(h); return `block_${h}`; },
+      });
+
+      machine.handleMessage('attacker', MSG_SYNC_INFO, new Uint8Array(encode({
+        tipHeight: -1_000_000_000,
+        tipBlockId: 'x',
+        tipCumulativeWork: '1',
+        anchors: [],
+      })));
+      machine.flush();
+
+      expect(reads).toHaveLength(0);
+      expect(sent).toHaveLength(0);
+      expect(violations).toEqual([{ peerId: 'attacker', reason: 'malformed SyncInfo' }]);
+    });
+
+    it('still serves a peer that is legitimately behind', () => {
+      const reads: number[] = [];
+      const { machine, sent, violations } = makeReportingMachine({
+        chainHeight: () => 10,
+        getOrderingBlockId: (h: number) => { reads.push(h); return `block_${h}`; },
+      });
+
+      machine.handleMessage('peer1', MSG_SYNC_INFO, new Uint8Array(encode({
+        tipHeight: 5,
+        tipBlockId: 'x',
+        tipCumulativeWork: '1',
+        anchors: [],
+      })));
+      machine.flush();
+
+      expect(reads).toEqual([6, 7, 8, 9, 10]);
+      expect(sent).toHaveLength(1);
+      expect(violations).toHaveLength(0);
+    });
+
+    // --- event-loop isolation ----------------------------------------------
+
+    it('keeps the background event loop alive after a malformed ModifierRequest', async () => {
+      const { machine } = makeReportingMachine({ chainHeight: () => 0 });
+      machine.start();
+      try {
+        machine.handleMessage('attacker', MSG_MODIFIER_REQUEST, new Uint8Array(encode({ typeId: 101 })));
+        await settle();
+
+        // The loop must still be processing — before the fix this event was
+        // never seen, because the loop promise had already rejected.
+        machine.onPeerActive('peer1', 100);
+        await settle();
+
+        expect(machine.getState().phase).toBe('syncing');
+        expect(machine.getState().syncPeerId).toBe('peer1');
+      } finally {
+        machine.stop();
+      }
+    });
+
+    it('survives a handler that throws and keeps processing later events', async () => {
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      let calls = 0;
+      const { machine } = makeReportingMachine({
+        chainHeight: () => {
+          calls++;
+          if (calls === 1) throw new Error('store exploded');
+          return 0;
+        },
+      });
+      machine.start();
+      try {
+        machine.onPeerActive('poison', 50);
+        await settle();
+        expect(machine.getState().phase).toBe('idle');
+
+        machine.onPeerActive('peer1', 100);
+        await settle();
+        expect(machine.getState().phase).toBe('syncing');
+        expect(errSpy).toHaveBeenCalled();
+      } finally {
+        machine.stop();
+        errSpy.mockRestore();
+      }
+    });
+
+    it('isolates a throwing handler in flush() too', () => {
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      let calls = 0;
+      const { machine } = makeReportingMachine({
+        chainHeight: () => {
+          calls++;
+          if (calls === 1) throw new Error('store exploded');
+          return 0;
+        },
+      });
+
+      machine.onPeerActive('poison', 50);
+      machine.onPeerActive('peer1', 100);
+      expect(() => machine.flush()).not.toThrow();
+      expect(machine.getState().phase).toBe('syncing');
+
+      errSpy.mockRestore();
     });
   });
 });

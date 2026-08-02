@@ -141,11 +141,26 @@ sends its magic; the inbound side echoes it back. Both sides verify the
 magic matches their own network's magic bytes in the frame. Anti-replay,
 validates both sides agree on network.
 
-### Validation
+### Validation (and untrusted-input safety)
 
+Every decoded stream message — the handshake and all sync messages (`SyncInfo`, `Inv`,
+`ModifierRequest`, `ModifierResponse`, …) — is **structurally validated before use**:
+required fields present and correctly typed, arrays are arrays, and every height or
+count is a `Number.isInteger` that is **non-negative and within a sane maximum**. A
+malformed or out-of-bounds message is dropped and the peer penalized — it must **never
+throw out of, or crash, the handler**, and the sync event loop isolates a per-message
+failure so one bad message degrades that message only, never the loop.
+
+Handshake specifics:
 - `protocolVersion` must be one this node supports
-- `chainHeight` is informational — used to decide sync direction
-- Unknown capabilities are preserved, not rejected (forward compat)
+- `chainHeight` (and `SyncInfo.tipHeight`) must be a non-negative integer `<=
+  MAX_ADVERTISED_HEIGHT` (= 100,000,000, ~190 years at 1 block/min) — they drive
+  `servePeer`, so an unbounded or negative value must never reach the serve loop (it
+  would otherwise scan ~10⁹ heights). The same bound applies to the legacy
+  `/dagsocial/headers/1` request range, which is ungated (no handshake) and must clamp
+  its serve loop to the local tip.
+- `agentName` / `nodeName` are strings; `capabilities` is an array of numbers (unknown
+  capabilities preserved, not rejected — forward compat)
 
 Validation failure → stream closed, peer banned permanently.
 

@@ -1,12 +1,14 @@
 import { MAGIC_MAINNET } from './frame.js';
 import type { NetConfig } from './types.js';
 import {
+  MSG_HANDSHAKE,
   MSG_SYNC_INFO,
   MSG_INV,
   MSG_MODIFIER_REQUEST,
   MSG_MODIFIER_RESPONSE,
   MODIFIER_ORDERING_BLOCK,
 } from './types.js';
+import { isHeight } from './msg-guards.js';
 import type { SyncInfo, Inv, ModifierRequest, ModifierResponse, SyncState } from './sync-types.js';
 import {
   encodeSyncInfo,
@@ -126,11 +128,17 @@ export class SyncMachine {
   /** Whether the background event loop is running. */
   private running = false;
 
+  /**
+   * @param onProtocolViolation Called when a message fails the decode boundary,
+   *   so the node layer can penalize the sending peer. Defaults to a no-op for
+   *   callers that only want the state machine.
+   */
   constructor(
     private config: NetConfig,
     private store: SyncStore,
     private sendToPeer: (peerId: string, data: Uint8Array) => void,
     private requestSubBlocks: (peerId: string, ids: string[]) => Promise<unknown[]>,
+    private onProtocolViolation: (peerId: string, reason: string) => void = () => {},
   ) {
     this.magic = config.magic ?? MAGIC_MAINNET;
   }
@@ -144,6 +152,10 @@ export class SyncMachine {
     if (this.running) return;
     this.running = true;
     this.eventLoop().catch((err) => {
+      // Unreachable while every dispatch is isolated, but if the loop ever does
+      // die, clear the flag so `start()` can bring it back instead of being a
+      // permanent no-op.
+      this.running = false;
       console.error('[sync-machine] event loop crashed:', err);
     });
   }
@@ -166,27 +178,26 @@ export class SyncMachine {
    * 3. Timer tick (fallback, lowest priority)
    *
    * Yields to the microtask queue between iterations to prevent CPU spinning.
+   *
+   * Every dispatch is isolated (see `dispatchControlEvent`) — a throwing
+   * handler must degrade one message, never abandon the loop.
    */
   private async eventLoop(): Promise<void> {
     while (this.running) {
-      let didWork = false;
-
       // 1. Drain control events first (never dropped)
       while (this.controlQueue.length > 0) {
         const event = this.controlQueue.shift()!;
-        this.handleControlEvent(event);
-        didWork = true;
+        this.dispatchControlEvent(event);
       }
 
       // 2. Process one data event
       const dataEvent = this.dataQueue.shift();
       if (dataEvent) {
-        this.handleDataEvent(dataEvent);
-        didWork = true;
+        this.dispatchDataEvent(dataEvent);
       }
 
       // 3. Fallback: timer tick
-      this.onTimerTick();
+      this.dispatchTimerTick();
 
       // Small yield to prevent CPU spinning
       await new Promise((resolve) => setImmediate(resolve));
@@ -209,14 +220,51 @@ export class SyncMachine {
       // Drain all control events
       while (this.controlQueue.length > 0) {
         const event = this.controlQueue.shift()!;
-        this.handleControlEvent(event);
+        this.dispatchControlEvent(event);
       }
 
       // Process one data event
       const dataEvent = this.dataQueue.shift();
       if (dataEvent) {
-        this.handleDataEvent(dataEvent);
+        this.dispatchDataEvent(dataEvent);
       }
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Internal — isolated dispatch
+  //
+  // A handler that throws must degrade one message, not the subsystem. In the
+  // background loop an escaping error rejects the `eventLoop` promise and
+  // abandons `while (this.running)` — sync then stays dead until the process
+  // restarts. `flush()` shares these helpers so both paths behave the same.
+  // -----------------------------------------------------------------------
+
+  private dispatchControlEvent(event: ControlEvent): void {
+    try {
+      this.handleControlEvent(event);
+    } catch (err) {
+      console.error(
+        `[sync-machine] control event '${event.type}' from ${event.peerId} failed: ${String(err)}`,
+      );
+    }
+  }
+
+  private dispatchDataEvent(event: DataEvent): void {
+    try {
+      this.handleDataEvent(event);
+    } catch (err) {
+      console.error(
+        `[sync-machine] data event '${event.type}' from ${event.peerId} failed: ${String(err)}`,
+      );
+    }
+  }
+
+  private dispatchTimerTick(): void {
+    try {
+      this.onTimerTick();
+    } catch (err) {
+      console.error(`[sync-machine] timer tick failed: ${String(err)}`);
     }
   }
 
@@ -240,9 +288,17 @@ export class SyncMachine {
   /**
    * Called after handshake reveals a peer's tip height.
    *
+   * The height is peer-supplied and feeds `servePeer`, which walks the chain
+   * one height at a time — so it is bounds-checked here, at the boundary,
+   * before it can reach a loop.
+   *
    * Enqueues a control event — the event loop processes it with top priority.
    */
   onPeerActive(peerId: string, peerHeight: number): void {
+    if (!isHeight(peerHeight)) {
+      this.rejectMessage(peerId, MSG_HANDSHAKE, `advertised height out of range: ${String(peerHeight)}`);
+      return;
+    }
     this.controlQueue.push({ type: 'peer-active', peerId, peerHeight });
   }
 
@@ -252,35 +308,64 @@ export class SyncMachine {
    * The `body` is the raw CBOR payload (already stripped of the frame
    * envelope by the caller).
    *
+   * Every body is decoded *and* shape-checked before it is queued: a message
+   * that fails the boundary is dropped here and attributed to the sender, so no
+   * unvalidated value ever reaches a handler.
+   *
    * Routes to control queue (SyncInfo) or data queue (everything else).
    */
   handleMessage(peerId: string, code: number, body: Uint8Array): void {
     switch (code) {
-      case MSG_SYNC_INFO:
-        this.controlQueue.push({
-          type: 'sync-info',
-          peerId,
-          info: decodeSyncInfo(body),
-        });
+      case MSG_SYNC_INFO: {
+        const info = decodeSyncInfo(body);
+        if (!info) {
+          this.rejectMessage(peerId, code, 'malformed SyncInfo');
+          return;
+        }
+        this.controlQueue.push({ type: 'sync-info', peerId, info });
         break;
-      case MSG_INV:
-        this.enqueueData({ type: 'inv', peerId, inv: decodeInv(body) });
+      }
+      case MSG_INV: {
+        const inv = decodeInv(body);
+        if (!inv) {
+          this.rejectMessage(peerId, code, 'malformed Inv');
+          return;
+        }
+        this.enqueueData({ type: 'inv', peerId, inv });
         break;
-      case MSG_MODIFIER_REQUEST:
-        this.enqueueData({
-          type: 'modifier-request',
-          peerId,
-          req: decodeModifierRequest(body),
-        });
+      }
+      case MSG_MODIFIER_REQUEST: {
+        const req = decodeModifierRequest(body);
+        if (!req) {
+          this.rejectMessage(peerId, code, 'malformed ModifierRequest');
+          return;
+        }
+        this.enqueueData({ type: 'modifier-request', peerId, req });
         break;
-      case MSG_MODIFIER_RESPONSE:
-        this.enqueueData({
-          type: 'modifier-response',
-          peerId,
-          resp: decodeModifierResponse(body),
-        });
+      }
+      case MSG_MODIFIER_RESPONSE: {
+        const resp = decodeModifierResponse(body);
+        if (!resp) {
+          this.rejectMessage(peerId, code, 'malformed ModifierResponse');
+          return;
+        }
+        this.enqueueData({ type: 'modifier-response', peerId, resp });
         break;
+      }
       // Unknown message types are silently ignored.
+    }
+  }
+
+  /**
+   * Drop a message that failed the decode boundary and attribute the failure to
+   * the peer that sent it.
+   */
+  private rejectMessage(peerId: string, code: number, reason: string): void {
+    console.warn(`[sync-machine] dropping code=${code} from ${peerId}: ${reason}`);
+    try {
+      this.onProtocolViolation(peerId, reason);
+    } catch (err) {
+      console.warn(`[sync-machine] onProtocolViolation handler error: ${String(err)}`);
     }
   }
 
@@ -558,6 +643,11 @@ export class SyncMachine {
    * from their height.
    *
    * Capped at MAX_INV_IDS to avoid oversized messages.
+   *
+   * Precondition: `peerHeight` has passed `isHeight`. Both callers take it from
+   * a bounds-checked boundary (`onPeerActive`, `decodeSyncInfo`) — the loop
+   * below reads the store once per height, so a negative value here would scan
+   * ~10⁹ heights on the main thread.
    */
   private servePeer(peerId: string, peerHeight: number): void {
     const startHeight = peerHeight + 1;

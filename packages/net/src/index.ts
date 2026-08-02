@@ -27,6 +27,19 @@ export {
 } from './types.js';
 export { buildHandshakeFrame, parseHandshakeBody, validateHandshake } from './handshake.js';
 export type { HandshakeMsg, HandshakeResult } from './handshake.js';
+export {
+  isRecord,
+  isBoundedInt,
+  isHeight,
+  isStringArray,
+  isBoundedIntArray,
+  isBytes,
+  isWorkString,
+  MAX_ADVERTISED_HEIGHT,
+  MAX_TYPE_ID,
+  MAX_UINT32,
+  MAX_CAPABILITY_CODE,
+} from './msg-guards.js';
 export { PeerDb } from './peerdb.js';
 export { OutboundManager } from './outbound-mgr.js';
 export type { PeerStorage } from './peerdb.js';
@@ -61,6 +74,8 @@ export {
   encodePosts, decodePosts,
   encodeGetStumps, decodeGetStumps,
   encodeStumps, decodeStumps,
+  decodeLegacyHeadersRequest,
 } from './sync-codec.js';
+export type { LegacyHeadersRequest } from './sync-codec.js';
 export { SyncMachine } from './sync-machine.js';
 export type { SyncStore } from './sync-machine.js';
