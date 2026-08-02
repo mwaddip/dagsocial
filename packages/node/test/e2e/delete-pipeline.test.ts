@@ -10,6 +10,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { request as httpRequest } from 'node:http';
 import { createHash, generateKeyPairSync, sign as cryptoSign } from 'node:crypto';
 import type { KeyObject } from 'node:crypto';
 import {
@@ -50,12 +51,47 @@ const concat = (...arrs: Uint8Array[]) => { const t = arrs.reduce((s,a)=>s+a.len
 const le64 = (n: number) => { const b = new Uint8Array(8); new DataView(b.buffer).setBigUint64(0, BigInt(n), true); return b; };
 const encoder = new TextEncoder();
 
-async function get(url: string) { const r = await fetch(url); return r.json(); }
+/**
+ * One request on a fresh, non-pooled socket (`agent: false`).
+ *
+ * `fetch` keeps sockets alive in undici's pool and relies on a timer to retire
+ * them before the server does. `solve()` below blocks the event loop for
+ * seconds at a time, so that timer cannot fire; the node's HTTP server hits its
+ * own 5s keep-alive timeout first and closes the connection, and the next
+ * request writes into a half-closed socket — `UND_ERR_SOCKET: other side
+ * closed`, on the call right after the PoW solve. A connection per request
+ * removes the shared state the race needs.
+ */
+function httpJson(method: string, url: string, body?: unknown): Promise<{ status: number; text: string }> {
+  const u = new URL(url);
+  const payload = body === undefined ? undefined : JSON.stringify(body);
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({
+      hostname: u.hostname,
+      port: u.port,
+      path: `${u.pathname}${u.search}`,
+      method,
+      agent: false,
+      headers: payload
+        ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+        : {},
+    }, res => {
+      let d = '';
+      res.setEncoding('utf8');
+      res.on('data', c => { d += c; });
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, text: d }));
+    });
+    req.on('error', reject);
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+async function get(url: string) { const r = await httpJson('GET', url); return JSON.parse(r.text); }
 async function api(method: string, url: string, body?: unknown) {
-  const r = await fetch(url, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
-  const t = await r.text();
-  if (!r.ok) throw new Error(`${method} ${url} ${r.status}: ${t}`);
-  return t ? JSON.parse(t) : {};
+  const r = await httpJson(method, url, body);
+  if (r.status < 200 || r.status >= 300) throw new Error(`${method} ${url} ${r.status}: ${r.text}`);
+  return r.text ? JSON.parse(r.text) : {};
 }
 
 function signTx(tx: UtxoTransaction): void {

@@ -8,10 +8,12 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { request as httpRequest } from 'node:http';
 import { createHash, generateKeyPairSync, sign as cryptoSign, randomBytes } from 'node:crypto';
 import type { KeyObject } from 'node:crypto';
 import {
   computeTxId,
+  computePostId,
   leafHash,
   buildMerkleRoot,
   hexToBuf,
@@ -35,6 +37,11 @@ const ENV = {
   KARMA_DECAY_AMOUNT: '5',
   KARMA_MINIMUM: '10',
   MINING_MODE: 'internal',
+  // Challenge validity is measured in blocks, and this config mines one every
+  // 2s — the default 10-block window is ~20s, shorter than a single PoW solve
+  // at the node's target bits, so a challenge expires mid-solve. Widen it so
+  // the window stays realistic against the compressed block time.
+  CHALLENGE_WINDOW_BLOCKS: '100',
 };
 
 let n1: ChildProcess, n2: ChildProcess;
@@ -50,12 +57,47 @@ const le64 = (n: number) => { const b = new Uint8Array(8); new DataView(b.buffer
 
 const encoder = new TextEncoder();
 
-async function get(url: string) { const r = await fetch(url); return r.json(); }
+/**
+ * One request on a fresh, non-pooled socket (`agent: false`).
+ *
+ * `fetch` keeps sockets alive in undici's pool and relies on a timer to retire
+ * them before the server does. `solve()` below blocks the event loop for
+ * seconds at a time, so that timer cannot fire; the node's HTTP server hits its
+ * own 5s keep-alive timeout first and closes the connection, and the next
+ * request writes into a half-closed socket — `UND_ERR_SOCKET: other side
+ * closed`, reproducibly on the call right after the PoW solve. A connection per
+ * request removes the shared state the race needs.
+ */
+function httpJson(method: string, url: string, body?: unknown): Promise<{ status: number; text: string }> {
+  const u = new URL(url);
+  const payload = body === undefined ? undefined : JSON.stringify(body);
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({
+      hostname: u.hostname,
+      port: u.port,
+      path: `${u.pathname}${u.search}`,
+      method,
+      agent: false,
+      headers: payload
+        ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+        : {},
+    }, res => {
+      let d = '';
+      res.setEncoding('utf8');
+      res.on('data', c => { d += c; });
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, text: d }));
+    });
+    req.on('error', reject);
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+async function get(url: string) { const r = await httpJson('GET', url); return JSON.parse(r.text); }
 async function api(method: string, url: string, body?: unknown) {
-  const r = await fetch(url, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
-  const t = await r.text();
-  if (!r.ok) throw new Error(`${method} ${url} ${r.status}: ${t}`);
-  return t ? JSON.parse(t) : {};
+  const r = await httpJson(method, url, body);
+  if (r.status < 200 || r.status >= 300) throw new Error(`${method} ${url} ${r.status}: ${r.text}`);
+  return r.text ? JSON.parse(r.text) : {};
 }
 
 function signTx(tx: UtxoTransaction): void {
@@ -104,9 +146,24 @@ function signPost(content: string, author: Uint8Array, parents: string[], chal: 
 }
 
 // Tx builders
-function karmaTx(boxes: {boxId:string,value:number}[], spend:number, proof:string): UtxoTransaction {
+/**
+ * Post-lock tx — karma(total) → karma(total − lock) + PostLockBox(lock).
+ *
+ * The locked karma moves into the PostLockBox; it is never burned. A user tx
+ * that dropped the lock output would spend karma into nothing and is rejected
+ * by the node's value-conservation check.
+ */
+function postLockTx(boxes: {boxId:string,value:number}[], lockAmount:number, targetPostId:string): UtxoTransaction {
   const t = boxes.reduce((s,b)=>s+b.value,0);
-  return { inputs: boxes.map(b=>b.boxId), outputs: [{ boxType:'karma',value:t-spend,createdAtBlock:0,owner:pubRaw,guard:'owner_signature',proofSource:proof,lastTouchBlock:0 }], signatures:{}, protocolVersion:PROTOCOL_VERSION };
+  return {
+    inputs: boxes.map(b=>b.boxId),
+    outputs: [
+      { boxType:'karma',value:t-lockAmount,createdAtBlock:0,owner:pubRaw,guard:'owner_signature',proofSource:targetPostId,lastTouchBlock:0 },
+      { boxType:'post_lock',value:lockAmount,originalValue:lockAmount,owner:pubRaw,targetPostId,guard:'epoch_tally' },
+    ],
+    signatures:{},
+    protocolVersion:PROTOCOL_VERSION,
+  };
 }
 function likeTx(boxes: {boxId:string,value:number}[], targetPostId: string): UtxoTransaction {
   const t = boxes.reduce((s,b)=>s+b.value,0);
@@ -206,13 +263,21 @@ describe('E2E Pipeline', () => {
     const sig = signPost('e2e-post', pubRaw, [], chalBytes, ts);
     console.log(`PoW: nonce=${nonce}`);
 
+    // The PostLockBox must reference the post it locks karma for, so the post
+    // ID is computed client-side from the exact fields being submitted.
+    const targetPostId = computePostId({
+      content:'e2e-post', author:pubRaw, parentRefs:[] as string[],
+      challenge:chalBytes, protocolVersion:PROTOCOL_VERSION,
+      timestamp:ts, powNonce:nonce, signature:unhex(sig),
+    } as never);
+
     k = await get(`${A1}/karma/${userId}`) as { total: number; boxes: { boxId: string; value: number }[] };
-    const lockTx = karmaTx(k.boxes, POST_LOCK_THREAD_COST, 'e2e');
+    const lockTx = postLockTx(k.boxes, POST_LOCK_THREAD_COST, targetPostId);
     signTx(lockTx);
 
     const postR = await api('POST', `${A1}/posts`, { content:'e2e-post', author:pubHex, parentRefs:[], challenge:chal.challenge, protocolVersion:PROTOCOL_VERSION, timestamp:ts, powNonce:nonce, signature:sig, karmaLockTx: txToApi(lockTx) }) as { status: string; postId: string };
     expect(postR.status).toBe('pending');
-    const targetPostId = postR.postId;
+    expect(postR.postId).toBe(targetPostId);
     console.log(`Post: ${targetPostId.slice(0,16)}...`);
     await wait(6000);
 
@@ -241,8 +306,9 @@ describe('E2E Pipeline', () => {
     console.log(`Pre-decay karma: ${s}`);
     for (let i=0; i<30; i++) {
       await wait(2000);
-      const h1 = (await get(`${A1}/status`) as { currentHeight: number }).currentHeight;
-      const h2 = (await get(`${A2}/status`) as { currentHeight: number }).currentHeight;
+      // /status reports `blockHeight`; `currentHeight` printed as undefined.
+      const h1 = (await get(`${A1}/status`) as { blockHeight: number }).blockHeight;
+      const h2 = (await get(`${A2}/status`) as { blockHeight: number }).blockHeight;
       console.log(`  H1=${h1} H2=${h2}`);
     }
     const e = (await get(`${A1}/karma/${userId}`) as { total: number }).total;
@@ -272,8 +338,14 @@ describe('E2E Pipeline', () => {
     const nonce = solve(pi, chal.targetBits);
     const sig = signPost('e2e-delete-test', pubRaw, [], chalBytes, ts);
 
+    const targetPostId = computePostId({
+      content:'e2e-delete-test', author:pubRaw, parentRefs:[] as string[],
+      challenge:chalBytes, protocolVersion:PROTOCOL_VERSION,
+      timestamp:ts, powNonce:nonce, signature:unhex(sig),
+    } as never);
+
     const k = await get(`${A1}/karma/${userId}`) as { total: number; boxes: { boxId: string; value: number }[] };
-    const lockTx = karmaTx(k.boxes, POST_LOCK_THREAD_COST, 'e2e-delete');
+    const lockTx = postLockTx(k.boxes, POST_LOCK_THREAD_COST, targetPostId);
     signTx(lockTx);
 
     const postR = await api('POST', `${A1}/posts`, {
@@ -283,7 +355,7 @@ describe('E2E Pipeline', () => {
       karmaLockTx: txToApi(lockTx),
     }) as { status: string; postId: string };
     expect(postR.status).toBe('pending');
-    const targetPostId = postR.postId;
+    expect(postR.postId).toBe(targetPostId);
     console.log(`Delete-test post: ${targetPostId.slice(0, 16)}...`);
 
     // Wait for post to confirm

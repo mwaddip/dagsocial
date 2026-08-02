@@ -1,4 +1,4 @@
-import { uid } from '../helpers.js';
+import { uid, signTransaction } from '../helpers.js';
 import {
   describe,
   it,
@@ -249,18 +249,37 @@ function makeKarmaBox(
   return box;
 }
 
+/**
+ * Build a signed, value-conserving like transaction — the shape a real client
+ * submits: the liker's karma box is consumed and split into a karma change box
+ * and the LikeBox.
+ *
+ * A fixture that emitted only the LikeBox would burn `karmaBox.value −
+ * LIKE_COST` inside a user tx. The node rejects that, so such a tx could never
+ * reach a block and the assembly this file exercises would never see it.
+ */
 function makeLikeTx(
+  liker: TestIdentity,
   karmaBox: KarmaBox,
   targetPostId: string,
 ): UtxoTransaction {
-  return {
+  const tx: UtxoTransaction = {
     inputs: [karmaBox.id!],
     outputs: [
+      {
+        boxType: 'karma',
+        value: karmaBox.value - LIKE_COST,
+        createdAtBlock: 0,
+        owner: liker.userId,
+        guard: 'owner_signature',
+        proofSource: 'like_op',
+        lastTouchBlock: 0,
+      } as KarmaBox,
       {
         boxType: 'like',
         value: LIKE_COST,
         createdAtBlock: 0,
-        likerId: karmaBox.owner,
+        likerId: liker.userId,
         targetPostId,
         guard: 'epoch_tally',
       } as LikeBox,
@@ -268,6 +287,8 @@ function makeLikeTx(
     signatures: {},
     protocolVersion: PROTOCOL_VERSION,
   };
+  signTransaction(tx, liker.privateKey, Buffer.from(liker.userId).toString('hex'));
+  return tx;
 }
 
 // ---------------------------------------------------------------------------
@@ -866,7 +887,7 @@ describe('block-creator', () => {
     // unrelated post, so it won't be attached to any sub-block)
     const karmaBox = makeKarmaBox(100, author.userId, 0);
     utxo.insertBox(karmaBox);
-    const likeTx = makeLikeTx(karmaBox, 'some_post_id_not_matching');
+    const likeTx = makeLikeTx(author, karmaBox, 'some_post_id_not_matching');
     mempool.insertUtxoTx(likeTx, null, 1000);
 
     bc.startBlockCreator(testConfig);
@@ -921,13 +942,13 @@ describe('block-creator', () => {
     // Create a like tx that targets THIS post (matching)
     const karmaBox = makeKarmaBox(100, author.userId, 0);
     utxo.insertBox(karmaBox);
-    const matchingLikeTx = makeLikeTx(karmaBox, postId);
+    const matchingLikeTx = makeLikeTx(author, karmaBox, postId);
     mempool.insertUtxoTx(matchingLikeTx, null, 1000);
 
     // Create another like tx targeting an unrelated post (standalone → utxoTxIds)
     const karmaBox2 = makeKarmaBox(50, author.userId, 0);
     utxo.insertBox(karmaBox2);
-    const standaloneLikeTx = makeLikeTx(karmaBox2, 'unrelated_post');
+    const standaloneLikeTx = makeLikeTx(author, karmaBox2, 'unrelated_post');
     mempool.insertUtxoTx(standaloneLikeTx, null, 1000);
 
     bc.startBlockCreator(testConfig);
@@ -973,7 +994,7 @@ describe('block-creator', () => {
     // Create a UTXO transaction with batch_id "batch1"
     const karmaBox = makeKarmaBox(100, author.userId, 0);
     utxo.insertBox(karmaBox);
-    const likeTx = makeLikeTx(karmaBox, 'unrelated_post_id');
+    const likeTx = makeLikeTx(author, karmaBox, 'unrelated_post_id');
     mempool.insertUtxoTx(likeTx, 'batch1', 1000);
 
     bc.startBlockCreator(testConfig);

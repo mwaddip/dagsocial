@@ -99,24 +99,14 @@ export function txToApi(tx: UtxoTransaction): Record<string, unknown> {
   };
 }
 
-export function karmaTx(
-  boxes: { boxId: string; value: number }[],
-  spend: number,
-  proof: string,
-  owner: Uint8Array,
-): UtxoTransaction {
-  const t = boxes.reduce((s, b) => s + b.value, 0);
-  return {
-    inputs: boxes.map(b => b.boxId),
-    outputs: [{
-      boxType: 'karma', value: t - spend, createdAtBlock: 0,
-      owner, guard: 'owner_signature', proofSource: proof, lastTouchBlock: 0,
-    }],
-    signatures: {},
-    protocolVersion: PROTOCOL_VERSION,
-  };
-}
-
+/**
+ * Post-lock tx — karma(total) → karma(total − lock) + PostLockBox(lock).
+ *
+ * There is deliberately no generic "spend N karma" builder: a user tx that
+ * shrinks a karma box without producing a box for the difference destroys
+ * value and the node rejects it. Karma is only burned by block-application
+ * paths (decay, bond burn), never inside a user tx.
+ */
 export function postLockTx(
   boxes: { boxId: string; value: number }[],
   lockAmount: number,
