@@ -1,4 +1,4 @@
-import type { SubBlock, OrderingBlock, UtxoTransaction, Post, LikeBox } from '@dagsocial/types';
+import type { SubBlock, OrderingBlock, UtxoTransaction, Post, LikeBox, BlockHeader } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
 // Message codes
@@ -142,6 +142,7 @@ export interface NetConfig {
 
 export interface NetValidators {
   verifyPoW: (input: Uint8Array, nonce: number, targetBits: number) => boolean;
+  verifyOrderingBlockPoW: (header: BlockHeader) => boolean;
   verifyPostSignature: (post: Post, publicKey: Uint8Array) => boolean;
   verifyProtocolVersion: (version: number) => boolean;
   verifyContentLimits: (content: string) => { valid: boolean; error?: string };

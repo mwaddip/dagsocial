@@ -110,6 +110,19 @@ export function subscribeTopics(
         peerMgr.recordPenalty('misbehavior', _peer.toString(), 100, 'unsupported protocol version');
         return TopicValidatorResult.Reject;
       }
+      if (!Number.isSafeInteger(block.header.height)) {
+        // Bogus — structure's `>= 1` bound admits NaN and floats (audit M-6).
+        peerMgr.recordPenalty('misbehavior', _peer.toString(), 100, 'ordering block height is not a safe integer');
+        return TopicValidatorResult.Reject;
+      }
+      if (!validators.verifyOrderingBlockPoW(block.header)) {
+        // Bogus — a zero-work block must die at the first hop, not be
+        // re-gossiped mesh-wide (audit M-9). Stage 1 checks the header's own
+        // floor-bounded target only; the difficulty schedule is apply-time
+        // node policy.
+        peerMgr.recordPenalty('misbehavior', _peer.toString(), 100, 'ordering block PoW invalid');
+        return TopicValidatorResult.Reject;
+      }
       return TopicValidatorResult.Accept;
     } catch (err) {
       // Malformed — cannot even decode. Permanent ban.
@@ -228,6 +241,13 @@ function runStage1SubBlock(
   const powInput = postPowPreimage(post);
   if (!v.verifyPoW(powInput, post.powNonce, POST_POW_TARGET_BITS)) {
     return { valid: false, error: 'Proof of Work invalid' };
+  }
+
+  // PoW first (anti-spam gate), then the ~50µs signature check.
+  // `post.author` IS the 32-byte Ed25519 key — the same derivation Stage 2
+  // uses in the node's verifyPostForRelay; any drift here splits the relay.
+  if (!v.verifyPostSignature(post, post.author)) {
+    return { valid: false, error: 'Signature invalid' };
   }
 
   return { valid: true };

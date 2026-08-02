@@ -537,15 +537,25 @@ Two-stage validation, modeled after Ergo's modifier processing:
 
 ### Stage 1 (net package, stateless)
 
-Runs on inbound gossip messages before forwarding to mesh peers. Uses
-`@dagsocial/validation`:
+Runs inside the gossipsub topic validators — i.e. **before** a message is
+forwarded to mesh peers. A message that fails Stage 1 is Rejected (never
+forwarded) and penalized: undecodable → `ProtocolViolation` (permanent
+ban); well-formed but invalid → misbehavior penalty (100). Uses
+`@dagsocial/validation`. Per topic:
 
-- CBOR structural validity
-- Protocol version check
-- Content limits (1-300 UTF-8 bytes)
-- PoW verification (blake2b512 meets target difficulty)
-- Signature verification (Ed25519)
-- Sub-block, ordering block, and UTXO transaction structural checks
+| Topic | Checks before Accept |
+|-------|----------------------|
+| sub-block | `verifySubBlockStructure`; content limits (1–300 UTF-8 bytes) + character rules; parent-refs count; protocol version; post PoW (`verifyPoW` over `postPowPreimage` at `POST_POW_TARGET_BITS`); post signature (`verifyPostSignature` — the post's own `author` key) |
+| ordering-block | `verifyOrderingBlockStructure`; protocol version; `header.height` is a safe integer (NaN/float/±Infinity → Reject); ordering-block PoW (`verifyOrderingBlockPoW`) — the solution must satisfy the header's own `powTargetBits` (bounded ≥ `ORDERING_BLOCK_POW_TARGET_FLOOR` by structure), and a non-safe-integer `powNonce`/`powTargetBits` never verifies (audit M-6, M-9) |
+| tx | `verifyTxStructure`; protocol version |
+| stump | `rootPostHash` is 64-char hex |
+
+Stage 1 is stateless. It does **not** check the difficulty schedule
+(`powTargetBits === expectedTarget(height)`), chain linkage, validator
+signatures, or state roots — those are apply-time checks in
+`@dagsocial/node`, enforced for every entry path (gossip, sync, reorg) by
+the block-apply funnel. The relay PoW gate exists to make mesh propagation
+cost-bearing: no zero-work ordering block may be re-gossiped (audit M-9).
 
 ### Stage 2 (node package, stateful)
 
@@ -558,9 +568,11 @@ Runs after Stage 1 passes, via registered `on*` callbacks:
 
 ### Forwarding Rule
 
-Forward to mesh peers after Stage 1 passes. If Stage 2 fails later, penalize
-the source peer. This keeps propagation fast while gatekeeping on structure
-and PoW.
+Forward to mesh peers only after Stage 1 passes — for ordering blocks this
+includes PoW verification, so a bogus-PoW or NaN-nonce block is dropped at
+the first hop instead of amplified mesh-wide. If Stage 2 fails later,
+penalize the source peer. This keeps propagation fast while gatekeeping on
+structure, PoW, and signatures.
 
 ---
 

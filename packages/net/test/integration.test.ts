@@ -1,8 +1,9 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { generateKeyPair, computePostId, postPowPreimage } from '@dagsocial/types';
-import type { Post, SubBlock, OrderingBlock } from '@dagsocial/types';
+import { generateKeyPair, computePostId, postPowPreimage, signingHash } from '@dagsocial/types';
+import type { Post, SubBlock, OrderingBlock, BlockHeader } from '@dagsocial/types';
 import {
   verifyPoW,
+  verifyOrderingBlockPoW,
   verifyPostSignature,
   verifyProtocolVersion,
   verifyContentLimits,
@@ -11,7 +12,7 @@ import {
   verifyTxStructure,
   verifyOrderingBlockStructure,
 } from '@dagsocial/validation';
-import { createHash } from 'crypto';
+import { createHash, createPrivateKey, sign } from 'crypto';
 import { NetNode } from '../src/node.js';
 import type { NetConfig, NetValidators } from '../src/types.js';
 
@@ -30,6 +31,7 @@ function makeConfig(bootstrapPeers: string[] = []): NetConfig {
 
 const validators: NetValidators = {
   verifyPoW,
+  verifyOrderingBlockPoW,
   verifyPostSignature,
   verifyProtocolVersion,
   verifyContentLimits,
@@ -147,6 +149,15 @@ describe('Two-node integration', () => {
     const powInput = postPowPreimage({ ...postBase, powNonce: 0 });
     const nonce = solvePoW(powInput, 20);
     const post: Post = { ...postBase, powNonce: nonce };
+    // Stage 1 now verifies the post signature before relay (NET_INTERFACE
+    // Stage-1 de-drift) — an unsigned fixture dies at B's topic validator.
+    // signingHash excludes powNonce and signature, so signing after mining
+    // is sound.
+    post.signature = new Uint8Array(
+      sign(null, signingHash(post), createPrivateKey({
+        key: Buffer.from(kp.secretKey), format: 'der', type: 'pkcs8',
+      })),
+    );
     const sb: SubBlock = {
       subBlockId: computePostId(post),
       post,
@@ -180,19 +191,28 @@ describe('Two-node integration', () => {
     });
 
     const validatorId = new Uint8Array(32);
+    // Stage 1 now PoW-gates ordering-block relay (audit M-9) — an unmined
+    // header dies at B's topic validator, so mine the real 12-bit nonce
+    // (~4K tries) with the same function the relay gate calls.
+    const headerBase: BlockHeader = {
+      protocolVersion: 1,
+      height: 1,
+      prevBlockHash: '00'.repeat(32),
+      subBlockRoot: '00'.repeat(32),
+      utxoTxRoot: '00'.repeat(32),
+      stateRoot: '00'.repeat(33),
+      validatorId,
+      powNonce: 0,
+      powTargetBits: 12,
+      createdAt: Date.now(),
+    };
+    let blockNonce = -1;
+    for (let n = 0; n < 10_000_000; n++) {
+      if (verifyOrderingBlockPoW({ ...headerBase, powNonce: n })) { blockNonce = n; break; }
+    }
+    expect(blockNonce).toBeGreaterThanOrEqual(0);
     const block: OrderingBlock = {
-      header: {
-        protocolVersion: 1,
-        height: 1,
-        prevBlockHash: '00'.repeat(32),
-        subBlockRoot: '00'.repeat(32),
-        utxoTxRoot: '00'.repeat(32),
-        stateRoot: '00'.repeat(33),
-        validatorId,
-        powNonce: 0,
-        powTargetBits: 12,
-        createdAt: Date.now(),
-      },
+      header: { ...headerBase, powNonce: blockNonce },
       subBlockTree: {
         subBlockRefs: [],
         subBlockEntries: [],
