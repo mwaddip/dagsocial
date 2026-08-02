@@ -227,7 +227,7 @@ Multi-box UTXO model — identities can hold multiple karma/credit boxes.
 | Method | Path | Request | Response | Errors |
 |--------|------|---------|----------|--------|
 | `POST` | `/credits/transfer` | `{ from: hex, to: hex, amount, signature: base64, expectedHeight }` | `{ sent, change?, txId }` | 400 if insufficient |
-| `POST` | `/credits/faucet` | `{ to: hex }` | `{ amount, txId }` | 403 if not testnet |
+| `POST` | `/credits/faucet` | `{ to: hex }` | `{ amount, txId }` | 403 if not testnet, 409 if already funded |
 
 ### Blocks
 
@@ -240,11 +240,21 @@ Multi-box UTXO model — identities can hold multiple karma/credit boxes.
 
 | Method | Path | Request | Response | Errors |
 |--------|------|---------|----------|--------|
-| `POST` | `/faucet` | `{ userId: hex }` | `{ status: "pending", txId, expiresAtHeight }` | 400 if missing fields, 403 if not testnet |
+| `POST` | `/faucet` | `{ userId: hex }` | `{ status: "pending", txId, expiresAtHeight }` | 400 if missing fields, 403 if not testnet, 409 if already funded |
 
-Grants 100 karma to an identity. Mints from the system keypair — not a
-transfer. Builds a UTXO transaction creating a new karma box, inserts into
-mempool. Gated behind `networkMode === "testnet"`.
+Grants 100 karma to an identity, **once per identity, ever** (idempotent). Mints
+from the system keypair — not a transfer. Builds a UTXO transaction creating a
+new karma box and inserts it into the mempool. Gated behind
+`networkMode === "testnet"`.
+
+**Idempotency (required):** a given `userId` may be funded at most once, ever. A repeat
+request is rejected (409). Enforced by a durable per-`(userId, asset)` grant ledger
+(`faucet_grants`) written in the **same transaction** as the mempool insert, so two
+same-block calls cannot both succeed. Backed by a settled faucet-origin karma-box check
+(`proof_source = 'faucet'`, ignoring spent — covers grants issued before the ledger and
+prevents spend-then-redraw) and a mempool scan (covers grants relayed by gossip). Credits
+rely on the ledger + mempool scan only, since a settled credit box carries no faucet marker.
+The same one-grant rule applies to `POST /credits/faucet`.
 
 ### Mining
 

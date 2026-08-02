@@ -256,6 +256,27 @@ export function getKarmaBoxes(owner: Uint8Array): KarmaBox[] {
 }
 
 /**
+ * True if a faucet-origin karma box has ever existed for this owner.
+ *
+ * Deliberately ignores `spent_at_block` — a grant that has since been spent
+ * still counts, otherwise an identity could spend its grant and draw again.
+ * `'faucet'` enters the ledger only through `faucetGrant`; the system change
+ * box carries `'faucet:system'` and does not match. This covers identities
+ * funded before the faucet grant ledger existed.
+ */
+export function hasFaucetOriginKarmaBox(owner: Uint8Array): boolean {
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT 1 AS present FROM utxo_boxes
+       WHERE owner = ? AND box_type = 'karma' AND proof_source = 'faucet'
+       LIMIT 1`,
+    )
+    .get(Buffer.from(owner)) as { present: number } | undefined;
+  return row !== undefined;
+}
+
+/**
  * Return the single unspent credit box for the given owner, or null if none.
  */
 export function getCreditBox(owner: Uint8Array): CreditBox | null {

@@ -433,5 +433,27 @@ describe('UTXO routes', () => {
       expect(body.amount).toBe(1000);
       expect(typeof body.txId).toBe('string');
     });
+
+    it('rejects a repeat grant for the same recipient with 409', async () => {
+      // faucetRecipientHex was funded by the preceding test — one grant, ever.
+      const res = await request('/credits/faucet', 'POST', {
+        to: faucetRecipientHex,
+      });
+      expect(res.status).toBe(409);
+      expect(String((res.data as Record<string, unknown>).error)).toContain('already funded');
+    });
+
+    it('never grants more than one credit allocation to an identity', async () => {
+      const to = Buffer.from(generateKeyPair().publicKey).toString('hex');
+
+      const statuses: number[] = [];
+      for (let i = 0; i < 3; i++) {
+        const res = await request('/credits/faucet', 'POST', { to });
+        statuses.push(res.status);
+      }
+
+      expect(statuses.filter((s) => s === 200)).toHaveLength(1);
+      expect(statuses.filter((s) => s === 409)).toHaveLength(2);
+    });
   });
 });

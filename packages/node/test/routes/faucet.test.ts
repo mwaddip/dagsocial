@@ -27,6 +27,26 @@ function hex(u: Uint8Array): string {
   return Buffer.from(u).toString('hex');
 }
 
+/**
+ * Sum the karma every pending faucet grant in the mempool would pay to `owner`.
+ * The faucet only enqueues transactions, so this is the balance the identity is
+ * on track to receive once the block lands.
+ */
+function pendingFaucetKarmaFor(owner: Uint8Array): number {
+  let total = 0;
+  for (const entry of getPendingEntries(1000)) {
+    if (entry.entryType !== 'utxo_tx' || !entry.utxoTxCbor) continue;
+    const tx = decodeTx(entry.utxoTxCbor);
+    for (const out of tx.outputs) {
+      if (out.boxType !== 'karma') continue;
+      if (Buffer.from((out as KarmaBox).owner).equals(Buffer.from(owner))) {
+        total += out.value;
+      }
+    }
+  }
+  return total;
+}
+
 function buildDeps(): FaucetDeps {
   return {
     getKarmaBox,
@@ -170,27 +190,104 @@ describe('faucet route', () => {
   });
 
   // -----------------------------------------------------------------------
-  // Test 2: Subsequent faucet grants work (system box depleting)
+  // Test 2: One grant per identity, ever — a repeat request is rejected
   // -----------------------------------------------------------------------
 
-  it('handles multiple faucet grants from the same system box', async () => {
-    const kp = generateKeyPair();
-    const pk = kp.publicKey;
-
+  it('rejects a repeat grant for the same userId with 409', async () => {
+    const pk = generateKeyPair().publicKey;
     const app = buildApp(deps);
 
-    // First grant
     const res1 = await request(app, '/faucet', 'POST', { userId: hex(pk) });
     expect(res1.status).toBe(200);
-    const body1 = res1.data as Record<string, unknown>;
-    expect(body1.status).toBe('pending');
+    expect((res1.data as Record<string, unknown>).status).toBe('pending');
 
-    // Second grant (same user — same tx shape, same txId = idempotent)
     const res2 = await request(app, '/faucet', 'POST', { userId: hex(pk) });
-    expect(res2.status).toBe(200);
-    const body2 = res2.data as Record<string, unknown>;
-    expect(body2.status).toBe('pending');
-    // Same inputs + outputs = same txId (deterministic)
+    expect(res2.status).toBe(409);
+    expect(String((res2.data as Record<string, unknown>).reason)).toContain('already funded');
+  });
+
+  // -----------------------------------------------------------------------
+  // Test 2b: Balance never exceeds one grant, however many calls are made
+  // -----------------------------------------------------------------------
+
+  it('never grants more than one faucet allocation to an identity', async () => {
+    const pk = generateKeyPair().publicKey;
+    const app = buildApp(deps);
+
+    const statuses: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      const res = await request(app, '/faucet', 'POST', { userId: hex(pk) });
+      statuses.push(res.status);
+    }
+
+    expect(statuses.filter((s) => s === 200)).toHaveLength(1);
+    expect(statuses.filter((s) => s === 409)).toHaveLength(4);
+    expect(pendingFaucetKarmaFor(pk)).toBe(100);
+  });
+
+  // -----------------------------------------------------------------------
+  // Test 2c: Two calls within one block cannot both succeed
+  // -----------------------------------------------------------------------
+
+  it('lets only one of two same-block calls succeed', async () => {
+    const pk = generateKeyPair().publicKey;
+    const app = buildApp(deps);
+
+    // getCurrentHeight is unchanged between these calls — no block is produced,
+    // so both land in the same block window and only the settled/pending check
+    // can separate them.
+    const heightBefore = getCurrentHeight();
+    const [res1, res2] = await Promise.all([
+      request(app, '/faucet', 'POST', { userId: hex(pk) }),
+      request(app, '/faucet', 'POST', { userId: hex(pk) }),
+    ]);
+    expect(getCurrentHeight()).toBe(heightBefore);
+
+    const codes = [res1.status, res2.status].sort();
+    expect(codes).toEqual([200, 409]);
+    expect(pendingFaucetKarmaFor(pk)).toBe(100);
+  });
+
+  // -----------------------------------------------------------------------
+  // Test 2d: A settled faucet-origin box blocks a further grant, spent or not
+  // -----------------------------------------------------------------------
+
+  it('rejects an identity that already holds a settled faucet-origin box', async () => {
+    const pk = generateKeyPair().publicKey;
+    const box: KarmaBox = {
+      boxType: 'karma',
+      value: 100,
+      createdAtBlock: 1,
+      owner: pk,
+      guard: 'owner_signature',
+      proofSource: 'faucet',
+      lastTouchBlock: 1,
+    };
+    insertBox({ ...box, id: computeBoxId(box) });
+
+    const app = buildApp(deps);
+    const res = await request(app, '/faucet', 'POST', { userId: hex(pk) });
+    expect(res.status).toBe(409);
+  });
+
+  it('rejects an identity whose faucet grant has already been spent', async () => {
+    const pk = generateKeyPair().publicKey;
+    const box: KarmaBox = {
+      boxType: 'karma',
+      value: 100,
+      createdAtBlock: 1,
+      owner: pk,
+      guard: 'owner_signature',
+      proofSource: 'faucet',
+      lastTouchBlock: 2,
+    };
+    const boxId = computeBoxId(box);
+    insertBox({ ...box, id: boxId });
+    getDb().prepare('UPDATE utxo_boxes SET spent_at_block = ? WHERE id = ?').run(5, boxId);
+
+    const app = buildApp(deps);
+    const res = await request(app, '/faucet', 'POST', { userId: hex(pk) });
+    expect(res.status).toBe(409);
   });
 
   // -----------------------------------------------------------------------

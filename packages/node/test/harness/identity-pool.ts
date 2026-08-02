@@ -63,9 +63,16 @@ export function createIdentityPool(roles: string[]): IdentityPool {
 
         let confirmed = false;
         for (let attempt = 0; attempt < 5; attempt++) {
-          // Request faucet (idempotent — the server may have already processed
-          // a prior request for this userId)
-          await client.faucet(id.userId);
+          // Request faucet. The node grants one allocation per identity ever,
+          // so a retry after an accepted grant answers 409 — that means the
+          // grant is already pending or settled, and we should keep polling
+          // for it rather than treat it as a failure.
+          try {
+            await client.faucet(id.userId);
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            if (!/\b409\b/.test(msg)) throw e;
+          }
 
           // Poll for karma to appear (confirms the TX was mined).
           // Each attempt waits up to 4 block intervals (~8s at 2s blocks).

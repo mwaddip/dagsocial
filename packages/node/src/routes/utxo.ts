@@ -13,6 +13,11 @@ import type { UtxoEngineDeps } from '../services/utxo-engine.js';
 import { insertUtxoTx } from '../store/mempool.js';
 import { getUnlockedCreditBoxes } from '../store/utxo.js';
 import {
+  hasFaucetGrantRecord,
+  hasPendingFaucetGrant,
+  recordFaucetGrant,
+} from '../store/faucet-grants.js';
+import {
   getSystemKeypair,
   signWithSystemKey,
   ensureFaucetCreditBox,
@@ -200,68 +205,109 @@ export function createRouter(deps: UtxoDeps): Router {
       return;
     }
 
-    ensureFaucetCreditBox(sysKeypair.publicKey, currentHeight);
-
     const FAUCET_AMOUNT = 1000;
-    const unlocked = getUnlockedCreditBoxes(sysKeypair.publicKey, currentHeight);
-    const selected = selectBoxes(unlocked, FAUCET_AMOUNT);
-    const totalSelected = selected.reduce((s, b) => s + b.value, 0);
-    const change = totalSelected - FAUCET_AMOUNT;
+    const engineDeps = deps.getUtxoEngineDeps();
 
-    const outputs: CreditBox[] = [{
-      boxType: 'credit',
-      value: FAUCET_AMOUNT,
-      createdAtBlock: currentHeight,
-      owner: toBytes,
-      guard: 'owner_signature',
-      proofSource: -1,
-    }];
-    if (change > 0) {
-      outputs.push({
+    // The eligibility check, the mempool insert and the grant record share one
+    // transaction, so two calls for the same recipient in the same block cannot
+    // both succeed. Unlike karma, a settled credit box carries no faucet-origin
+    // marker (`proofSource` is a block height, and -1 also means "transfer"),
+    // so the grant ledger plus the mempool scan are the whole check.
+    let outcome:
+      | { ok: true; txId: string; tx: UtxoTransaction }
+      | { ok: false; status: number; error: string }
+      | undefined;
+
+    engineDeps.runInTransaction(() => {
+      if (
+        hasFaucetGrantRecord(toBytes, 'credit') ||
+        hasPendingFaucetGrant(toBytes, 'credit')
+      ) {
+        outcome = {
+          ok: false,
+          status: 409,
+          error: 'to already funded by the credit faucet — one grant per identity',
+        };
+        return;
+      }
+
+      ensureFaucetCreditBox(sysKeypair.publicKey, currentHeight);
+
+      const unlocked = getUnlockedCreditBoxes(sysKeypair.publicKey, currentHeight);
+      const selected = selectBoxes(unlocked, FAUCET_AMOUNT);
+      const totalSelected = selected.reduce((s, b) => s + b.value, 0);
+      const change = totalSelected - FAUCET_AMOUNT;
+
+      const outputs: CreditBox[] = [{
         boxType: 'credit',
-        value: change,
+        value: FAUCET_AMOUNT,
         createdAtBlock: currentHeight,
-        owner: sysKeypair.publicKey,
+        owner: toBytes,
         guard: 'owner_signature',
         proofSource: -1,
-      });
-    }
+      }];
+      if (change > 0) {
+        outputs.push({
+          boxType: 'credit',
+          value: change,
+          createdAtBlock: currentHeight,
+          owner: sysKeypair.publicKey,
+          guard: 'owner_signature',
+          proofSource: -1,
+        });
+      }
 
-    const tx: UtxoTransaction = {
-      inputs: selected.map(b => b.id!),
-      outputs: outputs.map(b => ({ ...b, id: computeBoxId(b) })),
-      signatures: {},
-      protocolVersion: PROTOCOL_VERSION,
-    };
+      const tx: UtxoTransaction = {
+        inputs: selected.map(b => b.id!),
+        outputs: outputs.map(b => ({ ...b, id: computeBoxId(b) })),
+        signatures: {},
+        protocolVersion: PROTOCOL_VERSION,
+      };
 
-    const txId = computeTxId(tx);
-    const sysPubKeyHex = Buffer.from(sysKeypair.publicKey).toString('hex');
-    const sig = signWithSystemKey(txId, sysKeypair.secretKey);
-    tx.signatures[sysPubKeyHex] = sig;
+      const txId = computeTxId(tx);
+      const sysPubKeyHex = Buffer.from(sysKeypair.publicKey).toString('hex');
+      const sig = signWithSystemKey(txId, sysKeypair.secretKey);
+      tx.signatures[sysPubKeyHex] = sig;
 
-    // Validate via UTXO engine
-    const engineDeps = deps.getUtxoEngineDeps();
-    const validation = validateTx(engineDeps, tx, currentHeight);
-    if (!validation.valid) {
-      res.status(400).json({ error: validation.error });
+      // Validate via UTXO engine
+      const validation = validateTx(engineDeps, tx, currentHeight);
+      if (!validation.valid) {
+        outcome = {
+          ok: false,
+          status: 400,
+          error: validation.error ?? 'transaction validation failed',
+        };
+        return;
+      }
+
+      // Insert into mempool and record the grant
+      const expiresAtHeight = currentHeight + MEMPOOL_EXPIRY_BLOCKS;
+      insertUtxoTx(tx, null, expiresAtHeight);
+      recordFaucetGrant(toBytes, 'credit', txId, currentHeight);
+
+      outcome = { ok: true, txId, tx };
+    });
+
+    if (!outcome) {
+      res.status(500).json({ error: 'credit faucet grant did not complete' });
       return;
     }
-
-    // Insert into mempool
-    const expiresAtHeight = currentHeight + MEMPOOL_EXPIRY_BLOCKS;
-    insertUtxoTx(tx, null, expiresAtHeight);
+    if (!outcome.ok) {
+      res.status(outcome.status).json({ error: outcome.error });
+      return;
+    }
 
     // Broadcast (best-effort)
     try {
       const net = getNet();
       if (net) {
-        net.broadcastTx(tx).catch((err: Error) => {
+        net.broadcastTx(outcome.tx).catch((err: Error) => {
           console.warn(`Failed to broadcast credit faucet tx: ${err.message}`);
         });
       }
     } catch { /* net not available */ }
 
-    res.json({ txId, amount: FAUCET_AMOUNT });
+    res.json({ txId: outcome.txId, amount: FAUCET_AMOUNT });
   });
 
   // GET /invites/:userId — get pending invites and bonds for a user

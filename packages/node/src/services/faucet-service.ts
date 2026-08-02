@@ -7,6 +7,12 @@ import {
 import type { KarmaBox, UtxoTransaction } from '@dagsocial/types';
 import { insertUtxoTx } from '../store/mempool.js';
 import { getSystemKeypair, ensureSystemKarmaBox, signWithSystemKey } from '../store/system.js';
+import {
+  hasFaucetGrantRecord,
+  hasPendingFaucetGrant,
+  recordFaucetGrant,
+} from '../store/faucet-grants.js';
+import { hasFaucetOriginKarmaBox } from '../store/utxo.js';
 import { validateTx } from './utxo-engine.js';
 import type { UtxoEngineDeps } from './utxo-engine.js';
 
@@ -54,82 +60,126 @@ export interface FaucetGrantResult {
 // ---------------------------------------------------------------------------
 
 /**
- * Grant karma from the system faucet box to a user.
+ * Throw 409 if this identity has already drawn a karma grant.
  *
- * Builds and signs a faucet grant transaction, validates it, and inserts it
- * into the mempool. Broadcasting is handled by the route layer.
+ * Three sources, cheapest first, together covering every window in which a
+ * grant can exist:
+ *  - the grant ledger — every grant this node has issued, pending or settled;
+ *  - a faucet-origin karma box — identities funded before the ledger existed,
+ *    including ones that have since spent the grant;
+ *  - the mempool — a grant relayed from a peer, which leaves no local row.
+ */
+function assertNotAlreadyFunded(userIdBytes: Uint8Array): void {
+  if (
+    hasFaucetGrantRecord(userIdBytes, 'karma') ||
+    hasFaucetOriginKarmaBox(userIdBytes) ||
+    hasPendingFaucetGrant(userIdBytes, 'karma')
+  ) {
+    throw new FaucetServiceError(
+      'userId already funded by the faucet — one grant per identity',
+      409,
+    );
+  }
+}
+
+/**
+ * Grant karma from the system faucet box to a user, once per identity ever.
+ *
+ * Builds and signs a faucet grant transaction, validates it, inserts it into
+ * the mempool, and records the grant. Broadcasting is handled by the route
+ * layer.
+ *
+ * The eligibility check, the mempool insert and the ledger write share one
+ * SQLite transaction, so two calls for the same `userId` in the same block
+ * cannot both succeed: the second sees the first's row.
+ *
+ * Throws `FaucetServiceError` with status 409 if `userIdBytes` was already
+ * funded, 500 if the system keypair is missing, 400 if the faucet is depleted
+ * or the built transaction fails validation.
  */
 export function faucetGrant(
   deps: FaucetServiceDeps,
   userIdBytes: Uint8Array,
 ): FaucetGrantResult {
-  // ---- 1. Get system keypair and karma box ----
+  // ---- 1. Get system keypair ----
   const sysKeypair = getSystemKeypair();
   if (!sysKeypair) {
     throw new FaucetServiceError('System keypair not initialized', 500);
   }
 
   const currentHeight = deps.getCurrentHeight();
-  const systemBox = ensureSystemKarmaBox(sysKeypair.publicKey, currentHeight);
-
-  if (systemBox.value < FAUCET_AMOUNT) {
-    throw new FaucetServiceError('Faucet depleted');
-  }
-
-  // ---- 2. Build faucet grant transaction ----
-  // Consume: system KarmaBox (value V)
-  // Create: system KarmaBox (value V - FAUCET_AMOUNT) + user KarmaBox (value FAUCET_AMOUNT)
   const systemPubKeyHex = Buffer.from(sysKeypair.publicKey).toString('hex');
 
-  const newSystemBox: KarmaBox = {
-    boxType: 'karma',
-    value: systemBox.value - FAUCET_AMOUNT,
-    createdAtBlock: currentHeight,
-    owner: sysKeypair.publicKey,
-    guard: 'owner_signature',
-    proofSource: 'faucet:system',
-    lastTouchBlock: currentHeight,
-  };
+  let granted: FaucetGrantResult | undefined;
 
-  const userBox: KarmaBox = {
-    boxType: 'karma',
-    value: FAUCET_AMOUNT,
-    createdAtBlock: currentHeight,
-    owner: userIdBytes,
-    guard: 'owner_signature',
-    proofSource: 'faucet',
-    lastTouchBlock: currentHeight,
-  };
+  deps.runInTransaction(() => {
+    // ---- 2. One grant per identity, ever ----
+    assertNotAlreadyFunded(userIdBytes);
 
-  const tx: UtxoTransaction = {
-    inputs: [systemBox.id!],
-    outputs: [
-      { ...newSystemBox, id: computeBoxId(newSystemBox) },
-      { ...userBox, id: computeBoxId(userBox) },
-    ],
-    signatures: {},
-    protocolVersion: PROTOCOL_VERSION,
-  };
+    const systemBox = ensureSystemKarmaBox(sysKeypair.publicKey, currentHeight);
+    if (systemBox.value < FAUCET_AMOUNT) {
+      throw new FaucetServiceError('Faucet depleted');
+    }
 
-  // ---- 3. Sign with system key ----
-  const txId = computeTxId(tx);
-  const sig = signWithSystemKey(txId, sysKeypair.secretKey);
-  tx.signatures[systemPubKeyHex] = sig;
+    // ---- 3. Build faucet grant transaction ----
+    // Consume: system KarmaBox (value V)
+    // Create: system KarmaBox (value V - FAUCET_AMOUNT) + user KarmaBox (value FAUCET_AMOUNT)
+    const newSystemBox: KarmaBox = {
+      boxType: 'karma',
+      value: systemBox.value - FAUCET_AMOUNT,
+      createdAtBlock: currentHeight,
+      owner: sysKeypair.publicKey,
+      guard: 'owner_signature',
+      proofSource: 'faucet:system',
+      lastTouchBlock: currentHeight,
+    };
 
-  // ---- 4. Validate ----
-  const result = validateTx(deps, tx, currentHeight);
-  if (!result.valid) {
-    throw new FaucetServiceError(result.error ?? 'transaction validation failed');
+    const userBox: KarmaBox = {
+      boxType: 'karma',
+      value: FAUCET_AMOUNT,
+      createdAtBlock: currentHeight,
+      owner: userIdBytes,
+      guard: 'owner_signature',
+      proofSource: 'faucet',
+      lastTouchBlock: currentHeight,
+    };
+
+    const tx: UtxoTransaction = {
+      inputs: [systemBox.id!],
+      outputs: [
+        { ...newSystemBox, id: computeBoxId(newSystemBox) },
+        { ...userBox, id: computeBoxId(userBox) },
+      ],
+      signatures: {},
+      protocolVersion: PROTOCOL_VERSION,
+    };
+
+    // ---- 4. Sign with system key ----
+    const txId = computeTxId(tx);
+    const sig = signWithSystemKey(txId, sysKeypair.secretKey);
+    tx.signatures[systemPubKeyHex] = sig;
+
+    // ---- 5. Validate ----
+    const result = validateTx(deps, tx, currentHeight);
+    if (!result.valid) {
+      throw new FaucetServiceError(result.error ?? 'transaction validation failed');
+    }
+
+    // ---- 6. Insert into mempool and record the grant ----
+    const expiresAtHeight = currentHeight + MEMPOOL_EXPIRY_BLOCKS;
+    insertUtxoTx(tx, null, expiresAtHeight);
+    recordFaucetGrant(userIdBytes, 'karma', txId, currentHeight);
+
+    granted = {
+      status: 'pending',
+      txId,
+      expiresAtHeight,
+      tx,
+    };
+  });
+
+  if (!granted) {
+    throw new FaucetServiceError('faucet grant did not complete', 500);
   }
-
-  // ---- 5. Insert into mempool ----
-  const expiresAtHeight = currentHeight + MEMPOOL_EXPIRY_BLOCKS;
-  insertUtxoTx(tx, null, expiresAtHeight);
-
-  return {
-    status: 'pending',
-    txId,
-    expiresAtHeight,
-    tx,
-  };
+  return granted;
 }
