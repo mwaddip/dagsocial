@@ -27,6 +27,7 @@ import {
   getPendingEntries,
 } from '../../src/store/index.js';
 import { createInvite, claimInvite, cancelInvite, commitInvite } from '../../src/services/invites.js';
+import { validateTx } from '../../src/services/utxo-engine.js';
 import type { UtxoEngineDeps } from '../../src/services/utxo-engine.js';
 import { rawPublicKey, signTransaction } from '../helpers.js';
 
@@ -1017,5 +1018,117 @@ describe('invites service', () => {
     expect(() => cancelInvite(deps, tx, 5)).toThrow(
       'Invalid invite cancel transaction',
     );
+  });
+
+  // -----------------------------------------------------------------------
+  // 10. Bond-commit signature guard (audit H-2)
+  //
+  // The bond_dual commit path (`checkGuards` Path 3 in utxo-engine) used to
+  // accept any non-empty `signatures` map once the preimage matched, and
+  // `commitInvite` only checked that an entry for the invitee key existed. So
+  // consensus accepted a commit whose signature did not verify at all, and a
+  // commit could bind a key the committer did not control. The guard now
+  // requires a VALID Ed25519 signature from the committed invitee — the
+  // OUTPUT BondBox's `inviteePublicKey`.
+  //
+  // Deliberately NOT covered here: the bearer front-run. `InviteBox.secretHash
+  // = H(s)` names no invitee, so an observer who learns `s` can still commit
+  // under their *own* key and sign it — that passes, by design. Closing it
+  // requires binding the invitee at invite creation, deferred to the
+  // karma-econ emission-model track.
+  // -----------------------------------------------------------------------
+  describe('bond-commit signature guard (H-2)', () => {
+    const secret = new Uint8Array(32).fill(0x42);
+    let inviteBox: InviteBox;
+    let bondBox: BondBox;
+
+    beforeEach(() => {
+      const secretHash = createHash('blake2b512')
+        .update(Buffer.from(secret))
+        .digest()
+        .subarray(0, 32);
+      inviteBox = insertInviteBox(INVITE_KARMA_AMOUNT, 1, secretHash, inviterId);
+      bondBox = insertBondBox(INVITE_BOND_KARMA, 1, inviterId, inviteBox.id!);
+    });
+
+    /** Unsigned, otherwise well-formed commit: uncommitted bond → bond bound to `committedKey`. */
+    function buildCommitTx(committedKey: Uint8Array): UtxoTransaction {
+      const bondOut: BondBox = {
+        boxType: 'bond',
+        value: INVITE_BOND_KARMA,
+        createdAtBlock: 5,
+        inviterId,
+        inviteBoxId: inviteBox.id!,
+        inviteePublicKey: committedKey,
+        probationStartBlock: 5,
+        probationEndBlock: 5 + INVITE_PROBATION_BLOCKS,
+        guard: 'bond_dual',
+      };
+      return {
+        inputs: [bondBox.id!],
+        outputs: [{ ...bondOut, id: computeBoxId(bondOut) }],
+        signatures: {},
+        preimages: { [bondBox.id!]: secret },
+        protocolVersion: PROTOCOL_VERSION,
+      };
+    }
+
+    it('accepts a commit signed by the committed invitee', () => {
+      const tx = buildCommitTx(inviteePubKey);
+      signTransaction(tx, inviteePrivKey, inviteePubKeyHex);
+
+      expect(validateTx(deps, tx, 5).valid).toBe(true);
+
+      const result = commitInvite(deps, tx, 5);
+      expect(result.status).toBe('pending');
+      expect(result.bondBoxId).toBe(bondBox.id);
+    });
+
+    it('rejects a commit with no signature at all', () => {
+      const tx = buildCommitTx(inviteePubKey);
+      expect(Object.keys(tx.signatures)).toHaveLength(0);
+
+      const result = validateTx(deps, tx, 5);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('Bond commit must be signed by the committed invitee');
+      expect(() => commitInvite(deps, tx, 5)).toThrow(
+        'Bond commit must be signed by the committed invitee',
+      );
+    });
+
+    it('rejects a commit whose signature under the committed key does not verify', () => {
+      const tx = buildCommitTx(inviteePubKey);
+      // A 64-byte signature slot with garbage contents: the old guard only
+      // checked that the map was non-empty, so this used to be accepted.
+      tx.signatures[inviteePubKeyHex] = new Uint8Array(64).fill(0x7f);
+
+      const result = validateTx(deps, tx, 5);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('Bond commit must be signed by the committed invitee');
+      expect(() => commitInvite(deps, tx, 5)).toThrow(
+        'Bond commit must be signed by the committed invitee',
+      );
+    });
+
+    it('rejects a commit validly signed by a key other than the committed invitee', () => {
+      // Output binds invitee A; a third party B (not the inviter, so the
+      // inviter-reclaim path cannot absorb it) produces a real signature.
+      const otherKeys = generateKeyPairSync('ed25519');
+      const otherPubKey = rawPublicKey(otherKeys.publicKey);
+      const otherPubKeyHex = Buffer.from(otherPubKey).toString('hex');
+
+      const tx = buildCommitTx(inviteePubKey);
+      signTransaction(tx, otherKeys.privateKey, otherPubKeyHex);
+
+      expect(tx.signatures[otherPubKeyHex]).toBeDefined();
+      expect(tx.signatures[inviteePubKeyHex]).toBeUndefined();
+
+      const result = validateTx(deps, tx, 5);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('Bond commit must be signed by the committed invitee');
+      expect(() => commitInvite(deps, tx, 5)).toThrow(
+        'Bond commit must be signed by the committed invitee',
+      );
+    });
   });
 });

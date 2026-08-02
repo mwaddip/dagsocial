@@ -146,7 +146,7 @@ They count toward the total for author rewards.
 | Method | Path | Request | Response | Errors |
 |--------|------|---------|----------|--------|
 | `POST` | `/invites` | `{ tx: UtxoTransaction }` — client-signed create tx | `{ status: "pending", txId, expiresAtHeight, secretHash: hex, inviteBoxId, bondBoxId }` | 400 if insufficient karma, 400 if exceeds `MAX_PENDING_INVITES` |
-| `POST` | `/invites/commit` | `{ tx: UtxoTransaction }` — client-signed commit tx (step 1 of 2) | `{ status: "pending", txId, expiresAtHeight }` | 400 if hash mismatch or invalid bond state |
+| `POST` | `/invites/commit` | `{ tx: UtxoTransaction }` — client-signed commit tx (step 1 of 2) | `{ status: "pending", txId, expiresAtHeight }` | 400 if hash mismatch, missing/invalid committed-invitee signature, or invalid bond state |
 | `POST` | `/invites/claim` | `{ tx: UtxoTransaction }` — client-signed claim tx with preimage (step 2 of 2) | `{ status: "pending", txId, expiresAtHeight, userId, karmaBoxId }` | 400 if hash mismatch, 400 if publicKey already an account |
 | `POST` | `/invites/cancel` | `{ tx: UtxoTransaction }` — client-signed cancel tx | `{ status: "pending", txId, expiresAtHeight }` | 400 if already claimed, 403 if not inviter |
 
@@ -162,16 +162,39 @@ They count toward the total for author rewards.
 6. Return `{ status: "pending", txId, expiresAtHeight, secretHash, inviteBoxId, bondBoxId }`
    — inviter communicates `s` to invitee out of band
 
-**Claim flow:**
+**Commit flow** (step 1 of 2 — binds the invitee to the bond):
 
 1. Verify `blake2b512(secret).subarray(0,32) === inviteBox.secretHash`
+2. Build UTXO transaction: spend the uncommitted BondBox → committed BondBox
+   (set `inviteePublicKey` to the invitee's key, plus `probationStartBlock` /
+   `probationEndBlock`)
+3. The `bond_dual` commit guard verifies a **valid Ed25519 signature from the
+   committed invitee** — the output BondBox's `inviteePublicKey` (audit H-2).
+   This runs in `checkGuards`/`validateTx`, so it holds on every path (local,
+   gossip relay, reorg). Revealing `s` no longer authorizes a commit by itself,
+   and a commit cannot bind a key the committer does not control.
+4. Insert into mempool: `insertUtxoTx(tx, null, expiresAtHeight)`; return
+   `{ status: "pending", txId, expiresAtHeight }`
+
+> **Known-open (deferred).** The invite is a bearer instrument — `s` identifies
+> the holder, not a pre-named invitee — so an observer who learns `s` can still
+> commit under their *own* key. The guard authenticates the committer; it does
+> not bind the invite to a specific invitee. Closing that front-run needs the
+> invitee bound at invite creation (e.g. `secretHash = H(s ‖ inviteePubkey)`),
+> deferred to the karma-econ emission-model design.
+
+**Claim flow** (step 2 of 2 — requires the bond already committed):
+
+1. Verify the BondBox is committed (`inviteePublicKey` is 32 bytes) — a reveal
+   before commit is rejected
 2. Verify `publicKey` is not already associated with an existing account
-3. Build UTXO transaction:
-   - Consume InviteBox
-   - Create new KarmaBox for invitee (value N, owner = publicKey) — account now exists
-   - Update BondBox: set `inviteePublicKey`, `probationStartBlock`, `probationEndBlock`
-4. Insert into mempool: `insertUtxoTx(tx, null, expiresAtHeight)`
-5. Return `{ status: "pending", txId, expiresAtHeight }`
+3. Build UTXO transaction: consume the InviteBox and the committed BondBox;
+   create the invitee's KarmaBox (value N, `owner = publicKey`, which must equal
+   the committed `inviteePublicKey`) — account now exists
+4. `validateTx` verifies the `hash_preimage_with_bond` guard (preimage `s` +
+   committed-bond cross-input) and the transitions
+5. Insert into mempool: `insertUtxoTx(tx, null, expiresAtHeight)`; return
+   `{ status: "pending", txId, expiresAtHeight }`
 
 **Cancel flow:**
 

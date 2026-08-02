@@ -565,11 +565,25 @@ function checkGuards(
             error: `Hash preimage mismatch for bond commit on box ${box.id}`,
           };
         }
-        // Must have at least one signature (service layer verifies pubkey match)
-        if (Object.keys(tx.signatures).length === 0) {
+        // H-2: bind the commit to the key it names. The committed invitee is the
+        // OUTPUT BondBox's inviteePublicKey; require a VALID signature from it.
+        // A non-empty signatures map — or a signature from any other key — no
+        // longer authorizes the commit. (This does NOT stop a front-runner who
+        // commits under their own key; that needs invitee-binding at invite
+        // creation, deferred to the karma-econ emission model.)
+        const committedBondOut = tx.outputs.find(
+          (o): o is BondBox => o.boxType === 'bond',
+        );
+        if (!committedBondOut || committedBondOut.inviteePublicKey.length !== 32) {
           return {
             valid: false,
-            error: `Bond commit requires a signature from the invitee`,
+            error: `Bond commit must produce a committed BondBox output`,
+          };
+        }
+        if (!verifyGuardSignature(tx, txHash, committedBondOut.inviteePublicKey)) {
+          return {
+            valid: false,
+            error: `Bond commit must be signed by the committed invitee`,
           };
         }
         break;

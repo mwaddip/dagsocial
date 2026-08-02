@@ -141,9 +141,16 @@ export function createInvite(
  * Commit to an invite by spending the BondBox to lock in the invitee's identity.
  *
  * The invitee builds a tx spending only the BondBox. The bond_dual guard's
- * hash_preimage commit path verifies that the preimage matches the InviteBox's
- * secretHash. The transition records the invitee's public key and starts
- * probation timers.
+ * commit path verifies that the preimage matches the InviteBox's secretHash
+ * **and** that the tx carries a valid Ed25519 signature from the committed
+ * invitee — the output BondBox's inviteePublicKey (audit H-2), so a commit
+ * cannot bind a key the committer does not control. The transition records
+ * the invitee's public key and starts probation timers.
+ *
+ * Known-open: the invite is a bearer instrument — `secretHash` names no
+ * invitee — so an observer who learns the secret can still commit under their
+ * own key. Binding the invitee at invite creation is deferred to the
+ * karma-econ emission-model track.
  *
  * The commit is **pending** until the next ordering block is confirmed.
  * Once committed, the invitee must reveal (claimInvite) to get their karma.
@@ -187,23 +194,21 @@ export function commitInvite(
     throw new Error('Commit output BondBox must have 32-byte inviteePublicKey');
   }
 
-  // ---- 5. Verify tx is signed by the invitee (bond output pubkey) ----
-  const inviteePubKeyHex = Buffer.from(bondOut.inviteePublicKey).toString('hex');
-  if (!tx.signatures[inviteePubKeyHex]) {
-    throw new Error('Commit transaction must be signed by the invitee');
-  }
-
-  // ---- 6. Validate transaction (guards, transitions) ----
+  // ---- 5. Validate transaction (guards, transitions) ----
+  // The bond_dual commit guard verifies a real Ed25519 signature from the
+  // committed invitee — the output BondBox's inviteePublicKey (audit H-2).
+  // That check is consensus-enforced, so the service layer does not repeat it;
+  // an "a signature entry exists" test here would only re-add the weak gate.
   const result = validateTx(deps, tx, currentBlockHeight);
   if (!result.valid) {
     throw new Error(`Invalid commit transaction: ${result.error}`);
   }
 
-  // ---- 7. Insert into mempool ----
+  // ---- 6. Insert into mempool ----
   const expiresAtHeight = currentBlockHeight + MEMPOOL_EXPIRY_BLOCKS;
   insertUtxoTx(tx, null, expiresAtHeight);
 
-  // ---- 8. Return result ----
+  // ---- 7. Return result ----
   const txId = computeTxId(tx);
 
   return {

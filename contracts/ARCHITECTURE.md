@@ -549,6 +549,16 @@ Create:
 The invite is a bearer instrument — anyone holding `s` can claim it. Bob can
 pass `s` to Carol if he chooses not to join.
 
+The node implements this as a two-phase **commit → claim**: the invitee first
+commits, binding their public key to the bond, then claims. The bond-commit
+guard requires a **valid signature from the committed public key**, so revealing
+the preimage `s` alone does not authorize a commit and a commit cannot bind a
+key the committer does not control (audit H-2). This does **not** remove the
+bearer front-run: because `s` names no specific invitee, an observer who learns
+`s` can commit under their own key. Binding the invite to a specific invitee at
+creation — which would close the front-run — is deferred to the karma-econ
+emission-model design (the same track that owns bond settlement).
+
 ### Invite claim
 
 Bob generates a keypair, then constructs a claim transaction:
