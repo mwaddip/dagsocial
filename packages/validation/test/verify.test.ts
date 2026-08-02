@@ -19,7 +19,7 @@ import {
 } from '../src/verify.js';
 import { isDisallowedContentCodepoint, PINNED_UNICODE_VERSION } from '../src/content-charset.js';
 import { generateKeyPair, computePostId, signingHash, EMPTY_STATE_ROOT } from '@dagsocial/types';
-import type { Post, SubBlock, BlockHeader, OrderingBlock, UtxoTransaction } from '@dagsocial/types';
+import type { Post, SubBlock, SubBlockEntry, BlockHeader, OrderingBlock, UtxoTransaction } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
 // verifyPoW
@@ -610,10 +610,43 @@ describe('verifyOrderingBlockStructure', () => {
   it('rejects subBlockEntries with invalid postId', () => {
     const block = makeValidBlock();
     block.subBlockTree.subBlockRefs = ['aa'.repeat(32)];
-    block.subBlockTree.subBlockEntries = [{ postId: 'too-short', parentRefs: [] }];
+    block.subBlockTree.subBlockEntries = [
+      { postId: 'too-short', parentRefs: [], author: 'cc'.repeat(32) },
+    ];
     const result = verifyOrderingBlockStructure(block);
     expect(result.valid).toBe(false);
     expect(result.error).toContain('invalid postId');
+  });
+
+  it('accepts a subBlockEntry with a 64-char author (control for the author check)', () => {
+    const block = makeValidBlock();
+    block.subBlockTree.subBlockRefs = ['aa'.repeat(32)];
+    block.subBlockTree.subBlockEntries = [
+      { postId: 'aa'.repeat(32), parentRefs: [], author: 'cc'.repeat(32) },
+    ];
+    expect(verifyOrderingBlockStructure(block)).toEqual({ valid: true });
+  });
+
+  it('rejects subBlockEntries with a missing author', () => {
+    const block = makeValidBlock();
+    block.subBlockTree.subBlockRefs = ['aa'.repeat(32)];
+    block.subBlockTree.subBlockEntries = [
+      { postId: 'aa'.repeat(32), parentRefs: [] } as unknown as SubBlockEntry,
+    ];
+    const result = verifyOrderingBlockStructure(block);
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain('invalid author');
+  });
+
+  it('rejects subBlockEntries with a wrong-length author', () => {
+    const block = makeValidBlock();
+    block.subBlockTree.subBlockRefs = ['aa'.repeat(32)];
+    block.subBlockTree.subBlockEntries = [
+      { postId: 'aa'.repeat(32), parentRefs: [], author: 'too-short' },
+    ];
+    const result = verifyOrderingBlockStructure(block);
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain('invalid author');
   });
 
   it('rejects block with utxoTxs misaligned with utxoTxIds', () => {

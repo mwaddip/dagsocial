@@ -227,11 +227,18 @@ verifyOrderingBlockStructure(block: OrderingBlock): { valid: boolean; error?: st
 ```
 
 Checks: `prevBlockHash` present and non-empty, `subBlockRefs` is an array,
+`subBlockEntries` is an array aligned 1:1 with `subBlockRefs` where every entry
+has a 64-char `postId`, a `parentRefs` array of ≤ 8 64-char strings, and a
+64-char `author` (the consensus-carried authorship claim, audit H-3),
 `validatorSignature` is 64 bytes, `height` ≥ 1, `protocolVersion` is a number,
 `hash` present and non-empty, `powNonce` is a non-negative number,
 `powTargetBits` ≥ `ORDERING_BLOCK_POW_TARGET_FLOOR` (4), `coinbaseOutputs` is
 an array with each output having a 32-byte `owner` and non-negative `value`
 and `lockedUntilBlock` ≥ `block.height`.
+
+Structure-only: `author` is checked for shape here, not truth — binding it to
+the real post (when content is locally present) and to prune authorization is
+stateful and lives in `@dagsocial/node` (see `NODE_INTERFACE.md`).
 
 ### verifyBlockChainLink
 

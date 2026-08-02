@@ -15,6 +15,10 @@ import {
 import {
   computeBoxId,
   computePostId,
+  encodePost,
+  leafHash,
+  buildMerkleRoot,
+  hexToBuf,
   PROTOCOL_VERSION,
   LIKE_COST,
   LIKE_THRESHOLD,
@@ -29,6 +33,8 @@ import type {
   KarmaBox,
   BlockHeader,
   OrderingBlock,
+  SubBlockEntry,
+  PruneEntry,
   UtxoTransaction,
   BlockJournal,
   DecayJournalEntry,
@@ -350,6 +356,12 @@ async function makeApplicableBlock(
     /** Sign with this key instead of the miner's — a block whose signature does
      *  not come from the key its `validatorId` names (H-1 forged authorship). */
     signWith?: KeyObject;
+    /** Height to build at; anything above 1 chain-links to the stored block below. */
+    height?: number;
+    /** Sub-block entries this block confirms (topology + authorship). */
+    subBlockEntries?: SubBlockEntry[];
+    /** Prune entries this block settles. */
+    pruneEntries?: PruneEntry[];
   } = {},
 ): Promise<OrderingBlock> {
   const { computeSubBlockRoot, computeUtxoTxRoot, computeBlockReward } = await import(
@@ -357,9 +369,21 @@ async function makeApplicableBlock(
   );
   const { expectedTarget } = await import('../../src/services/difficulty.js');
 
-  const height = 1;
+  const height = opts.height ?? 1;
+  let prevBlockHash = ZERO_HASH;
+  if (height > 1) {
+    const { getOrderingBlock } = await import('../../src/store/ordering.js');
+    const prev = getOrderingBlock(height - 1) as OrderingBlock | null;
+    if (!prev) throw new Error(`makeApplicableBlock: no stored block at height ${height - 1}`);
+    prevBlockHash = blockHash(prev.header);
+  }
   const miner = makeTestIdentity();
-  const subBlockTree = { subBlockRefs: [], subBlockEntries: [], pruneEntries: [] };
+  const subBlockEntries = opts.subBlockEntries ?? [];
+  const subBlockTree = {
+    subBlockRefs: subBlockEntries.map((e) => e.postId),
+    subBlockEntries,
+    pruneEntries: opts.pruneEntries ?? [],
+  };
   const utxoTxTree = {
     utxoTxIds: [],
     utxoTxs: [],
@@ -378,7 +402,7 @@ async function makeApplicableBlock(
   const header = {
     protocolVersion: PROTOCOL_VERSION,
     height,
-    prevBlockHash: ZERO_HASH,
+    prevBlockHash,
     subBlockRoot: computeSubBlockRoot(subBlockTree),
     utxoTxRoot: computeUtxoTxRoot(utxoTxTree),
     stateRoot: ZERO_HASH,
@@ -1500,5 +1524,357 @@ describe('block-apply consensus schedules', () => {
 
     const journal = await importJournalStore();
     expect(journal.getBlockJournal(1)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// H-3: consensus-carried sub-block authorship + prune authorship binding
+// ---------------------------------------------------------------------------
+
+function hex(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString('hex');
+}
+
+/**
+ * A PruneEntry that is internally valid in every respect a node can check
+ * without knowing who the author is: the Merkle root is the real root over the
+ * subtree ids, and the signature is a real Ed25519 signature over
+ * blake2b(rootPostHash ‖ merkleRoot) from `signWith`, whose public key it
+ * carries as `authorId`. What a test varies is *whose* key that is.
+ */
+function makePruneEntry(
+  rootPostHash: string,
+  subtreePostIds: string[],
+  signWith: TestIdentity,
+): PruneEntry {
+  const leaves = [...subtreePostIds].sort().map((id) => leafHash('stump', hexToBuf(id)));
+  const subtreeMerkleRoot = buildMerkleRoot(leaves);
+  const payload = createHash('blake2b512')
+    .update(rootPostHash)
+    .update(Buffer.from(subtreeMerkleRoot))
+    .digest()
+    .subarray(0, 32);
+  return {
+    rootPostHash,
+    subtreePostIds,
+    subtreeMerkleRoot,
+    authorId: signWith.userId,
+    authorSignature: new Uint8Array(cryptoSign(null, payload, signWith.privateKey)),
+    trigger: 'author',
+  };
+}
+
+describe('block-apply H-3 sub-block authorship and prune binding', () => {
+  beforeEach(async () => {
+    vi.resetModules();
+  });
+
+  afterEach(async () => {
+    try {
+      const bc = await importBlockCreator();
+      bc.stopBlockCreator();
+    } catch {
+      // Module might not have been imported
+    }
+    vi.resetModules();
+  });
+
+  // -----------------------------------------------------------------------
+  // Prune authorship binding — the H-3 attack itself
+  // -----------------------------------------------------------------------
+
+  it('rejects a block pruning a subtree under a key that is not the root author', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    const author = makeTestIdentity();
+    const attacker = makeTestIdentity();
+    const post = makePost(author.userId, 'victim post');
+    const postId = computePostId(post);
+
+    const posts = await importPosts();
+    posts.insertPost(post, encodePost(post));
+
+    const blockApply = await importBlockApply();
+
+    // Height 1 confirms the post — that is what records its author in
+    // block_topology, and it is the only place the author is recorded.
+    const confirmBlock = await makeApplicableBlock({
+      subBlockEntries: [{ postId, parentRefs: [], author: hex(author.userId) }],
+    });
+    expect(blockApply.applyOrderingBlock(confirmBlock)).toBe(true);
+
+    // Height 2 is the attack: the prune is signed, correctly, by a key that has
+    // nothing to do with the post. Merkle root, postId set and signature all
+    // verify — only the binding to the recorded author does not.
+    const pruneBlock = await makeApplicableBlock({
+      height: 2,
+      pruneEntries: [makePruneEntry(postId, [postId], attacker)],
+    });
+    expect(hex(attacker.userId)).not.toBe(hex(author.userId));
+    expect(blockApply.applyOrderingBlock(pruneBlock)).toBe(false);
+
+    // Rolled back whole: no block at 2, no settlement, no DAG deletion.
+    const ordering = await importOrdering();
+    expect(ordering.getOrderingBlock(2)).toBeNull();
+    expect(ordering.getCurrentHeight()).toBe(1);
+
+    const journal = await importJournalStore();
+    expect(journal.getBlockJournal(2)).toBeNull();
+
+    const stored = posts.getPost(postId);
+    expect(stored).not.toBeNull();
+    expect((stored as Post).content).toBe('victim post');
+
+    const { getStump } = (await import('../../src/store/stumps.js')) as {
+      getStump: (id: string) => unknown;
+    };
+    expect(getStump(postId)).toBeNull();
+  });
+
+  it('accepts the same prune when authorId is the recorded author (control)', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    const author = makeTestIdentity();
+    const post = makePost(author.userId, 'victim post');
+    const postId = computePostId(post);
+
+    const posts = await importPosts();
+    posts.insertPost(post, encodePost(post));
+
+    const blockApply = await importBlockApply();
+    const confirmBlock = await makeApplicableBlock({
+      subBlockEntries: [{ postId, parentRefs: [], author: hex(author.userId) }],
+    });
+    expect(blockApply.applyOrderingBlock(confirmBlock)).toBe(true);
+
+    // Identical in shape to the rejected block above — the signing key is the
+    // only difference, which is what makes that rejection non-vacuous.
+    const pruneBlock = await makeApplicableBlock({
+      height: 2,
+      pruneEntries: [makePruneEntry(postId, [postId], author)],
+    });
+    expect(blockApply.applyOrderingBlock(pruneBlock)).toBe(true);
+
+    const ordering = await importOrdering();
+    expect(ordering.getCurrentHeight()).toBe(2);
+
+    const { getStump } = (await import('../../src/store/stumps.js')) as {
+      getStump: (id: string) => { rootPostHash: string } | null;
+    };
+    expect(getStump(postId)?.rootPostHash).toBe(postId);
+  });
+
+  it('rejects a prune of a root no applied block has confirmed', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    // The author's own key, the author's own post — but nothing has confirmed
+    // it, so block_topology has no author for it and it is not prunable. Held
+    // locally and unconfirmed is exactly the state a gossip-only post is in.
+    const author = makeTestIdentity();
+    const post = makePost(author.userId, 'unconfirmed post');
+    const postId = computePostId(post);
+
+    const posts = await importPosts();
+    posts.insertPost(post, encodePost(post));
+
+    const { getTopologyAuthor } = (await import('../../src/store/topology.js')) as {
+      getTopologyAuthor: (postId: string) => string | null;
+    };
+    expect(getTopologyAuthor(postId)).toBeNull();
+
+    const blockApply = await importBlockApply();
+    const pruneBlock = await makeApplicableBlock({
+      pruneEntries: [makePruneEntry(postId, [postId], author)],
+    });
+    expect(blockApply.applyOrderingBlock(pruneBlock)).toBe(false);
+
+    const ordering = await importOrdering();
+    expect(ordering.getCurrentHeight()).toBe(0);
+    expect((posts.getPost(postId) as Post).content).toBe('unconfirmed post');
+  });
+
+  it('accepts the same prune once a block has confirmed the root (control)', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    const author = makeTestIdentity();
+    const post = makePost(author.userId, 'confirmed post');
+    const postId = computePostId(post);
+
+    const posts = await importPosts();
+    posts.insertPost(post, encodePost(post));
+
+    const blockApply = await importBlockApply();
+    expect(
+      blockApply.applyOrderingBlock(
+        await makeApplicableBlock({
+          subBlockEntries: [{ postId, parentRefs: [], author: hex(author.userId) }],
+        }),
+      ),
+    ).toBe(true);
+
+    // Same entry, same key — the topology row is the only thing that changed.
+    const pruneBlock = await makeApplicableBlock({
+      height: 2,
+      pruneEntries: [makePruneEntry(postId, [postId], author)],
+    });
+    expect(blockApply.applyOrderingBlock(pruneBlock)).toBe(true);
+
+    const ordering = await importOrdering();
+    expect(ordering.getCurrentHeight()).toBe(2);
+  });
+
+  // -----------------------------------------------------------------------
+  // Entry-vs-post verification — content-holders keep lying entries out
+  // -----------------------------------------------------------------------
+
+  it('accepts a block whose entry matches the local post (control)', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    const author = makeTestIdentity();
+    const parentA = 'a1'.repeat(32);
+    const parentB = 'b2'.repeat(32);
+    const post = { ...makePost(author.userId), parentRefs: [parentA, parentB] };
+    const postId = computePostId(post);
+
+    const posts = await importPosts();
+    posts.insertPost(post, encodePost(post));
+
+    const blockApply = await importBlockApply();
+    const block = await makeApplicableBlock({
+      subBlockEntries: [
+        { postId, parentRefs: [parentA, parentB], author: hex(author.userId) },
+      ],
+    });
+    expect(blockApply.applyOrderingBlock(block)).toBe(true);
+
+    const ordering = await importOrdering();
+    expect(ordering.getCurrentHeight()).toBe(1);
+  });
+
+  it('rejects a block whose entry claims an author the local post contradicts', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    // Identical to the control above except for `author` — the producer claims
+    // authorship of someone else's post, which is what would make the prune
+    // binding above authorize them.
+    const author = makeTestIdentity();
+    const attacker = makeTestIdentity();
+    const parentA = 'a1'.repeat(32);
+    const parentB = 'b2'.repeat(32);
+    const post = { ...makePost(author.userId), parentRefs: [parentA, parentB] };
+    const postId = computePostId(post);
+
+    const posts = await importPosts();
+    posts.insertPost(post, encodePost(post));
+
+    const blockApply = await importBlockApply();
+    const block = await makeApplicableBlock({
+      subBlockEntries: [
+        { postId, parentRefs: [parentA, parentB], author: hex(attacker.userId) },
+      ],
+    });
+    expect(blockApply.applyOrderingBlock(block)).toBe(false);
+
+    const ordering = await importOrdering();
+    expect(ordering.getCurrentHeight()).toBe(0);
+
+    const { getTopologyAuthor } = (await import('../../src/store/topology.js')) as {
+      getTopologyAuthor: (postId: string) => string | null;
+    };
+    expect(getTopologyAuthor(postId)).toBeNull();
+  });
+
+  it('rejects a block whose entry grafts the post under a different parent', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    // Identical to the control except for `parentRefs`: the producer reparents
+    // a victim's post under a root they authored, so the victim's post falls
+    // inside the subtree their own prune signature covers.
+    const author = makeTestIdentity();
+    const parentA = 'a1'.repeat(32);
+    const parentB = 'b2'.repeat(32);
+    const attackerRoot = 'cc'.repeat(32);
+    const post = { ...makePost(author.userId), parentRefs: [parentA, parentB] };
+    const postId = computePostId(post);
+
+    const posts = await importPosts();
+    posts.insertPost(post, encodePost(post));
+
+    const blockApply = await importBlockApply();
+    const block = await makeApplicableBlock({
+      subBlockEntries: [
+        { postId, parentRefs: [attackerRoot], author: hex(author.userId) },
+      ],
+    });
+    expect(blockApply.applyOrderingBlock(block)).toBe(false);
+
+    const ordering = await importOrdering();
+    expect(ordering.getCurrentHeight()).toBe(0);
+  });
+
+  it('rejects a block whose entry reorders the post parentRefs', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    // Same set, different order. parentRefs are a postId-preimage field, so the
+    // order is part of the post's identity and the comparison is sequence-wise.
+    const author = makeTestIdentity();
+    const parentA = 'a1'.repeat(32);
+    const parentB = 'b2'.repeat(32);
+    const post = { ...makePost(author.userId), parentRefs: [parentA, parentB] };
+    const postId = computePostId(post);
+
+    const posts = await importPosts();
+    posts.insertPost(post, encodePost(post));
+
+    const blockApply = await importBlockApply();
+    const block = await makeApplicableBlock({
+      subBlockEntries: [
+        { postId, parentRefs: [parentB, parentA], author: hex(author.userId) },
+      ],
+    });
+    expect(blockApply.applyOrderingBlock(block)).toBe(false);
+
+    const ordering = await importOrdering();
+    expect(ordering.getCurrentHeight()).toBe(0);
+  });
+
+  // -----------------------------------------------------------------------
+  // Placeholder path — a node without the content still records the author
+  // -----------------------------------------------------------------------
+
+  it('confirms an unseen post as a placeholder and records the entry author', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    // The fresh-sync case: no content for this postId anywhere locally, so
+    // there is nothing to verify the entry against and the claim is recorded
+    // as given. block_topology carries the author; dag_posts does not.
+    const claimed = makeTestIdentity();
+    const postId = 'ab'.repeat(32);
+
+    const blockApply = await importBlockApply();
+    const block = await makeApplicableBlock({
+      subBlockEntries: [{ postId, parentRefs: [], author: hex(claimed.userId) }],
+    });
+    expect(blockApply.applyOrderingBlock(block)).toBe(true);
+
+    const { getTopologyAuthor } = (await import('../../src/store/topology.js')) as {
+      getTopologyAuthor: (postId: string) => string | null;
+    };
+    expect(getTopologyAuthor(postId)).toBe(hex(claimed.userId));
+
+    const posts = await importPosts();
+    const placeholder = posts.getPost(postId) as Post;
+    expect(placeholder).not.toBeNull();
+    expect(placeholder.content).toBe('');
+    expect(hex(placeholder.author)).toBe('00'.repeat(32));
   });
 });

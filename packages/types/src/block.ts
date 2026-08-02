@@ -98,9 +98,21 @@ export function cumulativeWork(headers: BlockHeader[]): bigint {
 // Body sections (independently requestable)
 // ---------------------------------------------------------------------------
 
+/**
+ * Committed topology + authorship for one confirmed sub-block.
+ *
+ * `author` is consensus-carried (audit H-3): it rides in the block, committed
+ * under `subBlockRoot`, so every node — including one that synced from ordering
+ * blocks alone and never saw the post content — records an identical author per
+ * post. It is a `postId`-preimage field, so any node holding the content can
+ * verify the claim; nodes holding the post at apply time MUST reject a block
+ * whose entry contradicts it (see NODE_INTERFACE.md, apply-time authorization).
+ * This is what makes prune authorship checkable without DAG content.
+ */
 export interface SubBlockEntry {
   postId: string;        // hex-encoded 32-byte post ID
   parentRefs: string[];  // hex-encoded parent post IDs (0–8 entries)
+  author: string;        // hex-encoded 32-byte author public key of the post
 }
 
 export interface SubBlockTree {

@@ -423,6 +423,7 @@ SubBlockTree {
 SubBlockEntry {
   postId: string        // hex(32) post ID
   parentRefs: string[]  // hex(32) parent post IDs (0–8)
+  author: string        // hex(32) author public key of the post (consensus-carried, audit H-3)
 }
 
 UtxoTxTree {
@@ -433,6 +434,15 @@ UtxoTxTree {
   epochTallyResults?: EpochTally     // present if an epoch transition triggered
 }
 ```
+
+`SubBlockEntry.author` is the consensus-carried authorship claim for the confirmed
+post: it is committed under `subBlockRoot`, so every node — including one that
+synced from ordering blocks alone and never saw the post content — records an
+identical author per post. `author` is a `postId`-preimage field, so any node
+holding the content can verify the claim by recomputing the id; nodes holding
+the post at apply time MUST reject a block whose entry contradicts it (see
+`NODE_INTERFACE.md`, apply-time authorization). This is what makes prune
+authorship (audit H-3) checkable deterministically without DAG content.
 
 ### Coinbase output
 

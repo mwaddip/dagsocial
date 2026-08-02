@@ -201,6 +201,7 @@ function migrateBlockTopology(database: Database.Database): void {
     CREATE TABLE IF NOT EXISTS block_topology (
       post_id TEXT PRIMARY KEY,
       parent_refs TEXT NOT NULL,
+      author TEXT NOT NULL,
       block_height INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_block_topology_height

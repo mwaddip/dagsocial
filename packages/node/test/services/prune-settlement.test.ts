@@ -23,8 +23,14 @@ async function importDb() {
 async function importTopology() {
   const mod = await import('../../src/store/topology.js');
   return mod as {
-    insertBlockTopology: (postId: string, parentRefs: string[], blockHeight: number) => void;
+    insertBlockTopology: (
+      postId: string,
+      parentRefs: string[],
+      author: string,
+      blockHeight: number,
+    ) => void;
     getSubtreeTopology: (rootPostId: string) => Set<string>;
+    getTopologyAuthor: (postId: string) => string | null;
     rollbackBlockTopology: (blockHeight: number) => void;
   };
 }
@@ -107,6 +113,9 @@ function makeJournal(height = 10): BlockJournal {
   };
 }
 
+/** Consensus-carried author for topology fixtures (hex(32)). */
+const AUTHOR_HEX = 'ab'.repeat(32);
+
 /** Check if a box ID is spent in the utxo_boxes table. */
 function boxIsSpent(db: Database, boxId: string): boolean {
   const row = db
@@ -134,9 +143,9 @@ describe('block_topology', () => {
     const { insertBlockTopology, getSubtreeTopology } = await importTopology();
 
     // Chain: root1 -> reply1 -> reply2
-    insertBlockTopology('root1', [], 1);
-    insertBlockTopology('reply1', ['root1'], 2);
-    insertBlockTopology('reply2', ['reply1'], 2);
+    insertBlockTopology('root1', [], AUTHOR_HEX, 1);
+    insertBlockTopology('reply1', ['root1'], AUTHOR_HEX, 2);
+    insertBlockTopology('reply2', ['reply1'], AUTHOR_HEX, 2);
 
     const subtree = getSubtreeTopology('root1');
     expect(subtree).toEqual(new Set(['root1', 'reply1', 'reply2']));
@@ -144,7 +153,7 @@ describe('block_topology', () => {
 
   it('getSubtreeTopology returns only root when no replies', async () => {
     const { insertBlockTopology, getSubtreeTopology } = await importTopology();
-    insertBlockTopology('root1', [], 1);
+    insertBlockTopology('root1', [], AUTHOR_HEX, 1);
 
     const subtree = getSubtreeTopology('root1');
     expect(subtree).toEqual(new Set(['root1']));
@@ -160,9 +169,9 @@ describe('block_topology', () => {
   it('insertBlockTopology is idempotent', async () => {
     const { insertBlockTopology, getSubtreeTopology } = await importTopology();
 
-    insertBlockTopology('root1', [], 1);
-    insertBlockTopology('root1', [], 1); // Duplicate call
-    insertBlockTopology('reply1', ['root1'], 2);
+    insertBlockTopology('root1', [], AUTHOR_HEX, 1);
+    insertBlockTopology('root1', [], AUTHOR_HEX, 1); // Duplicate call
+    insertBlockTopology('reply1', ['root1'], AUTHOR_HEX, 2);
 
     const subtree = getSubtreeTopology('root1');
     expect(subtree).toEqual(new Set(['root1', 'reply1']));
@@ -173,9 +182,9 @@ describe('block_topology', () => {
 
     // root -> child1
     // root -> child2
-    insertBlockTopology('root', [], 1);
-    insertBlockTopology('child1', ['root'], 2);
-    insertBlockTopology('child2', ['root'], 2);
+    insertBlockTopology('root', [], AUTHOR_HEX, 1);
+    insertBlockTopology('child1', ['root'], AUTHOR_HEX, 2);
+    insertBlockTopology('child2', ['root'], AUTHOR_HEX, 2);
 
     const subtree = getSubtreeTopology('root');
     expect(subtree).toEqual(new Set(['root', 'child1', 'child2']));
@@ -185,20 +194,51 @@ describe('block_topology', () => {
     const { insertBlockTopology, getSubtreeTopology } = await importTopology();
 
     // Two independent root posts
-    insertBlockTopology('rootA', [], 1);
-    insertBlockTopology('rootB', [], 1);
+    insertBlockTopology('rootA', [], AUTHOR_HEX, 1);
+    insertBlockTopology('rootB', [], AUTHOR_HEX, 1);
 
     const subtree = getSubtreeTopology('rootA');
     expect(subtree).toEqual(new Set(['rootA']));
+  });
+
+  it('getTopologyAuthor returns the recorded author', async () => {
+    const { insertBlockTopology, getTopologyAuthor } = await importTopology();
+    insertBlockTopology('root1', [], AUTHOR_HEX, 1);
+
+    expect(getTopologyAuthor('root1')).toBe(AUTHOR_HEX);
+  });
+
+  it('getTopologyAuthor returns null for a post no block has confirmed', async () => {
+    const { getTopologyAuthor } = await importTopology();
+
+    expect(getTopologyAuthor('nonexistent')).toBeNull();
+  });
+
+  it('getTopologyAuthor keeps the first confirming block author (idempotent insert)', async () => {
+    const { insertBlockTopology, getTopologyAuthor } = await importTopology();
+    insertBlockTopology('root1', [], AUTHOR_HEX, 1);
+    insertBlockTopology('root1', [], 'cd'.repeat(32), 2); // later block, same postId
+
+    expect(getTopologyAuthor('root1')).toBe(AUTHOR_HEX);
+  });
+
+  it('getTopologyAuthor returns null again after the height is rolled back', async () => {
+    const { insertBlockTopology, getTopologyAuthor, rollbackBlockTopology } =
+      await importTopology();
+    insertBlockTopology('root1', [], AUTHOR_HEX, 7);
+    expect(getTopologyAuthor('root1')).toBe(AUTHOR_HEX);
+
+    rollbackBlockTopology(7);
+    expect(getTopologyAuthor('root1')).toBeNull();
   });
 
   it('rollbackBlockTopology removes entries at given height', async () => {
     const { insertBlockTopology, getSubtreeTopology, rollbackBlockTopology } =
       await importTopology();
 
-    insertBlockTopology('root1', [], 1);
-    insertBlockTopology('reply1', ['root1'], 2);
-    insertBlockTopology('reply2', ['reply1'], 3);
+    insertBlockTopology('root1', [], AUTHOR_HEX, 1);
+    insertBlockTopology('reply1', ['root1'], AUTHOR_HEX, 2);
+    insertBlockTopology('reply2', ['reply1'], AUTHOR_HEX, 3);
 
     // Roll back height 2 entries
     rollbackBlockTopology(2);
@@ -468,8 +508,9 @@ describe('Full prune lifecycle (UTXO settlement path)', () => {
     const likerId = makeUserId('liker1');
 
     // 1. Seed block_topology: root has no parents, reply has root as parent
-    topology.insertBlockTopology(rootId, [], 1);
-    topology.insertBlockTopology(replyId, [rootId], 2);
+    const authorHex = Buffer.from(authorId).toString('hex');
+    topology.insertBlockTopology(rootId, [], authorHex, 1);
+    topology.insertBlockTopology(replyId, [rootId], authorHex, 2);
 
     // 2. Verify subtree includes both posts
     const subtree = topology.getSubtreeTopology(rootId);

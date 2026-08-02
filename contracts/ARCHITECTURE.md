@@ -134,9 +134,14 @@ The root author may prune their entire subtree at any time. Pruning:
 
 The prune is authorized **solely** by the root author's Ed25519 signature
 over `(rootPostHash, subtreeMerkleRoot)`. The signature travels in the block
-as a PruneEntry. No validator attestation is required — settlement is
-deterministically computable from the UTXO state (PostLockBoxes, LikeBoxes).
-Any node can verify the prune independently.
+as a PruneEntry. Who "the author" is, is itself consensus data: every
+confirmed post's `author` is carried in its block's `SubBlockEntry` and
+recorded in `block_topology`, and a PruneEntry is valid only if its
+`authorId` equals that recorded author (audit H-3) — so a signature from
+anyone else, however valid for its own key, authorizes nothing. No validator
+attestation is required — settlement is deterministically computable from the
+UTXO state (PostLockBoxes, LikeBoxes). Any node can verify the prune
+independently, with or without the DAG content.
 
 Pruning is irreversible. Once content is pruned, it cannot be recovered.
 Nodes propagate stumps, not the original content.
@@ -306,9 +311,11 @@ Stump {
 4. Node verifies signature, subtree completeness, and Merkle root
 5. Node enqueues PruneEntry in mempool — included in next ordering block via
    `SubBlockTree.pruneEntries`
-6. At block application, every node independently verifies: Ed25519 signature,
-   postId set against block_topology, Merkle root, then settles UTXO
-   deterministically (consumes PostLockBoxes and LikeBoxes, mints refund karma)
+6. At block application, every node independently verifies: authorship
+   binding (`authorId` equals the `block_topology`-recorded author of the
+   root; unconfirmed roots are not prunable), Ed25519 signature, postId set
+   against block_topology, Merkle root, then settles UTXO deterministically
+   (consumes PostLockBoxes and LikeBoxes, mints refund karma)
 7. DAG content pruned (when present) — simplified Stump stored for
    historical/gossip purposes
 
@@ -320,7 +327,10 @@ prune, and the settlement is deterministically computable from UTXO state.
 - Settlement is deterministic from UTXO state + block's PruneEntry — any node
   can verify independently without DAG content
 - The author's signature over `(rootPostHash, subtreeMerkleRoot)` in the block
-  is the single point of authorization
+  is the single point of authorization, and "the author" is pinned by
+  consensus: `PruneEntry.authorId` must equal the author recorded for the
+  root in `block_topology` (carried by `SubBlockEntry.author`, verified
+  against real content by every node that holds it at confirmation time)
 - A node that held the full subtree can verify the Merkle root against the
   original content
 - Parent hashes remain valid — a reply referencing a pruned post still has a
@@ -868,7 +878,8 @@ fresh. Namespacing keeps the option open to split into separate stores later
   settlement (consumes PostLockBoxes and LikeBoxes, mints refund karma)
 - AVL+ state root: authenticated dictionary over UTXO set, stateRoot in block
   headers, `GET /api/v1/proof/:boxId` for light-client proofs
-- block_topology table for efficient subtree topology lookups
+- block_topology table (post_id, parent_refs, author, block_height — all
+  consensus-sourced) for subtree topology and prune-authorship lookups
 - libp2p networking with two-stage validation (stateless + stateful)
 - Credit emission: Ergo-style linear decay, treasury split, miner reward delay
 - Height-deterministic difficulty schedule for ordering block PoW (no wall clock)

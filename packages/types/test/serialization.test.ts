@@ -89,7 +89,7 @@ function makeSubBlockTree(): SubBlockTree {
   return {
     subBlockRefs: ['d'.repeat(64)],
     subBlockEntries: [
-      { postId: 'b'.repeat(64), parentRefs: [] },
+      { postId: 'b'.repeat(64), parentRefs: [], author: 'c'.repeat(64) },
     ],
     pruneEntries: [],
   };
@@ -226,8 +226,8 @@ describe('CBOR serialization', () => {
       const tree: SubBlockTree = {
         subBlockRefs: ['aa'.repeat(32), 'bb'.repeat(32)],
         subBlockEntries: [
-          { postId: 'aa'.repeat(32), parentRefs: [] },
-          { postId: 'bb'.repeat(32), parentRefs: ['aa'.repeat(32)] },
+          { postId: 'aa'.repeat(32), parentRefs: [], author: 'cc'.repeat(32) },
+          { postId: 'bb'.repeat(32), parentRefs: ['aa'.repeat(32)], author: 'dd'.repeat(32) },
         ],
         pruneEntries: [],
       };

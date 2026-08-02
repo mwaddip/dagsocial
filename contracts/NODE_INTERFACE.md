@@ -230,9 +230,12 @@ They count toward the total for author rewards.
    subtreePostIds match actual reply tree, Merkle root matches postId list
 3. Node builds PruneEntry, enqueues in mempool, broadcasts simplified Stump
    to peers
-4. At block application: verify signature, verify topology via block_topology
-   CTE, verify Merkle root, settle UTXO deterministically (consume
-   PostLockBoxes and LikeBoxes, mint refund karma), prune DAG content
+4. At block application: verify authorship binding (`entry.authorId` equals
+   the `block_topology`-recorded author of `rootPostHash`; reject the block if
+   no topology row exists — an unconfirmed root is not prunable), verify
+   signature, verify topology via block_topology CTE, verify Merkle root,
+   settle UTXO deterministically (consume PostLockBoxes and LikeBoxes, mint
+   refund karma), prune DAG content
 
 ### UTXO queries
 
@@ -652,9 +655,17 @@ Fresh schema — no Phase 1 migration.
 
 | Function | Signature |
 |----------|-----------|
-| `insertBlockTopology(postId, parentRefs, blockHeight)` | `(string, string[], number) => void` |
+| `insertBlockTopology(postId, parentRefs, author, blockHeight)` | `(string, string[], string, number) => void` |
 | `getSubtreeTopology(rootPostId)` | `(string) => Set<string>` |
+| `getTopologyAuthor(postId)` | `(string) => string \| null` |
 | `rollbackBlockTopology(blockHeight)` | `(number) => void` |
+
+`block_topology` rows record `(post_id, parent_refs, author, block_height)` —
+all sourced from the confirming block's `SubBlockEntry` (consensus data, never
+from local DAG content). `author` is the entry's consensus-carried authorship
+claim (audit H-3); `getTopologyAuthor` returns `null` for posts no applied
+block has confirmed. Idempotent insert (first block to confirm a postId wins);
+`rollbackBlockTopology` removes a reverted height's rows wholesale.
 
 ### Mempool
 
@@ -1015,6 +1026,41 @@ against `block.header.validatorId` — so every node reaches the same verdict. I
 sits alongside the height-scheduled PoW-target and coinbase-maturity checks
 already enforced in this funnel, and precedes any mutation so a bad-signature
 block rolls back to a no-op.
+
+**Sub-block entry integrity + prune authorship (H-3).** `SubBlockEntry` carries
+a consensus-recorded `author` (see `TYPES_INTERFACE.md`), committed under
+`subBlockRoot`. The `'subblock'` Merkle leaf serializes
+`{ postId, parentRefs, author }` (JSON, exactly this key order). Enforcement has
+three legs, all inside the `applyOrderingBlock` funnel:
+
+1. **Producer honesty (fill).** The block creator fills `entry.author` from the
+   resolved sub-block's post — never from a client-supplied claim.
+2. **Entry-vs-post verification (confirm-time).** For every sub-block entry
+   whose post is locally present with real content (not a placeholder), the
+   block is REJECTED unless `entry.author === post.author` **and**
+   `entry.parentRefs` equals `post.parentRefs` as an exact ordered sequence.
+   Both are `postId`-preimage fields, so any content-holding node can verify
+   the claim; content-holding honest nodes thereby keep lying entries out of
+   the canonical chain. A node lacking the content accepts the entry as
+   claimed and inherits this guarantee through PoW weight — the same trust
+   model as every other content-dependent check. (Unchecked `parentRefs`
+   would let a producer graft a victim's post under their own root and prune
+   it "as author" — the parentRefs equality closes that route.)
+3. **Prune authorship binding (prune-time).** Before the prune entry's
+   postId-set and Merkle checks, the block is REJECTED unless
+   `getTopologyAuthor(entry.rootPostHash)` returns a non-null author equal to
+   `entry.authorId`. The lookup reads only consensus-recorded data, so the
+   verdict is identical on every node — including one that synced from
+   ordering blocks alone and holds no DAG content. A root no applied block has
+   confirmed has no topology author and is therefore not prunable (this also
+   forecloses the empty-subtree/unconfirmed-root edge). `PruneEntry.authorId`
+   is retained in the wire format and required to equal the topology author;
+   the author signature check then proceeds against it as before.
+
+Topology rows are written from the (verified) entry: `insertBlockTopology(
+entry.postId, entry.parentRefs, entry.author, height)`. Placeholder posts keep
+a zeroed `author` column in `dag_posts` — `block_topology.author` is the
+consensus authority for prune authorization, never `dag_posts.author`.
 
 ### Sync handlers (pull-path)
 

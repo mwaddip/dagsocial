@@ -169,44 +169,56 @@ the mempool insert is idempotent (sub-block ID is the primary key), and
 `verifyPostForRelay` skips the challenge check (the challenge was node-local
 to the origin node).
 
-### Pull path — not needed
+### Pull path — content is best-effort, topology is consensus
 
-Sub-blocks travel via gossip only. They are NOT requested independently via
-the sync protocol. Once a miner includes sub-blocks in an ordering block, the
-block carries the full CBOR inline — every node receives the sub-blocks as
-part of the block. See `NET_INTERFACE.md` for the ordering block serialization
-format.
+Sub-blocks travel via gossip. The sync protocol ships **ordering blocks
+only** — a block commits to sub-block *topology* (`subBlockEntries`), never to
+post content. A node applying a block for a post it has not seen inserts a
+**placeholder** row and confirms it; the content-sweep hooks
+(`setSyncHandler` / `onSyncComplete` / `onPeerActive`, see `NODE_INTERFACE.md`)
+backfill placeholders best-effort when a peer still holds the content. Pruned
+content is gone network-wide by design, so backfill can never be a consensus
+dependency.
 
 ---
 
 ## Ordering Block Relationship
 
-Ordering blocks carry sub-block CBOR inline. `subBlockTree` contains both
-`subBlockRefs` (IDs, for Merkle ordering) and `subBlocks` (CBOR-encoded
-`SubBlock` bytes, aligned by index). When a node applies an ordering block,
-it decodes sub-blocks from the block itself — no mempool lookup, no fetch.
+Ordering blocks do NOT carry sub-block or post content. `subBlockTree`
+contains `subBlockRefs` (IDs, for ordering), `subBlockEntries` (committed
+topology — `{ postId, parentRefs, author }`, aligned 1:1 with
+`subBlockRefs`), and `pruneEntries`. The entries are committed under
+`subBlockRoot` (the `'subblock'` leaf serializes `{ postId, parentRefs,
+author }`, JSON, exactly this key order), so topology and authorship are
+consensus data on every node even when content never arrives (audit H-3).
 
 ### Block creation (miner)
 
 1. Pull pending sub-blocks from mempool
 2. Decode, attach standalone like UTXO txs, deduplicate likes
 3. `subBlockRefs` = ordered list of sub-block IDs (FIFO)
-4. `subBlocks` = `encodeSubBlock(sb)` for each sub-block (same order)
-5. Build `subBlockRoot` = Merkle root over `subBlockRefs`
+4. `subBlockEntries` = `{ postId, parentRefs, author }` per sub-block, filled
+   from the resolved post itself (same order; never from a client claim)
+5. Build `subBlockRoot` = Merkle root over the sub-block entry leaves plus
+   prune-entry leaves
 6. Sub-blocks beyond `maxSubBlocksPerBlock` stay in mempool
 
 ### Block application (all nodes)
 
-1. For each index `i` in `subBlockRefs`:
-   - Decode `subBlocks[i]` via `decodeSubBlock`
-   - Insert post if not already present (e.g., from gossip)
-   - `confirmPost(subBlockId, blockHeight)`
+1. For each sub-block entry:
+   - If the post is locally present with real content: REJECT the block
+     unless `entry.author` and `entry.parentRefs` (exact ordered sequence)
+     match the post — content-holders keep lying entries out of the chain
+   - If the post is absent: insert a placeholder row from the entry
+   - `confirmPost(entry.postId, blockHeight)`; record
+     `(postId, parentRefs, author)` in `block_topology`
 2. For each index `i` in `utxoTxIds`:
    - Decode `utxoTxs[i]` via `decodeTx`
    - Revalidate in context, apply
 3. Remove confirmed entries from local mempool
 
-The block is self-contained. No external data needed to apply it fully.
+The block is self-contained for *state transition* purposes (UTXO, topology,
+authorship); post content is supplementary and arrives via gossip or sweep.
 
 ---
 
@@ -228,16 +240,17 @@ enough that pending→confirmed latency is acceptable without it.
 
 - `broadcastSubBlock(sb)`: push to mesh peers via gossipsub
 - `onSubBlock(callback)`: register Stage 2 handler for inbound sub-blocks
-- Sync: sub-blocks do not travel independently via the sync protocol. They
-  are carried inline in ordering blocks.
+- Sync: the sync protocol ships ordering blocks (topology only). Sub-block
+  content travels via gossip and the best-effort content sweep.
 
 ### Node package
 
 - `insertMempoolSubBlock(sb, expiresAtHeight, batchId?)`: queue sub-block
 - `getPendingEntries(limit)`: retrieve FIFO-ordered pending entries
 - `confirmPost(postId, blockHeight)`: mark post confirmed
-- Block creator: snapshots mempool, builds `subBlockRefs` + `subBlockRoot`,
-  attaches linked UTXO txs, deduplicates likes
+- Block creator: snapshots mempool, builds `subBlockRefs` +
+  `subBlockEntries` (`{ postId, parentRefs, author }` from the resolved
+  posts) + `subBlockRoot`, attaches linked UTXO txs, deduplicates likes
 - Block apply: confirms referenced sub-blocks, removes them from mempool.
   Unreferenced sub-blocks survive for the next block.
 
@@ -267,8 +280,9 @@ enough that pending→confirmed latency is acceptable without it.
 - Sub-blocks pass Stage 1 + Stage 2 validation before mempool insertion
 - Sub-blocks not confirmed in one ordering block survive in the mempool for
   the next block (eventual consistency)
-- Ordering blocks carry sub-block CBOR inline — every node can apply every
-  block fully without external data
+- Ordering blocks carry sub-block topology (`subBlockEntries`, including
+  `author`) — every node can apply every block's state transitions without
+  external data; content is supplementary (placeholder + sweep)
 - Confirmed sub-blocks have their posts transitioned to `confirmed` and their
   UTXO transactions applied
 
@@ -279,7 +293,8 @@ enough that pending→confirmed latency is acceptable without it.
 - Sub-blocks are user-produced, carrying post-level PoW
 - The ordering block is the sole authority on which sub-blocks get confirmed
 - `subBlockRefs.length ≤ maxSubBlocksPerBlock`
-- `subBlockRefs[i]` corresponds to `subBlocks[i]` — same index, same sub-block
+- `subBlockRefs[i]` corresponds to `subBlockEntries[i]` — same index, same
+  sub-block
 - Sub-block gossip is stateless at Stage 1 — verification depends only on
   the sub-block's own content
 - Sub-blocks not referenced by an ordering block remain in the mempool

@@ -370,6 +370,12 @@ export function verifyOrderingBlockStructure(
         return { valid: false, error: 'Ordering block subBlockEntry parentRef must be 64-char hex' };
       }
     }
+    // Structure only: `author` is checked for shape here, not truth. Binding it
+    // to the real post and to prune authorization is stateful (audit H-3) and
+    // lives in @dagsocial/node.
+    if (typeof entry.author !== 'string' || entry.author.length !== 64) {
+      return { valid: false, error: 'Ordering block subBlockEntry has invalid author' };
+    }
   }
   if (!block.validatorSignature || block.validatorSignature.length !== 64) {
     return { valid: false, error: 'Ordering block missing or invalid validatorSignature' };

@@ -39,6 +39,7 @@ import {
   removeEntry,
   insertBlockTopology,
   getSubtreeTopology,
+  getTopologyAuthor,
 } from '../store/index.js';
 import { getDb } from '../store/db.js';
 import { insertBlockJournal, purgeOldJournals } from '../store/journal.js';
@@ -278,13 +279,46 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
   }
 
   // 7. Confirm sub-blocks — create placeholders if post doesn't exist
+  //
+  // Entry-vs-post verification (H-3): `author` and `parentRefs` are both
+  // postId-preimage fields, so any node holding the content can check the
+  // block's claim against it. Nodes that do reject a lying entry, which keeps
+  // it out of the canonical chain for everyone; a node lacking the content
+  // accepts the entry as claimed and inherits the guarantee through PoW weight.
+  // Unchecked, a producer could graft a victim's post under their own root (via
+  // parentRefs) or claim its authorship outright — and then prune it "as author".
   for (let i = 0; i < block.subBlockTree.subBlockEntries.length; i++) {
     const entry = block.subBlockTree.subBlockEntries[i]!;
     const subBlockId = entry.postId;
 
-    // Create placeholder row if post doesn't exist yet
-    if (!getPost(subBlockId)) {
+    const localPost = getPost(subBlockId);
+    if (!localPost) {
+      // Content hasn't arrived — record the claim, verify it if it ever does.
       insertPostPlaceholder(subBlockId, entry.parentRefs);
+    } else if ('content' in localPost && localPost.content !== '') {
+      // Real content (not a placeholder, not a stump) — the claim is checkable.
+      const realAuthor = Buffer.from(localPost.author).toString('hex');
+      if (entry.author !== realAuthor) {
+        console.warn(
+          `Rejected block height=${block.header.height}: subBlockEntry author ` +
+          `mismatch for ${subBlockId}`,
+        );
+        currentJournal = null;
+        return false;
+      }
+      const realParents = localPost.parentRefs;
+      const parentsMatch =
+        Array.isArray(entry.parentRefs) &&
+        entry.parentRefs.length === realParents.length &&
+        entry.parentRefs.every((ref, j) => ref === realParents[j]);
+      if (!parentsMatch) {
+        console.warn(
+          `Rejected block height=${block.header.height}: subBlockEntry parentRefs ` +
+          `mismatch for ${subBlockId}`,
+        );
+        currentJournal = null;
+        return false;
+      }
     }
 
     try {
@@ -342,19 +376,51 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
   }
 
   // 8b. Populate block_topology from this block's subBlockEntries
+  // Consensus data only (verified against local content above where we hold it)
+  // — this, not dag_posts.author, is the authority for prune authorization.
   for (const entry of block.subBlockTree.subBlockEntries) {
-    insertBlockTopology(entry.postId, entry.parentRefs, block.header.height);
+    insertBlockTopology(entry.postId, entry.parentRefs, entry.author, block.header.height);
   }
 
   // 8c. Process prune entries from this block
-  // Five verification + settlement steps per entry:
-  //   1. Verify Ed25519 author signature over (rootPostHash || subtreeMerkleRoot)
-  //   2. Verify postId set against block_topology (deterministic, no DAG walk)
-  //   3. Verify Merkle root from entry.subtreePostIds
-  //   4. Settle UTXO — consume PostLockBox + LikeBox, mint refund karma
-  //   5. Prune DAG content, insert simplified Stump for historical record
+  // Six verification + settlement steps per entry:
+  //   1. Bind authorId to the root's consensus-recorded author (block_topology)
+  //   2. Verify Ed25519 author signature over (rootPostHash || subtreeMerkleRoot)
+  //   3. Verify postId set against block_topology (deterministic, no DAG walk)
+  //   4. Verify Merkle root from entry.subtreePostIds
+  //   5. Settle UTXO — consume PostLockBox + LikeBox, mint refund karma
+  //   6. Prune DAG content, insert simplified Stump for historical record
   for (const entry of block.subBlockTree.pruneEntries) {
-    // 1. Verify authorization
+    // 1. Authorship binding (H-3)
+    //
+    // The signature check below proves the entry was signed *by* authorId; it
+    // says nothing about authorId being the root's author. Without this bind,
+    // any miner signs blake2b(root ‖ merkleRoot) with their own key and prunes
+    // an arbitrary victim's subtree network-wide. block_topology is the
+    // authority — it is built from block data alone, so a node that synced from
+    // ordering blocks and holds no DAG content reaches the same verdict. A root
+    // no applied block has confirmed has no recorded author and is not prunable
+    // (this also forecloses the unconfirmed-root/empty-subtree edge).
+    //
+    // First, before any Buffer.from on adversarial fields: it is the cheapest
+    // check and the only total one.
+    const recordedAuthor =
+      typeof entry.rootPostHash === 'string' ? getTopologyAuthor(entry.rootPostHash) : null;
+    // authorId is UserId (raw 32 bytes) at runtime — CBOR preserves the bytes.
+    const claimedAuthor =
+      entry.authorId instanceof Uint8Array
+        ? Buffer.from(entry.authorId).toString('hex')
+        : null;
+    if (recordedAuthor === null || recordedAuthor !== claimedAuthor) {
+      console.error(
+        `Block ${block.header.height}: prune authorId does not match the ` +
+        `recorded author of ${entry.rootPostHash}`,
+      );
+      currentJournal = null;
+      return false;
+    }
+
+    // 2. Verify authorization
     const rootBytes = Buffer.from(entry.subtreeMerkleRoot);
     const payload = createHash('blake2b512')
       .update(entry.rootPostHash)
@@ -379,7 +445,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
       return false;
     }
 
-    // 2. Verify postId set against block_topology
+    // 3. Verify postId set against block_topology
     const topologyIds = getSubtreeTopology(entry.rootPostHash);
     const entryIds = new Set(entry.subtreePostIds);
     if (topologyIds.size !== entryIds.size ||
@@ -389,7 +455,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
       return false;
     }
 
-    // 3. Verify Merkle root
+    // 4. Verify Merkle root
     const leaves = [...entry.subtreePostIds]
       .sort()
       .map(id => leafHash('stump', hexToBuf(id)));
@@ -401,7 +467,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
       return false;
     }
 
-    // 4. Settle UTXO — deterministic from post IDs
+    // 5. Settle UTXO — deterministic from post IDs
     try {
       settlePruneUtxo(entry.subtreePostIds, block.header.height, currentJournal);
     } catch (err) {
@@ -410,7 +476,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
       return false;
     }
 
-    // 5. Prune DAG content (when present)
+    // 6. Prune DAG content (when present)
     try {
       pruneSubtree(entry.rootPostHash);
       // Insert simplified Stump for historical record

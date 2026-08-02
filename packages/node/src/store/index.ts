@@ -76,6 +76,7 @@ export {
 export {
   insertBlockTopology,
   getSubtreeTopology,
+  getTopologyAuthor,
   rollbackBlockTopology,
 } from './topology.js';
 

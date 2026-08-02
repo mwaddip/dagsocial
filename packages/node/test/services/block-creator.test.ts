@@ -73,6 +73,7 @@ type BlockCreatorModule = {
   stopBlockCreator: () => void;
   onSubBlockReceived: () => void;
   createOrderingBlock: () => OrderingBlock | null;
+  computeSubBlockRoot: (tree: OrderingBlock['subBlockTree']) => string;
 };
 
 async function importDb(): Promise<DbModule> {
@@ -373,6 +374,8 @@ describe('block-creator', () => {
     for (const entry of block!.subBlockTree.subBlockEntries) {
       expect(entry.postId).toBe(postId);
       expect(entry.parentRefs).toEqual(post.parentRefs);
+      // Filled from the resolved post, never from a client claim (audit H-3).
+      expect(entry.author).toBe(Buffer.from(post.author).toString('hex'));
     }
   });
 
@@ -1008,5 +1011,29 @@ describe('block-creator', () => {
     // Mempool should be empty (both confirmed)
     const remaining = mempool.getPendingEntries(100);
     expect(remaining).toHaveLength(0);
+  });
+
+  // -----------------------------------------------------------------------
+  // H-3: the sub-block Merkle leaf commits to the entry's author
+  // -----------------------------------------------------------------------
+
+  it('computeSubBlockRoot commits to the entry author', async () => {
+    const { computeSubBlockRoot } = await importBlockCreator();
+
+    const postId = 'aa'.repeat(32);
+    const entry: SubBlockEntry = {
+      postId,
+      parentRefs: ['bb'.repeat(32)],
+      author: 'cc'.repeat(32),
+    };
+    const tree = { subBlockRefs: [postId], subBlockEntries: [entry], pruneEntries: [] };
+    // Author flipped, nothing else — if the root moved, the block is bound to
+    // the authorship claim and a producer cannot rewrite it after mining.
+    const flipped = {
+      ...tree,
+      subBlockEntries: [{ ...entry, author: 'dd'.repeat(32) }],
+    };
+
+    expect(computeSubBlockRoot(flipped)).not.toBe(computeSubBlockRoot(tree));
   });
 });

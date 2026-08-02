@@ -90,9 +90,13 @@ import {
 export function computeSubBlockRoot(tree: SubBlockTree): string {
   const leaves = [
     ...tree.subBlockEntries.map((entry) =>
+      // `author` is part of the leaf preimage (audit H-3) — the block commits to
+      // who authored each confirmed post, so prune authorship is checkable on a
+      // node that never received the content. Key order is normative.
       leafHash('subblock', Buffer.from(JSON.stringify({
         postId: entry.postId,
         parentRefs: entry.parentRefs,
+        author: entry.author,
       })))),
     ...tree.pruneEntries.map((entry) =>
       // Tag changed from 'stump' to 'prune' (intentional breaking change, per verifiable-prune spec)
@@ -451,10 +455,14 @@ export function createOrderingBlock(): OrderingBlock | null {
 
   const subBlockRefs = resolvedSubBlocks.map((sb) => sb.subBlockId);
 
-  // Build subBlockEntries for the block (committed in the Merkle tree)
+  // Build subBlockEntries for the block (committed in the Merkle tree).
+  // Both parentRefs and author are read off the resolved post — never off a
+  // client-supplied claim — so an honest producer's entries always match the
+  // content other nodes verify them against (audit H-3).
   const subBlockEntriesForBlock = resolvedSubBlocks.map((sb) => ({
     postId: sb.subBlockId,
     parentRefs: (sb.post as Post).parentRefs ?? [],
+    author: Buffer.from((sb.post as Post).author).toString('hex'),
   }));
 
   // Collect UTXO tx CBOR for inline storage, matching the utxoTxIds order:
