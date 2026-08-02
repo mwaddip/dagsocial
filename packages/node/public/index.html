@@ -580,10 +580,16 @@ function buildLikeTx(karmaBox, targetPostId, pubKeyHex) {
   };
 }
 
-/** Build an unlike tx: consumes a LikeBox, produces karma (value - 1 penalty). */
+/**
+ * Build an unlike tx: consumes a LikeBox, returns the locked karma in full.
+ *
+ * The node enforces sum(inputs) == sum(outputs), so the refund must equal the
+ * LikeBox value. (This used to burn 1 karma as a "penalty" — audit L-6 — which
+ * both contradicted "locked karma is never burned" and is now rejected.)
+ */
 function buildUnlikeTx(likeBoxId, pubKeyHex) {
   const now = currentBlockHeight;
-  const refundValue = LIKE_COST - 1; // 2 locked - 1 penalty = 1
+  const refundValue = LIKE_COST;
 
   const karmaOutput = {
     boxType: 'karma',
@@ -1261,20 +1267,24 @@ async function doUnlike(targetPostId) {
     const pubKeyHex = buf2hex(pubKeyRaw);
 
     if (stored.isFree) {
-      // Free like — no LikeBox to consume. The client still sends a tx
-      // for the server to deduct the 1-karma penalty.
-      // For now, send a simple karma→karma tx with -1 penalty.
+      // Free like — no LikeBox to consume, and a free like costs nothing, so
+      // the tx just re-anchors one karma box to carry the removal.
+      // It re-emits that box's own value: the old version paid out the
+      // *aggregate* balance minus a 1-karma "penalty" (audit L-6, L-7), which
+      // both minted karma when the account held more than one box and is now
+      // rejected by the conservation check.
       const karmaBox = await fetchKarmaBox();
-      if (!karmaBox) {
-        setStatus('No karma box for unlike penalty', 'error');
+      const sourceBox = karmaBox && karmaBox.boxes && karmaBox.boxes[0];
+      if (!sourceBox) {
+        setStatus('No karma box to anchor the unlike', 'error');
         return false;
       }
       const now = currentBlockHeight;
       const tx = {
-        inputs: [karmaBox.boxId],
+        inputs: [sourceBox.boxId],
         outputs: [{
           boxType: 'karma',
-          value: karmaBox.balance - 1, // 1 karma penalty
+          value: sourceBox.value,
           createdAtBlock: now,
           owner: pubKeyHex,
           guard: 'owner_signature',
