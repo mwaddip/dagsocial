@@ -4,7 +4,8 @@ import { encode, decode } from 'cbor-x';
 import type { Libp2p } from 'libp2p';
 import type { Stream } from '@libp2p/interface';
 import type { NetConfig } from './types.js';
-import { mergeUint8Arrays } from './util.js';
+import { readStreamBounded } from './util.js';
+import { MAX_STREAM_BYTES } from './msg-guards.js';
 
 export const SYNC_PROTOCOL = '/dagsocial/sync/1';
 export const HEADERS_PROTOCOL = '/dagsocial/headers/1';
@@ -44,16 +45,14 @@ export async function requestSubBlock(
     await stream.sink([encoder.encode(subBlockId)]);
 
     // Read response
-    const chunks: Uint8Array[] = [];
-    for await (const chunk of stream.source) {
-      chunks.push(chunk instanceof Uint8Array ? chunk : chunk.subarray());
+    const response = await readStreamBounded(stream.source);
+    if (response === null) {
+      throw new Error(`Sub-block response from peer ${peerId} exceeds ${MAX_STREAM_BYTES} bytes`);
     }
 
-    if (chunks.length === 0) {
+    if (response.length === 0) {
       throw new Error('Empty response from peer');
     }
-
-    const response = mergeUint8Arrays(chunks);
 
     // Check for not-found marker
     if (response.length === 1 && response[0] === 0x00) {
@@ -95,13 +94,13 @@ export async function requestHeaders(
     const request = { startHeight, maxCount };
     await stream.sink([Buffer.from(encode(request))] as any);
 
-    const chunks: Uint8Array[] = [];
-    for await (const chunk of stream.source) {
-      chunks.push(chunk instanceof Uint8Array ? chunk : chunk.subarray());
+    const response = await readStreamBounded(stream.source);
+    if (response === null) {
+      throw new Error(`Headers response from peer ${peerId} exceeds ${MAX_STREAM_BYTES} bytes`);
     }
 
-    if (chunks.length === 0) return [];
-    return decode(mergeUint8Arrays(chunks)) as BlockHeader[];
+    if (response.length === 0) return [];
+    return decode(response) as BlockHeader[];
   } finally {
     if (stream) await stream.close();
   }
@@ -129,13 +128,13 @@ export async function requestBlocks(
     const request = { startHeight, endHeight, mode: 'blocks' };
     await stream.sink([Buffer.from(encode(request))] as any);
 
-    const chunks: Uint8Array[] = [];
-    for await (const chunk of stream.source) {
-      chunks.push(chunk instanceof Uint8Array ? chunk : chunk.subarray());
+    const raw = await readStreamBounded(stream.source);
+    if (raw === null) {
+      throw new Error(`Blocks response from peer ${peerId} exceeds ${MAX_STREAM_BYTES} bytes`);
     }
 
-    if (chunks.length === 0) return [];
-    const response = decode(mergeUint8Arrays(chunks)) as { blocks: OrderingBlock[] };
+    if (raw.length === 0) return [];
+    const response = decode(raw) as { blocks: OrderingBlock[] };
     return response.blocks;
   } finally {
     if (stream) await stream.close();

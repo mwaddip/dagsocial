@@ -10,6 +10,9 @@ import {
   MODIFIER_ORDERING_BLOCK,
 } from '../src/types.js';
 import type { NetConfig } from '../src/types.js';
+import { MAX_INV_IDS, MAX_SERVE_BODY_BYTES } from '../src/msg-guards.js';
+import { decodeFrame } from '../src/frame.js';
+import { decodeModifierResponse } from '../src/sync-codec.js';
 import type { SyncInfo, Inv, ModifierRequest } from '../src/sync-types.js';
 
 // ---------------------------------------------------------------------------
@@ -22,7 +25,6 @@ function stubStore(overrides: Partial<SyncStore> = {}): SyncStore {
     serializeOrderingBlock: () => null,
     getOrderingBlockHeader: () => null,
     getOrderingBlockId: () => null,
-    hasOrderingBlockHeader: () => false,
     chainHeight: () => 0,
     cumulativeWork: () => 0n,
     getAnchors: () => [],
@@ -324,7 +326,7 @@ describe('SyncMachine', () => {
   describe('handleInv', () => {
     it('sends ModifierRequest when syncing', () => {
       const { machine, sent } = makeMachine({
-        store: { chainHeight: () => 0, hasOrderingBlockHeader: () => false },
+        store: { chainHeight: () => 0, getOrderingBlockId: () => null },
       });
       peerActive(machine, 'peer1', 100);
       sent.length = 0; // clear the SyncInfo send
@@ -348,8 +350,8 @@ describe('SyncMachine', () => {
     it('filters out already-known IDs', () => {
       const { machine, sent } = makeMachine({
         store: {
-          chainHeight: () => 0,
-          hasOrderingBlockHeader: (id: string) => id === 'id1', // id1 is known
+          chainHeight: () => 1,
+          getOrderingBlockId: (h: number) => (h === 1 ? 'id1' : null), // id1 is known
         },
       });
       peerActive(machine, 'peer1', 100);
@@ -365,8 +367,8 @@ describe('SyncMachine', () => {
     it('sends nothing when all IDs are already known', () => {
       const { machine, sent } = makeMachine({
         store: {
-          chainHeight: () => 0,
-          hasOrderingBlockHeader: () => true,
+          chainHeight: () => 2,
+          getOrderingBlockId: (h: number) => `id${h}`, // id1 and id2 both known
         },
       });
       peerActive(machine, 'peer1', 100);
@@ -1042,6 +1044,232 @@ describe('SyncMachine', () => {
       expect(machine.getState().phase).toBe('syncing');
 
       errSpy.mockRestore();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Resource limits (audit H-9)
+  //
+  // Element-wise shape checks pass an arbitrarily long array through, and every
+  // element buys the receiver work. Two things have to hold: the array is capped
+  // on receipt, and the work per surviving message is bounded by the chain, not
+  // by the chain times the peer's id count.
+  // -----------------------------------------------------------------------
+
+  describe('resource limits (audit H-9)', () => {
+    function makeReportingMachine(store: Partial<SyncStore> = {}): {
+      machine: SyncMachine;
+      sent: SentMessage[];
+      violations: { peerId: string; reason: string }[];
+    } {
+      const sent: SentMessage[] = [];
+      const violations: { peerId: string; reason: string }[] = [];
+      const machine = new SyncMachine(
+        testConfig,
+        stubStore(store),
+        (peerId, data) => sent.push({ peerId, data }),
+        async () => [],
+        (peerId, reason) => violations.push({ peerId, reason }),
+      );
+      return { machine, sent, violations };
+    }
+
+    const ids = (n: number): string[] => Array.from({ length: n }, (_, i) => `block_${i + 1}`);
+
+    // --- inbound arrays are capped on receipt -------------------------------
+
+    it('drops an Inv over MAX_INV_IDS and penalizes the sender', () => {
+      const reads: number[] = [];
+      const { machine, sent, violations } = makeReportingMachine({
+        chainHeight: () => 10,
+        getOrderingBlockId: (h: number) => { reads.push(h); return `block_${h}`; },
+      });
+      peerActive(machine, 'attacker', 100);
+      sent.length = 0;
+      reads.length = 0;
+
+      machine.handleMessage(
+        'attacker',
+        MSG_INV,
+        new Uint8Array(encode({ typeId: MODIFIER_ORDERING_BLOCK, ids: ids(MAX_INV_IDS + 1) })),
+      );
+      machine.flush();
+
+      expect(sent).toHaveLength(0);
+      expect(reads).toHaveLength(0);
+      expect(violations).toHaveLength(1);
+      expect(violations[0].reason).toContain(`exceeds ${MAX_INV_IDS}`);
+    });
+
+    it('accepts an Inv of exactly MAX_INV_IDS ids', () => {
+      const { machine, sent, violations } = makeReportingMachine({ chainHeight: () => 0 });
+      peerActive(machine, 'peer1', 100);
+      sent.length = 0;
+
+      machine.handleMessage(
+        'peer1',
+        MSG_INV,
+        new Uint8Array(encode({ typeId: MODIFIER_ORDERING_BLOCK, ids: ids(MAX_INV_IDS) })),
+      );
+      machine.flush();
+
+      expect(violations).toHaveLength(0);
+      expect(sent).toHaveLength(1);
+    });
+
+    it('drops a ModifierRequest over MAX_INV_IDS before the serve loop runs', () => {
+      const reads: number[] = [];
+      const { machine, sent, violations } = makeReportingMachine({
+        chainHeight: () => 10,
+        getOrderingBlockId: (h: number) => { reads.push(h); return `block_${h}`; },
+        serializeOrderingBlock: () => new Uint8Array([1]),
+      });
+
+      machine.handleMessage(
+        'attacker',
+        MSG_MODIFIER_REQUEST,
+        new Uint8Array(encode({ typeId: MODIFIER_ORDERING_BLOCK, ids: ids(MAX_INV_IDS + 1) })),
+      );
+      machine.flush();
+
+      expect(reads).toHaveLength(0);
+      expect(sent).toHaveLength(0);
+      expect(violations).toHaveLength(1);
+      expect(violations[0].reason).toContain(`exceeds ${MAX_INV_IDS}`);
+    });
+
+    it('drops a ModifierResponse over MAX_INV_IDS without applying it', () => {
+      const appended: unknown[] = [];
+      const { machine, violations } = makeReportingMachine({
+        chainHeight: () => 0,
+        appendBlocks: (blocks: unknown[]) => { appended.push(...blocks); },
+      });
+
+      machine.handleMessage(
+        'attacker',
+        MSG_MODIFIER_RESPONSE,
+        new Uint8Array(encode({
+          typeId: MODIFIER_ORDERING_BLOCK,
+          modifiers: ids(MAX_INV_IDS + 1).map((id) => ({ id, data: new Uint8Array([1]) })),
+        })),
+      );
+      machine.flush();
+
+      expect(appended).toHaveLength(0);
+      expect(violations).toHaveLength(1);
+      expect(violations[0].reason).toContain(`exceeds ${MAX_INV_IDS}`);
+    });
+
+    it('drops a SyncInfo with more than MAX_INV_IDS anchors', () => {
+      const { machine, sent, violations } = makeReportingMachine({ chainHeight: () => 10 });
+
+      machine.handleMessage('attacker', MSG_SYNC_INFO, new Uint8Array(encode({
+        tipHeight: 5,
+        tipBlockId: 'x',
+        tipCumulativeWork: '1',
+        anchors: Array.from({ length: MAX_INV_IDS + 1 }, (_, i) => ({ height: i, blockId: `a${i}` })),
+      })));
+      machine.flush();
+
+      expect(sent).toHaveLength(0);
+      expect(machine.getState().phase).toBe('idle');
+      expect(violations).toHaveLength(1);
+      expect(violations[0].reason).toContain(`exceeds ${MAX_INV_IDS}`);
+    });
+
+    // --- serve work is O(chainHeight + ids), never O(ids × chainHeight) -----
+
+    it('scans the chain once per ModifierRequest, not once per id', () => {
+      const CHAIN_HEIGHT = 50;
+      const reads: number[] = [];
+      const { machine, sent } = makeReportingMachine({
+        chainHeight: () => CHAIN_HEIGHT,
+        getOrderingBlockId: (h: number) => { reads.push(h); return `block_${h}`; },
+        serializeOrderingBlock: () => new Uint8Array([1, 2, 3]),
+      });
+
+      machine.handleMessage(
+        'peer1',
+        MSG_MODIFIER_REQUEST,
+        new Uint8Array(encode({ typeId: MODIFIER_ORDERING_BLOCK, ids: ids(MAX_INV_IDS) })),
+      );
+      machine.flush();
+
+      // One pass over heights 0..CHAIN_HEIGHT. The pre-fix nested loop read
+      // ~MAX_INV_IDS × CHAIN_HEIGHT heights for the same message.
+      expect(reads).toHaveLength(CHAIN_HEIGHT + 1);
+      expect(sent).toHaveLength(1);
+    });
+
+    it('scans the chain once per Inv, not once per announced id', () => {
+      const CHAIN_HEIGHT = 50;
+      const reads: number[] = [];
+      const { machine, sent } = makeReportingMachine({
+        chainHeight: () => CHAIN_HEIGHT,
+        getOrderingBlockId: (h: number) => { reads.push(h); return `block_${h}`; },
+      });
+      peerActive(machine, 'peer1', 1000);
+      sent.length = 0;
+      reads.length = 0;
+
+      machine.handleMessage(
+        'peer1',
+        MSG_INV,
+        new Uint8Array(encode({
+          typeId: MODIFIER_ORDERING_BLOCK,
+          ids: Array.from({ length: MAX_INV_IDS }, (_, i) => `unknown_${i}`),
+        })),
+      );
+      machine.flush();
+
+      expect(reads).toHaveLength(CHAIN_HEIGHT + 1);
+      expect(sent).toHaveLength(1);
+    });
+
+    // --- served bodies stay inside the reader's byte cap --------------------
+
+    function servedModifierCount(sent: SentMessage[]): number {
+      expect(sent).toHaveLength(1);
+      const { code, body } = decodeFrame(testConfig.magic!, sent[0].data);
+      expect(code).toBe(MSG_MODIFIER_RESPONSE);
+      return decodeModifierResponse(body)!.modifiers.length;
+    }
+
+    it('truncates a response that would exceed MAX_SERVE_BODY_BYTES', () => {
+      const chunk = new Uint8Array(3 * 1024 * 1024); // two of these overflow 4 MiB
+      const { machine, sent } = makeReportingMachine({
+        chainHeight: () => 3,
+        getOrderingBlockId: (h: number) => `block_${h}`,
+        serializeOrderingBlock: () => chunk,
+      });
+
+      machine.handleMessage(
+        'peer1',
+        MSG_MODIFIER_REQUEST,
+        new Uint8Array(encode({ typeId: MODIFIER_ORDERING_BLOCK, ids: ids(3) })),
+      );
+      machine.flush();
+
+      expect(servedModifierCount(sent)).toBe(1);
+    });
+
+    it('still serves a single block larger than the byte budget', () => {
+      // Otherwise an oversized block could never be handed over and sync wedges.
+      const chunk = new Uint8Array(MAX_SERVE_BODY_BYTES + 1024);
+      const { machine, sent } = makeReportingMachine({
+        chainHeight: () => 1,
+        getOrderingBlockId: (h: number) => `block_${h}`,
+        serializeOrderingBlock: () => chunk,
+      });
+
+      machine.handleMessage(
+        'peer1',
+        MSG_MODIFIER_REQUEST,
+        new Uint8Array(encode({ typeId: MODIFIER_ORDERING_BLOCK, ids: ids(1) })),
+      );
+      machine.flush();
+
+      expect(servedModifierCount(sent)).toBe(1);
     });
   });
 });

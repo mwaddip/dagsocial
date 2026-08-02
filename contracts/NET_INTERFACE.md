@@ -151,6 +151,13 @@ malformed or out-of-bounds message is dropped and the peer penalized — it must
 throw out of, or crash, the handler**, and the sync event loop isolates a per-message
 failure so one bad message degrades that message only, never the loop.
 
+**Resource limits (untrusted counts and sizes).** Inbound array lengths (`ids`, `anchors`,
+`modifiers`) are capped at `MAX_INV_IDS` **on receipt** — the cap applies to what a peer
+*sends us*, not only to what we send. Raw stream reads are bounded by `MAX_STREAM_BYTES`
+(never buffer an unbounded attacker-controlled stream). Per-request serve work is bounded:
+handling a request must not be `O(ids × chainHeight)` — an unbounded id list must not each
+trigger a full-chain scan.
+
 Handshake specifics:
 - `protocolVersion` must be one this node supports
 - `chainHeight` (and `SyncInfo.tipHeight`) must be a non-negative integer `<=
@@ -162,7 +169,13 @@ Handshake specifics:
 - `agentName` / `nodeName` are strings; `capabilities` is an array of numbers (unknown
   capabilities preserved, not rejected — forward compat)
 
-Validation failure → stream closed, peer banned permanently.
+**Ban policy** — distinguish adversarial input from a compatibility mismatch:
+- Malformed / out-of-bounds input (missing or wrong-typed fields, negative or
+  over-`MAX_ADVERTISED_HEIGHT` values) is adversarial → stream closed, peer **banned
+  permanently**.
+- `protocolVersion` unsupported is a compatibility mismatch, not an attack → stream closed
+  with a **soft refusal; do not permanently ban** (a routine `PROTOCOL_VERSION` bump must not
+  partition the network — the peer may upgrade). A short temporary cooldown at most.
 
 ### Post-Handshake Routing
 

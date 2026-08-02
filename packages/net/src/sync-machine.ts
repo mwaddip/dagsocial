@@ -8,7 +8,7 @@ import {
   MSG_MODIFIER_RESPONSE,
   MODIFIER_ORDERING_BLOCK,
 } from './types.js';
-import { isHeight } from './msg-guards.js';
+import { isHeight, MAX_INV_IDS, MAX_SERVE_BODY_BYTES } from './msg-guards.js';
 import type { SyncInfo, Inv, ModifierRequest, ModifierResponse, SyncState } from './sync-types.js';
 import {
   encodeSyncInfo,
@@ -34,8 +34,6 @@ export interface SyncStore {
   getOrderingBlockHeader(height: number): unknown | null;
   /** Block ID (hash) for a given height, or null if not available. */
   getOrderingBlockId(height: number): string | null;
-  /** True if the header with this ID is already known. */
-  hasOrderingBlockHeader(id: string): boolean;
   /** Current best-chain tip height. */
   chainHeight(): number;
   /** Cumulative work (sum of 2^targetBits) of the best chain. */
@@ -76,8 +74,6 @@ type DataEvent =
 const STALL_TIMEOUT_MS = 60_000;
 /** Send SyncInfo to sync peer every 30 seconds while active. */
 const SYNCED_POLL_INTERVAL_MS = 30_000;
-/** Maximum number of IDs to include in a single Inv message. */
-const MAX_INV_IDS = 400;
 /** Maximum data events in the queue before dropping oldest. */
 const MAX_DATA_QUEUE = 64;
 
@@ -312,6 +308,10 @@ export class SyncMachine {
    * that fails the boundary is dropped here and attributed to the sender, so no
    * unvalidated value ever reaches a handler.
    *
+   * Shape is not enough on its own — every inbound array is also length-capped
+   * here, because each element costs the handler work and the sender chooses how
+   * many there are.
+   *
    * Routes to control queue (SyncInfo) or data queue (everything else).
    */
   handleMessage(peerId: string, code: number, body: Uint8Array): void {
@@ -322,6 +322,7 @@ export class SyncMachine {
           this.rejectMessage(peerId, code, 'malformed SyncInfo');
           return;
         }
+        if (!this.withinCap(peerId, code, 'SyncInfo anchors', info.anchors.length)) return;
         this.controlQueue.push({ type: 'sync-info', peerId, info });
         break;
       }
@@ -331,6 +332,7 @@ export class SyncMachine {
           this.rejectMessage(peerId, code, 'malformed Inv');
           return;
         }
+        if (!this.withinCap(peerId, code, 'Inv ids', inv.ids.length)) return;
         this.enqueueData({ type: 'inv', peerId, inv });
         break;
       }
@@ -340,6 +342,7 @@ export class SyncMachine {
           this.rejectMessage(peerId, code, 'malformed ModifierRequest');
           return;
         }
+        if (!this.withinCap(peerId, code, 'ModifierRequest ids', req.ids.length)) return;
         this.enqueueData({ type: 'modifier-request', peerId, req });
         break;
       }
@@ -349,11 +352,28 @@ export class SyncMachine {
           this.rejectMessage(peerId, code, 'malformed ModifierResponse');
           return;
         }
+        if (!this.withinCap(peerId, code, 'ModifierResponse modifiers', resp.modifiers.length)) {
+          return;
+        }
         this.enqueueData({ type: 'modifier-response', peerId, resp });
         break;
       }
       // Unknown message types are silently ignored.
     }
+  }
+
+  /**
+   * Enforce `MAX_INV_IDS` on an inbound array, on receipt.
+   *
+   * Returns false — and drops + penalizes — when the peer sent more entries than
+   * the protocol allows. The check belongs here rather than in the codec: this is
+   * the first point that knows *who* sent the message, and an over-cap array is a
+   * protocol violation, not a decode failure.
+   */
+  private withinCap(peerId: string, code: number, label: string, length: number): boolean {
+    if (length <= MAX_INV_IDS) return true;
+    this.rejectMessage(peerId, code, `${label} exceeds ${MAX_INV_IDS} (got ${length})`);
+    return false;
   }
 
   /**
@@ -537,6 +557,25 @@ export class SyncMachine {
   }
 
   /**
+   * Index every ordering block on our best chain by ID, in a single pass.
+   *
+   * The store answers ID questions only by height, so asking it once per ID in a
+   * message is `O(ids × chainHeight)` — the shape audit H-9 flagged: one message
+   * with a long ID list becomes a full-chain scan per ID and freezes the main
+   * thread. Building the index once per message makes the same work
+   * `O(chainHeight + ids)`, with the per-ID part an O(1) map lookup.
+   */
+  private blockIdIndex(): Map<string, number> {
+    const index = new Map<string, number>();
+    const ourHeight = this.store.chainHeight();
+    for (let h = 0; h <= ourHeight; h++) {
+      const id = this.store.getOrderingBlockId(h);
+      if (id !== null) index.set(id, h);
+    }
+    return index;
+  }
+
+  /**
    * Process an Inv (inventory) message.
    *
    * If we're syncing, request the announced modifiers from our sync peer.
@@ -544,16 +583,11 @@ export class SyncMachine {
    */
   private handleInvMsg(_peerId: string, inv: Inv): void {
     if (this.state.phase !== 'syncing' || !this.state.syncPeerId) return;
+    // Unknown modifier types are dropped before any store work is done.
+    if (inv.typeId !== MODIFIER_ORDERING_BLOCK) return;
 
-    // Filter out IDs we already know about
-    const missing = inv.ids.filter((id) => {
-      if (inv.typeId === MODIFIER_ORDERING_BLOCK) {
-        return !this.store.hasOrderingBlockHeader(id);
-      }
-      // Unknown modifier types are dropped.
-      return false;
-    });
-
+    const known = this.blockIdIndex();
+    const missing = inv.ids.filter((id) => !known.has(id));
     if (missing.length === 0) return;
 
     const req: ModifierRequest = { typeId: inv.typeId, ids: missing };
@@ -563,33 +597,30 @@ export class SyncMachine {
   /**
    * Process a ModifierRequest from a peer — serve the requested data from
    * our local store.
+   *
+   * Two bounds apply. The ID list was capped on receipt, and the store is walked
+   * once (see `blockIdIndex`) rather than once per ID. The assembled body is also
+   * byte-bounded: a response is truncated at `MAX_SERVE_BODY_BYTES` so it always
+   * fits inside the requester's stream cap. The first matching block is always
+   * included, so an oversized block still moves rather than wedging sync.
    */
   private handleModifierRequestMsg(peerId: string, req: ModifierRequest): void {
+    // We serve ordering blocks only. Sub-block serving uses a separate protocol
+    // stream (see sync.ts).
+    if (req.typeId !== MODIFIER_ORDERING_BLOCK) return;
+
+    const heightOf = this.blockIdIndex();
     const modifiers: { id: string; data: Uint8Array }[] = [];
+    let bodyBytes = 0;
 
     for (const id of req.ids) {
-      // Currently we serve ordering blocks only. Sub-block serving uses a
-      // separate protocol stream (see sync.ts).
-      if (req.typeId === MODIFIER_ORDERING_BLOCK) {
-        // Try to find by iterating heights. For a production store this would
-        // be an indexed lookup.
-        const ourHeight = this.store.chainHeight();
-        for (let h = 0; h <= ourHeight; h++) {
-          const storedId = this.store.getOrderingBlockId(h);
-          if (storedId === id) {
-            const block = this.store.getOrderingBlock(h);
-            if (block) {
-              // The block data is serialized by the store layer. For now,
-              // pass the structured block — the codec will CBOR-encode it.
-              const data = this.store.serializeOrderingBlock(h);
-              if (data) {
-                modifiers.push({ id, data });
-              }
-            }
-            break;
-          }
-        }
-      }
+      const height = heightOf.get(id);
+      if (height === undefined) continue;
+      const data = this.store.serializeOrderingBlock(height);
+      if (!data) continue;
+      if (modifiers.length > 0 && bodyBytes + data.length > MAX_SERVE_BODY_BYTES) break;
+      bodyBytes += data.length;
+      modifiers.push({ id, data });
     }
 
     if (modifiers.length > 0) {

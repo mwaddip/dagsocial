@@ -36,13 +36,19 @@ import {
   decodeStumps,
   decodeLegacyHeadersRequest,
 } from './sync-codec.js';
-import { mergeUint8Arrays } from './util.js';
+import { readStreamBounded } from './util.js';
+import { MAX_STREAM_BYTES } from './msg-guards.js';
 import { PeerDb } from './peerdb.js';
 import { SyncMachine } from './sync-machine.js';
 import type { SyncStore } from './sync-machine.js';
 import { OutboundManager } from './outbound-mgr.js';
 import { encodeFrame, decodeFrame, MAGIC_MAINNET, MAGIC_TESTNET } from './frame.js';
-import { buildHandshakeFrame, parseHandshakeBody, validateHandshake } from './handshake.js';
+import {
+  buildHandshakeFrame,
+  handshakePenalty,
+  parseHandshakeBody,
+  validateHandshake,
+} from './handshake.js';
 import type { HandshakeResult } from './handshake.js';
 import {
   MSG_GET_SUB_BLOCK,
@@ -119,17 +125,6 @@ class LazySyncStore implements SyncStore {
       }
     }
     return null;
-  }
-
-  hasOrderingBlockHeader(id: string): boolean {
-    // Walk heights to check — naive but correct for small chains
-    if (!this._getOrderingBlock) return false;
-    const h = this.chainHeight();
-    for (let i = 0; i <= h; i++) {
-      const bid = this.getOrderingBlockId(i);
-      if (bid === id) return true;
-    }
-    return false;
   }
 
   getSubBlock(id: string): unknown | null {
@@ -502,16 +497,22 @@ export class NetNode {
     libp2p.handle('/dagsocial/handshake/1', async ({ stream, connection }) => {
       const peerId = connection.remotePeer.toString();
       try {
-        const chunks: Uint8Array[] = [];
-        for await (const chunk of stream.source) {
-          chunks.push(chunk instanceof Uint8Array ? chunk : chunk.subarray());
+        const data = await readStreamBounded(stream.source);
+        if (data === null) {
+          console.warn(`[net] handshake stream from ${peerId} exceeded ${MAX_STREAM_BYTES} bytes`);
+          this.peerMgr.recordPenaltyKind(
+            PenaltyKind.ProtocolViolation,
+            peerId,
+            'handshake stream exceeds byte cap',
+          );
+          await stream.sink([new Uint8Array(0)]);
+          return;
         }
-        if (chunks.length === 0) {
+        if (data.length === 0) {
           await stream.sink([new Uint8Array(0)]);
           return;
         }
 
-        const data = mergeUint8Arrays(chunks);
         let body: Uint8Array;
         try {
           const framed = decodeFrame(magic, data);
@@ -528,10 +529,12 @@ export class NetNode {
 
         const result = validateHandshake(parseHandshakeBody(body), [PROTOCOL_VERSION]);
         if (!result.ok || !result.msg) {
-          // Contract: validation failure → stream closed, peer banned.
+          // Contract: the stream closes either way, but the ban does not —
+          // malformed input is banned permanently, an unsupported version is
+          // only cooled down (see `handshakePenalty`).
           console.warn(`[net] inbound handshake from ${peerId} rejected: ${result.error}`);
           this.peerMgr.recordPenaltyKind(
-            PenaltyKind.ProtocolViolation,
+            handshakePenalty(result.rejection),
             peerId,
             `handshake: ${result.error}`,
           );
@@ -592,16 +595,21 @@ export class NetNode {
       }
 
       try {
-        const chunks: Uint8Array[] = [];
-        for await (const chunk of stream.source) {
-          chunks.push(chunk instanceof Uint8Array ? chunk : chunk.subarray());
-        }
-        if (chunks.length === 0) {
+        const data = await readStreamBounded(stream.source);
+        if (data === null) {
+          console.warn(`[net] sync stream from ${peerId} exceeded ${MAX_STREAM_BYTES} bytes`);
+          this.peerMgr.recordPenaltyKind(
+            PenaltyKind.ProtocolViolation,
+            peerId,
+            'sync stream exceeds byte cap',
+          );
           await stream.sink([new Uint8Array(0)]);
           return;
         }
-
-        const data = mergeUint8Arrays(chunks);
+        if (data.length === 0) {
+          await stream.sink([new Uint8Array(0)]);
+          return;
+        }
 
         // Try framed decode first
         let code: number;
@@ -726,16 +734,27 @@ export class NetNode {
       await stream.sink([buildHandshakeFrame(magic, ourMsg)]);
 
       // Read their response
-      const chunks: Uint8Array[] = [];
-      for await (const chunk of stream.source) {
-        chunks.push(chunk instanceof Uint8Array ? chunk : chunk.subarray());
+      const data = await readStreamBounded(stream.source);
+      if (data === null) {
+        console.warn(`[net] handshake response from ${peerId} exceeded ${MAX_STREAM_BYTES} bytes`);
+        this.peerMgr.recordPenaltyKind(
+          PenaltyKind.ProtocolViolation,
+          peerId,
+          'handshake stream exceeds byte cap',
+        );
+        return {
+          ok: false,
+          error: 'handshake response exceeds byte cap',
+          rejection: 'malformed',
+          peerHeight: 0,
+          peerCapabilities: [],
+        };
       }
 
-      if (chunks.length === 0) {
+      if (data.length === 0) {
         return { ok: false, error: 'empty handshake response', peerHeight: 0, peerCapabilities: [] };
       }
 
-      const data = mergeUint8Arrays(chunks);
       let body: Uint8Array;
       try {
         const framed = decodeFrame(magic, data);
@@ -748,7 +767,7 @@ export class NetNode {
       if (!result.ok) {
         console.warn(`[net] outbound handshake with ${peerId} rejected: ${result.error}`);
         this.peerMgr.recordPenaltyKind(
-          PenaltyKind.ProtocolViolation,
+          handshakePenalty(result.rejection),
           peerId,
           `handshake: ${result.error}`,
         );
@@ -918,14 +937,14 @@ export class NetNode {
     try {
       stream = await this.libp2p.dialProtocol(peer, SYNC_PROTOCOL);
       await stream.sink([request]);
-      const chunks: Uint8Array[] = [];
-      for await (const chunk of stream.source) {
-        chunks.push(chunk instanceof Uint8Array ? chunk : chunk.subarray());
-      }
-      if (chunks.length === 0) {
+      const data = await readStreamBounded(stream.source);
+      if (data === null) {
+        console.warn(`[net] requestPosts: response from ${peerId} exceeded ${MAX_STREAM_BYTES} bytes`);
         return { entries: [] };
       }
-      const data = mergeUint8Arrays(chunks);
+      if (data.length === 0) {
+        return { entries: [] };
+      }
       const frame = decodeFrame(magic, data);
       if (frame.code !== MSG_POSTS) {
         console.warn(`[net] requestPosts: unexpected response code ${frame.code}`);
@@ -963,14 +982,14 @@ export class NetNode {
     try {
       stream = await this.libp2p.dialProtocol(peer, SYNC_PROTOCOL);
       await stream.sink([request]);
-      const chunks: Uint8Array[] = [];
-      for await (const chunk of stream.source) {
-        chunks.push(chunk instanceof Uint8Array ? chunk : chunk.subarray());
-      }
-      if (chunks.length === 0) {
+      const data = await readStreamBounded(stream.source);
+      if (data === null) {
+        console.warn(`[net] requestStumps: response from ${peerId} exceeded ${MAX_STREAM_BYTES} bytes`);
         return { entries: [] };
       }
-      const data = mergeUint8Arrays(chunks);
+      if (data.length === 0) {
+        return { entries: [] };
+      }
       const frame = decodeFrame(magic, data);
       if (frame.code !== MSG_STUMPS) {
         console.warn(`[net] requestStumps: unexpected response code ${frame.code}`);
@@ -1044,16 +1063,15 @@ export class NetNode {
       const libp2p = this.libp2p;
       libp2p.handle(HEADERS_PROTOCOL, async ({ stream }) => {
         try {
-          const chunks: Uint8Array[] = [];
-          for await (const chunk of stream.source) {
-            chunks.push(chunk instanceof Uint8Array ? chunk : chunk.subarray());
-          }
-          if (chunks.length === 0) {
+          // The legacy protocol is ungated — no handshake, so no peer identity to
+          // penalize. An over-cap stream is simply dropped.
+          const data = await readStreamBounded(stream.source);
+          if (data === null || data.length === 0) {
             await stream.sink([new Uint8Array(0)]);
             return;
           }
 
-          const request = decodeLegacyHeadersRequest(mergeUint8Arrays(chunks));
+          const request = decodeLegacyHeadersRequest(data);
           if (!request) {
             await stream.sink([new Uint8Array(0)]);
             return;

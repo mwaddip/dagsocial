@@ -25,8 +25,13 @@ export {
   MSG_STUMPS,
   MODIFIER_ORDERING_BLOCK,
 } from './types.js';
-export { buildHandshakeFrame, parseHandshakeBody, validateHandshake } from './handshake.js';
-export type { HandshakeMsg, HandshakeResult } from './handshake.js';
+export {
+  buildHandshakeFrame,
+  handshakePenalty,
+  parseHandshakeBody,
+  validateHandshake,
+} from './handshake.js';
+export type { HandshakeMsg, HandshakeRejection, HandshakeResult } from './handshake.js';
 export {
   isRecord,
   isBoundedInt,
@@ -39,6 +44,9 @@ export {
   MAX_TYPE_ID,
   MAX_UINT32,
   MAX_CAPABILITY_CODE,
+  MAX_INV_IDS,
+  MAX_STREAM_BYTES,
+  MAX_SERVE_BODY_BYTES,
 } from './msg-guards.js';
 export { PeerDb } from './peerdb.js';
 export { OutboundManager } from './outbound-mgr.js';

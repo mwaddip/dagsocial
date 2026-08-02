@@ -1,8 +1,14 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { encode } from 'cbor-x';
-import { buildHandshakeFrame, parseHandshakeBody, validateHandshake } from '@dagsocial/net';
+import {
+  buildHandshakeFrame,
+  handshakePenalty,
+  parseHandshakeBody,
+  validateHandshake,
+} from '@dagsocial/net';
 import { MAGIC_TESTNET, decodeFrame, MAX_ADVERTISED_HEIGHT } from '@dagsocial/net';
-import type { HandshakeMsg } from '@dagsocial/net';
+import { PeerManager, PenaltyKind } from '@dagsocial/net';
+import type { HandshakeMsg, NetConfig } from '@dagsocial/net';
 
 const testMsg: HandshakeMsg = {
   agentName: 'dagsocial/1.0.0',
@@ -39,6 +45,111 @@ describe('handshake', () => {
     const result = validateHandshake(msg, [1]);
     expect(result.ok).toBe(false);
     expect(result.error).toContain('unsupported protocol version');
+  });
+
+  // -------------------------------------------------------------------------
+  // Ban policy — adversarial input is banned, a version mismatch is not
+  //
+  // A permanent ban on version mismatch would partition the network on any
+  // routine PROTOCOL_VERSION bump, so the two rejection classes must stay
+  // distinguishable all the way to the penalty call.
+  // -------------------------------------------------------------------------
+
+  describe('ban policy', () => {
+    const BAN_MS = 3_600_000;
+
+    function makeMgr(): PeerManager {
+      const config: NetConfig = {
+        bootstrapPeers: [],
+        listenAddrs: '/ip4/0.0.0.0/tcp/0',
+        maxPeers: 10,
+        penaltyScoreThreshold: 500,
+        temporalBanDurationMs: BAN_MS,
+        penaltySafeIntervalMs: 120_000,
+        peerEvictionIntervalMs: 3_600_000,
+        syncRequestTimeoutMs: 10_000,
+      };
+      const mgr = new PeerManager(config);
+      mgr.addPeer({ id: 'peer1', multiaddrs: [], protocols: [], connectedAt: 0 });
+      return mgr;
+    }
+
+    /** Apply the handshake ban policy exactly as the node's stream handlers do. */
+    function applyPolicy(mgr: PeerManager, raw: unknown): void {
+      const result = validateEncoded(raw);
+      expect(result.ok).toBe(false);
+      mgr.recordPenaltyKind(handshakePenalty(result.rejection), 'peer1', 'handshake');
+    }
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('classifies an unsupported version as a compatibility mismatch', () => {
+      const result = validateEncoded({ ...testMsg, protocolVersion: 99 });
+      expect(result.rejection).toBe('unsupported-version');
+      expect(handshakePenalty(result.rejection)).toBe(PenaltyKind.Transient);
+    });
+
+    it('classifies malformed input as adversarial', () => {
+      for (const raw of [
+        7,
+        { ...testMsg, chainHeight: -1 },
+        { ...testMsg, chainHeight: MAX_ADVERTISED_HEIGHT + 1 },
+        { ...testMsg, sessionMagic: 'magic' },
+        { ...testMsg, agentName: '' },
+      ]) {
+        const result = validateEncoded(raw);
+        expect(result.rejection).toBe('malformed');
+        expect(handshakePenalty(result.rejection)).toBe(PenaltyKind.ProtocolViolation);
+      }
+    });
+
+    it('classifies a malformed body carrying a bad version as malformed', () => {
+      // An attacker must not dodge the permanent ban by tacking an unsupported
+      // version onto otherwise garbage input.
+      const result = validateEncoded({ protocolVersion: 99, chainHeight: -1 });
+      expect(result.rejection).toBe('malformed');
+    });
+
+    it('does NOT permanently ban a peer on an unsupported version', () => {
+      const mgr = makeMgr();
+      vi.spyOn(Date, 'now').mockReturnValue(0);
+
+      applyPolicy(mgr, { ...testMsg, protocolVersion: 99 });
+
+      expect(mgr.isBanned('peer1')).toBe(false);
+      expect(mgr.getPeerCount()).toBe(1);
+    });
+
+    it('keeps a retrying version-mismatched peer on an expiring ban only', () => {
+      const mgr = makeMgr();
+      // Hammer past the score threshold: the worst outcome must still be a
+      // temporal ban that lifts on its own once the peer upgrades.
+      for (let i = 0; i < 10; i++) {
+        vi.spyOn(Date, 'now').mockReturnValue(i * 120_001);
+        applyPolicy(mgr, { ...testMsg, protocolVersion: 99 });
+      }
+      vi.spyOn(Date, 'now').mockReturnValue(9 * 120_001);
+      expect(mgr.isBanned('peer1')).toBe(true);
+
+      vi.spyOn(Date, 'now').mockReturnValue(9 * 120_001 + BAN_MS + 1);
+      expect(mgr.isBanned('peer1')).toBe(false);
+    });
+
+    it('permanently bans a peer that sends a malformed handshake', () => {
+      const mgr = makeMgr();
+      vi.spyOn(Date, 'now').mockReturnValue(0);
+
+      applyPolicy(mgr, { ...testMsg, chainHeight: -1 });
+
+      expect(mgr.isBanned('peer1')).toBe(true);
+      expect(mgr.getPeerCount()).toBe(0);
+
+      // Still banned long after any temporal ban would have expired.
+      vi.spyOn(Date, 'now').mockReturnValue(BAN_MS * 10);
+      expect(mgr.isBanned('peer1')).toBe(true);
+    });
   });
 
   it('rejects missing agentName', () => {

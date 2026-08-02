@@ -42,6 +42,46 @@ export const MAX_CAPABILITY_CODE = 65_535;
  */
 const WORK_STRING_RE = /^[0-9]{1,80}$/;
 
+// ---------------------------------------------------------------------------
+// Resource limits (untrusted counts and sizes)
+//
+// Shape checks alone are not enough: a body where every element is well-formed
+// can still be arbitrarily long, and an element-wise loop over it is exactly the
+// work an attacker wants to buy with one packet.
+// ---------------------------------------------------------------------------
+
+/**
+ * Largest `ids` / `anchors` / `modifiers` array accepted from a peer.
+ *
+ * 400 is the send-side batch cap (NET_INTERFACE → Inv: "max 400 per batch"). The
+ * same number bounds what a peer may send *us* — the cap has to be enforced on
+ * receipt, since an attacker has no reason to honour the one we apply to
+ * ourselves. Over-cap arrays are dropped and the sender penalized.
+ */
+export const MAX_INV_IDS = 400;
+
+/**
+ * Largest number of bytes buffered from a single inbound stream.
+ *
+ * Stream readers accumulate chunks until the peer closes its side, so without a
+ * ceiling a peer that never stops writing is an out-of-memory kill. 8 MiB leaves
+ * ample headroom above the largest legitimate message (a `ModifierResponse`
+ * batch, bounded below by `MAX_SERVE_BODY_BYTES`) while keeping the worst case
+ * per connection bounded.
+ */
+export const MAX_STREAM_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Largest response body we assemble when serving a peer.
+ *
+ * Kept at half of `MAX_STREAM_BYTES` so a response we produce always fits inside
+ * the read cap on the other end, with room for framing and CBOR overhead. A
+ * request whose blocks do not fit is answered partially; the requester re-asks
+ * for what is still missing on the next SyncInfo round, so truncating here costs
+ * a round trip, never a stuck sync.
+ */
+export const MAX_SERVE_BODY_BYTES = 4 * 1024 * 1024;
+
 /** True for a plain CBOR map — an object that is neither null nor an array. */
 export function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
