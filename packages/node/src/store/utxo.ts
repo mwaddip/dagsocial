@@ -427,13 +427,19 @@ export function getLockedLikeBoxes(targetPostId: string): LikeBox[] {
 
 /**
  * Return all unprocessed (unspent) locked like boxes for epoch tally.
+ *
+ * Ordered by box id — content-derived, so every node walks these in the same
+ * order regardless of the order it received the likes in.  Defence in depth
+ * for the epoch tally: the consensus-relevant serialization is canonicalized
+ * (`epoch-canonical.ts`), never left to rely on rowid order.
  */
 export function getUnprocessedLockedLikeBoxes(): LikeBox[] {
   const db = getDb();
   const rows = db
     .prepare(
       `SELECT * FROM utxo_boxes
-       WHERE box_type = 'like' AND spent_at_block IS NULL`,
+       WHERE box_type = 'like' AND spent_at_block IS NULL
+       ORDER BY id`,
     )
     .all() as UtxoRow[];
   return rows.map((r) => rowToBox(r) as LikeBox);
@@ -441,13 +447,16 @@ export function getUnprocessedLockedLikeBoxes(): LikeBox[] {
 
 /**
  * Return all unspent post lock boxes for epoch tally.
+ *
+ * Ordered by box id, for the same reason as the like boxes above.
  */
 export function getUnspentPostLockBoxes(): PostLockBox[] {
   const db = getDb();
   const rows = db
     .prepare(
       `SELECT * FROM utxo_boxes
-       WHERE box_type = 'post_lock' AND spent_at_block IS NULL`,
+       WHERE box_type = 'post_lock' AND spent_at_block IS NULL
+       ORDER BY id`,
     )
     .all() as UtxoRow[];
   return rows.map((r) => rowToBox(r) as PostLockBox);

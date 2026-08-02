@@ -106,6 +106,11 @@ export function getLikeCount(postId: string): { locked: number; free: number } {
 
 /**
  * Return all unprocessed free likes (processed = 0).
+ *
+ * Ordered by like id so the epoch tally walks them identically on every node
+ * whatever order they arrived in.  Defence in depth: the consensus-relevant
+ * serialization is canonicalized (`epoch-canonical.ts`), never left to rely on
+ * rowid order.
  */
 export function getUnprocessedFreeLikes(): Array<{
   id: string;
@@ -114,7 +119,7 @@ export function getUnprocessedFreeLikes(): Array<{
 }> {
   const db = getDb();
   const rows = db
-    .prepare('SELECT * FROM dag_likes WHERE processed = 0')
+    .prepare('SELECT * FROM dag_likes WHERE processed = 0 ORDER BY id')
     .all() as LikeRow[];
   return rows.map((r) => ({
     id: r.id,

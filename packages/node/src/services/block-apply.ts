@@ -13,6 +13,7 @@ import { settlePruneUtxo } from './settle-prune-utxo.js';
 import type { DecayDeps } from './decay.js';
 import { config } from '../config.js';
 import { computeBlockReward, computeSubBlockRoot, computeUtxoTxRoot, clearTemplate, computeEpochTally } from './block-creator.js';
+import { canonicalRewardsJson } from './epoch-canonical.js';
 import { DagService } from './dag-service.js';
 import { applyTx, validateTx } from './utxo-engine.js';
 import { getSystemKeypair } from '../store/system.js';
@@ -188,10 +189,14 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
   // fabricated.  But we must also verify the results are correct for
   // the current UTXO state — a malicious miner could commit to valid
   // (Merkle-matching) but incorrect (state-divergent) results.
+  //
+  // Compared canonically: the miner's key order is its own gossip/row order,
+  // and it arrives here through a CBOR round-trip that preserves it, so an
+  // insertion-order compare rejects logically identical tallies (audit C-6).
   if (block.utxoTxTree.epochTallyResults) {
     const localTally = computeEpochTally(block.header.height);
-    const blockRewards = JSON.stringify(block.utxoTxTree.epochTallyResults.rewards);
-    const localRewards = JSON.stringify(localTally.rewards);
+    const blockRewards = canonicalRewardsJson(block.utxoTxTree.epochTallyResults.rewards);
+    const localRewards = canonicalRewardsJson(localTally.rewards);
     if (blockRewards !== localRewards) {
       console.warn(
         `Rejected block height=${block.header.height}: epoch tally mismatch`,

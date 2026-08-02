@@ -28,6 +28,8 @@ import type {
   UtxoTransaction,
   BlockJournal,
   DecayJournalEntry,
+  EpochTally,
+  LikeReward,
 } from '@dagsocial/types';
 import type Database from 'better-sqlite3';
 import { signTransaction } from '../helpers.js';
@@ -1019,5 +1021,149 @@ describe('block-apply embedded tx re-validation', () => {
     const finalBox = utxo.getBox(changeBoxOf(txB).id!) as KarmaBox | null;
     expect(finalBox).not.toBeNull();
     expect(finalBox!.value).toBe(100 - 2 * LIKE_COST);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Epoch tally acceptance across differing row orders (audit C-6)
+// ---------------------------------------------------------------------------
+
+describe('block-apply epoch tally ordering', () => {
+  beforeEach(async () => {
+    vi.resetModules();
+  });
+
+  afterEach(async () => {
+    try {
+      const bc = await importBlockCreator();
+      bc.stopBlockCreator();
+    } catch {
+      // Module might not have been imported
+    }
+    vi.resetModules();
+  });
+
+  /**
+   * The same logical tally as held by a node that received every like in the
+   * opposite order: each map rebuilt in reverse key order, each array
+   * reversed. Nothing about the reward set changes — only the order the rows
+   * came out of that node's database in.
+   */
+  function reverseTallyOrder(tally: EpochTally): EpochTally {
+    const rewards: Record<string, LikeReward> = {};
+    for (const postId of Object.keys(tally.rewards).reverse()) {
+      const reward = tally.rewards[postId]!;
+      const likerRefunds: Record<string, number> = {};
+      for (const likerId of Object.keys(reward.likerRefunds).reverse()) {
+        likerRefunds[likerId] = reward.likerRefunds[likerId]!;
+      }
+      rewards[postId] = { ...reward, likerRefunds };
+    }
+    return {
+      ...tally,
+      rewards,
+      talliedLockedLikeBoxIds: [...tally.talliedLockedLikeBoxIds].reverse(),
+      processedFreeLikeIds: [...tally.processedFreeLikeIds].reverse(),
+      consumedPostLockBoxIds: [...tally.consumedPostLockBoxIds].reverse(),
+      newPostLockBoxes: [...tally.newPostLockBoxes].reverse(),
+    };
+  }
+
+  /**
+   * A peer's epoch block: built from the peer's own tally ordering, with its
+   * own Merkle root over that ordering — exactly what arrives over gossip from
+   * an honest second miner whose like rows sit in a different order.
+   */
+  it('accepts a peer epoch block whose tally was assembled in a different order', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    const posts = await importPosts();
+    const utxo = await importUtxo();
+    const { encodePost, CREDIT_MINER_REWARD_DELAY } = await import('@dagsocial/types');
+
+    // Three posts with different like counts, so the tally carries three
+    // reward entries and the busiest one clears the refund threshold
+    // (2 × LIKE_THRESHOLD) and so has a populated likerRefunds map.
+    const author = makeTestIdentity();
+    const likeCounts = [2 * LIKE_THRESHOLD, LIKE_THRESHOLD + 1, 2];
+    for (let i = 0; i < likeCounts.length; i++) {
+      const post = makePost(author.userId, `epoch ordering post ${i}`);
+      const postId = computePostId(post);
+      posts.insertPost(post, encodePost(post));
+      for (let n = 0; n < likeCounts[i]!; n++) {
+        utxo.insertBox(makeLikeBox(makeTestIdentity().userId, postId, 1));
+      }
+    }
+
+    // Two ordinary blocks; with epochBlocks = 2 the next one carries the tally.
+    const bc = await importBlockCreator();
+    bc.startBlockCreator(testConfig);
+    bc.createOrderingBlock();
+    bc.createOrderingBlock();
+
+    const ordering = await importOrdering();
+    expect(ordering.getCurrentHeight()).toBe(2);
+
+    const { computeEpochTally, computeSubBlockRoot, computeUtxoTxRoot, computeBlockReward } =
+      await import('../../src/services/block-creator.js');
+    const { blockHash } = await import('@dagsocial/validation');
+
+    const height = 3;
+    const localTally = computeEpochTally(height);
+    expect(Object.keys(localTally.rewards).length).toBe(3);
+    // Exactly the busiest post cleared the refund threshold. Which key that is
+    // depends on box ids, so assert over the set rather than a position.
+    const withRefunds = Object.values(localTally.rewards).filter(
+      (reward) => Object.keys(reward.likerRefunds).length > 0,
+    );
+    expect(withRefunds.length).toBe(1);
+    expect(Object.keys(withRefunds[0]!.likerRefunds).length).toBe(2 * LIKE_THRESHOLD);
+
+    const peerTally = reverseTallyOrder(localTally);
+
+    // Vacuity guard: under the insertion-order `JSON.stringify` this check used
+    // to use, these two tallies are different strings — so the acceptance below
+    // is not passing for want of a difference between them.
+    expect(JSON.stringify(peerTally.rewards)).not.toBe(JSON.stringify(localTally.rewards));
+
+    const subBlockTree = { subBlockRefs: [], subBlockEntries: [], pruneEntries: [] };
+    const miner = makeTestIdentity();
+    const utxoTxTree = {
+      utxoTxIds: [],
+      utxoTxs: [],
+      likeBoxIds: [],
+      coinbaseOutputs: [
+        {
+          owner: miner.userId,
+          value: computeBlockReward(height),
+          lockedUntilBlock: height + CREDIT_MINER_REWARD_DELAY,
+          isTreasury: false,
+        },
+      ],
+      epochTallyResults: peerTally,
+    };
+
+    const peerBlock = {
+      header: {
+        protocolVersion: PROTOCOL_VERSION,
+        height,
+        prevBlockHash: blockHash(ordering.getOrderingBlock(2)!.header),
+        subBlockRoot: computeSubBlockRoot(subBlockTree),
+        utxoTxRoot: computeUtxoTxRoot(utxoTxTree),
+        stateRoot: '0000000000000000000000000000000000000000000000000000000000000000',
+        validatorId: miner.userId,
+        powNonce: 0,
+        powTargetBits: 0, // satisfied unconditionally — PoW is not what is under test
+        createdAt: Date.now(),
+      },
+      subBlockTree,
+      utxoTxTree,
+      validatorSignature: new Uint8Array(64),
+    } as unknown as OrderingBlock;
+
+    const blockApply = await importBlockApply();
+    expect(blockApply.applyOrderingBlock(peerBlock)).toBe(true);
+    expect(ordering.getCurrentHeight()).toBe(3);
   });
 });

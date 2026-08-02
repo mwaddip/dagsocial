@@ -50,6 +50,7 @@ import type {
   UserId,
 } from '@dagsocial/types';
 import type { Config } from '../config.js';
+import { canonicalEpochTallyJson } from './epoch-canonical.js';
 import { getNet } from './net-instance.js';
 import { mintKarma } from './karma.js';
 import { mintCredits } from './credits.js';
@@ -115,8 +116,10 @@ export function computeUtxoTxRoot(tree: UtxoTxTree): string {
       })))),
   ];
   if (tree.epochTallyResults) {
+    // Canonical, not insertion-order: the tally's key/row order differs between
+    // honest nodes and does not survive a CBOR round-trip (audit C-6).
     leaves.push(
-      leafHash('epoch', Buffer.from(JSON.stringify(tree.epochTallyResults))),
+      leafHash('epoch', Buffer.from(canonicalEpochTallyJson(tree.epochTallyResults))),
     );
   }
   return Buffer.from(buildMerkleRoot(leaves)).toString('hex');
