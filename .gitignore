@@ -4,3 +4,10 @@ dist/
 *.db-wal
 *.db-shm
 SESSION_CONTEXT.md
+
+# Remediation working files — held from this PUBLIC repo while audit fixes are in progress
+# (they describe live-exploitable issues on a running node). Un-ignore + commit once fixes ship.
+AUDIT-*.md
+docs/specs/
+prompts/
+*.deb
