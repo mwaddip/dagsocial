@@ -10,8 +10,21 @@ import {
   computeBoxId,
   computeTxId,
   LIKE_COST,
+  POST_LOCK_THREAD_COST,
+  VOUCH_KARMA_AMOUNT,
+  INVITE_KARMA_AMOUNT,
+  INVITE_BOND_KARMA,
 } from '@dagsocial/types';
-import type { AnyBox, KarmaBox, LikeBox, InviteBox, BondBox, UtxoTransaction } from '@dagsocial/types';
+import type {
+  AnyBox,
+  KarmaBox,
+  LikeBox,
+  InviteBox,
+  BondBox,
+  PostLockBox,
+  VouchBox,
+  UtxoTransaction,
+} from '@dagsocial/types';
 import Database from 'better-sqlite3';
 
 import {
@@ -161,12 +174,12 @@ describe('validateAndApplyTx', () => {
   // -------------------------------------------------------------------------
   // 1. Valid karma→karma (balance change, same owner)
   // -------------------------------------------------------------------------
-  it('valid karma to karma (balance change, same owner)', () => {
+  it('valid karma to karma (re-anchor, same owner, value conserved)', () => {
     const karma = createAndInsertKarma(ownerPubKey, 100, 1);
 
     const newKarma: KarmaBox = {
       boxType: 'karma',
-      value: 60,
+      value: 100,
       createdAtBlock: 10,
       owner: ownerPubKey,
       guard: 'owner_signature',
@@ -187,7 +200,7 @@ describe('validateAndApplyTx', () => {
     const outputBox = deps.getBox(computeBoxId(newKarma));
     expect(outputBox).not.toBeNull();
     expect(outputBox!.boxType).toBe('karma');
-    expect((outputBox as KarmaBox).value).toBe(60);
+    expect((outputBox as KarmaBox).value).toBe(100);
   });
 
   // -------------------------------------------------------------------------
@@ -311,13 +324,12 @@ describe('validateAndApplyTx', () => {
   });
 
   // -------------------------------------------------------------------------
-  // 5. Karma value non-conservation allowed (periodic decay handles it)
+  // 5. Karma value non-conservation rejected (audit C-1)
   // -------------------------------------------------------------------------
-  it('allows karma value non-conservation (decay is periodic)', () => {
+  it('rejects karma value non-conservation (audit C-1)', () => {
     const karma = createAndInsertKarma(ownerPubKey, 100, 1);
 
-    // Output claims 120 from 100 input — conservation check is skipped for
-    // karma since periodic decay now handles value enforcement.
+    // Output claims 120 from a 100 input — 20 karma minted from nothing.
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: 120,
@@ -331,8 +343,11 @@ describe('validateAndApplyTx', () => {
     const tx = buildSignedTx([karma.id!], [newKarma], ownerPrivKey, ownerPubKey);
     const result = validateAndApplyTx(deps, tx, 10);
 
-    expect(result.valid).toBe(true);
-    expect(result.error).toBeUndefined();
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain('Value non-conservation');
+
+    // Nothing applied — the input box is still unspent.
+    expect(deps.getBox(karma.id!)).not.toBeNull();
   });
 
   // -------------------------------------------------------------------------
@@ -399,7 +414,7 @@ describe('validateAndApplyTx', () => {
 
     const newKarma: KarmaBox = {
       boxType: 'karma',
-      value: 80,
+      value: 100,
       createdAtBlock: 10,
       owner: ownerPubKey,
       guard: 'owner_signature',
@@ -439,7 +454,7 @@ describe('validateAndApplyTx', () => {
 
     const newKarma: KarmaBox = {
       boxType: 'karma',
-      value: 80,
+      value: 100 - LIKE_COST,
       createdAtBlock: 10,
       owner: ownerPubKey,
       guard: 'owner_signature',
@@ -483,7 +498,7 @@ describe('validateAndApplyTx', () => {
 
     const newKarma: KarmaBox = {
       boxType: 'karma',
-      value: 60,
+      value: 100,
       createdAtBlock: 10,
       owner: ownerPubKey,
       guard: 'owner_signature',
@@ -884,6 +899,407 @@ describe('validateAndApplyTx', () => {
       const result = validateTx(deps, tx, 10);
       expect(result.valid).toBe(false);
       expect(result.error).toContain('Invalid invite reveal');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // 13. Value conservation (audit C-1, L-11)
+  //
+  // sum(inputs) == sum(outputs) for every box type. The sole exception is a
+  // BondBox burn (zero outputs). Karma/credits are minted or burned only in
+  // block-application paths, never inside a user transaction.
+  // ---------------------------------------------------------------------------
+  describe('value conservation (audit C-1, L-11)', () => {
+    it('rejects self-signed K(v) -> K(v) + Like(2) (mints karma from nothing)', () => {
+      const karma = createAndInsertKarma(ownerPubKey, 100, 1);
+
+      // The C-1 exploit: the change box keeps the full balance while a
+      // LikeBox conjures 2 more karma.
+      const newKarma: KarmaBox = {
+        boxType: 'karma',
+        value: 100,
+        createdAtBlock: 10,
+        owner: ownerPubKey,
+        guard: 'owner_signature',
+        proofSource: 'test',
+        lastTouchBlock: 10,
+      };
+      const likeBox: LikeBox = {
+        boxType: 'like',
+        value: LIKE_COST,
+        createdAtBlock: 10,
+        likerId: ownerUserId,
+        targetPostId: 'cc'.repeat(32),
+        guard: 'epoch_tally',
+      };
+
+      const tx = buildSignedTx(
+        [karma.id!],
+        [newKarma, likeBox],
+        ownerPrivKey,
+        ownerPubKey,
+      );
+      const result = validateAndApplyTx(deps, tx, 10);
+
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('Value non-conservation');
+      expect(result.error).toContain('inputs=100');
+      expect(result.error).toContain(`outputs=${100 + LIKE_COST}`);
+
+      // Nothing applied.
+      expect(deps.getBox(karma.id!)).not.toBeNull();
+      expect(deps.getKarmaBox(ownerPubKey)!.value).toBe(100);
+    });
+
+    it('accepts the correct K(v) -> K(v-2) + Like(2)', () => {
+      const karma = createAndInsertKarma(ownerPubKey, 100, 1);
+
+      const newKarma: KarmaBox = {
+        boxType: 'karma',
+        value: 100 - LIKE_COST,
+        createdAtBlock: 10,
+        owner: ownerPubKey,
+        guard: 'owner_signature',
+        proofSource: 'test',
+        lastTouchBlock: 10,
+      };
+      const likeBox: LikeBox = {
+        boxType: 'like',
+        value: LIKE_COST,
+        createdAtBlock: 10,
+        likerId: ownerUserId,
+        targetPostId: 'dd'.repeat(32),
+        guard: 'epoch_tally',
+      };
+
+      const tx = buildSignedTx(
+        [karma.id!],
+        [newKarma, likeBox],
+        ownerPrivKey,
+        ownerPubKey,
+      );
+      const result = validateAndApplyTx(deps, tx, 10);
+
+      expect(result.valid).toBe(true);
+      expect(result.error).toBeUndefined();
+      expect(deps.getKarmaBox(ownerPubKey)!.value).toBe(100 - LIKE_COST);
+    });
+
+    // -----------------------------------------------------------------------
+    // L-11 — box `value` must be a non-negative integer
+    // -----------------------------------------------------------------------
+    for (const [label, badValue] of [
+      ['negative', -1],
+      ['NaN', Number.NaN],
+      ['fractional', 1.5],
+      ['Infinity', Number.POSITIVE_INFINITY],
+      ['beyond MAX_SAFE_INTEGER', Number.MAX_SAFE_INTEGER + 2],
+    ] as const) {
+      it(`rejects a ${label} box value (${String(badValue)})`, () => {
+        const karma = createAndInsertKarma(ownerPubKey, 100, 1);
+
+        const newKarma = {
+          boxType: 'karma',
+          value: badValue,
+          createdAtBlock: 10,
+          owner: ownerPubKey,
+          guard: 'owner_signature',
+          proofSource: 'test',
+          lastTouchBlock: 10,
+        } as unknown as KarmaBox;
+
+        const tx = buildSignedTx([karma.id!], [newKarma], ownerPrivKey, ownerPubKey);
+        const result = validateAndApplyTx(deps, tx, 10);
+
+        expect(result.valid).toBe(false);
+        expect(result.error).toContain('Invalid box value');
+        expect(deps.getBox(karma.id!)).not.toBeNull();
+      });
+    }
+
+    it('rejects a negative value that balances the sum (K(10) -> K(15) + Like(-5))', () => {
+      const karma = createAndInsertKarma(ownerPubKey, 10, 1);
+
+      // 15 + (-5) == 10, so a sum-only check would pass this — yet it hands
+      // the owner a 15-karma box out of a 10-karma input.
+      const newKarma: KarmaBox = {
+        boxType: 'karma',
+        value: 15,
+        createdAtBlock: 10,
+        owner: ownerPubKey,
+        guard: 'owner_signature',
+        proofSource: 'test',
+        lastTouchBlock: 10,
+      };
+      const likeBox = {
+        boxType: 'like',
+        value: -5,
+        createdAtBlock: 10,
+        likerId: ownerUserId,
+        targetPostId: 'ee'.repeat(32),
+        guard: 'epoch_tally',
+      } as unknown as LikeBox;
+
+      const tx = buildSignedTx(
+        [karma.id!],
+        [newKarma, likeBox],
+        ownerPrivKey,
+        ownerPubKey,
+      );
+      const result = validateAndApplyTx(deps, tx, 10);
+
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('Invalid box value');
+      expect(deps.getKarmaBox(ownerPubKey)!.value).toBe(10);
+    });
+
+    // -----------------------------------------------------------------------
+    // Legitimate tx shapes must keep passing
+    // -----------------------------------------------------------------------
+    it('accepts a conserving post-lock tx K(v) -> K(v-5) + PostLock(5)', () => {
+      const karma = createAndInsertKarma(ownerPubKey, 100, 1);
+
+      const newKarma: KarmaBox = {
+        boxType: 'karma',
+        value: 100 - POST_LOCK_THREAD_COST,
+        createdAtBlock: 10,
+        owner: ownerPubKey,
+        guard: 'owner_signature',
+        proofSource: 'test',
+        lastTouchBlock: 10,
+      };
+      const postLock: PostLockBox = {
+        boxType: 'post_lock',
+        value: POST_LOCK_THREAD_COST,
+        originalValue: POST_LOCK_THREAD_COST,
+        createdAtBlock: 10,
+        owner: ownerPubKey,
+        targetPostId: 'ab'.repeat(32),
+        guard: 'epoch_tally',
+      };
+
+      const tx = buildSignedTx(
+        [karma.id!],
+        [newKarma, postLock],
+        ownerPrivKey,
+        ownerPubKey,
+      );
+      const result = validateAndApplyTx(deps, tx, 10);
+
+      expect(result.valid).toBe(true);
+      expect(result.error).toBeUndefined();
+    });
+
+    it('accepts a conserving vouch tx K(v) -> K(v-1) + Vouch(1)', () => {
+      const karma = createAndInsertKarma(ownerPubKey, 100, 1);
+      const { publicKey: targetPub } = generateKeyPairSync('ed25519');
+      const targetPubRaw = rawPublicKey(targetPub);
+
+      const newKarma: KarmaBox = {
+        boxType: 'karma',
+        value: 100 - VOUCH_KARMA_AMOUNT,
+        createdAtBlock: 10,
+        owner: ownerPubKey,
+        guard: 'owner_signature',
+        proofSource: 'test',
+        lastTouchBlock: 10,
+      };
+      const vouchBox: VouchBox = {
+        boxType: 'vouch',
+        value: VOUCH_KARMA_AMOUNT,
+        createdAtBlock: 10,
+        voucherId: ownerPubKey,
+        targetId: targetPubRaw,
+        guard: 'owner_signature',
+      };
+
+      const tx = buildSignedTx(
+        [karma.id!],
+        [newKarma, vouchBox],
+        ownerPrivKey,
+        ownerPubKey,
+      );
+      const result = validateAndApplyTx(deps, tx, 10);
+
+      expect(result.valid).toBe(true);
+      expect(result.error).toBeUndefined();
+    });
+
+    it('accepts a conserving invite-create tx K(v) -> K(v-50) + Invite(25) + Bond(25)', () => {
+      const karma = createAndInsertKarma(ownerPubKey, 100, 1);
+
+      const newKarma: KarmaBox = {
+        boxType: 'karma',
+        value: 100 - INVITE_KARMA_AMOUNT - INVITE_BOND_KARMA,
+        createdAtBlock: 10,
+        owner: ownerPubKey,
+        guard: 'owner_signature',
+        proofSource: 'test',
+        lastTouchBlock: 10,
+      };
+      const inviteBox: InviteBox = {
+        boxType: 'invite',
+        value: INVITE_KARMA_AMOUNT,
+        createdAtBlock: 10,
+        secretHash: new Uint8Array(32).fill(0xbb),
+        inviterId: ownerUserId,
+        guard: 'hash_preimage_with_bond',
+      };
+      const bondBox: BondBox = {
+        boxType: 'bond',
+        value: INVITE_BOND_KARMA,
+        createdAtBlock: 10,
+        inviterId: ownerUserId,
+        inviteBoxId: computeBoxId(inviteBox),
+        inviteePublicKey: new Uint8Array(0),
+        probationStartBlock: 0,
+        probationEndBlock: 0,
+        guard: 'bond_dual',
+      };
+
+      const tx = buildSignedTx(
+        [karma.id!],
+        [newKarma, inviteBox, bondBox],
+        ownerPrivKey,
+        ownerPubKey,
+      );
+      const result = validateAndApplyTx(deps, tx, 10);
+
+      expect(result.valid).toBe(true);
+      expect(result.error).toBeUndefined();
+    });
+
+    it('rejects invite-create that does not debit the change box (audit C-1)', () => {
+      const karma = createAndInsertKarma(ownerPubKey, 100, 1);
+
+      // invites.ts checks only that invite/bond equal 25 each — never that the
+      // change box was debited. Conservation is what catches this.
+      const newKarma: KarmaBox = {
+        boxType: 'karma',
+        value: 100,
+        createdAtBlock: 10,
+        owner: ownerPubKey,
+        guard: 'owner_signature',
+        proofSource: 'test',
+        lastTouchBlock: 10,
+      };
+      const inviteBox: InviteBox = {
+        boxType: 'invite',
+        value: INVITE_KARMA_AMOUNT,
+        createdAtBlock: 10,
+        secretHash: new Uint8Array(32).fill(0xcc),
+        inviterId: ownerUserId,
+        guard: 'hash_preimage_with_bond',
+      };
+      const bondBox: BondBox = {
+        boxType: 'bond',
+        value: INVITE_BOND_KARMA,
+        createdAtBlock: 10,
+        inviterId: ownerUserId,
+        inviteBoxId: computeBoxId(inviteBox),
+        inviteePublicKey: new Uint8Array(0),
+        probationStartBlock: 0,
+        probationEndBlock: 0,
+        guard: 'bond_dual',
+      };
+
+      const tx = buildSignedTx(
+        [karma.id!],
+        [newKarma, inviteBox, bondBox],
+        ownerPrivKey,
+        ownerPubKey,
+      );
+      const result = validateAndApplyTx(deps, tx, 10);
+
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('Value non-conservation');
+    });
+
+    it('accepts a BondBox burn (zero outputs) — the sole exception', () => {
+      const bondBox: BondBox = {
+        boxType: 'bond',
+        value: INVITE_BOND_KARMA,
+        createdAtBlock: 1,
+        inviterId: ownerPubKey,
+        inviteBoxId: 'ff'.repeat(32),
+        inviteePublicKey: new Uint8Array(0),
+        probationStartBlock: 0,
+        probationEndBlock: 0,
+        guard: 'bond_dual',
+      };
+      const bondBoxId = computeBoxId(bondBox);
+      storeInsertBox({ ...bondBox, id: bondBoxId });
+
+      const tx = buildSignedTx([bondBoxId], [], ownerPrivKey, ownerPubKey);
+      const result = validateAndApplyTx(deps, tx, 10);
+
+      expect(result.valid).toBe(true);
+      expect(result.error).toBeUndefined();
+      expect(deps.getBox(bondBoxId)).toBeNull();
+    });
+
+    it('accepts a VouchBox burn (unvouch) — karma escrows into the cooldown', () => {
+      const { publicKey: targetPub } = generateKeyPairSync('ed25519');
+      const vouchBox: VouchBox = {
+        boxType: 'vouch',
+        value: VOUCH_KARMA_AMOUNT,
+        createdAtBlock: 1,
+        voucherId: ownerPubKey,
+        targetId: rawPublicKey(targetPub),
+        guard: 'owner_signature',
+      };
+      const vouchBoxId = computeBoxId(vouchBox);
+      storeInsertBox({ ...vouchBox, id: vouchBoxId });
+
+      const tx = buildSignedTx([vouchBoxId], [], ownerPrivKey, ownerPubKey);
+      const result = validateAndApplyTx(deps, tx, 10);
+
+      expect(result.valid).toBe(true);
+      expect(result.error).toBeUndefined();
+      expect(deps.getBox(vouchBoxId)).toBeNull();
+    });
+
+    it('does not extend the zero-output exception to karma or like inputs', () => {
+      const karma = createAndInsertKarma(ownerPubKey, 100, 1);
+
+      // A karma spend with no outputs is not a legal burn — only bond and
+      // vouch may destroy value this way.
+      const tx = buildSignedTx([karma.id!], [], ownerPrivKey, ownerPubKey);
+      const result = validateAndApplyTx(deps, tx, 10);
+
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('Value non-conservation');
+      expect(deps.getBox(karma.id!)).not.toBeNull();
+    });
+
+    it('accepts a conserving credit transfer C(v) -> C(a) + C(v-a)', () => {
+      const { publicKey: recipientPub } = generateKeyPairSync('ed25519');
+      const recipientRaw = rawPublicKey(recipientPub);
+
+      const creditBox = {
+        boxType: 'credit' as const,
+        value: 100,
+        createdAtBlock: 1,
+        owner: ownerPubKey,
+        guard: 'owner_signature' as const,
+        proofSource: 'test',
+      };
+      const creditBoxId = computeBoxId(creditBox);
+      storeInsertBox({ ...creditBox, id: creditBoxId } as AnyBox);
+
+      const tx = buildSignedTx(
+        [creditBoxId],
+        [
+          { ...creditBox, value: 30, owner: recipientRaw, createdAtBlock: 10 },
+          { ...creditBox, value: 70, createdAtBlock: 10 },
+        ] as AnyBox[],
+        ownerPrivKey,
+        ownerPubKey,
+      );
+      const result = validateAndApplyTx(deps, tx, 10);
+
+      expect(result.valid).toBe(true);
+      expect(result.error).toBeUndefined();
     });
   });
 });

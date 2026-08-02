@@ -765,7 +765,7 @@ describe('invites service', () => {
   // -----------------------------------------------------------------------
   // 5. Create accepts karma below invite cost (decay is periodic)
   // -----------------------------------------------------------------------
-  it('Create accepts karma below invite cost (decay is periodic)', () => {
+  it('Create rejects karma below invite cost (audit C-1)', () => {
     const karma = createKarmaBox(inviterPubKey, 10, 1);
 
     const newKarma: KarmaBox = {
@@ -812,10 +812,8 @@ describe('invites service', () => {
     };
     signTransaction(tx, inviterPrivKey, inviterPubKeyHex);
 
-    // Karma value non-conservation is no longer enforced at tx time —
-    // periodic decay handles value enforcement globally.
-    const result = createInvite(deps, tx, 1);
-    expect(result.status).toBe('pending');
+    // K(10) -> K(0) + Invite(25) + Bond(25) would mint 40 karma from nothing.
+    expect(() => createInvite(deps, tx, 1)).toThrow('Value non-conservation');
   });
 
   // -----------------------------------------------------------------------

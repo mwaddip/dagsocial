@@ -338,8 +338,17 @@ Full read-only validation. Performs all checks without modifying state:
 1. No duplicate input box IDs
 2. All input boxes exist and are unspent
 3. All inputs have the same boxType
-4. Face-value conservation (non-karma types; karma conservation is handled
-   by the periodic decay engine)
+4. Value conservation: `sum(input values) == sum(output values)` for **every** box
+   type. The exceptions are the two deliberate **zero-output burns** that move value
+   out of the UTXO set by design: a **BondBox burn** (bond forfeited on probation
+   failure) and a **VouchBox burn** (unvouch — the staked karma is escrowed off-UTXO
+   in `vouch_cooldowns` and re-minted to the voucher at maturity). All other user
+   transactions — including karma, like, and vouch *cast* — conserve value; karma/
+   credit mint and burn happen only in block-application paths (like rewards, decay,
+   coinbase, bond forfeiture), never inside a user transaction. Box `value` fields
+   must be finite, non-negative integers (enforced both at the JSON→tx boundary and
+   in the engine — a negative value could otherwise balance the sums while minting
+   into a sibling box)
 5. Guard satisfaction (signatures verified against tx hash)
 6. Legal box transitions (per the transition table below)
 

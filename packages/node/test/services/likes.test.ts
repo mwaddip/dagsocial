@@ -447,7 +447,7 @@ describe('likes service', () => {
   // -----------------------------------------------------------------------
   // 7. castLike accepts karma below like cost (decay is periodic)
   // -----------------------------------------------------------------------
-  it('castLike accepts karma below like cost (decay is periodic)', () => {
+  it('castLike rejects karma below like cost (audit C-1)', () => {
     const karma = createKarmaBox(likerPubKey, 1, 1); // Only 1 karma, need 2+ for like cost
     const postId = createTestPost(likerId);
 
@@ -483,10 +483,8 @@ describe('likes service', () => {
 
     signTransaction(tx, likerPrivKey, likerPubKeyHex);
 
-    // Karma value non-conservation is no longer enforced at tx time —
-    // periodic decay handles value enforcement globally.
-    const result = castLike(deps, tx, 5);
-    expect(result.castLikeResult).toBe('pending');
+    // K(1) -> K(0) + Like(2) would mint 1 karma from nothing.
+    expect(() => castLike(deps, tx, 5)).toThrow('Value non-conservation');
   });
 
   // -----------------------------------------------------------------------

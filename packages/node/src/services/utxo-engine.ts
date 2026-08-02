@@ -372,32 +372,68 @@ function checkTransitions(
 // ---------------------------------------------------------------------------
 
 /**
- * Check face-value conservation for non-karma box types.
- * Karma and bond burns skip conservation (karma conservation is handled
- * by the periodic decay engine).
+ * Reject output values that cannot take part soundly in conservation
+ * arithmetic: non-numeric, negative, fractional, or outside the range where
+ * JS integer addition stays exact.
+ *
+ * Outputs are attacker-controlled, so this is a security boundary rather than
+ * input hygiene: a negative value lets a transaction balance its sums while
+ * minting into a sibling box — `K(10) → K(15) + Like(-5)` sums to 10 == 10.
+ * `json-to-tx.ts` applies the same rule at the HTTP edge so clients get a
+ * clear error; this check covers every other entry point (gossip, blocks).
+ */
+function checkOutputValues(outputs: AnyBox[]): UtxoResult {
+  for (const box of outputs) {
+    const value = box.value as unknown;
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+      return {
+        valid: false,
+        error: `Invalid box value: expected a non-negative integer, got ${String(value)}`,
+      };
+    }
+  }
+  return { valid: true };
+}
+
+/**
+ * Enforce strict face-value conservation — `sum(inputs) == sum(outputs)` for
+ * **every** box type.
+ *
+ * Karma and credits are minted or burned only in block-application paths (like
+ * rewards, decay, coinbase, bond forfeiture), never inside a user transaction,
+ * so no box type gets a blanket exemption. Two zero-output spends are the
+ * deliberate exceptions, both of which move value out of the UTXO set by
+ * design:
+ *
+ * - **BondBox burn** — the invite bond is destroyed on probation failure.
+ * - **VouchBox burn (unvouch)** — the staked karma is escrowed in the
+ *   `vouch_cooldowns` table and re-minted to the voucher at maturity by
+ *   `processVouchCooldowns` (block-apply). `checkTransitions` *requires*
+ *   unvouch to have zero outputs, so this is the shape of every legal
+ *   unvouch, not a loophole. The escrow living outside the UTXO set (and
+ *   therefore outside the AVL+ state root) is a known wart — modelling it as
+ *   a maturing box is tracked separately.
  */
 function checkValueConservation(
   inputBoxes: AnyBox[],
   outputs: AnyBox[],
 ): UtxoResult {
+  const outputValueCheck = checkOutputValues(outputs);
+  if (!outputValueCheck.valid) return outputValueCheck;
+
   const inputType = inputBoxes[0]!.boxType;
+  if (outputs.length === 0 && (inputType === 'bond' || inputType === 'vouch')) {
+    return { valid: true };
+  }
+
   const totalInputValue = inputBoxes.reduce((sum, b) => sum + b.value, 0);
   const totalOutputValue = outputs.reduce((sum, b) => sum + b.value, 0);
 
-  if (inputType === 'bond' && outputs.length === 0) {
-    // BondBox burn — no outputs, value deliberately destroyed. Skip conservation.
-  } else if (inputType === 'karma' || inputType === 'like' || inputType === 'vouch') {
-    // Karma conservation is handled by the periodic decay engine.
-    // Face values differ legitimately — decay burns karma, and like/invite
-    // creation splits value across multiple output boxes.
-  } else {
-    // Credit, non-burn bond, invite: strict face-value conservation
-    if (totalInputValue !== totalOutputValue) {
-      return {
-        valid: false,
-        error: `Value non-conservation: inputs=${totalInputValue}, outputs=${totalOutputValue}`,
-      };
-    }
+  if (totalInputValue !== totalOutputValue) {
+    return {
+      valid: false,
+      error: `Value non-conservation: inputs=${totalInputValue}, outputs=${totalOutputValue}`,
+    };
   }
 
   return { valid: true };
@@ -558,7 +594,9 @@ function checkGuards(
  * 1. No duplicate input IDs
  * 2. All inputs exist and are unspent
  * 3. All inputs have the same boxType
- * 4. Face-value conservation (non-karma types)
+ * 4. Face-value conservation — sum(in) == sum(out) for every box type, plus
+ *    non-negative integer output values (exceptions: BondBox and VouchBox
+ *    zero-output burns)
  * 5. Guard satisfaction (signatures)
  * 6. Legal box transitions
  *

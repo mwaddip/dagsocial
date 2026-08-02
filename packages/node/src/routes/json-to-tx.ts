@@ -55,7 +55,8 @@ export function jsonToTx(raw: Record<string, unknown>): UtxoTransaction {
 }
 
 /**
- * Convert hex-encoded Uint8Array fields inside a single box object.
+ * Convert hex-encoded Uint8Array fields inside a single box object, and
+ * reject a `value` the ledger cannot account for.
  */
 function convertBox(box: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -66,7 +67,23 @@ function convertBox(box: Record<string, unknown>): Record<string, unknown> {
       out[key] = val;
     }
   }
+  assertValidBoxValue(out.value);
   return out;
+}
+
+/**
+ * A box `value` must be a non-negative integer that JS can sum exactly —
+ * negative, fractional, `NaN`, `Infinity`, and above-2^53 values all break
+ * conservation arithmetic. Rejecting here gives the client a clear 400;
+ * `validateTx` enforces the same rule for txs arriving over gossip or inside
+ * a block.
+ */
+function assertValidBoxValue(value: unknown): void {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(
+      `box value must be a non-negative integer, got ${String(value)}`,
+    );
+  }
 }
 
 function hexToBytes(hex: string): Uint8Array {
