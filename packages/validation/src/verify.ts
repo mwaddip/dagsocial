@@ -9,6 +9,7 @@ import {
 import { signingHash } from '@dagsocial/types';
 import { encodeHeader } from '@dagsocial/types';
 import type { Post, SubBlock, BlockHeader, OrderingBlock, UtxoTransaction } from '@dagsocial/types';
+import { isDisallowedContentCodepoint } from './content-charset.js';
 
 // ---------------------------------------------------------------------------
 // Hashing
@@ -46,20 +47,130 @@ export function ed25519PublicKeyToKeyObject(rawKey: Uint8Array): ReturnType<type
 }
 
 // ---------------------------------------------------------------------------
+// Input guards (audit M-5, M-6)
+// ---------------------------------------------------------------------------
+//
+// Every exported verify* function receives objects straight off the wire, so
+// its arguments may be wrongly typed or out of range. The guards below stand in
+// front of the operations that throw on such input — `Buffer.byteLength`,
+// `Buffer.from`, `createPublicKey`, `crypto.verify`, `BigInt` /
+// `writeBigUInt64LE`, CBOR encoding, and plain `.length` reads — so a malformed
+// object yields a clean `false` / `{ valid: false }`, never an exception.
+//
+// Each guard checks exactly the declared type of the field it protects, so a
+// well-formed object from any conforming encoder passes unchanged and the happy
+// path is untouched.
+
+/** Narrow to a non-null object. */
+function isObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null;
+}
+
+/**
+ * Narrow to `Uint8Array` (which `Buffer` extends).
+ *
+ * Deliberately not `ArrayBuffer.isView`: `Buffer.from(new Uint32Array(8))`
+ * copies *elements*, not bytes, so a 32-byte-but-not-Uint8Array view would
+ * silently yield an 8-byte key and throw downstream in `createPublicKey`.
+ */
+function isBytes(v: unknown): v is Uint8Array {
+  return v instanceof Uint8Array;
+}
+
+/**
+ * Guard for every value that reaches `BigInt(...)` + `writeBigUInt64LE`, and
+ * for bit-count arguments (audit M-6).
+ *
+ * `Number.isSafeInteger`, not a loose `typeof === 'number'` — the loose check
+ * admits `NaN`, `Infinity`, and floats, each of which throws in `BigInt()`, and
+ * negatives / values ≥ 2^64, which throw in `writeBigUInt64LE`. Safe integers
+ * are a strict subset of u64, so the u64 range is satisfied by construction.
+ */
+function isU64Safe(v: unknown): v is number {
+  return typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
+}
+
+/**
+ * True iff `hash` opens with at least `targetBits` zero bits.
+ *
+ * A `targetBits` beyond the hash's own bit length is unsatisfiable, hence
+ * `false`. The previous inline loops read past the end of the array instead,
+ * where `undefined & mask` coerces to `0` — so an all-zero digest satisfied an
+ * arbitrarily large target rather than none. (The practically reachable
+ * accept-anything case was a `NaN`/`Infinity` `targetBits`, whose loop never
+ * ran at all; `isU64Safe` now rejects that before we get here.)
+ */
+function hasLeadingZeroBits(hash: Uint8Array, targetBits: number): boolean {
+  if (targetBits > hash.length * 8) return false;
+  for (let i = 0; i < targetBits; i++) {
+    const byteIdx = Math.floor(i / 8);
+    const bitIdx = 7 - (i % 8);
+    const byte = hash[byteIdx];
+    if (byte === undefined) return false; // unreachable given the bound above
+    if ((byte & (1 << bitIdx)) !== 0) return false;
+  }
+  return true;
+}
+
+/**
+ * Guard the fields `signingHash` (via `postPowPreimage`) reads, so a malformed
+ * post cannot throw inside `@dagsocial/types`: a non-array `parentRefs` throws
+ * in `.map`, an absent `author`/`challenge` throws on `.length`, an `author`
+ * that is not a byte view overruns the preimage buffer, and a symbol in
+ * `content` / `parentRefs` / `protocolVersion` / `timestamp` throws in
+ * `TextEncoder.encode` / `String()`.
+ */
+function isSignablePost(post: unknown): post is Post {
+  if (!isObject(post)) return false;
+  if (typeof post.content !== 'string') return false;
+  if (!isBytes(post.author)) return false;
+  if (!Array.isArray(post.parentRefs)) return false;
+  for (const ref of post.parentRefs) {
+    if (typeof ref !== 'string') return false;
+  }
+  if (!isBytes(post.challenge)) return false;
+  if (typeof post.protocolVersion !== 'number') return false;
+  if (typeof post.timestamp !== 'number') return false;
+  return true;
+}
+
+/**
+ * Guard the declared `BlockHeader` fields before the header is CBOR-encoded —
+ * `cbor-x` throws on symbol and function values.
+ *
+ * Only declared fields are checked. A header carrying an *extra* property that
+ * holds a symbol, function, or reference cycle would still throw, but such a
+ * header cannot arrive over the wire (CBOR encodes none of those); it can only
+ * be built in-process, which is trusted.
+ */
+function isEncodableHeader(h: unknown): h is BlockHeader {
+  if (!isObject(h)) return false;
+  if (typeof h.protocolVersion !== 'number') return false;
+  if (typeof h.height !== 'number') return false;
+  if (typeof h.prevBlockHash !== 'string') return false;
+  if (typeof h.subBlockRoot !== 'string') return false;
+  if (typeof h.utxoTxRoot !== 'string') return false;
+  if (typeof h.stateRoot !== 'string') return false;
+  if (!isBytes(h.validatorId)) return false;
+  if (typeof h.powNonce !== 'number') return false;
+  if (typeof h.powTargetBits !== 'number') return false;
+  if (typeof h.createdAt !== 'number') return false;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // verifyPoW
 // ---------------------------------------------------------------------------
 
 export function verifyPoW(input: Uint8Array, nonce: number, targetBits: number): boolean {
+  if (!isBytes(input)) return false;
+  if (!isU64Safe(nonce)) return false;
+  if (!isU64Safe(targetBits)) return false;
   const nonceBuf = Buffer.alloc(8);
   nonceBuf.writeBigUInt64LE(BigInt(nonce));
   const buf = Buffer.concat([Buffer.from(input), nonceBuf]);
   const hash = createHash('blake2b512').update(buf).digest().subarray(0, 32);
-  for (let i = 0; i < targetBits; i++) {
-    const byteIdx = Math.floor(i / 8);
-    const bitIdx = 7 - (i % 8);
-    if ((hash[byteIdx]! & (1 << bitIdx)) !== 0) return false;
-  }
-  return true;
+  return hasLeadingZeroBits(hash, targetBits);
 }
 
 // ---------------------------------------------------------------------------
@@ -67,6 +178,13 @@ export function verifyPoW(input: Uint8Array, nonce: number, targetBits: number):
 // ---------------------------------------------------------------------------
 
 export function verifyPostSignature(post: Post, publicKey: Uint8Array): boolean {
+  // `createPublicKey` throws ("Failed to read asymmetric key") unless the SPKI
+  // envelope carries exactly 32 raw bytes.
+  if (!isBytes(publicKey) || publicKey.length !== 32) return false;
+  if (!isSignablePost(post)) return false;
+  // A wrong-*length* signature is left to `crypto.verify`, which rejects it
+  // cleanly; only a non-byte-view throws.
+  if (!isBytes(post.signature)) return false;
   const pubDer = wrapSpki(publicKey);
   const pubKeyObj = createPublicKey({ key: pubDer, format: 'der', type: 'spki' });
   const sigBuf = Buffer.from(post.signature);
@@ -86,6 +204,8 @@ export function verifyProtocolVersion(version: number): boolean {
 // ---------------------------------------------------------------------------
 
 export function verifyContentLimits(content: string): { valid: boolean; error?: string } {
+  // `Buffer.byteLength` throws on anything that is not a string or byte view.
+  if (typeof content !== 'string') return { valid: false, error: 'Content must be a string' };
   const byteLen = Buffer.byteLength(content, 'utf8');
   if (byteLen === 0) return { valid: false, error: 'Content is empty' };
   if (byteLen > MAX_CONTENT_BYTES) return { valid: false, error: 'Content exceeds max length' };
@@ -96,11 +216,28 @@ export function verifyContentLimits(content: string): { valid: boolean; error?: 
 // verifyContentCharacters
 // ---------------------------------------------------------------------------
 
-const CONTENT_CHAR_REGEX = /^[\P{C}\n]*$/u;
+const CONTENT_CHAR_ERROR =
+  'Content contains disallowed characters (control, zero-width, or bidi override)';
 
+/**
+ * Consensus Stage-1 character policy. Rejects the Unicode control, format,
+ * surrogate, and private-use codepoints (`Cc`/`Cf`/`Cs`/`Co`) enumerated at the
+ * pinned Unicode version in `content-charset.ts`, with `\n` as the sole
+ * exception. Unassigned (`Cn`) codepoints are allowed.
+ *
+ * Consults only the static table — never a runtime `\p{...}` escape — so the
+ * verdict is identical on every node regardless of the Unicode data version its
+ * Node/V8 build ships (audit M-4).
+ */
 export function verifyContentCharacters(content: string): { valid: boolean; error?: string } {
-  if (!CONTENT_CHAR_REGEX.test(content)) {
-    return { valid: false, error: 'Content contains disallowed characters (control, zero-width, or bidi override)' };
+  if (typeof content !== 'string') return { valid: false, error: CONTENT_CHAR_ERROR };
+  // Iterating a string yields whole codepoints (and lone surrogates singly),
+  // matching the codepoint semantics the previous `u`-flag regex had.
+  for (const ch of content) {
+    const cp = ch.codePointAt(0);
+    if (cp !== undefined && isDisallowedContentCodepoint(cp)) {
+      return { valid: false, error: CONTENT_CHAR_ERROR };
+    }
   }
   return { valid: true };
 }
@@ -110,6 +247,7 @@ export function verifyContentCharacters(content: string): { valid: boolean; erro
 // ---------------------------------------------------------------------------
 
 export function verifyParentRefsCount(refs: string[]): { valid: boolean; error?: string } {
+  if (!Array.isArray(refs)) return { valid: false, error: 'Parent refs must be an array' };
   if (refs.length > MAX_PARENT_REFS) {
     return { valid: false, error: `Too many parent refs (max ${MAX_PARENT_REFS})` };
   }
@@ -121,6 +259,7 @@ export function verifyParentRefsCount(refs: string[]): { valid: boolean; error?:
 // ---------------------------------------------------------------------------
 
 export function verifySubBlockStructure(sb: SubBlock): { valid: boolean; error?: string } {
+  if (!isObject(sb)) return { valid: false, error: 'Sub-block is not an object' };
   if (!sb.post) return { valid: false, error: 'Sub-block missing post' };
   if (!sb.subBlockId) return { valid: false, error: 'Sub-block missing subBlockId' };
   if (!Array.isArray(sb.likeBoxes)) return { valid: false, error: 'Sub-block likeBoxes must be an array' };
@@ -134,6 +273,7 @@ export function verifySubBlockStructure(sb: SubBlock): { valid: boolean; error?:
 // ---------------------------------------------------------------------------
 
 export function verifyTxStructure(tx: UtxoTransaction): { valid: boolean; error?: string } {
+  if (!isObject(tx)) return { valid: false, error: 'Transaction is not an object' };
   if (!Array.isArray(tx.inputs) || tx.inputs.length === 0) {
     return { valid: false, error: 'Transaction must have at least one input' };
   }
@@ -159,6 +299,7 @@ export function verifyTxStructure(tx: UtxoTransaction): { valid: boolean; error?
 export function verifyOrderingBlockStructure(
   block: OrderingBlock,
 ): { valid: boolean; error?: string } {
+  if (!isObject(block)) return { valid: false, error: 'Ordering block is not an object' };
   const h = block.header;
   if (!h) return { valid: false, error: 'Ordering block missing header' };
   if (!h.prevBlockHash || h.prevBlockHash.length !== 64) {
@@ -173,6 +314,9 @@ export function verifyOrderingBlockStructure(
   }
   // Validate each entry
   for (const entry of block.subBlockTree.subBlockEntries) {
+    if (!isObject(entry)) {
+      return { valid: false, error: 'Ordering block subBlockEntry is not an object' };
+    }
     if (typeof entry.postId !== 'string' || entry.postId.length !== 64) {
       return { valid: false, error: 'Ordering block subBlockEntry has invalid postId' };
     }
@@ -214,6 +358,9 @@ export function verifyOrderingBlockStructure(
     return { valid: false, error: 'Ordering block missing utxoTxTree.coinbaseOutputs' };
   }
   for (const out of block.utxoTxTree.coinbaseOutputs) {
+    if (!isObject(out)) {
+      return { valid: false, error: 'Coinbase output is not an object' };
+    }
     if (!out.owner || out.owner.length !== 32) {
       return { valid: false, error: 'Coinbase output missing or invalid owner' };
     }
@@ -284,6 +431,8 @@ export function computePowHash(header: BlockHeader): Buffer {
 // ---------------------------------------------------------------------------
 
 export function verifyOrderingBlockPoW(header: BlockHeader): boolean {
+  if (!isEncodableHeader(header)) return false;
+  if (!isU64Safe(header.powNonce) || !isU64Safe(header.powTargetBits)) return false;
   const preimage = computePowHash(header);
   const nonceBuf = Buffer.alloc(8);
   nonceBuf.writeBigUInt64LE(BigInt(header.powNonce));
@@ -292,12 +441,7 @@ export function verifyOrderingBlockPoW(header: BlockHeader): boolean {
     .update(nonceBuf)
     .digest()
     .subarray(0, 32);
-  for (let i = 0; i < header.powTargetBits; i++) {
-    const byteIdx = Math.floor(i / 8);
-    const bitIdx = 7 - (i % 8);
-    if ((hash[byteIdx]! & (1 << bitIdx)) !== 0) return false;
-  }
-  return true;
+  return hasLeadingZeroBits(hash, header.powTargetBits);
 }
 
 // ---------------------------------------------------------------------------
@@ -308,6 +452,11 @@ export function verifyBlockChainLink(
   block: OrderingBlock,
   prevBlock: OrderingBlock,
 ): boolean {
+  if (!isObject(block) || !isObject(prevBlock)) return false;
+  if (!isObject(block.header)) return false;
+  // `prevBlock.header` is CBOR-encoded by `blockHash`; `block.header` is only
+  // read from, so it needs no encodability guard.
+  if (!isEncodableHeader(prevBlock.header)) return false;
   return (
     block.header.prevBlockHash === blockHash(prevBlock.header) &&
     block.header.height === prevBlock.header.height + 1

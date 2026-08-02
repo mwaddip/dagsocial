@@ -116,20 +116,29 @@ Rejects if `refs.length > MAX_PARENT_REFS` (8). Accepts 0–8 refs.
 verifyContentCharacters(content: string): { valid: boolean; error?: string }
 ```
 
-Rejects content containing any character in Unicode category C (Other):
-`\p{Cc}` (control), `\p{Cf}` (format), `\p{Cs}` (surrogate), `\p{Co}`
-(private use), `\p{Cn}` (unassigned). The only exception is `\n` (U+000A,
-line feed) — it is in Cc but explicitly allowed.
+Rejects content containing any character in Unicode categories `Cc` (control),
+`Cf` (format), `Cs` (surrogate), or `Co` (private use), with the single
+exception of `\n` (U+000A, line feed). This blocks zero-width characters
+(ZWSP U+200B, ZWNJ U+200C, ZWJ U+200D), bidi controls (U+200E–200F,
+U+202A–202E, U+2060–2064, U+2066–206F), tag characters (U+E0000–E007F),
+BOM/interlinear/soft-hyphen and other format codepoints, control characters
+(null, backspace, `\r`, `\t`, escape sequences), surrogates, and private-use
+codepoints. Allows all letters, marks, numbers, punctuation, symbols,
+separators, emoji, unassigned codepoints, and `\n`.
 
-This blocks zero-width characters (ZWSP U+200B, ZWNJ U+200C, ZWJ U+200D),
-bidi override characters (U+202A–U+202E, U+2066–U+2069), control characters
-(null, backspace, `\r`, `\t`, escape sequences), and private-use codepoints.
-
-Allows all letters, marks, numbers, punctuation, symbols, separators,
-emoji, and `\n`.
-
-Implemented as a single regex: `/^[\P{C}\n]*$/u`. Pure stateless check
-with no version gating — applies unconditionally to all post content.
+**Version-independence (M-4).** This is a **consensus Stage-1 check**, so every
+node must reach the same verdict for the same bytes. It therefore may **not** be
+implemented with runtime Unicode general-category escapes (`\p{C}` / `\P{C}`):
+`\P{C}` excludes `\p{Cn}` (unassigned), whose membership shifts as each Node/V8
+build ships a newer Unicode data version, so two nodes on different builds would
+diverge on any codepoint that has since been assigned. Instead the check is a
+table of **explicit numeric codepoint ranges** — the union of `Cc`/`Cf`/`Cs`/`Co`
+enumerated at one **pinned Unicode version** (documented in code), minus U+000A.
+`Cn` (unassigned) is deliberately **not** rejected; allowing it is what removes
+the version dependence. The verdict is then identical on every runtime regardless
+of its Unicode data version. Pure stateless check, applied unconditionally to all
+post content; covered by a test asserting the ranges match the pinned version and
+that the verdict does not consult runtime category data.
 
 ---
 
@@ -259,6 +268,14 @@ verified at receipt time only.
 - All exported functions are pure: same inputs → same outputs, no side effects
 - No I/O, no DB access, no network calls
 - Callable from any context (gossip event handler, HTTP route handler, test)
+- **No-panic (M-5).** No exported verify function throws on malformed or
+  adversarial input — each returns `false` / `{ valid: false }` instead. Inputs
+  arrive straight off the wire and may be wrongly typed or out of range
+  (non-string `content`, non-array `parentRefs`, a public key that is not 32
+  bytes, a nonce that is negative / `NaN` / float / beyond `u64`). Every such
+  case is a clean rejection, never an exception. Guard the throwing operations
+  (`Buffer.byteLength`, `createPublicKey`, `BigInt`/`writeBigUInt64LE`,
+  `.length`) with type/shape checks first.
 
 ## Invariants
 - All hashing uses `blake2b512.digest().subarray(0, 32)` — Node.js v22
@@ -266,7 +283,11 @@ verified at receipt time only.
 - Signatures verified with `crypto.verify(null, signingHash, keyObj, sig)`
   using a `KeyObject` created via `crypto.createPublicKey`
 - SPKI DER prefix for Ed25519: `302a300506032b6570032100`
-- PoW nonce encoded as 8-byte little-endian unsigned integer
+- PoW nonce encoded as 8-byte little-endian unsigned integer, after an
+  integer-range guard (M-6): a nonce or `targetBits` that is not a non-negative
+  safe integer within `u64` yields `false`, never a thrown `RangeError` from
+  `BigInt` / `writeBigUInt64LE`. Validate with `Number.isInteger` (not a loose
+  `typeof === 'number'`, which admits `NaN` and floats)
 - Content limits measured in UTF-8 bytes, not characters
 - All functions are synchronous — no Promises, no callbacks
 - Protocol version `PROTOCOL_VERSION` from `@dagsocial/types`
