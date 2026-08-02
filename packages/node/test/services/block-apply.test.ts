@@ -16,6 +16,8 @@ import {
   computeBoxId,
   computePostId,
   encodePost,
+  encodeOrderingBlock,
+  decodeOrderingBlock,
   leafHash,
   buildMerkleRoot,
   hexToBuf,
@@ -699,7 +701,7 @@ describe('block-apply journal recording', () => {
         powTargetBits: expectedTarget(1),
         createdAt: Date.now(),
       },
-      subBlockTree: { subBlockRefs: [], subBlockEntries: [], stumpIds: [] },
+      subBlockTree: { subBlockRefs: [], subBlockEntries: [], pruneEntries: [] },
       utxoTxTree: {
         utxoTxIds: [],
         utxoTxs: [],
@@ -747,7 +749,7 @@ describe('block-apply journal recording', () => {
         powTargetBits: 4,
         createdAt: Date.now(),
       },
-      subBlockTree: { subBlockRefs: [], subBlockEntries: [], stumpIds: [] },
+      subBlockTree: { subBlockRefs: [], subBlockEntries: [], pruneEntries: [] },
       utxoTxTree: {
         utxoTxIds: [],
         utxoTxs: [],
@@ -791,7 +793,7 @@ describe('block-apply journal recording', () => {
         powTargetBits: 4,
         createdAt: Date.now(),
       },
-      subBlockTree: { subBlockRefs: [], subBlockEntries: [], stumpIds: [] },
+      subBlockTree: { subBlockRefs: [], subBlockEntries: [], pruneEntries: [] },
       utxoTxTree: {
         utxoTxIds: [],
         utxoTxs: [],
@@ -843,7 +845,14 @@ describe('block-apply journal recording', () => {
       utxoTxs: [],
       likeBoxIds: [],
       coinbaseOutputs: [
-        { value: 0, owner: new Uint8Array(32), lockedUntilBlock: null },
+        // The scheduled maturity lock, so the value is the only thing wrong:
+        // a non-numeric `lockedUntilBlock` is now a structure rejection, which
+        // would reject this block before it reached the coinbase check.
+        {
+          value: 0,
+          owner: new Uint8Array(32),
+          lockedUntilBlock: 1 + CREDIT_MINER_REWARD_DELAY,
+        },
       ],
     };
     const header = {
@@ -1876,5 +1885,241 @@ describe('block-apply H-3 sub-block authorship and prune binding', () => {
     expect(placeholder).not.toBeNull();
     expect(placeholder.content).toBe('');
     expect(hex(placeholder.author)).toBe('00'.repeat(32));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The apply funnel is a total function of its input
+//
+// `verifyOrderingBlockStructure` ran only in the gossip topic validator, so the
+// pull-sync path — CBOR-decode straight into the apply handler — reached
+// consensus code with fields of arbitrary type. Nothing between there and the
+// prune loop's `Buffer.from(entry.subtreeMerkleRoot)` checks that field, and a
+// throw out of `applyOrderingBlock` becomes an unhandled rejection in the
+// gossip callback (whose promise the net layer discards), which exits the
+// process. A rejected block is never stored, so the node re-fetches it on
+// restart and dies again: one cheaply-mined block, a permanent network-wide
+// crash loop.
+// ---------------------------------------------------------------------------
+
+describe('block-apply funnel totality', () => {
+  beforeEach(async () => {
+    vi.resetModules();
+  });
+
+  afterEach(async () => {
+    try {
+      const bc = await importBlockCreator();
+      bc.stopBlockCreator();
+    } catch {
+      // Module might not have been imported
+    }
+    vi.doUnmock('../../src/store/journal.js');
+    vi.resetModules();
+  });
+
+  /**
+   * A confirmed post and its consensus-recorded author — the state an attacker
+   * builds a prune entry against. `rootPostHash` and the recorded author are
+   * public consensus data (they ride in every block), so nothing here is a
+   * secret the attacker has to obtain.
+   */
+  async function confirmedPost(): Promise<{ postId: string; author: TestIdentity }> {
+    const author = makeTestIdentity();
+    const post = makePost(author.userId, 'victim post');
+    const postId = computePostId(post);
+
+    const posts = await importPosts();
+    posts.insertPost(post, encodePost(post));
+
+    const blockApply = await importBlockApply();
+    const confirmBlock = await makeApplicableBlock({
+      subBlockEntries: [{ postId, parentRefs: [], author: hex(author.userId) }],
+    });
+    expect(blockApply.applyOrderingBlock(confirmBlock)).toBe(true);
+    return { postId, author };
+  }
+
+  // -----------------------------------------------------------------------
+  // The kill shot: a prune entry whose subtreeMerkleRoot is not bytes
+  // -----------------------------------------------------------------------
+
+  it('rejects — without throwing — a block whose prune entry carries a non-Uint8Array subtreeMerkleRoot', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    const { postId, author } = await confirmedPost();
+    const blockApply = await importBlockApply();
+
+    // Valid in every respect a node checks: real PoW at the scheduled target,
+    // a real validator signature, the scheduled coinbase with the scheduled
+    // maturity lock, and Merkle roots computed over this very tree. The prune
+    // entry names the root's genuine consensus-recorded author, so the H-3
+    // binding check — the only total check standing in front of the prune
+    // loop — passes. `subtreeMerkleRoot` is a CBOR integer, which is what
+    // `Buffer.from` throws on.
+    const killEntry = {
+      ...makePruneEntry(postId, [postId], author),
+      subtreeMerkleRoot: 42,
+    } as unknown as PruneEntry;
+    const killBlock = await makeApplicableBlock({ height: 2, pruneEntries: [killEntry] });
+
+    expect(() => blockApply.applyOrderingBlock(killBlock)).not.toThrow();
+    expect(blockApply.applyOrderingBlock(killBlock)).toBe(false);
+
+    // Rolled back whole: the chain does not move and no journal is written.
+    const ordering = await importOrdering();
+    expect(ordering.getOrderingBlock(2)).toBeNull();
+    expect(ordering.getCurrentHeight()).toBe(1);
+
+    const journal = await importJournalStore();
+    expect(journal.getBlockJournal(2)).toBeNull();
+    expect(blockApply.getCurrentJournal()).toBeNull();
+
+    // The prune did not settle: the victim's content is untouched.
+    const posts = await importPosts();
+    expect((posts.getPost(postId) as Post).content).toBe('victim post');
+  });
+
+  it('accepts the same block with a real 32-byte subtreeMerkleRoot (control)', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    const { postId, author } = await confirmedPost();
+    const blockApply = await importBlockApply();
+
+    // Identical in every field but one: the merkle root is the real root over
+    // the subtree ids and the signature covers it. That is what makes the
+    // rejection above a verdict on the field's *type* and nothing else.
+    const block = await makeApplicableBlock({
+      height: 2,
+      pruneEntries: [makePruneEntry(postId, [postId], author)],
+    });
+    expect(blockApply.applyOrderingBlock(block)).toBe(true);
+
+    const ordering = await importOrdering();
+    expect(ordering.getCurrentHeight()).toBe(2);
+
+    const { getStump } = (await import('../../src/store/stumps.js')) as {
+      getStump: (id: string) => { rootPostHash: string } | null;
+    };
+    expect(getStump(postId)?.rootPostHash).toBe(postId);
+  });
+
+  // -----------------------------------------------------------------------
+  // Path independence — the sync path has no gossip validator in front of it
+  // -----------------------------------------------------------------------
+
+  it('rejects the malformed block arriving over the sync path (CBOR round-trip, no gossip validator)', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    const { postId, author } = await confirmedPost();
+    const blockApply = await importBlockApply();
+
+    const killEntry = {
+      ...makePruneEntry(postId, [postId], author),
+      subtreeMerkleRoot: 42,
+    } as unknown as PruneEntry;
+    const killBlock = await makeApplicableBlock({ height: 2, pruneEntries: [killEntry] });
+
+    // What `NetNode.appendBlocks` does with a peer's Modifier response: decode
+    // the bytes and hand the result straight to the apply handler. No topic
+    // validator runs on this path, which is why the structure check cannot
+    // live in gossip.
+    const decoded = decodeOrderingBlock(encodeOrderingBlock(killBlock));
+    // The wire round-trip preserves the hostile field verbatim — a CBOR
+    // integer decodes back to a number, not to bytes.
+    expect(typeof decoded.subBlockTree.pruneEntries[0]!.subtreeMerkleRoot).toBe('number');
+
+    expect(() => blockApply.applyOrderingBlock(decoded)).not.toThrow();
+    expect(blockApply.applyOrderingBlock(decoded)).toBe(false);
+
+    const ordering = await importOrdering();
+    expect(ordering.getCurrentHeight()).toBe(1);
+  });
+
+  it('accepts a well-formed block over the same sync path (control)', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    const { postId, author } = await confirmedPost();
+    const blockApply = await importBlockApply();
+
+    const block = await makeApplicableBlock({
+      height: 2,
+      pruneEntries: [makePruneEntry(postId, [postId], author)],
+    });
+    const decoded = decodeOrderingBlock(encodeOrderingBlock(block));
+    expect(blockApply.applyOrderingBlock(decoded)).toBe(true);
+
+    const ordering = await importOrdering();
+    expect(ordering.getCurrentHeight()).toBe(2);
+  });
+
+  // -----------------------------------------------------------------------
+  // Totality backstop — an unexpected throw is a rejection, not a crash
+  // -----------------------------------------------------------------------
+
+  it('returns false and rolls back when apply throws for a reason no check anticipated', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    // A failure from the last step of apply, past every consensus check and
+    // past every state mutation the block makes: the block row is written and
+    // the coinbase is minted before this runs. Nothing about the block is
+    // malformed — this stands in for the class of defect structure validation
+    // cannot enumerate in advance.
+    vi.doMock('../../src/store/journal.js', async () => {
+      const actual = await vi.importActual<typeof import('../../src/store/journal.js')>(
+        '../../src/store/journal.js',
+      );
+      return {
+        ...actual,
+        insertBlockJournal: () => {
+          throw new Error('disk on fire');
+        },
+      };
+    });
+
+    const blockApply = await importBlockApply();
+    const block = await makeApplicableBlock();
+
+    expect(() => blockApply.applyOrderingBlock(block)).not.toThrow();
+    expect(blockApply.applyOrderingBlock(block)).toBe(false);
+
+    // Rolled back whole — including the mutations that had already landed
+    // inside the transaction before the throw.
+    const ordering = await importOrdering();
+    expect(ordering.getOrderingBlock(1)).toBeNull();
+    expect(ordering.getCurrentHeight()).toBe(0);
+
+    const { getCreditBoxes } = (await import('../../src/store/utxo.js')) as {
+      getCreditBoxes: (owner: Uint8Array) => unknown[];
+    };
+    expect(getCreditBoxes(block.utxoTxTree.coinbaseOutputs[0]!.owner)).toHaveLength(0);
+
+    // The half-built journal is dropped, so the next block does not inherit it.
+    expect(blockApply.getCurrentJournal()).toBeNull();
+  });
+
+  it('applies the same block with no stub in place (control)', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    const blockApply = await importBlockApply();
+    const block = await makeApplicableBlock();
+    expect(blockApply.applyOrderingBlock(block)).toBe(true);
+
+    const ordering = await importOrdering();
+    expect(ordering.getCurrentHeight()).toBe(1);
+
+    const journal = await importJournalStore();
+    expect(journal.getBlockJournal(1)).not.toBeNull();
+
+    const { getCreditBoxes } = (await import('../../src/store/utxo.js')) as {
+      getCreditBoxes: (owner: Uint8Array) => unknown[];
+    };
+    expect(getCreditBoxes(block.utxoTxTree.coinbaseOutputs[0]!.owner)).toHaveLength(1);
   });
 });

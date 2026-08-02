@@ -195,8 +195,8 @@ describe('Two-node integration', () => {
       },
       subBlockTree: {
         subBlockRefs: [],
-        stumpIds: [],
         subBlockEntries: [],
+        pruneEntries: [],
       },
       utxoTxTree: {
         utxoTxIds: [],

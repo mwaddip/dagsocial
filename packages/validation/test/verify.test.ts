@@ -19,7 +19,7 @@ import {
 } from '../src/verify.js';
 import { isDisallowedContentCodepoint, PINNED_UNICODE_VERSION } from '../src/content-charset.js';
 import { generateKeyPair, computePostId, signingHash, EMPTY_STATE_ROOT } from '@dagsocial/types';
-import type { Post, SubBlock, SubBlockEntry, BlockHeader, OrderingBlock, UtxoTransaction } from '@dagsocial/types';
+import type { Post, SubBlock, SubBlockEntry, PruneEntry, BlockHeader, OrderingBlock, UtxoTransaction } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
 // verifyPoW
@@ -545,8 +545,8 @@ describe('verifyOrderingBlockStructure', () => {
     },
     subBlockTree: {
       subBlockRefs: [],
-      stumpIds: [],
       subBlockEntries: [],
+      pruneEntries: [],
     },
     utxoTxTree: {
       utxoTxIds: [],
@@ -667,6 +667,123 @@ describe('verifyOrderingBlockStructure', () => {
     } as unknown as OrderingBlock;
     expect(verifyOrderingBlockStructure(block).valid).toBe(false);
   });
+
+  // -------------------------------------------------------------------------
+  // pruneEntries
+  //
+  // These fields are the ones block application feeds to `Buffer.from(...)`
+  // and `createHash().update(...)`, so a wrong *type* here is not a cosmetic
+  // defect: it throws inside the apply funnel. Nothing else validates them.
+  // -------------------------------------------------------------------------
+
+  /** A prune entry that is well-formed in every field the structure check reads. */
+  const makeValidPruneEntry = (): PruneEntry => ({
+    rootPostHash: 'aa'.repeat(32),
+    subtreePostIds: ['aa'.repeat(32), 'bb'.repeat(32)],
+    subtreeMerkleRoot: new Uint8Array(32).fill(7),
+    authorId: new Uint8Array(32).fill(3),
+    authorSignature: new Uint8Array(64).fill(9),
+    trigger: 'author',
+  });
+
+  /** The valid block, carrying one prune entry with `over` applied to it. */
+  const blockWithPrune = (over: Record<string, unknown> = {}): OrderingBlock => {
+    const block = makeValidBlock();
+    block.subBlockTree.pruneEntries = [
+      { ...makeValidPruneEntry(), ...over } as unknown as PruneEntry,
+    ];
+    return block;
+  };
+
+  it('accepts a well-formed prune entry (control for every rejection below)', () => {
+    expect(verifyOrderingBlockStructure(blockWithPrune())).toEqual({ valid: true });
+  });
+
+  it('accepts the "storage_prune" trigger', () => {
+    expect(verifyOrderingBlockStructure(blockWithPrune({ trigger: 'storage_prune' })))
+      .toEqual({ valid: true });
+  });
+
+  it('rejects a block with no pruneEntries field at all', () => {
+    const block = makeValidBlock();
+    delete (block.subBlockTree as unknown as Record<string, unknown>).pruneEntries;
+    const result = verifyOrderingBlockStructure(block);
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain('pruneEntries');
+  });
+
+  it('rejects a non-array pruneEntries', () => {
+    const block = makeValidBlock();
+    (block.subBlockTree as unknown as Record<string, unknown>).pruneEntries = 'nope';
+    expect(verifyOrderingBlockStructure(block).valid).toBe(false);
+  });
+
+  it('rejects a prune entry that is not an object', () => {
+    const block = makeValidBlock();
+    (block.subBlockTree as unknown as Record<string, unknown>).pruneEntries = [42];
+    const result = verifyOrderingBlockStructure(block);
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain('pruneEntry is not an object');
+  });
+
+  // Each case below deviates from `makeValidPruneEntry()` in exactly one field,
+  // and the control above proves the rest of the entry passes — so what each
+  // one measures is that field and nothing else. The distinct-error assertion
+  // at the end proves no two of them are being rejected for the same reason.
+  const REJECTED_SHAPES: Array<{ name: string; over: Record<string, unknown>; error: string }> = [
+    { name: 'rootPostHash too short', over: { rootPostHash: 'aa' }, error: 'invalid rootPostHash' },
+    { name: 'rootPostHash not a string', over: { rootPostHash: 42 }, error: 'invalid rootPostHash' },
+    { name: 'rootPostHash bytes, not hex', over: { rootPostHash: new Uint8Array(32) }, error: 'invalid rootPostHash' },
+    { name: 'subtreePostIds not an array', over: { subtreePostIds: 'aa'.repeat(32) }, error: 'invalid subtreePostIds' },
+    { name: 'subtreePostIds holds a non-string', over: { subtreePostIds: [42] }, error: 'subtreePostId must be 64-char hex' },
+    { name: 'subtreePostIds holds a short string', over: { subtreePostIds: ['aa'] }, error: 'subtreePostId must be 64-char hex' },
+    // The kill shot: a CBOR integer where 32 bytes belong. `Buffer.from(42)`
+    // throws, and block apply reaches it with nothing in between.
+    { name: 'subtreeMerkleRoot is a number', over: { subtreeMerkleRoot: 42 }, error: 'invalid subtreeMerkleRoot' },
+    // Length-bearing impostors — what a `.length`-only check would wave through.
+    { name: 'subtreeMerkleRoot is a 32-char string', over: { subtreeMerkleRoot: 'a'.repeat(32) }, error: 'invalid subtreeMerkleRoot' },
+    { name: 'subtreeMerkleRoot is {length: 32}', over: { subtreeMerkleRoot: { length: 32 } }, error: 'invalid subtreeMerkleRoot' },
+    { name: 'subtreeMerkleRoot is a 32-element array', over: { subtreeMerkleRoot: new Array(32).fill(0) }, error: 'invalid subtreeMerkleRoot' },
+    // Right type, wrong width — an 8-byte key or root is not a key or root.
+    { name: 'subtreeMerkleRoot is 31 bytes', over: { subtreeMerkleRoot: new Uint8Array(31) }, error: 'invalid subtreeMerkleRoot' },
+    { name: 'subtreeMerkleRoot is a Uint32Array', over: { subtreeMerkleRoot: new Uint32Array(8) }, error: 'invalid subtreeMerkleRoot' },
+    { name: 'subtreeMerkleRoot missing', over: { subtreeMerkleRoot: undefined }, error: 'invalid subtreeMerkleRoot' },
+    { name: 'authorId is a 32-char string', over: { authorId: 'a'.repeat(32) }, error: 'invalid authorId' },
+    { name: 'authorId is {length: 32}', over: { authorId: { length: 32 } }, error: 'invalid authorId' },
+    { name: 'authorId is 33 bytes', over: { authorId: new Uint8Array(33) }, error: 'invalid authorId' },
+    { name: 'authorId missing', over: { authorId: undefined }, error: 'invalid authorId' },
+    { name: 'authorSignature is a 64-char string', over: { authorSignature: 'a'.repeat(64) }, error: 'invalid authorSignature' },
+    { name: 'authorSignature is {length: 64}', over: { authorSignature: { length: 64 } }, error: 'invalid authorSignature' },
+    { name: 'authorSignature is 32 bytes', over: { authorSignature: new Uint8Array(32) }, error: 'invalid authorSignature' },
+    { name: 'authorSignature missing', over: { authorSignature: undefined }, error: 'invalid authorSignature' },
+    { name: 'trigger is an unknown string', over: { trigger: 'whatever' }, error: 'invalid trigger' },
+    { name: 'trigger is missing', over: { trigger: undefined }, error: 'invalid trigger' },
+    { name: 'trigger is a number', over: { trigger: 1 }, error: 'invalid trigger' },
+  ];
+
+  for (const shape of REJECTED_SHAPES) {
+    it(`rejects a prune entry whose ${shape.name}`, () => {
+      const result = verifyOrderingBlockStructure(blockWithPrune(shape.over));
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain(shape.error);
+    });
+  }
+
+  it('names the offending field distinctly for each prune-entry rejection', () => {
+    // One error string per field, so an operator reading a rejection log can
+    // tell which field the producer got wrong.
+    const errors = new Set(REJECTED_SHAPES.map((s) => s.error));
+    expect(errors.size).toBe(7);
+    for (const shape of REJECTED_SHAPES) {
+      expect(verifyOrderingBlockStructure(blockWithPrune(shape.over)).error).toContain(shape.error);
+    }
+  });
+
+  it('never throws on a hostile prune entry', () => {
+    for (const shape of REJECTED_SHAPES) {
+      expect(() => verifyOrderingBlockStructure(blockWithPrune(shape.over))).not.toThrow();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -689,8 +806,8 @@ describe('verifyBlockChainLink', () => {
     },
     subBlockTree: {
       subBlockRefs: [],
-      stumpIds: [],
       subBlockEntries: [],
+      pruneEntries: [],
     },
     utxoTxTree: {
       utxoTxIds: [],
@@ -1008,7 +1125,7 @@ describe('no-panic on malformed input (M-5)', () => {
   const goodInput = Buffer.from('pow input');
   const goodBlock: OrderingBlock = {
     header: makeHeader(),
-    subBlockTree: { subBlockRefs: [], stumpIds: [], subBlockEntries: [] },
+    subBlockTree: { subBlockRefs: [], subBlockEntries: [], pruneEntries: [] },
     utxoTxTree: { utxoTxIds: [], utxoTxs: [], likeBoxIds: [], coinbaseOutputs: [] },
     validatorSignature: new Uint8Array(64),
   };
@@ -1092,7 +1209,32 @@ describe('no-panic on malformed input (M-5)', () => {
       expect(() =>
         verifyOrderingBlockStructure({
           ...goodBlock,
-          subBlockTree: { subBlockRefs: [bad], stumpIds: [], subBlockEntries: [bad] },
+          subBlockTree: { subBlockRefs: [bad], subBlockEntries: [bad], pruneEntries: [bad] },
+        } as any),
+      ).not.toThrow();
+      expect(() =>
+        verifyOrderingBlockStructure({
+          ...goodBlock,
+          subBlockTree: { subBlockRefs: [], subBlockEntries: [], pruneEntries: bad },
+        } as any),
+      ).not.toThrow();
+      expect(() =>
+        verifyOrderingBlockStructure({
+          ...goodBlock,
+          subBlockTree: {
+            subBlockRefs: [],
+            subBlockEntries: [],
+            pruneEntries: [
+              {
+                rootPostHash: bad,
+                subtreePostIds: bad,
+                subtreeMerkleRoot: bad,
+                authorId: bad,
+                authorSignature: bad,
+                trigger: bad,
+              },
+            ],
+          },
         } as any),
       ).not.toThrow();
       expect(() =>

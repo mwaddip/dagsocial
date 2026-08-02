@@ -377,6 +377,42 @@ export function verifyOrderingBlockStructure(
       return { valid: false, error: 'Ordering block subBlockEntry has invalid author' };
     }
   }
+  // Prune entries. Every byte field is checked with `isBytes`, not a `.length`
+  // read: a CBOR payload puts any type in any field, and a 32-char string or a
+  // `{length: 32}` object satisfies a length check while throwing in the
+  // `Buffer.from` / `createHash().update()` these fields reach at block apply.
+  // Type is the only property that makes those calls safe.
+  if (!Array.isArray(block.subBlockTree.pruneEntries)) {
+    return { valid: false, error: 'Ordering block missing subBlockTree.pruneEntries' };
+  }
+  for (const entry of block.subBlockTree.pruneEntries) {
+    if (!isObject(entry)) {
+      return { valid: false, error: 'Ordering block pruneEntry is not an object' };
+    }
+    if (typeof entry.rootPostHash !== 'string' || entry.rootPostHash.length !== 64) {
+      return { valid: false, error: 'Ordering block pruneEntry has invalid rootPostHash' };
+    }
+    if (!Array.isArray(entry.subtreePostIds)) {
+      return { valid: false, error: 'Ordering block pruneEntry has invalid subtreePostIds' };
+    }
+    for (const id of entry.subtreePostIds) {
+      if (typeof id !== 'string' || id.length !== 64) {
+        return { valid: false, error: 'Ordering block pruneEntry subtreePostId must be 64-char hex' };
+      }
+    }
+    if (!isBytes(entry.subtreeMerkleRoot) || entry.subtreeMerkleRoot.length !== 32) {
+      return { valid: false, error: 'Ordering block pruneEntry has invalid subtreeMerkleRoot' };
+    }
+    if (!isBytes(entry.authorId) || entry.authorId.length !== 32) {
+      return { valid: false, error: 'Ordering block pruneEntry has invalid authorId' };
+    }
+    if (!isBytes(entry.authorSignature) || entry.authorSignature.length !== 64) {
+      return { valid: false, error: 'Ordering block pruneEntry has invalid authorSignature' };
+    }
+    if (entry.trigger !== 'author' && entry.trigger !== 'storage_prune') {
+      return { valid: false, error: 'Ordering block pruneEntry has invalid trigger' };
+    }
+  }
   if (!block.validatorSignature || block.validatorSignature.length !== 64) {
     return { valid: false, error: 'Ordering block missing or invalid validatorSignature' };
   }

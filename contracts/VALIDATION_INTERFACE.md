@@ -236,9 +236,22 @@ has a 64-char `postId`, a `parentRefs` array of ≤ 8 64-char strings, and a
 an array with each output having a 32-byte `owner` and non-negative `value`
 and `lockedUntilBlock` ≥ `block.height`.
 
+Also checks **`pruneEntries`**: an array, each entry an object with a 64-char
+`rootPostHash`, a `subtreePostIds` array of 64-char strings, a 32-byte
+`subtreeMerkleRoot`, a 32-byte `authorId`, a 64-byte `authorSignature`, and a
+`trigger` of exactly `"author"` or `"storage_prune"`. Byte-length fields must
+be `Uint8Array`, not merely length-bearing — a CBOR payload can put any type
+in any field, and the consumers of these fields call `Buffer.from(...)` and
+`createHash().update(...)`, which throw on a number or object. Structure
+validation is the layer that guarantees they never see one.
+
 Structure-only: `author` is checked for shape here, not truth — binding it to
 the real post (when content is locally present) and to prune authorization is
 stateful and lives in `@dagsocial/node` (see `NODE_INTERFACE.md`).
+
+Every check is total: adversarial input yields `{ valid: false }`, never a
+throw. That is what lets the block-apply funnel treat this function as its
+gate (see `NODE_INTERFACE.md`, "Structure validation in the apply funnel").
 
 ### verifyBlockChainLink
 

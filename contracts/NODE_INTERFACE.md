@@ -1044,6 +1044,30 @@ not fail the API request.
 pull-sync, and reorg — passes through, so consensus authorization is enforced
 there rather than at any one entry point.
 
+**Structure validation in the apply funnel.** Before any field of the block is
+read, `applyOrderingBlock` rejects the block unless
+`verifyOrderingBlockStructure(block)` (from `@dagsocial/validation`) returns
+valid. Previously this ran *only* in the gossip topic validator
+(`net/src/gossip.ts`), so the pull-sync path — which decodes CBOR and calls the
+apply handler directly — reached consensus code with fields of arbitrary type.
+Enforcing it in the funnel makes the guarantee path-independent, and is the
+same relocation already applied to the PoW target (M-2), coinbase maturity
+(M-3), and the validator signature (H-1).
+
+**The funnel is total.** `applyOrderingBlock` MUST NOT propagate an exception
+for any input. A block that causes an unexpected throw is a block the node
+rejects: the surrounding transaction rolls back and the function returns
+`false`, exactly as for an explicit rejection, with the error logged
+server-side. This is the ARCHITECTURE invariant "no method panics on untrusted
+input" applied at the consensus boundary, and it is load-bearing rather than
+defensive: the gossip callback is `async` and its promise is discarded by the
+net layer, so a propagated throw becomes an unhandled rejection, which
+terminates the process on Node ≥ 15. Because a rejected block is never stored,
+a crashing block is re-fetched on restart and crashes again — a single
+cheaply-mined block would otherwise be a permanent, self-reapplying kill for
+every node that receives it. Structure validation closes the known instance;
+totality bounds every future one.
+
 **Validator signature (H-1).** Before applying any state, the block is rejected
 unless `verifyValidatorSignature(block.header, block.validatorSignature)` (from
 `@dagsocial/validation`) returns `true`. This binds block-production attribution

@@ -88,8 +88,32 @@ class BlockRejected extends Error {}
  * step — rolls the whole thing back, leaving the node on the state it had
  * before the block arrived. Returns false for a rejected block; `reorg()`
  * nests this inside its own transaction, which SQLite handles as a savepoint.
+ *
+ * The funnel is total: no input makes this function throw. A block that causes
+ * an unexpected exception is a block the node rejects, on the same terms as an
+ * explicit rejection — transaction rolled back, journal dropped, `false`
+ * returned, detail logged. That is not defensive padding. The gossip callback
+ * is `async` and the net layer discards its promise, so a propagated throw
+ * becomes an unhandled rejection, which exits the process on Node ≥ 15; and
+ * because a rejected block is never stored, the node re-fetches it on restart
+ * and dies again. One cheaply-mined block would otherwise be a permanent,
+ * self-reapplying kill for every node that receives it.
  */
 export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService): boolean {
+  // Structure first, before any field of `block` is read. Until this returns
+  // valid, nothing about the object's shape is known: the fields below are
+  // decoded CBOR from an untrusted producer, and `pruneEntries` in particular
+  // reaches `Buffer.from` and `createHash().update()` further down, which throw
+  // on a number or a plain object. This used to run only in the gossip topic
+  // validator, so the pull-sync path — CBOR-decode straight into the apply
+  // handler — arrived here with fields of arbitrary type. Enforcing it in the
+  // funnel makes the guarantee path-independent, as already done for the PoW
+  // target (M-2), coinbase maturity (M-3), and the validator signature (H-1).
+  const structure = validation.verifyOrderingBlockStructure(block);
+  if (!structure.valid) {
+    console.warn(`Rejected block: invalid structure: ${structure.error}`);
+    return false;
+  }
   try {
     return getDb().transaction(() => {
       if (!applyBlockBody(block, dagService)) throw new BlockRejected();
@@ -97,7 +121,16 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
     })();
   } catch (err) {
     if (err instanceof BlockRejected) return false;
-    throw err;
+    // better-sqlite3 has already rolled the transaction back by the time the
+    // throw surfaces here (it issues ROLLBACK, or ROLLBACK TO for the nested
+    // reorg savepoint, before re-throwing), so the node is on its pre-block
+    // state. What is left is to drop the half-built journal and answer the
+    // caller the same way an explicit rejection does.
+    console.error(
+      `Rejected block height=${block.header.height}: unexpected failure during apply: ${String(err)}`,
+    );
+    currentJournal = null;
+    return false;
   }
 }
 
