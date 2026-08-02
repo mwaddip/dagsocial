@@ -1,18 +1,180 @@
 # Notis
 
-Decentralized social network — no tokens to buy, no ads, no corporate servers.
-Content lives in a prunable DAG controlled by authors. Karma and credits live in
-a Bitcoin-style UTXO ledger secured by Ed25519 signatures. Phase 2: local HTTP
-node with identity, PoW posting, DAG storage, UTXO engine, AVL+ state root,
-verifiable prune consensus, libp2p networking, and a demo UI with thread view and
-link sharing.
+A decentralized social network where your words stay yours and your reputation
+can't be bought.
 
-**494 tests** across 5 packages (2 E2E flakes pass in isolation). Node.js ≥ 22,
-TypeScript, pnpm. MIT licensed.
+No corporate servers, no ads, no token sale. Content lives in a prunable DAG
+that each author controls. Karma and credits live in a Bitcoin-style UTXO
+ledger secured by Ed25519 signatures. Proof-of-Work orders it all — no stake,
+no committee. Deleting your thread is a first-class, cryptographically
+verifiable operation, not a favor from a moderation team.
+
+*Notis is the network; the code ships under the working scope `@dagsocial/*`.*
+
+**Status:** Phase 2 devnet — a single-binary node with HTTP API, libp2p
+networking, PoW consensus, and a demo UI. Pre-network: consensus formats still
+change freely between versions. Node.js ≥ 22, TypeScript, pnpm. MIT licensed.
 
 ---
 
-## Quick Start
+## The idea
+
+Content and value have different requirements. A threaded reply chain shouldn't
+be an immutable ledger entry, and your karma balance shouldn't vanish when
+someone deletes a post. So Notis runs two ledgers, each doing what it's good
+at, bound by verifiable settlement:
+
+| | Posts DAG | UTXO ledger |
+|---|---|---|
+| **What it tracks** | Content, replies, who said what | Karma, credits, who has how much |
+| **Who controls it** | Each author controls their own subtree | Box owners control their boxes via signatures |
+| **Can it be deleted?** | Yes — authors can prune their content | No — box history is immutable |
+| **What it's good at** | Threaded conversation, author sovereignty | Value accounting with cryptographic lineage |
+
+Three properties fall out of this split:
+
+- **Author sovereignty.** Every post is the root of its own subtree. Replying
+  to someone is consent: they can prune the whole tree later, replies included.
+  That cascade is the privacy model — replies leak what the root said, so
+  deletion that leaves them behind isn't deletion.
+- **Reputation you can't buy.** Karma only moves through protocol actions —
+  likes, invites, rewards, decay, burns. There is no transfer. A rich account
+  cannot buy social weight.
+- **Deletion that settles.** Pruning a subtree is consensus-verified: every
+  node — including nodes that never stored the content — independently checks
+  who authorized it and settles the karma locked inside it.
+
+---
+
+## How it works
+
+### Posting
+
+Every post costs a small Proof of Work — not mining, just making spam
+expensive while keeping posting free. Request a challenge from your node,
+iterate a nonce until the hash meets the target (under a second on a laptop),
+submit. Your solved post *is* a sub-block; a miner's ordering block anchors it.
+
+| | Sub-block | Ordering block |
+|---|---|---|
+| **Producer** | You (the poster) | Miner (PoW) |
+| **Frequency** | Per post | ~60 seconds |
+| **Contains** | One post | Batch of sub-block entries + likes + epoch processing |
+
+Posts link via `parentRefs` (up to 8 parents — a DAG, not a strict tree).
+Content is 1–300 UTF-8 bytes. Posting locks a little karma as skin in the
+game, released back as the post accumulates likes.
+
+### Likes and karma
+
+Karma is the non-tradeable social currency. Liking locks 2 karma from your
+box; at the next epoch the post's likes are tallied — reach the threshold and
+your karma comes back, the author earns a capped reward, and once a post is
+popular enough further likes are free. Rewards mint karma; invite-bond burns
+and inactivity decay destroy it. Dormant accounts bleed slowly down to a
+floor; any protocol action resets the clock.
+
+You cannot buy, sell, or transfer karma. That's the point.
+
+### Credits
+
+Credits are the tradeable counterpart, earned by miners through coinbase
+emission with an Ergo-style linear decay schedule (fixed rate, then stepwise
+reduction, then a flat tail — ~31 years of emission). A treasury split is
+optional. Credits transfer freely between identities; future protocol versions
+spend them (ads, boosts, tips).
+
+### Invites
+
+The network is invite-only, and inviting has skin in the game:
+
+1. Alice locks karma for the invitee **plus an equal bond**, hash-locked to a
+   secret she hands Bob out of band
+2. Bob commits to the invite under his own key — the commit is
+   signature-verified at consensus, so holding the secret alone binds nothing
+3. Bob claims, and his account exists the moment his first box does
+4. The bond sits in escrow through a probation window:
+
+| Outcome | Bond |
+|---|---|
+| Bob reaches the karma threshold within probation | Returned to Alice |
+| Bob falls below the posting minimum during probation | **Burned** |
+| Probation expires uneventfully | Returned to Alice |
+
+Burned bonds shrink the karma supply — inviting badly costs real reputation.
+Alice can cancel an unclaimed invite and get everything back.
+
+### Deletion that settles (stumps)
+
+Pruning is where the two ledgers meet, and it's consensus-critical: the karma
+locked in a subtree (post locks, pending likes) must be settled identically on
+every node, even nodes that never had the content.
+
+A **PruneEntry** in the ordering block carries the pruned post-id set, a Merkle
+root over it, and the root author's Ed25519 signature. At block application
+every node verifies:
+
+1. **Authorship** — the entry's author *is* the consensus-recorded author of
+   the root. Every confirmed post's author travels in its block (committed
+   under the sub-block Merkle root), so "who owns this subtree" is chain data,
+   not content data — a miner cannot prune someone else's thread
+2. **Signature** — the root author signed this exact prune
+3. **Topology** — the post-id set matches the confirmed reply tree
+4. **Merkle root** — the set is exactly what was signed
+5. **Settlement** — locked boxes are consumed and refunds minted,
+   deterministically from UTXO state
+
+What remains is a **stump**: a compact record that the subtree existed and
+what it earned. The content itself is gone network-wide — nodes propagate
+stumps, not archives.
+
+### Consensus and networking
+
+Ordering blocks are mined with PoW at a height-scheduled difficulty (on-chain
+time is block height, never wall clock). Fork choice is cumulative work. The
+`@dagsocial/net` package runs libp2p with Gossipsub for sub-blocks, ordering
+blocks, and UTXO transactions, plus a header-first sync protocol: a fresh node
+downloads ordering blocks only — block entries carry enough topology and
+authorship to verify all settlement without any post content.
+
+Exact parameters (lock amounts, thresholds, emission, decay) are protocol
+constants documented in [contracts/ARCHITECTURE.md](contracts/ARCHITECTURE.md).
+
+---
+
+## Security model
+
+What consensus enforces at block application, on every path (gossip, sync,
+reorg):
+
+- **Validator signatures** — PoW proves work was spent, the Ed25519 validator
+  signature proves who spent it; blocks forging another validator's identity
+  are rejected
+- **Prune authorship** — binding a prune to the consensus-recorded root author
+  (see above); censorship-by-miner is rejected structurally
+- **Invite-commit signatures** — a bond commit must verify against the
+  committed key; observing a secret on the wire authorizes nothing
+- **Coinbase discipline** — reward value, treasury split, and maturity locks
+  are pure functions of height; deviation rejects the block
+- **Embedded transactions** — fully re-validated at apply (signatures, guards,
+  conservation); a block producer is untrusted by construction
+- **Atomicity** — a rejected block rolls back to a no-op via journaling
+
+Validation posture: no panics on untrusted input (adversarial bytes get a
+`false`, not a crash), and every self-reported claim — hashes, PoW, signatures
+— is independently recomputed. Nodes that hold content additionally verify the
+chain's claims against it, keeping dishonest blocks out of the canonical chain
+for everyone else.
+
+The consensus model, including the trust story for nodes that sync without
+content, is documented in [docs/CONSENSUS.md](docs/CONSENSUS.md). The commit
+history carries an ongoing, audit-driven hardening pass over the consensus
+surface — this is devnet software under active adversarial review, not a
+finished protocol. Don't run it with anything at stake yet.
+
+---
+
+## Running a node
 
 ### Build
 
@@ -28,15 +190,16 @@ pnpm typecheck
 NETWORK_MODE=testnet NODE_ROLE=miner node packages/node/dist/index.js
 ```
 
-This starts a miner node on `http://localhost:3000` with the demo UI at the
-same address. It produces ordering blocks every 60 seconds and mines PoW
-in-process.
+Starts a miner node on `http://localhost:3000` with the demo UI at the same
+address, producing ordering blocks every 60 seconds with in-process PoW.
 
-### Devnet (split mining)
+### Split mining (external miner)
 
-For running a node on a VPS without PoW (ToS compliance, etc.), Notis
-supports external mining. The node builds block templates and exposes them
-over HTTP; a separate miner script solves PoW and submits.
+For running a node on a VPS without burning its CPU (or its ToS), the node
+can build block templates and let a separate machine solve them. External
+mining **requires** a configured secret — the node refuses to start an
+unauthenticated external-mining setup, and internal-mode nodes expose no
+mining API at all.
 
 **VPS node:**
 
@@ -44,43 +207,28 @@ over HTTP; a separate miner script solves PoW and submits.
 NODE_ROLE=miner MINING_MODE=external MINING_SECRET=<secret> node packages/node/dist/index.js
 ```
 
-**Laptop miner:**
+**Miner machine:**
 
 ```bash
 NODE_URL=https://your-node.example.com/testnet/api MINER_PCT=25 MINING_SECRET=<secret> node packages/node/scripts/miner.mjs
 ```
 
-`MINER_PCT` controls CPU usage (0–100, default 25). The miner ships as a
-single zero-dependency script — no repo or `pnpm install` needed, just Node.js ≥ 22.
-
-A reference systemd unit is at `packages/node/scripts/dagsocial-miner.service`.
+`MINER_PCT` throttles CPU (0–100, default 25). The miner is a single
+zero-dependency script — no repo checkout needed, just Node.js ≥ 22. A
+reference systemd unit is at `packages/node/scripts/dagsocial-miner.service`.
 
 ### Multi-node cluster
 
-The cluster script starts N miner nodes with sequential ports, fresh databases,
-and automatic peer discovery via a bootstrap node:
-
 ```bash
-# 3 nodes, fresh DBs, 60s block interval
-./scripts/cluster.sh
-
-# 5 nodes, 30s blocks
-./scripts/cluster.sh 5 --interval-ms 30000
-
-# 4 nodes, keep DBs between runs
-./scripts/cluster.sh 4 --persist
-
-# Custom port ranges
+./scripts/cluster.sh                              # 3 nodes, fresh DBs, 60s blocks
+./scripts/cluster.sh 5 --interval-ms 30000        # 5 nodes, 30s blocks
+./scripts/cluster.sh 4 --persist                  # keep DBs between runs
 ./scripts/cluster.sh 3 --base-http 4000 --base-p2p 5000
 ```
 
-Node 1 is the bootstrap seed. Others dial it and join the gossip mesh. Logs go
-to `/tmp/dagsocial-cluster/node-*.log`.
-
-```bash
-# Stop all nodes
-kill $(cat /tmp/dagsocial-cluster/pids)
-```
+Node 1 is the bootstrap seed; the rest dial it and join the mesh. Logs land in
+`/tmp/dagsocial-cluster/node-*.log`; stop everything with
+`kill $(cat /tmp/dagsocial-cluster/pids)`.
 
 ### Environment variables
 
@@ -101,363 +249,35 @@ kill $(cat /tmp/dagsocial-cluster/pids)
 | `KARMA_DECAY_INTERVAL_BLOCKS` | 720 | Blocks between decay burns |
 | `KARMA_DECAY_AMOUNT` | 5 | Karma burned per interval |
 | `KARMA_MINIMUM` | 10 | Decay floor |
-| `MINING_MODE` | `internal` | `internal` or `external` (node builds templates, miner solves PoW remotely) |
-| `MINING_SECRET` | (empty) | Bearer token for mining API auth (empty = no auth) |
+| `MINING_MODE` | `internal` | `internal` (in-process PoW, no mining API) or `external` (authenticated template API) |
+| `MINING_SECRET` | — | Bearer token for the mining API. Required non-empty in external mode — startup fails without it. Unused in internal mode. |
 | `ORDERING_BLOCK_POW_TARGET_BITS` | 12 | Ordering block PoW difficulty |
-| `EPOCH_BLOCKS` | 60 | Blocks per epoch (like processing + difficulty adjustment) |
-| `PUBLIC_URL` | `/` | Base path where the demo UI is served (e.g. `/testnet/` when behind nginx) |
+| `EPOCH_BLOCKS` | 60 | Blocks per epoch (like processing) |
+| `PUBLIC_URL` | `/` | Base path for the demo UI (e.g. `/testnet/` behind nginx) |
+
+### Demo UI
+
+Open `http://localhost:3000` (behind nginx with path isolation: UI at
+`/testnet/`, API at `/testnet/api/`). Single HTML page, vanilla JS, no build
+step. Create an identity, hit the testnet faucets, post (the browser solves
+PoW), like, invite, transfer credits. Click a post's timestamp for thread view
+— full ancestor chain and reply tree — and copy a shareable link with OG
+metadata for rich previews in chat apps. Admin tools (faucets, invites,
+transfers) appear in testnet mode only.
 
 ---
 
 ## API
 
-All endpoints are JSON. POST/PUT bodies are JSON. Auth is Bearer token only
-on `/mining/*` when `MINING_SECRET` is set.
-
-### Node status
-
-| Method | Path | Description |
-|---|---|---|
-| GET | `/status` | Node status (block height, post count, karma, credits) |
-| GET | `/health` | Admin health check (port 3001) |
-
-### Identity
-
-| Method | Path | Description |
-|---|---|---|
-| GET | `/karma/:id` | Karma balance for an identity |
-| GET | `/credits/:id` | Credit boxes for an identity |
-| GET | `/invites/:id` | Invite state for an identity |
-
-### Posts
-
-| Method | Path | Description |
-|---|---|---|
-| GET | `/posts?limit=50&offset=0&author=<hex>` | Recent posts (paginated, optional author filter) |
-| GET | `/posts/:id` | Single post by ID |
-| GET | `/posts/:id/thread` | Post with full thread context (ancestors + descendants) |
-| POST | `/posts` | Create a post (requires PoW challenge + karma-lock tx) |
-| POST | `/posts/:id/prune` | Prune a subtree (author-signed) |
-
-### Challenges
-
-| Method | Path | Description |
-|---|---|---|
-| POST | `/challenge` | Request a PoW challenge for posting |
-
-### Likes
-
-| Method | Path | Description |
-|---|---|---|
-| POST | `/likes` | Like a post (submits a signed tx) |
-| POST | `/likes/remove` | Unlike a post (submits a signed tx) |
-
-### Invites
-
-| Method | Path | Description |
-|---|---|---|
-| POST | `/invites` | Create an invite (submits a signed tx) |
-| POST | `/invites/commit` | Commit to an invite (reveal intent, step 1 of 2) |
-| POST | `/invites/claim` | Claim an invite (reveal preimage, step 2 of 2) |
-| POST | `/invites/cancel` | Cancel an unclaimed invite (submits a signed tx) |
-
-### Credits (testnet)
-
-| Method | Path | Description |
-|---|---|---|
-| POST | `/credits/transfer` | Transfer credits between identities |
-| POST | `/credits/faucet` | Testnet credit faucet |
-
-### Karma faucet (testnet)
-
-| Method | Path | Description |
-|---|---|---|
-| POST | `/faucet` | Testnet karma faucet |
-
-### Mining (auth required)
-
-| Method | Path | Description |
-|---|---|---|
-| GET | `/mining/template` | Current block template (PoW preimage, target bits, header) |
-| POST | `/mining/submit` | Submit `{ powNonce, height }` — returns block hash on success |
-
-### Vouches
-
-| Method | Path | Description |
-|---|---|---|
-| GET | `/vouches` | Query vouches (`?target=` or `?voucher=` or `?cooldowns`) |
-| POST | `/vouches` | Cast a vouch for another identity |
-| DELETE | `/vouches/:targetId` | Initiate unvouch (cooldown starts) |
-
-### Link previews
-
-| Method | Path | Description |
-|---|---|---|
-| GET | `/preview/:id` | OG-tagged HTML page for link sharing (Telegram, Twitter, etc.) |
-
-### AVL proofs
-
-| Method | Path | Description |
-|---|---|---|
-| GET | `/api/v1/proof/:boxId?atHeight=N` | AVL+ proof for a UTXO box |
-
----
-
-## Demo UI
-
-Open `http://localhost:3000` (or the bootstrap node's port in a cluster).
-When behind nginx with path isolation, the UI is at `/testnet/` and the
-API at `/testnet/api/`. The UI is a single HTML page with vanilla JS — no
-build step.
-
-**Getting started:**
-
-1. **Create an identity** — click "+ New" to generate an Ed25519 keypair
-2. **Get karma** — in testnet mode, use the Karma Faucet (Admin section)
-3. **Get credits** — in testnet mode, use the Credit Faucet (Admin section)
-4. **Post** — write a message. The browser solves PoW in under a second and
-   submits it to the mempool
-5. **Like posts** — costs 2 karma locked per like. Refunded at epoch if the
-   post has 10+ likes
-6. **Send credits** — transfer credits between identities via the Credit
-   Transfer form (Admin section, testnet only)
-7. **Invite** — create an invite (25 karma + 25 bond), share the secret,
-   have the invitee redeem it with the Invite Box ID + Bond Box ID + secret
-
-**Thread view and link sharing:**
-
-- **Click a post's timestamp** to open its thread view — shows the full ancestor
-  chain above and the reply tree below, with the post highlighted
-- **Copy link** button in thread view copies a shareable URL with OG metadata
-- **Paste the URL** into Telegram, Twitter, or any chat app to get a rich preview
-  showing the author and post content
-- **Browser back button** returns from thread view to the normal feed
-- Timestamps show relative time ("2m ago") with absolute time on hover
-
-The admin section (faucets, invites, credit transfer) is only visible in
-testnet mode.
-
----
-
-## Architecture
-
-```
-@dagsocial/types          @dagsocial/validation
-       │                         │
-       └──────────┬──────────────┘
-                  │
-        @dagsocial/wire (frame codec)
-                  │
-             @dagsocial/net (libp2p + Gossipsub + headers sync)
-                  │
-          ┌───────┴───────┐
-          │               │
-    @dagsocial/node  (future: @dagsocial/web)
-```
-
-**Five packages:**
-- **`@dagsocial/types`** — data structures, base58, CBOR encoding, protocol
-  constants, UTXO selection. Pure functions only.
-- **`@dagsocial/validation`** — pure stateless checks (PoW verification,
-  block validation, Merkle root verification).
-- **`@dagsocial/wire`** — stream framing (VLQ, blake2b checksums, CBOR),
-  message codec, magic-byte discrimination. Shared by net and node.
-- **`@dagsocial/net`** — libp2p networking with Gossipsub (sub-blocks,
-  ordering blocks, UTXO transactions) and a headers-sync protocol for fork
-  resolution.
-- **`@dagsocial/node`** — Express server, PoW challenges, UTXO engine,
-  SQLite store, AVL+ state root prover, block creator, coinbase emission,
-  karma decay, demo UI.
-
----
-
-## How It Works
-
-Notis splits decentralized social networking into two layers, each doing
-what it's good at:
-
-| | Posts DAG | UTXO Ledger |
-|---|---|---|
-| **What it tracks** | Content, replies, who said what | Karma, credits, who has how much |
-| **Who controls it** | Each author controls their own subtree | Box owners control their boxes via signatures |
-| **Can it be deleted?** | Yes — authors can prune their content | No — box history is immutable |
-| **What it's good at** | Threaded conversation, author sovereignty | Value accounting with cryptographic lineage |
-
-Content and value have different requirements. A threaded reply chain shouldn't
-be an immutable ledger entry, and your karma balance shouldn't vanish when
-someone deletes a post.
-
-### Karma
-
-Karma is non-tradeable social currency. It only moves through specific
-protocol-enforced actions:
-
-| Action | Karma effect |
-|---|---|
-| **Like a post** | 2 karma locked while the like is pending (refunded at epoch if the post reaches 10+ likes) |
-| **Create an invite** | 25 karma transferred + 25 karma posted as bond for a new member |
-| **Earn from likes** | Author earns 1 karma per 5 likes, max 10 per post |
-| **Just hold it** | Karma above a floor gives you social weight |
-
-You **cannot** buy, sell, or transfer karma. The only way karma moves between
-accounts is through invites or like rewards. If karma were tradeable, a rich
-account could buy reputation. By restricting movement to protocol actions, karma
-reflects actual social contribution.
-
-#### Multi-box UTXO
-
-Karma and credits use a Bitcoin-style multi-UTXO model. An identity can hold
-multiple karma boxes (e.g., from earning rewards, receiving invite karma, or
-getting like refunds). When you spend karma, the protocol selects the fewest
-largest boxes needed to cover the amount (largest-first selection) and produces
-change back to you. All boxes are consolidated during mint operations.
-
-#### Karma decay
-
-Karma decays through a periodic burn mechanism. If your account is dormant for
-more than the stale threshold (28 days / 20,160 blocks), the system burns 5
-karma every 24 hours (720 blocks) until you hit the floor of 10 karma or start
-participating again. Every protocol action that touches your karma box resets
-the clock. Active accounts never feel decay. Ghost accounts eventually bleed
-down to the floor.
-
-The decay parameters are overridable via environment variables for testing.
-
-### Credits
-
-Credits are a **transferrable** currency, separate from karma. Miners earn
-credits through coinbase emission: 100 credits per block with Ergo-style linear
-decay (fixed rate for ~2 years, then decreasing by 2 every ~90 days, tailing at
-2 credits/block). The reward is split 90/10 between miner and an optional
-treasury.
-
-Unlike karma, credits can be freely transferred between identities
-(Bitcoin-style UTXO selection, Ed25519 signatures). A testnet-only credit faucet
-provides 1000 credits per call for development and testing.
-
-### Posts DAG
-
-Every post is the root of its own subtree. When someone replies, that reply
-lives under your subtree. You control everything under your root:
-
-- **You can prune your entire subtree** — the root post and every reply under
-  it, regardless of who wrote the replies. This is the privacy model.
-- **Replying is consent** — when you reply to someone's post, you accept that
-  they can prune the whole tree later.
-
-Posts link via `parentRefs` — a post can reference up to 8 parents, creating a
-DAG rather than a strict tree. Content is 1–300 UTF-8 bytes.
-
-#### Stumps and Verifiable Pruning
-
-When you prune your content, the DAG subtree vanishes but the karma earned from
-likes in that subtree must be refunded. Pruning is consensus-critical — every
-node must agree on who gets what karma back, even nodes that never had the
-original content.
-
-A **PruneEntry** in the ordering block carries everything needed for independent
-verification: the list of pruned post IDs committed by a Merkle root, and an
-Ed25519 signature from the root author over `blake2b512(rootPostHash,
-subtreeMerkleRoot)`. At block application, every node:
-
-1. Verifies the author's signature
-2. Checks the post ID set matches the reply tree via `block_topology`
-3. Verifies the Merkle root over the post IDs
-4. Deterministically settles UTXO state — consuming PostLockBoxes and LikeBoxes,
-   minting refund karma to authors and likers
-
-No DAG content is required. A node syncing UTXO-only verifies prune settlements
-identically to a full node. The DAG-side **Stump** becomes a lightweight
-historical record for gossip purposes — the block is the settlement authority.
-
-See [docs/CONSENSUS.md](docs/CONSENSUS.md) for the full consensus model.
-
-### Posting: Sub-blocks and PoW
-
-Every post requires a small Proof of Work. This isn't about mining — it's about
-making spam expensive while keeping posting free.
-
-1. **Request a challenge** — your node gives you a random nonce (one
-   outstanding challenge at a time)
-2. **Solve the puzzle** — iterate a counter until the hash meets a difficulty
-   target. A typical laptop solves this in under a second.
-3. **Submit** — your solved post IS a sub-block, carrying your content plus any
-   queued likes
-
-The network uses two-level blocks:
-
-| | Sub-block | Ordering block |
-|---|---|---|
-| **Producer** | You (the poster) | Miner (PoW) |
-| **Frequency** | Per post | ~60 seconds |
-| **Contains** | One post + queued likes | Batch of sub-blocks + deduplicated likes + epoch processing |
-
-Your post is visible as soon as you submit it. The ordering block anchors it.
-
-### Likes
-
-Likes distribute karma. The system is designed so liking is cheap for popular
-posts and rewards flow to good content.
-
-**Locked likes (first 50 likes on a post):** 2 karma locked from your box.
-At the next epoch (every 60 blocks), the system tallies the post's total likes:
-
-| Total likes | Your 2 karma |
-|---|---|
-| < 10 | Stays locked, rolls to next epoch |
-| ≥ 10 | Full refund — 2 karma returned |
-
-**Free likes (51st like onward):** Once a post has 50 likes, further likes cost
-nothing. You just need > 0 karma to prove you're a real account.
-
-**Author reward:** `min(floor(totalLikes / 5), 10)` karma minted to the author.
-Rewards increase the total karma supply; invite bond burning is the deflationary
-counterbalance.
-
-### Invites
-
-The network is invite-only. Every new account needs someone to vouch for them
-with real karma at stake.
-
-1. **Alice creates an invite:** 25 karma for the invitee + 25 karma bond (total
-   50 karma from Alice's box)
-2. **Alice generates a secret** — the hash goes on-chain, she sends the secret
-   to Bob out of band
-3. **Bob generates a keypair** and claims the invite by revealing the secret
-4. **The bond sits in escrow** during probation:
-
-| Outcome | Bond |
-|---|---|
-| Bob reaches the karma threshold (20) within probation | Returned to Alice |
-| Bob falls below the posting minimum during probation | **Burned** |
-| Probation expires, Bob's fine but below threshold | Returned to Alice |
-
-Burned bonds reduce the total karma supply, counterbalancing author rewards.
-Alice can cancel an unclaimed invite and get her karma back.
-
-### Networking
-
-The `@dagsocial/net` package provides libp2p-based peer-to-peer networking:
-
-- **Gossipsub** for sub-blocks, ordering blocks, and UTXO transactions
-- **Headers sync protocol** for fork resolution — nodes request block headers
-  from peers, find the fork point, and reorg to the heaviest chain
-- **Bootstrap peers** for initial discovery — nodes dial configured bootstrap
-  addresses and join the gossip mesh
-
-Fork resolution is cumulative-work-based: the chain with more total PoW wins.
-
-### UTXO Engine
-
-The UTXO engine validates every box transition:
-
-- **Guard checks** — owner signatures for karma/credit boxes, hash preimages
-  for invites, epoch tally for likes and post locks
-- **Value conservation** — credit and invite transfers require strict
-  face-value equality; karma allows mint (rewards) and burn (decay, bonds)
-- **Legal transitions** — karma can produce karma + post_lock + like boxes;
-  credits can only produce credits; invites can only be claimed by revealing
-  the preimage
+Everything is JSON over HTTP: identities, posts, threads, challenges, likes,
+invites, vouches, credits, faucets, block queries, AVL+ UTXO proofs
+(`/api/v1/proof/:boxId`), OG link previews, and the authenticated mining
+endpoints. The demo UI exercises the whole surface.
+
+The authoritative route reference lives in
+[contracts/NODE_INTERFACE.md](contracts/NODE_INTERFACE.md) — request/response
+shapes, error codes, and preconditions for every endpoint. (This README used
+to duplicate it; the duplicate drifted, the contract doesn't.)
 
 ---
 
@@ -465,32 +285,52 @@ The UTXO engine validates every box transition:
 
 ```bash
 pnpm build          # Build all 5 packages
-pnpm test           # Run all 494 tests
+pnpm test           # Run the full suite
 pnpm typecheck      # Type-check all packages
 ```
 
-```bash
-# Watch mode during development
-pnpm --filter @dagsocial/types build --watch
-pnpm --filter @dagsocial/node vitest
-```
+**Five packages:**
+
+- **`@dagsocial/types`** — data structures, hashing, base58, CBOR, protocol
+  constants, UTXO selection. Pure functions only.
+- **`@dagsocial/validation`** — pure stateless checks: PoW, signatures, block
+  structure, Merkle roots. No panics on untrusted input.
+- **`@dagsocial/wire`** — stream framing (VLQ, blake2b checksums, magic
+  bytes), shared by net and node.
+- **`@dagsocial/net`** — libp2p + Gossipsub relay with two-stage validation,
+  header-first sync, peer discovery and scoring.
+- **`@dagsocial/node`** — Express server, PoW challenges, UTXO engine, SQLite
+  store, AVL+ state root, block creator, epoch tally, decay, demo UI.
 
 ### Contracts
 
-Design-by-contract workflow. The `contracts/` directory is the source of truth
-for interfaces. Contracts are updated before implementation code.
+Design-by-Contract workflow: the `contracts/` directory is the source of truth
+for every interface, and contracts are updated **before** implementation code.
 
-| Document | Type | Status |
-|---|---|---|
-| `contracts/ARCHITECTURE.md` | System architecture & invariants | Current (2026-07-29) |
-| `contracts/TYPES_INTERFACE.md` | Types package contract | Current (2026-07-29) |
-| `contracts/VALIDATION_INTERFACE.md` | Validation package contract | Current |
-| `contracts/NODE_INTERFACE.md` | Node package contract | Current (2026-07-29) |
-| `contracts/MEMPOOL_INTERFACE.md` | Mempool contract | Current (2026-07-29) |
-| `contracts/MINING_INTERFACE.md` | Mining contract | Current |
-| `contracts/NET_INTERFACE.md` | Networking contract | Current |
-| `contracts/SUBBLOCK_INTERFACE.md` | Sub-block contract | Current |
-| `contracts/WIRE_INTERFACE.md` | Wire framing contract | Current |
-| `contracts/JOURNAL_EVENTS.md` | Journal events contract | Current |
-| `contracts/WEB_INTERFACE.md` | Web client contract | Future (Phase 3) |
-| `docs/CONSENSUS.md` | Consensus model | Current (2026-07-29) |
+| Document | Covers |
+|---|---|
+| `contracts/ARCHITECTURE.md` | System architecture, invariants, protocol parameters |
+| `contracts/TYPES_INTERFACE.md` | Data structures, hashing, serialization |
+| `contracts/VALIDATION_INTERFACE.md` | Stateless validation functions |
+| `contracts/NODE_INTERFACE.md` | HTTP API, verifier, store, block application |
+| `contracts/MEMPOOL_INTERFACE.md` | Mempool semantics |
+| `contracts/MINING_INTERFACE.md` | Emission, PoW, difficulty, mining API |
+| `contracts/NET_INTERFACE.md` | Gossip, sync, peer management |
+| `contracts/SUBBLOCK_INTERFACE.md` | Sub-block lifecycle |
+| `contracts/WIRE_INTERFACE.md` | Frame and message codec |
+| `contracts/JOURNAL_EVENTS.md` | Block journal events |
+| `docs/CONSENSUS.md` | Consensus model |
+| `contracts/WEB_INTERFACE.md` | Web client (future, Phase 3) |
+
+---
+
+## Roadmap
+
+Implemented (Phase 2): the dual ledger, sub-block + ordering-block consensus,
+verifiable pruning, likes/epochs, invites with bonds, vouches, karma decay,
+credit emission, AVL+ state root with light-client proofs, libp2p networking
+with header-first sync, split mining, demo UI.
+
+Deferred to future protocol versions: credit sinks (ads, boosts, tips), reply
+earning, karma-proportional PoW, storage pruning for lean nodes, view keys,
+parameter governance, fee market.
