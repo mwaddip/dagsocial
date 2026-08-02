@@ -1046,4 +1046,94 @@ describe('reorg', () => {
     expect(journalStore.getBlockJournal(2)).not.toBeNull();
     expect(journalStore.getBlockJournal(3)).not.toBeNull();
   });
+
+  // -------------------------------------------------------------------------
+  // A full mempool must not abort a reorg (audit M-8). Re-insertion is
+  // bookkeeping; letting MempoolFullError escape would roll back the whole
+  // chain switch — mempool pressure turning into a consensus-liveness failure.
+  // -------------------------------------------------------------------------
+  it('drops re-inserted entries and still completes the reorg when the pool is full', async () => {
+    const originalCap = process.env['MAX_MEMPOOL_ENTRIES'];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      process.env['MAX_MEMPOOL_ENTRIES'] = '1';
+      vi.resetModules();
+
+      const db = await importDb();
+      db.initDb(':memory:');
+
+      const author = makeTestIdentity();
+      await importIdentities();
+
+      const { encodePost } = await import('@dagsocial/types');
+      const posts = await importPosts();
+      const mempool = await importMempoolFresh();
+      const bc = await importBlockCreator();
+      bc.startBlockCreator(testConfig);
+
+      // Two blocks, one sub-block each. Each insert sits alone in the pool
+      // (cap 1) and is consumed by its block, so building the chain is fine.
+      for (let i = 0; i < 2; i++) {
+        const post = makePost(author.userId, `full pool ${i}`);
+        const postId = computePostId(post);
+        posts.insertPost(post, encodePost(post));
+        mempool.insertSubBlock(postId, 1000);
+        bc.createOrderingBlock();
+      }
+
+      const ordering = await importOrdering();
+      expect(ordering.getCurrentHeight()).toBe(2);
+      expect(mempool.getPendingEntries(100)).toHaveLength(0);
+
+      // Fill the pool to its cap, so every re-insertion below is rejected.
+      mempool.insertSubBlock('occupier', 1000);
+      expect(mempool.getPendingEntries(100)).toHaveLength(1);
+
+      const forkResolution = await importForkResolution();
+      expect(() => forkResolution.reorg(0, [])).not.toThrow();
+
+      // The chain switch completed despite every re-insertion being dropped.
+      expect(ordering.getCurrentHeight()).toBe(0);
+      expect(ordering.getOrderingBlock(1)).toBeNull();
+      expect(ordering.getOrderingBlock(2)).toBeNull();
+      expect(mempool.getPendingEntries(100)).toHaveLength(1);
+      expect(
+        warn.mock.calls.some((c) => String(c[0]).includes('Reorg re-insertion dropped')),
+      ).toBe(true);
+    } finally {
+      warn.mockRestore();
+      if (originalCap === undefined) delete process.env['MAX_MEMPOOL_ENTRIES'];
+      else process.env['MAX_MEMPOOL_ENTRIES'] = originalCap;
+    }
+  });
+
+  it('control — the same reorg re-inserts entries when the pool has room', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    const author = makeTestIdentity();
+    await importIdentities();
+
+    const { encodePost } = await import('@dagsocial/types');
+    const posts = await importPosts();
+    const mempool = await importMempoolFresh();
+    const bc = await importBlockCreator();
+    bc.startBlockCreator(testConfig);
+
+    for (let i = 0; i < 2; i++) {
+      const post = makePost(author.userId, `room in pool ${i}`);
+      const postId = computePostId(post);
+      posts.insertPost(post, encodePost(post));
+      mempool.insertSubBlock(postId, 1000);
+      bc.createOrderingBlock();
+    }
+
+    mempool.insertSubBlock('occupier', 1000);
+
+    const forkResolution = await importForkResolution();
+    forkResolution.reorg(0, []);
+
+    // Default cap (10000): the reverted sub-blocks come back.
+    expect(mempool.getPendingEntries(100).length).toBeGreaterThan(1);
+  });
 });

@@ -14,6 +14,7 @@ import {
 } from '../store/index.js';
 
 import { ed25519PublicKeyToKeyObject } from '@dagsocial/validation';
+import { ClientError } from './client-error.js';
 
 // ---------------------------------------------------------------------------
 // Mint (coinbase emission)
@@ -95,7 +96,7 @@ export function sendCredits(
   expectedHeight?: number,
 ): CreditTransferResult {
   if (amount <= 0) {
-    throw new Error('amount must be positive');
+    throw new ClientError('amount must be positive');
   }
 
   // 1. Select unlocked boxes
@@ -147,7 +148,7 @@ export function sendCredits(
   const txIdBytes = Buffer.from(txId, 'hex');
   const ok = cryptoVerify(null, txIdBytes, keyObj, Buffer.from(signature));
   if (!ok) {
-    throw new Error('invalid signature');
+    throw new ClientError('invalid signature', 401);
   }
 
   // 5. Apply to UTXO set

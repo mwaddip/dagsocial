@@ -26,6 +26,8 @@ export interface Config {
   orderingBlockMinSubBlocks: number;
   maxSubBlocksPerBlock: number;
   epochBlocks: number;
+  /** Hard mempool bound — inserts are rejected at the cap, never evicted (audit M-8). */
+  maxMempoolEntries: number;
   // Mining
   miningMode: 'internal' | 'external';
   miningSecret: string;          // bearer token for mining API, required non-empty in external mode
@@ -79,6 +81,10 @@ export function loadConfig(): Readonly<Config> {
     ),
     epochBlocks: parseInt(
       process.env['EPOCH_BLOCKS'] ?? String(EPOCH_BLOCKS),
+      10,
+    ),
+    maxMempoolEntries: parseInt(
+      process.env['MAX_MEMPOOL_ENTRIES'] ?? '10000',
       10,
     ),
     // Mining

@@ -25,6 +25,7 @@ import {
   getBox as storeGetBox,
   consumeBox as storeConsumeBox,
   getPendingEntries,
+  insertMempoolSubBlock,
 } from '../../src/store/index.js';
 import { createInvite, claimInvite, cancelInvite, commitInvite } from '../../src/services/invites.js';
 import { validateTx } from '../../src/services/utxo-engine.js';
@@ -761,6 +762,103 @@ describe('invites service', () => {
     signTransaction(tx, inviterPrivKey, inviterPubKeyHex);
 
     expect(() => createInvite(deps, tx, 99)).toThrow('Invite limit reached');
+  });
+
+  // -----------------------------------------------------------------------
+  // 4b. MAX_PENDING_INVITES holds when the pending invites sit past the old
+  //     1000-row scan bound (audit M-8). Past that bound the mempool count
+  //     came back 0, so the limit could be bypassed by flooding the pool.
+  // -----------------------------------------------------------------------
+  it('Create fails at MAX_PENDING_INVITES with the invites past row 1000', () => {
+    /** Build a signed invite-create tx for the given identity. */
+    function buildInviteTx(
+      owner: Uint8Array,
+      ownerHex: string,
+      privKey: KeyObject,
+      seed: number,
+    ): UtxoTransaction {
+      const karma = createKarmaBox(owner, 100, seed, `seed-${ownerHex}-${seed}`);
+      const newKarma: KarmaBox = {
+        boxType: 'karma',
+        value: 50,
+        createdAtBlock: seed,
+        owner,
+        guard: 'owner_signature',
+        proofSource: `seed-${ownerHex}-${seed}`,
+        lastTouchBlock: seed,
+      };
+      const secret = new Uint8Array(32).fill(seed);
+      const secretHash = createHash('blake2b512')
+        .update(Buffer.from(secret))
+        .digest()
+        .subarray(0, 32);
+      const inviteBox: InviteBox = {
+        boxType: 'invite',
+        value: INVITE_KARMA_AMOUNT,
+        createdAtBlock: seed,
+        secretHash,
+        inviterId: owner,
+        guard: 'hash_preimage_with_bond',
+      };
+      const inviteBoxId = computeBoxId(inviteBox);
+      const bondBox: BondBox = {
+        boxType: 'bond',
+        value: INVITE_BOND_KARMA,
+        createdAtBlock: seed,
+        inviterId: owner,
+        inviteBoxId,
+        inviteePublicKey: new Uint8Array(0),
+        probationStartBlock: 0,
+        probationEndBlock: 0,
+        guard: 'bond_dual',
+      };
+      const tx: UtxoTransaction = {
+        inputs: [karma.id!],
+        outputs: [
+          { ...newKarma, id: computeBoxId(newKarma) },
+          { ...inviteBox, id: inviteBoxId },
+          { ...bondBox, id: computeBoxId(bondBox) },
+        ],
+        signatures: {},
+        protocolVersion: PROTOCOL_VERSION,
+      };
+      signTransaction(tx, privKey, ownerHex);
+      return tx;
+    }
+
+    // Bury the invites behind 1000 unrelated entries.
+    for (let i = 0; i < 1000; i++) insertMempoolSubBlock(`filler_${i}`, 900);
+
+    for (let i = 0; i < MAX_PENDING_INVITES; i++) {
+      createInvite(
+        deps,
+        buildInviteTx(inviterPubKey, inviterPubKeyHex, inviterPrivKey, i + 1),
+        i + 1,
+      );
+    }
+
+    // Vacuity: none of those invites is visible to a 1000-row scan.
+    const scanned = getPendingEntries(1000);
+    expect(scanned.some((e) => e.entryType === 'utxo_tx')).toBe(false);
+
+    expect(() =>
+      createInvite(
+        deps,
+        buildInviteTx(inviterPubKey, inviterPubKeyHex, inviterPrivKey, 90),
+        90,
+      ),
+    ).toThrow('Invite limit reached');
+
+    // Control — a different inviter with no pending invites still passes.
+    const otherKeys = generateKeyPairSync('ed25519');
+    const otherPub = rawPublicKey(otherKeys.publicKey);
+    const otherHex = Buffer.from(otherPub).toString('hex');
+    const otherResult = createInvite(
+      deps,
+      buildInviteTx(otherPub, otherHex, otherKeys.privateKey, 91),
+      91,
+    );
+    expect(otherResult.status).toBe('pending');
   });
 
   // -----------------------------------------------------------------------

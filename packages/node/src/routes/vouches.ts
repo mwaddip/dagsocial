@@ -3,6 +3,7 @@ import type { UtxoTransaction } from '@dagsocial/types';
 import type { UtxoEngineDeps } from '../services/utxo-engine.js';
 import { getNet } from '../services/net-instance.js';
 import { jsonToTx } from './json-to-tx.js';
+import { respondError } from './respond-error.js';
 import {
   getVouchesForTarget,
   getVouchesByVoucher,
@@ -42,7 +43,7 @@ export function createRouter(deps: VouchesDeps): Router {
     try {
       tx = jsonToTx(body.tx);
     } catch (err) {
-      res.status(400).json({ error: 400, reason: (err as Error).message });
+      respondError(res, err, 'POST /vouches (tx decode)');
       return;
     }
     try {
@@ -60,7 +61,7 @@ export function createRouter(deps: VouchesDeps): Router {
         expiresAtHeight: result.expiresAtHeight,
       });
     } catch (err) {
-      res.status(400).json({ error: 400, reason: (err as Error).message });
+      respondError(res, err, 'POST /vouches');
     }
   });
 
@@ -74,7 +75,7 @@ export function createRouter(deps: VouchesDeps): Router {
     try {
       tx = jsonToTx(body.tx);
     } catch (err) {
-      res.status(400).json({ error: 400, reason: (err as Error).message });
+      respondError(res, err, 'DELETE /vouches/:targetId (tx decode)');
       return;
     }
     try {
@@ -93,7 +94,7 @@ export function createRouter(deps: VouchesDeps): Router {
         karmaReturnsAtBlock: result.karmaReturnsAtBlock,
       });
     } catch (err) {
-      res.status(400).json({ error: 400, reason: (err as Error).message });
+      respondError(res, err, 'DELETE /vouches/:targetId');
     }
   });
 

@@ -4,45 +4,17 @@ import {
   MAX_PENDING_INVITES,
   INVITE_KARMA_AMOUNT,
   INVITE_BOND_KARMA,
-  decodeTx,
   MEMPOOL_EXPIRY_BLOCKS,
 } from '@dagsocial/types';
 import type { InviteBox, BondBox, KarmaBox, UtxoTransaction } from '@dagsocial/types';
 import {
   getPendingInviteCount,
   insertUtxoTx,
-  getPendingEntries,
+  countPendingInvites,
 } from '../store/index.js';
 import { validateTx } from './utxo-engine.js';
 import type { UtxoEngineDeps } from './utxo-engine.js';
-
-// ---------------------------------------------------------------------------
-// MemPool helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Count pending invite creates in the mempool for a given inviter.
- * This prevents bypassing the MAX_PENDING_INVITES limit by submitting
- * multiple unconfirmed invite-create transactions.
- */
-function countPendingInvitesInMempool(inviterId: Uint8Array): number {
-  const inviterIdHex = Buffer.from(inviterId).toString('hex');
-  const entries = getPendingEntries(1000);
-  let count = 0;
-  for (const entry of entries) {
-    if (entry.entryType !== 'utxo_tx' || !entry.utxoTxCbor) continue;
-    const tx = decodeTx(entry.utxoTxCbor);
-    for (const output of tx.outputs) {
-      if (output.boxType === 'invite') {
-        const inviteOut = output as InviteBox;
-        if (Buffer.from(inviteOut.inviterId).toString('hex') === inviterIdHex) {
-          count++;
-        }
-      }
-    }
-  }
-  return count;
-}
+import { ClientError } from './client-error.js';
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -74,16 +46,18 @@ export function createInvite(
     .map((id) => deps.getBox(id))
     .find((box): box is KarmaBox => box?.boxType === 'karma');
   if (!karmaInput) {
-    throw new Error('No karma box input found in transaction');
+    throw new ClientError('No karma box input found in transaction');
   }
   const inviterId = karmaInput.owner;
 
   // ---- 2. Verify invite count limit (UTXO + mempool) ----
+  // The mempool count is SQL over the gate-metadata columns, so an inviter
+  // cannot hide pending invites past a scan bound any more (audit M-8).
   const utxoCount = getPendingInviteCount(inviterId);
-  const mempoolCount = countPendingInvitesInMempool(inviterId);
+  const mempoolCount = countPendingInvites(Buffer.from(inviterId).toString('hex'));
   const totalPending = utxoCount + mempoolCount;
   if (totalPending >= MAX_PENDING_INVITES) {
-    throw new Error(
+    throw new ClientError(
       `Invite limit reached: ${totalPending} pending invites (max ${MAX_PENDING_INVITES})`,
     );
   }
@@ -94,7 +68,7 @@ export function createInvite(
   const bondOutputs = tx.outputs.filter((o) => o.boxType === 'bond');
 
   if (tx.outputs.length !== 3 || karmaOutputs.length !== 1 || inviteOutputs.length !== 1 || bondOutputs.length !== 1) {
-    throw new Error(
+    throw new ClientError(
       'Invite creation requires exactly 3 outputs: 1 karma + 1 invite + 1 bond',
     );
   }
@@ -104,12 +78,12 @@ export function createInvite(
   const bondOut = bondOutputs[0] as BondBox;
 
   if (inviteOut.value !== INVITE_KARMA_AMOUNT) {
-    throw new Error(
+    throw new ClientError(
       `InviteBox value must be ${INVITE_KARMA_AMOUNT}, got ${inviteOut.value}`,
     );
   }
   if (bondOut.value !== INVITE_BOND_KARMA) {
-    throw new Error(
+    throw new ClientError(
       `BondBox value must be ${INVITE_BOND_KARMA}, got ${bondOut.value}`,
     );
   }
@@ -117,7 +91,7 @@ export function createInvite(
   // ---- 5. Validate transaction (guards, transitions, decay) ----
   const result = validateTx(deps, tx, currentBlockHeight);
   if (!result.valid) {
-    throw new Error(`Invalid invite create transaction: ${result.error}`);
+    throw new ClientError(`Invalid invite create transaction: ${result.error}`);
   }
 
   // ---- 6. Insert into mempool ----
@@ -168,30 +142,30 @@ export function commitInvite(
 } {
   // ---- 1. Extract BondBox from inputs ----
   if (tx.inputs.length !== 1) {
-    throw new Error('Commit transaction must have exactly one input (BondBox)');
+    throw new ClientError('Commit transaction must have exactly one input (BondBox)');
   }
   const bondBoxId = tx.inputs[0]!;
   const bondBoxInput = deps.getBox(bondBoxId);
   if (!bondBoxInput || bondBoxInput.boxType !== 'bond') {
-    throw new Error(`Bond box not found: ${bondBoxId}`);
+    throw new ClientError(`Bond box not found: ${bondBoxId}`);
   }
   const bondIn = bondBoxInput as BondBox;
 
   // ---- 2. Verify BondBox is unclaimed ----
   if (bondIn.inviteePublicKey.length > 0) {
-    throw new Error('BondBox already committed');
+    throw new ClientError('BondBox already committed', 409);
   }
 
   // ---- 3. Verify exactly 1 BondBox output ----
   const bondOutputs = tx.outputs.filter((o) => o.boxType === 'bond');
   if (tx.outputs.length !== 1 || bondOutputs.length !== 1) {
-    throw new Error('Commit transaction must produce exactly 1 BondBox output');
+    throw new ClientError('Commit transaction must produce exactly 1 BondBox output');
   }
   const bondOut = bondOutputs[0] as BondBox;
 
   // ---- 4. Verify output BondBox has valid commitment shape ----
   if (bondOut.inviteePublicKey.length !== 32) {
-    throw new Error('Commit output BondBox must have 32-byte inviteePublicKey');
+    throw new ClientError('Commit output BondBox must have 32-byte inviteePublicKey');
   }
 
   // ---- 5. Validate transaction (guards, transitions) ----
@@ -201,7 +175,7 @@ export function commitInvite(
   // an "a signature entry exists" test here would only re-add the weak gate.
   const result = validateTx(deps, tx, currentBlockHeight);
   if (!result.valid) {
-    throw new Error(`Invalid commit transaction: ${result.error}`);
+    throw new ClientError(`Invalid commit transaction: ${result.error}`);
   }
 
   // ---- 6. Insert into mempool ----
@@ -253,43 +227,43 @@ export function claimInvite(
   }
 
   if (!inviteBoxId) {
-    throw new Error('Transaction does not consume an InviteBox');
+    throw new ClientError('Transaction does not consume an InviteBox');
   }
   if (!bondBoxId) {
-    throw new Error('Transaction does not consume a BondBox');
+    throw new ClientError('Transaction does not consume a BondBox');
   }
 
   // ---- 2. Verify invite box exists, is unspent, is type invite ----
   const inviteBox = deps.getBox(inviteBoxId);
   if (!inviteBox || inviteBox.boxType !== 'invite') {
-    throw new Error(`Invite box not found: ${inviteBoxId}`);
+    throw new ClientError(`Invite box not found: ${inviteBoxId}`);
   }
 
   // ---- 2.5. Verify bond box is committed ----
   const bondBoxForClaim = deps.getBox(bondBoxId);
   if (!bondBoxForClaim || bondBoxForClaim.boxType !== 'bond') {
-    throw new Error(`Bond box not found: ${bondBoxId}`);
+    throw new ClientError(`Bond box not found: ${bondBoxId}`);
   }
   const bondForClaim = bondBoxForClaim as BondBox;
   if (bondForClaim.inviteePublicKey.length !== 32) {
-    throw new Error('BondBox must be committed before reveal');
+    throw new ClientError('BondBox must be committed before reveal');
   }
 
   // ---- 3. Verify invitee public key is not already an account ----
   const karmaOutput = tx.outputs.find((o): o is KarmaBox => o.boxType === 'karma');
   if (!karmaOutput) {
-    throw new Error('Transaction must produce a KarmaBox for the invitee');
+    throw new ClientError('Transaction must produce a KarmaBox for the invitee');
   }
   const inviteePubKey = karmaOutput.owner;
 
   const existingKarma = deps.getKarmaBox(inviteePubKey);
   if (existingKarma) {
-    throw new Error('Public key already associated with an account');
+    throw new ClientError('Public key already associated with an account');
   }
 
   // ---- 3.5. Verify karma output owner matches committed bond invitee ----
   if (!Buffer.from(bondForClaim.inviteePublicKey).equals(karmaOutput.owner)) {
-    throw new Error('Karma output owner must match committed invitee public key');
+    throw new ClientError('Karma output owner must match committed invitee public key');
   }
 
   // ---- 4. Validate transaction (guards, transitions, decay) ----
@@ -297,7 +271,7 @@ export function claimInvite(
   // transition, and value conservation.
   const result = validateTx(deps, tx, currentBlockHeight);
   if (!result.valid) {
-    throw new Error(`Invalid invite claim transaction: ${result.error}`);
+    throw new ClientError(`Invalid invite claim transaction: ${result.error}`);
   }
 
   // ---- 5. Insert into mempool ----
@@ -349,13 +323,13 @@ export function cancelInvite(
   }
 
   if (!inviteBoxId) {
-    throw new Error('Transaction does not consume an InviteBox');
+    throw new ClientError('Transaction does not consume an InviteBox');
   }
 
   // ---- 2. Verify invite box exists, is unspent, is type invite ----
   const inviteBox = deps.getBox(inviteBoxId);
   if (!inviteBox || inviteBox.boxType !== 'invite') {
-    throw new Error(`Invite box not found: ${inviteBoxId}`);
+    throw new ClientError(`Invite box not found: ${inviteBoxId}`);
   }
 
   // ---- 3. Verify inviter matches the invite box's inviterId ----
@@ -364,10 +338,13 @@ export function cancelInvite(
     .map((id) => deps.getBox(id))
     .find((box): box is KarmaBox => box?.boxType === 'karma');
   if (!karmaInput) {
-    throw new Error('Transaction does not consume a KarmaBox');
+    throw new ClientError('Transaction does not consume a KarmaBox');
   }
   if (!Buffer.from(karmaInput.owner).equals(Buffer.from(inv.inviterId))) {
-    throw new Error('Inviter mismatch: karma box owner does not match invite box inviterId');
+    throw new ClientError(
+      'Inviter mismatch: karma box owner does not match invite box inviterId',
+      403,
+    );
   }
 
   // ---- 3.5. Verify bond box exists ----
@@ -380,11 +357,11 @@ export function cancelInvite(
     }
   }
   if (!bondBoxId) {
-    throw new Error('Transaction does not consume a BondBox');
+    throw new ClientError('Transaction does not consume a BondBox');
   }
   const bondBox = deps.getBox(bondBoxId);
   if (!bondBox || bondBox.boxType !== 'bond') {
-    throw new Error(`Bond box not found: ${bondBoxId}`);
+    throw new ClientError(`Bond box not found: ${bondBoxId}`);
   }
   // Cancel works on both unclaimed and committed BondBoxes.
   // The inviter reclaim path on bond_dual allows the inviter to reclaim
@@ -395,7 +372,7 @@ export function cancelInvite(
   // on the bond box, and the cancel transition.
   const result = validateTx(deps, tx, currentBlockHeight);
   if (!result.valid) {
-    throw new Error(`Invalid invite cancel transaction: ${result.error}`);
+    throw new ClientError(`Invalid invite cancel transaction: ${result.error}`);
   }
 
   // ---- 5. Insert into mempool ----

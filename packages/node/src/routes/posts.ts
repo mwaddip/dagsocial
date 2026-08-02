@@ -1,12 +1,14 @@
 import { Router } from 'express';
 import { MAX_CONTENT_BYTES } from '@dagsocial/types';
 import type { Post } from '@dagsocial/types';
-import { createPost, PostServiceError } from '../services/post-service.js';
+import { createPost } from '../services/post-service.js';
 import type { PostServiceDeps } from '../services/post-service.js';
 import { FeedService } from '../services/feed-service.js';
 import type { FeedServiceDeps } from '../services/feed-service.js';
 import { getNet } from '../services/net-instance.js';
 import { jsonToTx } from './json-to-tx.js';
+import { ClientError } from '../services/client-error.js';
+import { respondError } from './respond-error.js';
 
 // ---------------------------------------------------------------------------
 // Dependency types
@@ -36,11 +38,11 @@ function hexToPost(body: Record<string, unknown>): Post {
     challenge = new Uint8Array(Buffer.from(challengeHex, 'hex'));
     signature = new Uint8Array(Buffer.from(signatureHex, 'hex'));
   } catch {
-    throw new Error('Invalid hex encoding in author, challenge, or signature');
+    throw new ClientError('Invalid hex encoding in author, challenge, or signature');
   }
 
   if (author.length !== 32) {
-    throw new Error('author must be 32 bytes (64 hex chars) — Ed25519 public key');
+    throw new ClientError('author must be 32 bytes (64 hex chars) — Ed25519 public key');
   }
 
   return {
@@ -70,7 +72,7 @@ export function createRouter(deps: PostsDeps): Router {
     try {
       post = hexToPost(req.body as Record<string, unknown>);
     } catch (err) {
-      res.status(400).json({ error: 400, reason: (err as Error).message });
+      respondError(res, err, 'POST /posts (body decode)');
       return;
     }
 
@@ -98,7 +100,7 @@ export function createRouter(deps: PostsDeps): Router {
     try {
       karmaLockTx = jsonToTx(rawKarmaLockTx);
     } catch (err) {
-      res.status(400).json({ error: 400, reason: (err as Error).message });
+      respondError(res, err, 'POST /posts (karmaLockTx decode)');
       return;
     }
 
@@ -125,11 +127,7 @@ export function createRouter(deps: PostsDeps): Router {
         txId: result.txId,
       });
     } catch (err) {
-      if (err instanceof PostServiceError) {
-        res.status(err.statusCode).json({ error: err.statusCode, reason: err.message });
-      } else {
-        res.status(500).json({ error: 500, reason: 'internal error' });
-      }
+      respondError(res, err, 'POST /posts');
     }
   });
 

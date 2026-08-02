@@ -1,7 +1,8 @@
 import { Router } from 'express';
-import { faucetGrant, FaucetServiceError } from '../services/faucet-service.js';
+import { faucetGrant } from '../services/faucet-service.js';
 import type { FaucetServiceDeps } from '../services/faucet-service.js';
 import { getNet } from '../services/net-instance.js';
+import { respondError } from './respond-error.js';
 
 // ---------------------------------------------------------------------------
 // Dependency types
@@ -56,11 +57,7 @@ export function createRouter(deps: FaucetDeps): Router {
         expiresAtHeight: result.expiresAtHeight,
       });
     } catch (err) {
-      if (err instanceof FaucetServiceError) {
-        res.status(err.statusCode).json({ error: err.statusCode, reason: err.message });
-      } else {
-        res.status(500).json({ error: 500, reason: 'internal error' });
-      }
+      respondError(res, err, 'POST /faucet');
     }
   });
 

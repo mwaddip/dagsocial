@@ -1,5 +1,5 @@
 import { uid, txToJson, rawPublicKey, signTransaction } from '../helpers.js';
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import express from 'express';
 import http from 'http';
 import { createHash, generateKeyPairSync, createPrivateKey, sign as cryptoSign } from 'crypto';
@@ -19,6 +19,8 @@ import {
 import type { Post, KarmaBox, LikeBox, UtxoTransaction, AnyBox } from '@dagsocial/types';
 import { createRouter } from '../../src/routes/likes.js';
 import type { LikesDeps } from '../../src/routes/likes.js';
+import { ClientError } from '../../src/services/client-error.js';
+import { MempoolFullError } from '../../src/store/mempool.js';
 import { unlinkSync } from 'fs';
 
 const TEST_DB = '/tmp/dagsocial-test-routes-likes.sqlite';
@@ -31,6 +33,7 @@ async function request(
   path: string,
   method: string,
   body?: unknown,
+  depOverrides?: Partial<LikesDeps>,
 ): Promise<{ status: number; data: unknown }> {
   return new Promise((resolve) => {
     const db = getDb();
@@ -59,7 +62,7 @@ async function request(
     };
     const app = express();
     app.use(express.json());
-    app.use('/likes', createRouter(deps));
+    app.use('/likes', createRouter({ ...deps, ...depOverrides }));
     const server = app.listen(0, () => {
       const addr = server.address() as { port: number };
       const r = http.request(
@@ -267,6 +270,99 @@ describe('likes routes', () => {
     );
     const res = await request('/', 'POST', { tx: txJson });
     expect(res.status).toBe(400);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Route error policy (audit L-12, M-8) — a service's intentional rejection
+  // reaches the client; an unexpected error never does.
+  // ---------------------------------------------------------------------------
+
+  describe('error policy', () => {
+    const SECRET = 'SQLITE_CORRUPT: database disk image is malformed at /srv/dagsocial.db';
+
+    function validTxJson(): Record<string, unknown> {
+      return buildLikeTx(
+        karmaBox,
+        likerId,
+        likerPrivKey,
+        likerId,
+        likerPubKeyHex,
+        postId,
+        5,
+      ).txJson;
+    }
+
+    it('returns a generic 500 and logs when the service throws an unexpected error', async () => {
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const res = await request('/', 'POST', { tx: validTxJson() }, {
+          castLike: () => {
+            throw new Error(SECRET);
+          },
+        });
+
+        expect(res.status).toBe(500);
+        const body = res.data as Record<string, unknown>;
+        expect(body.error).toBe('Internal error');
+        expect(JSON.stringify(res.data)).not.toContain('SQLITE_CORRUPT');
+        expect(JSON.stringify(res.data)).not.toContain('/srv/dagsocial.db');
+        // The detail is kept server-side rather than dropped.
+        expect(
+          error.mock.calls.some((c) => c.some((a) => String((a as Error)?.message ?? a).includes('SQLITE_CORRUPT'))),
+        ).toBe(true);
+      } finally {
+        error.mockRestore();
+      }
+    });
+
+    it('control — an intentional rejection still returns its message with 400', async () => {
+      const res = await request('/', 'POST', { tx: validTxJson() }, {
+        castLike: () => {
+          throw new ClientError('Already liked this post');
+        },
+      });
+
+      expect(res.status).toBe(400);
+      const body = res.data as Record<string, unknown>;
+      expect(body.reason).toBe('Already liked this post');
+    });
+
+    it('maps a full mempool to 503 with a generic body', async () => {
+      const res = await request('/', 'POST', { tx: validTxJson() }, {
+        castLike: () => {
+          throw new MempoolFullError(10000);
+        },
+      });
+
+      expect(res.status).toBe(503);
+      expect(res.data).toEqual({ error: 'mempool full' });
+    });
+
+    it('applies the same policy on POST /likes/remove', async () => {
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const unexpected = await request('/remove', 'POST', { tx: validTxJson() }, {
+          removeLike: () => {
+            throw new Error(SECRET);
+          },
+        });
+        expect(unexpected.status).toBe(500);
+        expect((unexpected.data as Record<string, unknown>).error).toBe('Internal error');
+        expect(JSON.stringify(unexpected.data)).not.toContain('SQLITE_CORRUPT');
+
+        const intentional = await request('/remove', 'POST', { tx: validTxJson() }, {
+          removeLike: () => {
+            throw new ClientError('Transaction does not consume a LikeBox');
+          },
+        });
+        expect(intentional.status).toBe(400);
+        expect((intentional.data as Record<string, unknown>).reason).toBe(
+          'Transaction does not consume a LikeBox',
+        );
+      } finally {
+        error.mockRestore();
+      }
+    });
   });
 
   // ---------------------------------------------------------------------------

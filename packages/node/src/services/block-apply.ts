@@ -37,6 +37,7 @@ import {
   getOrderingBlock,
   getPendingEntries,
   removeEntry,
+  removeSubBlockEntries,
   insertBlockTopology,
   getSubtreeTopology,
   getTopologyAuthor,
@@ -328,18 +329,11 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
     }
   }
 
-  // Still remove confirmed entries from local mempool (if we have them)
-  if (block.subBlockTree.subBlockRefs.length > 0) {
-    const entriesAfter = getPendingEntries(1000);
-    for (const subBlockId of block.subBlockTree.subBlockRefs) {
-      const match = entriesAfter.find((e) =>
-        e.entryType === 'subblock' && e.subblockId === subBlockId,
-      );
-      if (match) {
-        removeEntry(match.rowid);
-      }
-    }
-  }
+  // Still remove confirmed entries from local mempool (if we have them).
+  // One DELETE keyed by subblock_id — the former fetch-1000-and-find loop
+  // silently stopped removing entries past row 1000 (audit M-8, bookkeeping
+  // only: those entries lingered until expiry, no consensus effect).
+  removeSubBlockEntries(block.subBlockTree.subBlockRefs);
 
   // 8. Compute DAG scores and evaluate canonical tip
   if (dagService) {

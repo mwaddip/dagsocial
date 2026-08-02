@@ -5,17 +5,15 @@ import {
 } from '@dagsocial/types';
 import type { Post, KarmaBox, UtxoTransaction, AnyBox, SubBlock, LikeBox } from '@dagsocial/types';
 import type { VerifierDeps, VerificationResult } from './verifier.js';
+import { ClientError } from './client-error.js';
 
 // ---------------------------------------------------------------------------
 // Error
 // ---------------------------------------------------------------------------
 
-export class PostServiceError extends Error {
-  constructor(
-    message: string,
-    public statusCode: number = 400,
-  ) {
-    super(message);
+export class PostServiceError extends ClientError {
+  constructor(message: string, statusCode: number = 400) {
+    super(message, statusCode);
     this.name = 'PostServiceError';
   }
 }

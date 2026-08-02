@@ -71,6 +71,29 @@ function createVouchBox(
   return full;
 }
 
+/** An unsigned vouch tx — for rejections that fire before validateTx. */
+function vouchTxFor(
+  voucherId: Uint8Array,
+  targetId: Uint8Array,
+  createdAtBlock: number,
+): UtxoTransaction {
+  return {
+    inputs: [],
+    outputs: [
+      {
+        boxType: 'vouch' as const,
+        value: VOUCH_KARMA_AMOUNT,
+        voucherId,
+        targetId,
+        guard: 'owner_signature' as const,
+        createdAtBlock,
+      },
+    ],
+    signatures: {},
+    protocolVersion: PROTOCOL_VERSION,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Test suite
 // ---------------------------------------------------------------------------
@@ -105,6 +128,45 @@ describe('vouch service', () => {
         (db.transaction(fn) as () => void)();
       },
     };
+  }
+
+  /** A fully-formed, signed vouch tx that passes validateTx. */
+  function signedVouchTx(
+    karmaBoxId: string,
+    owner: Uint8Array,
+    targetId: Uint8Array,
+    atBlock: number,
+    privKey?: KeyObject,
+  ): UtxoTransaction {
+    const ownerHex = Buffer.from(owner).toString('hex');
+    const newKarma: KarmaBox = {
+      boxType: 'karma',
+      value: 99,
+      createdAtBlock: atBlock,
+      owner,
+      guard: 'owner_signature',
+      proofSource: `vouch:${Buffer.from(targetId).toString('hex')}`,
+      lastTouchBlock: atBlock,
+    };
+    const vouchBox: Omit<VouchBox, 'id'> & { id?: string } = {
+      boxType: 'vouch',
+      value: VOUCH_KARMA_AMOUNT,
+      voucherId: owner,
+      targetId,
+      guard: 'owner_signature',
+      createdAtBlock: atBlock,
+    };
+    const tx: UtxoTransaction = {
+      inputs: [karmaBoxId],
+      outputs: [
+        { ...newKarma, id: computeBoxId(newKarma) },
+        { ...vouchBox, id: computeBoxId(vouchBox) } as VouchBox,
+      ],
+      signatures: {},
+      protocolVersion: PROTOCOL_VERSION,
+    };
+    signTransaction(tx, privKey ?? voucherPrivKey, ownerHex);
+    return tx;
   }
 
   beforeEach(() => {
@@ -238,8 +300,57 @@ describe('vouch service', () => {
       };
 
       expect(() => castVouch(deps, tx, 10)).toThrow(
-        'Already vouching for this identity',
+        'Already vouching for an identity',
       );
+    });
+
+    // -------------------------------------------------------------------
+    // Single active vouch, across all targets (audit L-4). The check used
+    // to be pair-scoped, so one identity could hold many concurrent
+    // VouchBoxes just by picking a different target each time.
+    // -------------------------------------------------------------------
+
+    it('rejects a second vouch aimed at a different target', () => {
+      createKarmaBox(voucherPubKey, 100, 1);
+      createVouchBox(voucherPubKey, targetPubKey, 5);
+
+      const otherTarget = rawPublicKey(generateKeyPairSync('ed25519').publicKey);
+      const tx = vouchTxFor(voucherPubKey, otherTarget, 10);
+
+      expect(() => castVouch(deps, tx, 10)).toThrow(
+        'Already vouching for an identity',
+      );
+    });
+
+    it('rejects a second vouch while the first is still pending in the mempool', () => {
+      const karma = createKarmaBox(voucherPubKey, 100, 1);
+
+      // First vouch — validated and queued, no VouchBox in the UTXO set yet.
+      const firstTx = signedVouchTx(karma.id!, voucherPubKey, targetPubKey, 5);
+      expect(castVouch(deps, firstTx, 5).status).toBe('pending');
+
+      const otherTarget = rawPublicKey(generateKeyPairSync('ed25519').publicKey);
+      const secondTx = vouchTxFor(voucherPubKey, otherTarget, 6);
+
+      expect(() => castVouch(deps, secondTx, 6)).toThrow('Vouch already pending');
+    });
+
+    it('control — a voucher with no active or pending vouch is accepted', () => {
+      const karma = createKarmaBox(voucherPubKey, 100, 1);
+      const tx = signedVouchTx(karma.id!, voucherPubKey, targetPubKey, 5);
+      expect(castVouch(deps, tx, 5).status).toBe('pending');
+    });
+
+    it('control — a different voucher is unaffected by another identity vouching', () => {
+      createKarmaBox(voucherPubKey, 100, 1);
+      createVouchBox(voucherPubKey, targetPubKey, 5);
+
+      const otherKeys = generateKeyPairSync('ed25519');
+      const otherPub = rawPublicKey(otherKeys.publicKey);
+      const otherKarma = createKarmaBox(otherPub, 100, 1);
+      const tx = signedVouchTx(otherKarma.id!, otherPub, targetPubKey, 10, otherKeys.privateKey);
+
+      expect(castVouch(deps, tx, 10).status).toBe('pending');
     });
 
     it('rejects if cooldown active', () => {

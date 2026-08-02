@@ -3,6 +3,7 @@ import type { UtxoTransaction } from '@dagsocial/types';
 import type { UtxoEngineDeps } from '../services/utxo-engine.js';
 import { getNet } from '../services/net-instance.js';
 import { jsonToTx } from './json-to-tx.js';
+import { respondError } from './respond-error.js';
 
 // ---------------------------------------------------------------------------
 // Dependency types
@@ -77,7 +78,7 @@ export function createRouter(deps: InvitesDeps): Router {
     try {
       tx = jsonToTx(body.tx);
     } catch (err) {
-      res.status(400).json({ error: (err as Error).message });
+      respondError(res, err, 'POST /invites (tx decode)', 'message');
       return;
     }
 
@@ -102,7 +103,7 @@ export function createRouter(deps: InvitesDeps): Router {
         secretHash: Buffer.from(result.inviteBox.secretHash).toString('hex'),
       });
     } catch (err) {
-      res.status(400).json({ error: (err as Error).message });
+      respondError(res, err, 'POST /invites', 'message');
     }
   });
 
@@ -119,7 +120,7 @@ export function createRouter(deps: InvitesDeps): Router {
     try {
       tx = jsonToTx(body.tx);
     } catch (err) {
-      res.status(400).json({ error: (err as Error).message });
+      respondError(res, err, 'POST /invites/commit (tx decode)', 'message');
       return;
     }
 
@@ -142,12 +143,9 @@ export function createRouter(deps: InvitesDeps): Router {
         bondBoxId: result.bondBoxId,
       });
     } catch (err) {
-      const msg = (err as Error).message;
-      if (msg.includes('already committed')) {
-        res.status(409).json({ error: msg });
-      } else {
-        res.status(400).json({ error: msg });
-      }
+      // 409 for an already-committed BondBox now rides on the typed error's
+      // statusCode — no message sniffing (audit L-12).
+      respondError(res, err, 'POST /invites/commit', 'message');
     }
   });
 
@@ -164,7 +162,7 @@ export function createRouter(deps: InvitesDeps): Router {
     try {
       tx = jsonToTx(body.tx);
     } catch (err) {
-      res.status(400).json({ error: (err as Error).message });
+      respondError(res, err, 'POST /invites/claim (tx decode)', 'message');
       return;
     }
 
@@ -188,7 +186,7 @@ export function createRouter(deps: InvitesDeps): Router {
         karmaBoxId: result.karmaBoxId,
       });
     } catch (err) {
-      res.status(400).json({ error: (err as Error).message });
+      respondError(res, err, 'POST /invites/claim', 'message');
     }
   });
 
@@ -205,7 +203,7 @@ export function createRouter(deps: InvitesDeps): Router {
     try {
       tx = jsonToTx(body.tx);
     } catch (err) {
-      res.status(400).json({ error: (err as Error).message });
+      respondError(res, err, 'POST /invites/cancel (tx decode)', 'message');
       return;
     }
 
@@ -227,17 +225,10 @@ export function createRouter(deps: InvitesDeps): Router {
         expiresAtHeight: result.expiresAtHeight,
       });
     } catch (err) {
-      const msg = (err as Error).message;
-      if (msg.includes('Inviter mismatch')) {
-        res.status(403).json({ error: msg });
-      } else if (
-        msg.includes('already claimed') ||
-        msg.includes('already spent')
-      ) {
-        res.status(400).json({ error: msg });
-      } else {
-        res.status(400).json({ error: msg });
-      }
+      // 403 for an inviter mismatch now rides on the typed error's statusCode;
+      // the 'already claimed' / 'already spent' branches were both 400, the
+      // same as the fallback (audit L-12).
+      respondError(res, err, 'POST /invites/cancel', 'message');
     }
   });
 

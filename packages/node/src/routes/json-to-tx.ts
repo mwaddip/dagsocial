@@ -1,4 +1,5 @@
 import type { AnyBox, UtxoTransaction } from '@dagsocial/types';
+import { ClientError } from '../services/client-error.js';
 
 /**
  * Fields in box types whose runtime value is Uint8Array but arrive as hex
@@ -23,7 +24,7 @@ export function jsonToTx(raw: Record<string, unknown>): UtxoTransaction {
   const signatures: Record<string, Uint8Array> = {};
   for (const [key, val] of Object.entries(rawSigs)) {
     if (typeof val !== 'string') {
-      throw new Error(`signature for ${key} must be a hex string`);
+      throw new ClientError(`signature for ${key} must be a hex string`);
     }
     signatures[key] = hexToBytes(val);
   }
@@ -33,7 +34,7 @@ export function jsonToTx(raw: Record<string, unknown>): UtxoTransaction {
   const preimages: Record<string, Uint8Array> = {};
   for (const [key, val] of Object.entries(rawPreimages)) {
     if (typeof val !== 'string') {
-      throw new Error(`preimage for ${key} must be a hex string`);
+      throw new ClientError(`preimage for ${key} must be a hex string`);
     }
     preimages[key] = hexToBytes(val);
   }
@@ -80,7 +81,7 @@ function convertBox(box: Record<string, unknown>): Record<string, unknown> {
  */
 function assertValidBoxValue(value: unknown): void {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
-    throw new Error(
+    throw new ClientError(
       `box value must be a non-negative integer, got ${String(value)}`,
     );
   }

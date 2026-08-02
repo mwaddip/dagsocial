@@ -3,6 +3,7 @@ import type { UtxoTransaction } from '@dagsocial/types';
 import type { UtxoEngineDeps } from '../services/utxo-engine.js';
 import { getNet } from '../services/net-instance.js';
 import { jsonToTx } from './json-to-tx.js';
+import { respondError } from './respond-error.js';
 
 // ---------------------------------------------------------------------------
 // Dependency types
@@ -44,7 +45,7 @@ export function createRouter(deps: LikesDeps): Router {
     try {
       tx = jsonToTx(body.tx);
     } catch (err) {
-      res.status(400).json({ error: 400, reason: (err as Error).message });
+      respondError(res, err, 'POST /likes (tx decode)');
       return;
     }
 
@@ -72,7 +73,7 @@ export function createRouter(deps: LikesDeps): Router {
         expiresAtHeight: response.expiresAtHeight,
       });
     } catch (err) {
-      res.status(400).json({ error: 400, reason: (err as Error).message });
+      respondError(res, err, 'POST /likes');
     }
   });
 
@@ -89,7 +90,7 @@ export function createRouter(deps: LikesDeps): Router {
     try {
       tx = jsonToTx(body.tx);
     } catch (err) {
-      res.status(400).json({ error: 400, reason: (err as Error).message });
+      respondError(res, err, 'POST /likes/remove (tx decode)');
       return;
     }
 
@@ -111,12 +112,7 @@ export function createRouter(deps: LikesDeps): Router {
         expiresAtHeight: result.expiresAtHeight,
       });
     } catch (err) {
-      const message = (err as Error).message;
-      if (message === 'Like not found') {
-        res.status(404).json({ error: 404, reason: message });
-      } else {
-        res.status(400).json({ error: 400, reason: message });
-      }
+      respondError(res, err, 'POST /likes/remove');
     }
   });
 

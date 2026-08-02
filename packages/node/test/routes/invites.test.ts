@@ -1,5 +1,5 @@
 import { txToJson, signTransaction } from '../helpers.js';
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import express from 'express';
 import http from 'http';
 import { createHash, generateKeyPairSync, createPrivateKey } from 'crypto';
@@ -23,6 +23,8 @@ import {
 import type { KarmaBox, InviteBox, BondBox, UtxoTransaction, AnyBox } from '@dagsocial/types';
 import { createRouter } from '../../src/routes/invites.js';
 import type { InvitesDeps } from '../../src/routes/invites.js';
+import { ClientError } from '../../src/services/client-error.js';
+import { MempoolFullError } from '../../src/store/mempool.js';
 import { unlinkSync } from 'fs';
 
 const TEST_DB = '/tmp/dagsocial-test-routes-invites.sqlite';
@@ -31,6 +33,7 @@ async function request(
   path: string,
   method: string,
   body?: unknown,
+  depOverrides?: Partial<InvitesDeps>,
 ): Promise<{ status: number; data: unknown }> {
   return new Promise((resolve) => {
     const db = getDb();
@@ -55,7 +58,7 @@ async function request(
     };
     const app = express();
     app.use(express.json());
-    app.use('/invites', createRouter(deps));
+    app.use('/invites', createRouter({ ...deps, ...depOverrides }));
     const server = app.listen(0, () => {
       const addr = server.address() as { port: number };
       const r = http.request(
@@ -508,5 +511,80 @@ describe('invites routes', () => {
 
     const res = await request('/cancel', 'POST', { tx: txToJson(tx) });
     expect(res.status).toBe(403);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Route error policy (audit L-12, M-8). These routes answer with the bare
+  // `{ error: <message> }` shape, so the assertions below read `error`.
+  // ---------------------------------------------------------------------------
+
+  describe('error policy', () => {
+    const SECRET = 'SQLITE_BUSY: database is locked at /srv/dagsocial.db';
+    const EMPTY_TX = { inputs: [], outputs: [], signatures: {}, protocolVersion: 1 };
+
+    it('returns a generic 500 and logs when the service throws an unexpected error', async () => {
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const res = await request('/', 'POST', { tx: EMPTY_TX }, {
+          createInvite: () => {
+            throw new Error(SECRET);
+          },
+        });
+
+        expect(res.status).toBe(500);
+        expect((res.data as Record<string, unknown>).error).toBe('Internal error');
+        expect(JSON.stringify(res.data)).not.toContain('SQLITE_BUSY');
+        expect(JSON.stringify(res.data)).not.toContain('/srv/dagsocial.db');
+        expect(
+          error.mock.calls.some((c) => c.some((a) => String((a as Error)?.message ?? a).includes('SQLITE_BUSY'))),
+        ).toBe(true);
+      } finally {
+        error.mockRestore();
+      }
+    });
+
+    it('control — an intentional rejection still returns its message with 400', async () => {
+      const res = await request('/', 'POST', { tx: EMPTY_TX }, {
+        createInvite: () => {
+          throw new ClientError('Invite limit reached: 5 pending invites (max 5)');
+        },
+      });
+
+      expect(res.status).toBe(400);
+      expect((res.data as Record<string, unknown>).error).toBe(
+        'Invite limit reached: 5 pending invites (max 5)',
+      );
+    });
+
+    it('carries a 409 on the typed error instead of sniffing the message', async () => {
+      const res = await request('/commit', 'POST', { tx: EMPTY_TX }, {
+        commitInvite: () => {
+          throw new ClientError('BondBox already committed', 409);
+        },
+      });
+
+      expect(res.status).toBe(409);
+      expect((res.data as Record<string, unknown>).error).toBe('BondBox already committed');
+    });
+
+    it('maps a full mempool to 503 with a generic body', async () => {
+      const res = await request('/claim', 'POST', { tx: EMPTY_TX }, {
+        claimInvite: () => {
+          throw new MempoolFullError(10000);
+        },
+      });
+
+      expect(res.status).toBe(503);
+      expect(res.data).toEqual({ error: 'mempool full' });
+    });
+
+    it('keeps returning decode errors verbatim with 400', async () => {
+      const res = await request('/', 'POST', { tx: { outputs: [{ value: -1 }] } });
+
+      expect(res.status).toBe(400);
+      expect(String((res.data as Record<string, unknown>).error)).toContain(
+        'box value must be a non-negative integer',
+      );
+    });
   });
 });

@@ -25,6 +25,7 @@ import {
   insertPost,
   getBox as storeGetBox,
   getPendingEntries,
+  insertMempoolSubBlock,
 } from '../../src/store/index.js';
 import { castLike } from '../../src/services/likes.js';
 import type { UtxoEngineDeps } from '../../src/services/utxo-engine.js';
@@ -442,6 +443,91 @@ describe('likes service', () => {
     signTransaction(tx2, likerPrivKey, likerPubKeyHex);
 
     expect(() => castLike(deps, tx2, 5)).toThrow('Already liked');
+  });
+
+  // -----------------------------------------------------------------------
+  // 6b. The mempool gate sees a pending like past the old 1000-row scan
+  //     bound (audit M-8). Beyond that bound the duplicate check used to go
+  //     blind, so the same identity could double-like the same post.
+  // -----------------------------------------------------------------------
+  it('castLike rejects a duplicate whose pending like sits past row 1000', () => {
+    const karma = createKarmaBox(likerPubKey, 100, 1);
+    const postId = createTestPost(likerId);
+
+    function buildLikeTx(): UtxoTransaction {
+      const newKarma: KarmaBox = {
+        boxType: 'karma',
+        value: 98,
+        createdAtBlock: 5,
+        owner: likerPubKey,
+        guard: 'owner_signature',
+        proofSource: `like:${postId}`,
+        lastTouchBlock: 5,
+      };
+      const likeBox: LikeBox = {
+        boxType: 'like',
+        value: LIKE_COST,
+        createdAtBlock: 5,
+        likerId,
+        targetPostId: postId,
+        guard: 'epoch_tally',
+      };
+      const tx: UtxoTransaction = {
+        inputs: [karma.id!],
+        outputs: [
+          { ...newKarma, id: computeBoxId(newKarma) },
+          { ...likeBox, id: computeBoxId(likeBox) },
+        ],
+        signatures: {},
+        protocolVersion: PROTOCOL_VERSION,
+      };
+      signTransaction(tx, likerPrivKey, likerPubKeyHex);
+      return tx;
+    }
+
+    // Bury the pending like behind 1000 unrelated entries.
+    for (let i = 0; i < 1000; i++) insertMempoolSubBlock(`filler_${i}`, 900);
+    castLike(deps, buildLikeTx(), 5);
+
+    // Vacuity: the pending like is genuinely out of the old scan's reach.
+    const scanned = getPendingEntries(1000);
+    expect(scanned.some((e) => e.entryType === 'utxo_tx')).toBe(false);
+
+    expect(() => castLike(deps, buildLikeTx(), 5)).toThrow('Already liked');
+
+    // Control — same post, different liker: single-field delta, still accepted.
+    const otherKeys = generateKeyPairSync('ed25519');
+    const otherPub = rawPublicKey(otherKeys.publicKey);
+    const otherKarma = createKarmaBox(otherPub, 100, 1);
+    const otherNewKarma: KarmaBox = {
+      boxType: 'karma',
+      value: 98,
+      createdAtBlock: 5,
+      owner: otherPub,
+      guard: 'owner_signature',
+      proofSource: `like:${postId}`,
+      lastTouchBlock: 5,
+    };
+    const otherLike: LikeBox = {
+      boxType: 'like',
+      value: LIKE_COST,
+      createdAtBlock: 5,
+      likerId: otherPub,
+      targetPostId: postId,
+      guard: 'epoch_tally',
+    };
+    const otherTx: UtxoTransaction = {
+      inputs: [otherKarma.id!],
+      outputs: [
+        { ...otherNewKarma, id: computeBoxId(otherNewKarma) },
+        { ...otherLike, id: computeBoxId(otherLike) },
+      ],
+      signatures: {},
+      protocolVersion: PROTOCOL_VERSION,
+    };
+    signTransaction(otherTx, otherKeys.privateKey, Buffer.from(otherPub).toString('hex'));
+
+    expect(castLike(deps, otherTx, 5).castLikeResult).toBe('pending');
   });
 
   // -----------------------------------------------------------------------

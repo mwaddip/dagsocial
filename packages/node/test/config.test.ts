@@ -8,6 +8,7 @@ const TEST_KEYS = [
   'ORDERING_BLOCK_INTERVAL_MS',
   'ORDERING_BLOCK_MIN_SUB_BLOCKS',
   'MAX_SUB_BLOCKS_PER_BLOCK',
+  'MAX_MEMPOOL_ENTRIES',
   'EPOCH_BLOCKS',
   'NETWORK_MODE',
   'MINING_SECRET',
@@ -40,6 +41,7 @@ describe('config', () => {
       expect(cfg.orderingBlockMinSubBlocks).toBe(1);
       expect(cfg.maxSubBlocksPerBlock).toBe(1000);
       expect(cfg.epochBlocks).toBe(60);
+      expect(cfg.maxMempoolEntries).toBe(10000);
       expect(cfg.networkMode).toBe('testnet');
       expect(cfg.miningSecret).toBe('');
     });
@@ -55,6 +57,7 @@ describe('config', () => {
       process.env['ORDERING_BLOCK_MIN_SUB_BLOCKS'] = '3';
       process.env['MAX_SUB_BLOCKS_PER_BLOCK'] = '500';
       process.env['EPOCH_BLOCKS'] = '120';
+      process.env['MAX_MEMPOOL_ENTRIES'] = '25';
       process.env['NETWORK_MODE'] = 'mainnet';
       process.env['MINING_SECRET'] = 'sekret';
 
@@ -69,6 +72,7 @@ describe('config', () => {
       expect(cfg.orderingBlockMinSubBlocks).toBe(3);
       expect(cfg.maxSubBlocksPerBlock).toBe(500);
       expect(cfg.epochBlocks).toBe(120);
+      expect(cfg.maxMempoolEntries).toBe(25);
       expect(cfg.networkMode).toBe('mainnet');
       expect(cfg.miningSecret).toBe('sekret');
     });

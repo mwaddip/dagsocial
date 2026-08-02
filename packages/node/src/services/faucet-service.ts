@@ -15,6 +15,7 @@ import {
 import { hasFaucetOriginKarmaBox } from '../store/utxo.js';
 import { validateTx } from './utxo-engine.js';
 import type { UtxoEngineDeps } from './utxo-engine.js';
+import { ClientError } from './client-error.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -26,12 +27,9 @@ const FAUCET_AMOUNT = 100;
 // Error
 // ---------------------------------------------------------------------------
 
-export class FaucetServiceError extends Error {
-  constructor(
-    message: string,
-    public statusCode: number = 400,
-  ) {
-    super(message);
+export class FaucetServiceError extends ClientError {
+  constructor(message: string, statusCode: number = 400) {
+    super(message, statusCode);
     this.name = 'FaucetServiceError';
   }
 }

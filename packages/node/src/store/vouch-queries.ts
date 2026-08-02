@@ -52,9 +52,21 @@ export function getVouchesByVoucher(voucherId: Uint8Array): VouchBox[] {
     .filter((b): b is VouchBox => b !== null && b.boxType === 'vouch');
 }
 
-export function hasActiveVouch(
-  voucherId: Uint8Array,
-  targetId: Uint8Array,
-): boolean {
-  return getVouchBox(voucherId, targetId) !== null;
+/**
+ * Does this identity hold an active VouchBox for *any* target? One vouch at a
+ * time is an ARCHITECTURE invariant; the pair-scoped predicate this replaces
+ * let a voucher hold many concurrent VouchBoxes by targeting different
+ * identities (audit L-4).
+ */
+export function hasAnyActiveVouch(voucherId: Uint8Array): boolean {
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT 1 FROM utxo_boxes
+       WHERE box_type = 'vouch' AND spent_at_block IS NULL
+         AND json_extract(extra_data, '$.voucherId') = ?
+       LIMIT 1`,
+    )
+    .get(pubkeyToHex(voucherId));
+  return row !== undefined;
 }

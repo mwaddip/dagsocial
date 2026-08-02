@@ -32,6 +32,7 @@ import {
   getCurrentHeight,
   insertMempoolSubBlock,
   insertUtxoTx,
+  MempoolFullError,
   getOrderingBlock,
   insertStump,
   getStump,
@@ -166,7 +167,15 @@ net.onSubBlock((sb) => {
   }
   insertPost(sb.post, encodePost(sb.post));
   const currentHeight = getCurrentHeight();
-  insertMempoolSubBlock(sb.subBlockId, currentHeight + MEMPOOL_EXPIRY_BLOCKS);
+  try {
+    insertMempoolSubBlock(sb.subBlockId, currentHeight + MEMPOOL_EXPIRY_BLOCKS);
+  } catch (err) {
+    if (err instanceof MempoolFullError) {
+      console.warn(`Relayed sub-block dropped, mempool full: ${sb.subBlockId}`);
+      return;
+    }
+    throw err;
+  }
   // Re-broadcast to other peers (gap 5)
   net.broadcastSubBlock(sb).catch((err: Error) => {
     console.warn(`Failed to relay sub-block ${sb.subBlockId}: ${err.message}`);
@@ -309,7 +318,15 @@ net.onTx((tx) => {
     return;
   }
   const expiresAtHeight = currentHeight + MEMPOOL_EXPIRY_BLOCKS;
-  insertUtxoTx(tx, null, expiresAtHeight);
+  try {
+    insertUtxoTx(tx, null, expiresAtHeight);
+  } catch (err) {
+    if (err instanceof MempoolFullError) {
+      console.warn(`Relayed tx dropped, mempool full: ${result.txId}`);
+      return;
+    }
+    throw err;
+  }
   console.log(`Relayed tx queued in mempool: ${result.txId}`);
 });
 

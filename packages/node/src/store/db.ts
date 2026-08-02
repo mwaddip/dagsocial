@@ -75,6 +75,10 @@ const MIGRATIONS = [
   // Mempool (unified sub-block + UTXO transaction pool)
   // Schema change: subblock_cbor BLOB → subblock_id TEXT (ID-based, not CBOR-based).
   // Existing databases with the old schema will fail — pre-stable, DB reset acceptable.
+  //
+  // The like_/invite_/vouch_ columns are gate metadata (audit M-8): populated by
+  // insertUtxoTx from the tx outputs so the correctness gates are plain SQL over
+  // every row, not a decode-scan of the first 1000.
   `CREATE TABLE IF NOT EXISTS mempool (
     rowid INTEGER PRIMARY KEY AUTOINCREMENT,
     entry_type TEXT NOT NULL CHECK(entry_type IN ('subblock', 'utxo_tx')),
@@ -82,7 +86,11 @@ const MIGRATIONS = [
     utxo_tx_cbor BLOB,
     batch_id TEXT,
     expires_at_height INTEGER NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    like_target TEXT,
+    like_liker TEXT,
+    invite_inviter TEXT,
+    vouch_voucher TEXT
   )`,
 
   // System config (persistent node-level keypairs, etc.)
@@ -227,7 +235,11 @@ function migrateVerifiablePrune(database: Database.Database): void {
       prune_entry_cbor BLOB,
       batch_id TEXT,
       expires_at_height INTEGER NOT NULL,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      like_target TEXT,
+      like_liker TEXT,
+      invite_inviter TEXT,
+      vouch_voucher TEXT
     );
   `);
 
@@ -266,6 +278,25 @@ function migrateVouchCooldowns(database: Database.Database): void {
   `);
 }
 
+/**
+ * Partial indexes over the mempool gate-metadata columns (audit M-8). Created
+ * after the mempool migrations so they land on whichever CREATE TABLE ran last.
+ * A database predating the gate columns fails loudly here at startup rather
+ * than silently at the first insert — pre-stable, DB reset acceptable.
+ */
+function createMempoolGateIndexes(database: Database.Database): void {
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_mempool_like
+      ON mempool(like_target, like_liker) WHERE like_target IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_mempool_invite
+      ON mempool(invite_inviter) WHERE invite_inviter IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_mempool_vouch
+      ON mempool(vouch_voucher) WHERE vouch_voucher IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_mempool_subblock_id
+      ON mempool(subblock_id) WHERE subblock_id IS NOT NULL;
+  `);
+}
+
 export function initDb(path: string): void {
   db = new Database(path);
   db.pragma('journal_mode = WAL');
@@ -278,6 +309,7 @@ export function initDb(path: string): void {
   migrateBlockTopology(db);
   migrateVerifiablePrune(db);
   migrateVouchCooldowns(db);
+  createMempoolGateIndexes(db);
 }
 
 export function getDb(): Database.Database {

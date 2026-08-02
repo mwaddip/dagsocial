@@ -215,6 +215,22 @@ They count toward the total for author rewards.
 | `GET` | `/vouches?voucher=X` | `getVouchesByVoucher` | List who identity vouches for |
 | `GET` | `/vouches?voucher=X&cooldowns=1` | `getVouchCooldowns` | Active cooldowns |
 
+**Single active vouch (L-4):** each identity may vouch for at most one target
+at a time (ARCHITECTURE invariant). `castVouch` rejects when the voucher has
+ANY active VouchBox — not merely one for the same target — or any pending
+vouch transaction in the mempool (`hasPendingVouch`). The pair-scoped
+cooldown check (no re-vouch of the same target during its cooldown) is
+unchanged.
+
+**Route error policy (L-12):** services signal intentional, client-safe
+rejections with a typed client-error class; route handlers return its message
+with the mapped status (400/404/409). Any other thrown error returns a
+**generic** body (`{ error: "Internal error" }`, 500) and is logged
+server-side with full detail — `err.message` from unexpected errors never
+reaches a response. `MempoolFullError` maps to 503 with a generic
+"mempool full" body. Applies to all tx-submitting routes (posts, likes,
+invites, vouches, credits, faucet, prune).
+
 ### Pruning
 
 | Method | Path | Request | Response | Errors |
@@ -678,7 +694,20 @@ block has confirmed. Idempotent insert (first block to confirm a postId wins);
 | `removeMempoolPrunes(entryIds)` | `(string[]) => void` | Remove confirmed prune entries by rowid |
 | `getPendingEntries(limit)` | `(number) => PoolEntry[]` | FIFO-ordered pending entries |
 | `purgeExpired(currentHeight)` | `(number) => number` | Remove entries past expiry, returns count |
+| `hasPendingLike(targetPostId, likerId)` | `(string, string) => boolean` | SQL EXISTS over gate metadata — unbounded (M-8) |
+| `countPendingInvites(inviterId)` | `(string) => number` | SQL COUNT over gate metadata — unbounded (M-8) |
+| `hasPendingVouch(voucherId)` | `(string) => boolean` | SQL EXISTS over gate metadata (L-4) |
+| `removeSubBlockEntries(postIds)` | `(string[]) => number` | Delete confirmed sub-block entries by id — replaces the fetch-and-find loop |
 | `removeEntry(rowid)` | `(number) => void` | Remove confirmed entry by rowid |
+
+All insert functions throw a typed `MempoolFullError` at `MAX_MEMPOOL_ENTRIES`
+(default 10000). Three callers, three behaviors: routes map it to 503; gossip
+relay handlers drop the entry and log; **reorg re-insertion**
+(`services/fork-resolution.ts`, returning reverted txs/sub-blocks/prunes to the
+pool) also drops-and-logs — it runs inside the chain-switch SQLite transaction,
+so an escaping error would roll back the reorg and strand the node on the
+lighter chain, turning mempool pressure into a consensus-liveness failure.
+Full semantics in `MEMPOOL_INTERFACE.md`.
 
 `PoolEntry`:
 ```

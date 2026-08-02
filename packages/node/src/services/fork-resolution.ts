@@ -15,6 +15,7 @@ import {
   insertMempoolPrune,
   removeMempoolPrunes,
   rollbackBlockTopology,
+  MempoolFullError,
 } from '../store/index.js';
 import { getDb } from '../store/db.js';
 import { deleteVouchCooldown } from '../store/vouch-cooldowns.js';
@@ -140,6 +141,29 @@ export function revertBlock(height: number): PruneEntry[] {
 }
 
 /**
+ * Return a reverted entry to the mempool, tolerating a full pool.
+ *
+ * Re-insertion is bookkeeping — it gives txs from the losing chain a chance to
+ * be re-mined. A `MempoolFullError` here must not abort the reorg: that would
+ * turn mempool pressure into a consensus-liveness failure, leaving the node
+ * stuck on the lighter chain (the whole reorg runs in one SQLite transaction,
+ * so a throw rolls back the chain switch too). Dropped entries are lost from
+ * the local pool only; the ledger state is already reverted, and peers still
+ * hold the txs.
+ */
+function reinsert(insert: () => void, label: string): void {
+  try {
+    insert();
+  } catch (err) {
+    if (err instanceof MempoolFullError) {
+      console.warn(`Reorg re-insertion dropped, mempool full: ${label}`);
+      return;
+    }
+    throw err;
+  }
+}
+
+/**
  * Reorg: revert our chain from currentHeight down to forkHeight+1,
  * then apply the competing chain forward.
  */
@@ -174,11 +198,11 @@ export function reorg(forkHeight: number, newBlocks: OrderingBlock[], dagService
     // Re-insert UTXO txs
     for (const txRecord of journal.appliedUtxoTxs) {
       const tx = decodeTx(txRecord.txCbor);
-      insertUtxoTx(tx, null, mempoolExpiry);
+      reinsert(() => insertUtxoTx(tx, null, mempoolExpiry), `tx ${txRecord.txId}`);
     }
     // Re-insert sub-blocks by ID (content is in dag_posts)
     for (const subBlockId of journal.confirmedSubBlockIds) {
-      insertMempoolSubBlock(subBlockId, mempoolExpiry);
+      reinsert(() => insertMempoolSubBlock(subBlockId, mempoolExpiry), `sub-block ${subBlockId}`);
     }
   }
 
@@ -187,7 +211,7 @@ export function reorg(forkHeight: number, newBlocks: OrderingBlock[], dagService
     const entryIds = revertedPruneEntries.map(e => computePruneEntryId(e));
     removeMempoolPrunes(entryIds);
     for (const entry of revertedPruneEntries) {
-      insertMempoolPrune(entry, mempoolExpiry);
+      reinsert(() => insertMempoolPrune(entry, mempoolExpiry), `prune entry ${entry.rootPostHash}`);
     }
   }
 

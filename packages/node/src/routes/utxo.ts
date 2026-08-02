@@ -23,6 +23,7 @@ import {
   ensureFaucetCreditBox,
 } from '../store/system.js';
 import { getNet } from '../services/net-instance.js';
+import { respondError } from './respond-error.js';
 import { config } from '../config.js';
 
 // ---------------------------------------------------------------------------
@@ -165,14 +166,10 @@ export function createRouter(deps: UtxoDeps): Router {
       const result = sendCredits(fromBytes, toBytes, body.amount, sigBytes, currentHeight, expectedHeight);
       res.json(result);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'transfer failed';
-      if (msg === 'invalid signature') {
-        res.status(401).json({ error: msg });
-      } else if (msg.includes('Insufficient')) {
-        res.status(400).json({ error: msg });
-      } else {
-        res.status(400).json({ error: msg });
-      }
+      // 401 for a bad signature now rides on the typed error's statusCode; the
+      // 'Insufficient' branch matched no thrown message and was already
+      // indistinguishable from the 400 fallback (audit L-12).
+      respondError(res, err, 'POST /credits/transfer', 'message');
     }
   });
 
@@ -218,75 +215,82 @@ export function createRouter(deps: UtxoDeps): Router {
       | { ok: false; status: number; error: string }
       | undefined;
 
-    engineDeps.runInTransaction(() => {
-      if (
-        hasFaucetGrantRecord(toBytes, 'credit') ||
-        hasPendingFaucetGrant(toBytes, 'credit')
-      ) {
-        outcome = {
-          ok: false,
-          status: 409,
-          error: 'to already funded by the credit faucet — one grant per identity',
-        };
-        return;
-      }
+    try {
+      engineDeps.runInTransaction(() => {
+        if (
+          hasFaucetGrantRecord(toBytes, 'credit') ||
+          hasPendingFaucetGrant(toBytes, 'credit')
+        ) {
+          outcome = {
+            ok: false,
+            status: 409,
+            error: 'to already funded by the credit faucet — one grant per identity',
+          };
+          return;
+        }
 
-      ensureFaucetCreditBox(sysKeypair.publicKey, currentHeight);
+        ensureFaucetCreditBox(sysKeypair.publicKey, currentHeight);
 
-      const unlocked = getUnlockedCreditBoxes(sysKeypair.publicKey, currentHeight);
-      const selected = selectBoxes(unlocked, FAUCET_AMOUNT);
-      const totalSelected = selected.reduce((s, b) => s + b.value, 0);
-      const change = totalSelected - FAUCET_AMOUNT;
+        const unlocked = getUnlockedCreditBoxes(sysKeypair.publicKey, currentHeight);
+        const selected = selectBoxes(unlocked, FAUCET_AMOUNT);
+        const totalSelected = selected.reduce((s, b) => s + b.value, 0);
+        const change = totalSelected - FAUCET_AMOUNT;
 
-      const outputs: CreditBox[] = [{
-        boxType: 'credit',
-        value: FAUCET_AMOUNT,
-        createdAtBlock: currentHeight,
-        owner: toBytes,
-        guard: 'owner_signature',
-        proofSource: -1,
-      }];
-      if (change > 0) {
-        outputs.push({
+        const outputs: CreditBox[] = [{
           boxType: 'credit',
-          value: change,
+          value: FAUCET_AMOUNT,
           createdAtBlock: currentHeight,
-          owner: sysKeypair.publicKey,
+          owner: toBytes,
           guard: 'owner_signature',
           proofSource: -1,
-        });
-      }
+        }];
+        if (change > 0) {
+          outputs.push({
+            boxType: 'credit',
+            value: change,
+            createdAtBlock: currentHeight,
+            owner: sysKeypair.publicKey,
+            guard: 'owner_signature',
+            proofSource: -1,
+          });
+        }
 
-      const tx: UtxoTransaction = {
-        inputs: selected.map(b => b.id!),
-        outputs: outputs.map(b => ({ ...b, id: computeBoxId(b) })),
-        signatures: {},
-        protocolVersion: PROTOCOL_VERSION,
-      };
-
-      const txId = computeTxId(tx);
-      const sysPubKeyHex = Buffer.from(sysKeypair.publicKey).toString('hex');
-      const sig = signWithSystemKey(txId, sysKeypair.secretKey);
-      tx.signatures[sysPubKeyHex] = sig;
-
-      // Validate via UTXO engine
-      const validation = validateTx(engineDeps, tx, currentHeight);
-      if (!validation.valid) {
-        outcome = {
-          ok: false,
-          status: 400,
-          error: validation.error ?? 'transaction validation failed',
+        const tx: UtxoTransaction = {
+          inputs: selected.map(b => b.id!),
+          outputs: outputs.map(b => ({ ...b, id: computeBoxId(b) })),
+          signatures: {},
+          protocolVersion: PROTOCOL_VERSION,
         };
-        return;
-      }
 
-      // Insert into mempool and record the grant
-      const expiresAtHeight = currentHeight + MEMPOOL_EXPIRY_BLOCKS;
-      insertUtxoTx(tx, null, expiresAtHeight);
-      recordFaucetGrant(toBytes, 'credit', txId, currentHeight);
+        const txId = computeTxId(tx);
+        const sysPubKeyHex = Buffer.from(sysKeypair.publicKey).toString('hex');
+        const sig = signWithSystemKey(txId, sysKeypair.secretKey);
+        tx.signatures[sysPubKeyHex] = sig;
 
-      outcome = { ok: true, txId, tx };
-    });
+        // Validate via UTXO engine
+        const validation = validateTx(engineDeps, tx, currentHeight);
+        if (!validation.valid) {
+          outcome = {
+            ok: false,
+            status: 400,
+            error: validation.error ?? 'transaction validation failed',
+          };
+          return;
+        }
+
+        // Insert into mempool and record the grant
+        const expiresAtHeight = currentHeight + MEMPOOL_EXPIRY_BLOCKS;
+        insertUtxoTx(tx, null, expiresAtHeight);
+        recordFaucetGrant(toBytes, 'credit', txId, currentHeight);
+
+        outcome = { ok: true, txId, tx };
+      });
+    } catch (err) {
+      // A full mempool rolls the whole grant transaction back (no orphan
+      // faucet_grants row) and answers 503 rather than escaping the handler.
+      respondError(res, err, 'POST /credits/faucet', 'message');
+      return;
+    }
 
     if (!outcome) {
       res.status(500).json({ error: 'credit faucet grant did not complete' });

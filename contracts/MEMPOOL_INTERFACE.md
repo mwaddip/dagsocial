@@ -41,7 +41,7 @@ entries.
 interface PoolEntry {
   rowid: number;
   entryType: 'subblock' | 'utxo_tx' | 'prune';
-  subblockCbor: Uint8Array | null;
+  subblockId: string | null;      // postId — sub-block content lives in the DAG store
   utxoTxCbor: Uint8Array | null;
   pruneEntryCbor: Uint8Array | null;
   batchId: string | null;
@@ -51,8 +51,23 @@ interface PoolEntry {
 ```
 
 Entries are decoded from CBOR on read by the consumer (block creator or relay
-handler). The mempool store layer does not decode payloads — it stores and
-returns raw CBOR.
+handler). The store does not decode payloads on read; on **insert** of a
+`utxo_tx` it walks the (already-decoded) transaction's outputs once to
+populate the gate-metadata columns below — the single chokepoint every
+insertion path (HTTP routes and gossip relay alike) goes through, which is
+what makes the correctness gates unable to miss an entry (audit M-8).
+
+### Gate metadata columns
+
+Nullable, populated by `insertUtxoTx` from the transaction outputs, indexed
+(partial indexes over non-null values):
+
+| Column | Populated when the tx has | Value |
+|---|---|---|
+| `like_target` | a `like` output | `targetPostId` (hex) |
+| `like_liker` | a `like` output | `likerId` (hex) |
+| `invite_inviter` | an `invite` output | `inviterId` (hex) |
+| `vouch_voucher` | a `vouch` output | `voucherId` (hex) |
 
 ---
 
@@ -77,12 +92,38 @@ SQLite `rowid` of the new row.
 insertUtxoTx(tx: UtxoTransaction, batchId: string | null, expiresAtHeight: number): number
 ```
 
-Encodes the UTXO transaction as CBOR and inserts a `utxo_tx` entry. Returns
-the SQLite `rowid`.
+Encodes the UTXO transaction as CBOR and inserts a `utxo_tx` entry, populating
+the gate-metadata columns from the transaction's outputs (see above). Returns
+the SQLite `rowid`. Throws `MempoolFullError` at the size cap.
 
 - `batchId` is null for standalone transactions (likes, invites, faucet).
   Set to a post ID for batch-linked transactions (karma-lock on post creation).
 - `expiresAtHeight` is the block height at which the entry becomes invalid.
+
+### Correctness gates (audit M-8)
+
+```
+hasPendingLike(targetPostId: string, likerId: string): boolean
+countPendingInvites(inviterId: string): number
+hasPendingVouch(voucherId: string): boolean
+```
+
+SQL `EXISTS`/`COUNT` over the gate-metadata columns — never a bounded scan.
+The previous implementation decoded `getPendingEntries(1000)` per request, so
+any entry past row 1000 was silently invisible to the duplicate-like and
+`MAX_PENDING_INVITES` checks. These gates see every row regardless of pool
+size. Hex parameters compare against the columns exactly as stored.
+
+### removeSubBlockEntries
+
+```
+removeSubBlockEntries(postIds: string[]): number
+```
+
+Deletes `subblock` entries whose `subblock_id` is in `postIds`; returns the
+count. Used by block application to clear confirmed sub-blocks — replaces the
+former fetch-1000-and-find loop, which stopped removing entries past row 1000
+(bookkeeping only; no consensus behavior change).
 
 ### insertMempoolPrune
 
@@ -308,11 +349,31 @@ When an ordering block is received from gossip:
 
 ## Design Decisions
 
-### No size cap
+### Size cap — reject, never evict (audit M-8)
 
-No limit on mempool size. Rationale: no fees yet, so no economic pressure to
-fill the pool. A cap with eviction would require fee-based prioritization,
-which is deferred.
+The pool holds at most `MAX_MEMPOOL_ENTRIES` rows (config, default 10000)
+across all entry types. Every insert function checks the count and throws a
+typed `MempoolFullError` at the cap. An unbounded pool was a disk-DoS lever
+(trivially via `/faucet` flood).
+
+Three insert callers, three behaviors:
+
+| Caller | At the cap |
+|---|---|
+| HTTP routes | **503** with a generic body (`{ error: 'mempool full' }`) |
+| Gossip relay (`onTx` / `onSubBlock`) | drop the entry, log, never throw |
+| **Reorg re-insertion** (`services/fork-resolution.ts`) | drop, log, continue |
+
+The reorg caller is not optional politeness: re-insertion of reverted
+txs/sub-blocks/prunes runs *inside* the chain-switch SQLite transaction, so an
+escaping `MempoolFullError` would roll back the switch and strand the node on
+the lighter chain — mempool pressure escalated into a consensus-liveness
+failure.
+
+Rejection, not eviction: eviction needs fee-based prioritization to decide
+*what* to evict, and there are no fees yet — that remains deferred to the fee
+market. `purgeExpired` still reclaims space every block, so a full pool
+drains on its own as entries expire or confirm.
 
 ### No replacement semantics
 
@@ -354,5 +415,6 @@ table was removed during the mempool migration.
   the same ordering block
 - Confirmed entries are removed by rowid after block finalization
 - FIFO ordering (by insertion) — no priority, no reordering
-- No size cap, no replacement, no fee-based eviction
+- Size-capped with rejection (`MempoolFullError` → 503); no replacement, no
+  fee-based eviction
 - Mempool is a node-local data structure — it is NOT gossiped

@@ -9,41 +9,12 @@ import {
   getPost,
   hasLiked,
   getLikeCount,
-  getPendingEntries,
+  hasPendingLike,
   insertUtxoTx,
 } from '../store/index.js';
-import { decodeTx } from '@dagsocial/types';
 import { validateTx } from './utxo-engine.js';
 import type { UtxoEngineDeps } from './utxo-engine.js';
-
-// ---------------------------------------------------------------------------
-// MemPool helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Check if there is a pending like transaction in the mempool for the given
- * target post and liker.  This prevents double-likes during the window between
- * mempool insertion and block confirmation.
- */
-function hasPendingLike(targetPostId: string, likerId: Uint8Array): boolean {
-  const entries = getPendingEntries(1000);
-  for (const entry of entries) {
-    if (entry.entryType !== 'utxo_tx' || !entry.utxoTxCbor) continue;
-    const tx = decodeTx(entry.utxoTxCbor);
-    for (const output of tx.outputs) {
-      if (output.boxType === 'like') {
-        const likeOut = output as LikeBox;
-        if (
-          likeOut.targetPostId === targetPostId &&
-          Buffer.from(likeOut.likerId).equals(Buffer.from(likerId))
-        ) {
-          return true;
-        }
-      }
-    }
-  }
-  return false;
-}
+import { ClientError } from './client-error.js';
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -72,25 +43,27 @@ export function castLike(
   // ---- 1. Extract targetPostId and likerId from the LikeBox output ----
   const likeOutput = tx.outputs.find((o): o is LikeBox => o.boxType === 'like');
   if (!likeOutput) {
-    throw new Error('Transaction must contain a LikeBox output');
+    throw new ClientError('Transaction must contain a LikeBox output');
   }
   const { targetPostId, likerId } = likeOutput;
 
   // ---- 2. Verify target post exists and is live ----
   const post = getPost(targetPostId);
   if (!post) {
-    throw new Error(`Post not found: ${targetPostId}`);
+    throw new ClientError(`Post not found: ${targetPostId}`);
   }
   if ('subtreeMerkleRoot' in post) {
-    throw new Error('Cannot like a pruned post');
+    throw new ClientError('Cannot like a pruned post');
   }
 
   // ---- 3. Verify not already liked (DB + mempool) ----
+  // The mempool gate is SQL over the gate-metadata columns — every pending
+  // entry, not the first 1000 (audit M-8).
   if (hasLiked(targetPostId, likerId)) {
-    throw new Error('Already liked this post');
+    throw new ClientError('Already liked this post');
   }
-  if (hasPendingLike(targetPostId, likerId)) {
-    throw new Error('Already liked this post');
+  if (hasPendingLike(targetPostId, Buffer.from(likerId).toString('hex'))) {
+    throw new ClientError('Already liked this post');
   }
 
   // ---- 4. Check total like count ----
@@ -100,7 +73,7 @@ export function castLike(
 
   if (total >= freeThreshold) {
     // Post qualifies for free liking — a locked transaction is inappropriate.
-    throw new Error(
+    throw new ClientError(
       'Post has sufficient likes for free liking — do not submit a locked transaction',
     );
   }
@@ -108,7 +81,7 @@ export function castLike(
   // ---- 5. Validate transaction (guards, transitions, decay) ----
   const result = validateTx(deps, tx, currentBlockHeight);
   if (!result.valid) {
-    throw new Error(`Invalid like transaction: ${result.error}`);
+    throw new ClientError(`Invalid like transaction: ${result.error}`);
   }
 
   // ---- 6. Insert into mempool ----
@@ -155,28 +128,28 @@ export function removeLike(
   }
 
   if (!targetPostId || !likerId) {
-    throw new Error('Transaction does not consume a LikeBox');
+    throw new ClientError('Transaction does not consume a LikeBox');
   }
 
   // Verify the LikeBox belongs to the signer
   const signerHex = Object.keys(tx.signatures)[0];
   if (!signerHex || Buffer.from(likerId).toString('hex') !== signerHex) {
-    throw new Error('LikeBox does not belong to signer');
+    throw new ClientError('LikeBox does not belong to signer');
   }
 
   // ---- 2. Verify target post exists and is live ----
   const post = getPost(targetPostId);
   if (!post) {
-    throw new Error(`Post not found: ${targetPostId}`);
+    throw new ClientError(`Post not found: ${targetPostId}`);
   }
   if ('subtreeMerkleRoot' in post) {
-    throw new Error('Cannot unlike a pruned post');
+    throw new ClientError('Cannot unlike a pruned post');
   }
 
   // ---- 3. Validate transaction (guards, transitions, decay) ----
   const result = validateTx(deps, tx, currentBlockHeight);
   if (!result.valid) {
-    throw new Error(`Invalid unlike transaction: ${result.error}`);
+    throw new ClientError(`Invalid unlike transaction: ${result.error}`);
   }
 
   // ---- 4. Insert into mempool ----

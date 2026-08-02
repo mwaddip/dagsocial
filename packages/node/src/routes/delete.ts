@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { computePruneEntryId } from '@dagsocial/types';
 import type { PruneIntent, PruneEntry } from '@dagsocial/types';
+import { MempoolFullError } from '../store/mempool.js';
 
 // ---------------------------------------------------------------------------
 // Dependency types
@@ -96,6 +97,10 @@ export function deleteRoutes(deps: DeleteDeps): Router {
       if (err.statusCode === 400) {
         return res.status(400).json({ error: err.message });
       }
+      if (err instanceof MempoolFullError) {
+        return res.status(503).json({ error: 'mempool full' });
+      }
+      console.error('DELETE /posts/:id failed with an unexpected error:', err);
       return res.status(500).json({ error: 'Internal server error' });
     }
   });

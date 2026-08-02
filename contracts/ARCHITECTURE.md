@@ -901,4 +901,5 @@ fresh. Namespacing keeps the option open to split into separate stores later
 - **View keys / private content:** Reader spending credits to unlock content
 - **Parameter governance:** Karma decay, like thresholds, emission schedule
   adjustable by future governance
-- **Fee market:** Mempool size caps, replacement semantics, priority fees
+- **Fee market:** Replacement semantics, priority fees, fee-based eviction
+  (a flat reject-at-cap mempool bound ships already — audit M-8)

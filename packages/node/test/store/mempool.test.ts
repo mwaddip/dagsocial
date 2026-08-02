@@ -19,7 +19,107 @@ async function importMempoolFresh() {
     getPendingEntries: (limit: number) => any[];
     purgeExpired: (currentHeight: number) => number;
     removeEntry: (rowid: number) => void;
+    removeSubBlockEntries: (postIds: string[]) => number;
+    hasPendingLike: (targetPostId: string, likerId: string) => boolean;
+    countPendingInvites: (inviterId: string) => number;
+    hasPendingVouch: (voucherId: string) => boolean;
   };
+}
+
+/** Mempool store plus raw row access, for asserting the gate columns directly. */
+async function importMempoolWithRow() {
+  const mem = await importMempoolFresh();
+  const { getDb } = await importDbFresh();
+  return {
+    ...mem,
+    getDbRow: () =>
+      (getDb() as any)
+        .prepare('SELECT like_target, like_liker, invite_inviter, vouch_voucher FROM mempool')
+        .get() as Record<string, string | null>,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Gate-metadata fixtures — hex ids as they are stored, and the minimal txs
+// whose outputs the insert chokepoint lifts them from.
+// ---------------------------------------------------------------------------
+
+const TARGET = 'post_target_1';
+const OTHER_TARGET = 'post_target_2';
+const LIKER_A = 'aa'.repeat(32);
+const LIKER_B = 'bb'.repeat(32);
+const INVITER_A = 'cc'.repeat(32);
+const INVITER_B = 'dd'.repeat(32);
+const VOUCHER_A = 'ee'.repeat(32);
+const VOUCHER_B = 'ff'.repeat(32);
+const TARGET_ID = '11'.repeat(32);
+
+const bytes = (hex: string) => new Uint8Array(Buffer.from(hex, 'hex'));
+
+function likeTx(targetPostId: string, likerHex: string) {
+  return {
+    inputs: [],
+    outputs: [
+      {
+        boxType: 'like',
+        value: 2,
+        createdAtBlock: 1,
+        likerId: bytes(likerHex),
+        targetPostId,
+        guard: 'epoch_tally',
+      },
+    ],
+    signatures: {},
+    protocolVersion: 1,
+  };
+}
+
+function inviteTx(inviterHex: string) {
+  return {
+    inputs: [],
+    outputs: [
+      {
+        boxType: 'invite',
+        value: 25,
+        createdAtBlock: 1,
+        inviterId: bytes(inviterHex),
+        secretHash: new Uint8Array(32),
+        guard: 'hash_preimage_with_bond',
+      },
+    ],
+    signatures: {},
+    protocolVersion: 1,
+  };
+}
+
+function vouchTx(voucherHex: string, targetHex: string) {
+  return {
+    inputs: [],
+    outputs: [
+      {
+        boxType: 'vouch',
+        value: 10,
+        createdAtBlock: 1,
+        voucherId: bytes(voucherHex),
+        targetId: bytes(targetHex),
+        guard: 'owner_signature',
+      },
+    ],
+    signatures: {},
+    protocolVersion: 1,
+  };
+}
+
+function pruneEntry(rootPostHash: string) {
+  return {
+    rootPostHash,
+    trigger: 'author',
+    authorId: new Uint8Array(32),
+    subtreeMerkleRoot: new Uint8Array(32),
+    subtreePostIds: [rootPostHash],
+    signature: new Uint8Array(64),
+    protocolVersion: 1,
+  } as any;
 }
 
 describe('mempool store', () => {
@@ -233,5 +333,167 @@ describe('mempool store', () => {
     expect(entries[0].entryType).toBe('utxo_tx');
     expect(entries[0].subblockId).toBeNull();
     expect(entries[0].utxoTxCbor).toBeInstanceOf(Uint8Array);
+  });
+
+  // -------------------------------------------------------------------------
+  // Correctness gates (audit M-8)
+  // -------------------------------------------------------------------------
+
+  describe('gate metadata and correctness gates', () => {
+    it('hasPendingLike sees a like inserted past any bounded scan', async () => {
+      const { insertSubBlock, insertUtxoTx, hasPendingLike, getPendingEntries } =
+        await importMempoolFresh();
+
+      // Bury the like behind the 1000-row bound the old decode-scan used.
+      for (let i = 0; i < 1000; i++) insertSubBlock(`filler_${i}`, 100);
+      insertUtxoTx(likeTx(TARGET, LIKER_A) as any, null, 100);
+
+      // Vacuity: the entry really is past the old scan's reach, so this test
+      // fails against the fetch-1000-and-decode implementation.
+      const scanned = getPendingEntries(1000);
+      expect(scanned.some((e: any) => e.entryType === 'utxo_tx')).toBe(false);
+
+      expect(hasPendingLike(TARGET, LIKER_A)).toBe(true);
+      // Controls — a single-field delta in each direction.
+      expect(hasPendingLike(TARGET, LIKER_B)).toBe(false);
+      expect(hasPendingLike(OTHER_TARGET, LIKER_A)).toBe(false);
+    });
+
+    it('countPendingInvites counts invites past any bounded scan', async () => {
+      const { insertSubBlock, insertUtxoTx, countPendingInvites } =
+        await importMempoolFresh();
+
+      for (let i = 0; i < 1000; i++) insertSubBlock(`filler_${i}`, 100);
+      insertUtxoTx(inviteTx(INVITER_A) as any, null, 100);
+      insertUtxoTx(inviteTx(INVITER_A) as any, null, 100);
+      insertUtxoTx(inviteTx(INVITER_B) as any, null, 100);
+
+      expect(countPendingInvites(INVITER_A)).toBe(2);
+      expect(countPendingInvites(INVITER_B)).toBe(1);
+      expect(countPendingInvites(LIKER_A)).toBe(0);
+    });
+
+    it('hasPendingVouch is keyed on the voucher alone', async () => {
+      const { insertUtxoTx, hasPendingVouch } = await importMempoolFresh();
+
+      insertUtxoTx(vouchTx(VOUCHER_A, TARGET_ID) as any, null, 100);
+
+      expect(hasPendingVouch(VOUCHER_A)).toBe(true);
+      expect(hasPendingVouch(VOUCHER_B)).toBe(false);
+    });
+
+    it('leaves gate columns null for a tx with no gated outputs', async () => {
+      const { insertUtxoTx, getDbRow } = await importMempoolWithRow();
+      insertUtxoTx({ inputs: [], outputs: [], signatures: {}, protocolVersion: 1 } as any, null, 100);
+      const row = getDbRow();
+      expect(row.like_target).toBeNull();
+      expect(row.like_liker).toBeNull();
+      expect(row.invite_inviter).toBeNull();
+      expect(row.vouch_voucher).toBeNull();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // removeSubBlockEntries (audit M-8)
+  // -------------------------------------------------------------------------
+
+  describe('removeSubBlockEntries', () => {
+    it('removes confirmed sub-blocks past the first rows and spares the rest', async () => {
+      const { insertSubBlock, insertUtxoTx, removeSubBlockEntries, getPendingEntries } =
+        await importMempoolFresh();
+
+      for (let i = 0; i < 1000; i++) insertSubBlock(`filler_${i}`, 100);
+      insertSubBlock('confirmed_a', 100);
+      insertUtxoTx(likeTx(TARGET, LIKER_A) as any, null, 100);
+      insertSubBlock('confirmed_b', 100);
+      insertSubBlock('survivor', 100);
+
+      const removed = removeSubBlockEntries(['confirmed_a', 'confirmed_b']);
+      expect(removed).toBe(2);
+
+      const remaining = getPendingEntries(2000);
+      expect(remaining.some((e: any) => e.subblockId === 'confirmed_a')).toBe(false);
+      expect(remaining.some((e: any) => e.subblockId === 'confirmed_b')).toBe(false);
+      // Controls: unrelated entries survive.
+      expect(remaining.some((e: any) => e.subblockId === 'survivor')).toBe(true);
+      expect(remaining.filter((e: any) => e.entryType === 'utxo_tx')).toHaveLength(1);
+      expect(remaining).toHaveLength(1002);
+    });
+
+    it('returns 0 for an empty list and ignores unknown ids', async () => {
+      const { insertSubBlock, removeSubBlockEntries } = await importMempoolFresh();
+      insertSubBlock('kept', 100);
+      expect(removeSubBlockEntries([])).toBe(0);
+      expect(removeSubBlockEntries(['never_inserted'])).toBe(0);
+    });
+
+    it('deletes more ids than SQLite takes bound parameters for', async () => {
+      const { insertSubBlock, removeSubBlockEntries, getPendingEntries } =
+        await importMempoolFresh();
+      const ids = Array.from({ length: 1200 }, (_, i) => `bulk_${i}`);
+      for (const id of ids) insertSubBlock(id, 100);
+      expect(removeSubBlockEntries(ids)).toBe(1200);
+      expect(getPendingEntries(2000)).toHaveLength(0);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Size cap — reject, never evict (audit M-8)
+  // -------------------------------------------------------------------------
+
+  describe('size cap', () => {
+    const originalCap = process.env['MAX_MEMPOOL_ENTRIES'];
+
+    afterEach(() => {
+      if (originalCap === undefined) delete process.env['MAX_MEMPOOL_ENTRIES'];
+      else process.env['MAX_MEMPOOL_ENTRIES'] = originalCap;
+    });
+
+    async function importCapped(cap: number) {
+      process.env['MAX_MEMPOOL_ENTRIES'] = String(cap);
+      vi.resetModules();
+      const dbMod = await import('../../src/store/db.js');
+      dbMod.initDb(':memory:');
+      const mem = await import('../../src/store/mempool.js');
+      return mem as any;
+    }
+
+    it('rejects every entry type at the cap and accepts below it', async () => {
+      const mem = await importCapped(3);
+
+      // Control: inserts below the cap succeed.
+      expect(() => mem.insertSubBlock('sb_1', 100)).not.toThrow();
+      expect(() => mem.insertUtxoTx(likeTx(TARGET, LIKER_A) as any, null, 100)).not.toThrow();
+      expect(() => mem.insertMempoolPrune(pruneEntry('root_1'), 100)).not.toThrow();
+
+      // At the cap (3 entries), each insert path rejects.
+      expect(() => mem.insertSubBlock('sb_2', 100)).toThrow(mem.MempoolFullError);
+      expect(() => mem.insertUtxoTx(likeTx(TARGET, LIKER_B) as any, null, 100)).toThrow(
+        mem.MempoolFullError,
+      );
+      expect(() => mem.insertMempoolPrune(pruneEntry('root_2'), 100), ).toThrow(
+        mem.MempoolFullError,
+      );
+
+      // Rejection, not eviction: the pool still holds exactly the cap.
+      expect(mem.getPendingEntries(100)).toHaveLength(3);
+    });
+
+    it('accepts again once entries expire — a full pool drains itself', async () => {
+      const mem = await importCapped(2);
+      mem.insertSubBlock('sb_expiring', 10);
+      mem.insertSubBlock('sb_live', 900);
+      expect(() => mem.insertSubBlock('sb_blocked', 900)).toThrow(mem.MempoolFullError);
+
+      mem.purgeExpired(50);
+      expect(() => mem.insertSubBlock('sb_after_purge', 900)).not.toThrow();
+    });
+
+    it('defaults to 10000 entries when MAX_MEMPOOL_ENTRIES is unset', async () => {
+      delete process.env['MAX_MEMPOOL_ENTRIES'];
+      vi.resetModules();
+      const { config } = await import('../../src/config.js');
+      expect(config.maxMempoolEntries).toBe(10000);
+    });
   });
 });

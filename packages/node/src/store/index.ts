@@ -87,8 +87,13 @@ export {
   getPendingEntries,
   purgeExpired,
   removeEntry,
+  removeSubBlockEntries,
   drainMempoolPrunes,
   removeMempoolPrunes,
+  hasPendingLike,
+  countPendingInvites,
+  hasPendingVouch,
+  MempoolFullError,
 } from './mempool.js';
 export type { PoolEntry } from './mempool.js';
 
@@ -118,5 +123,5 @@ export {
   getVouchBox,
   getVouchesForTarget,
   getVouchesByVoucher,
-  hasActiveVouch,
+  hasAnyActiveVouch,
 } from './vouch-queries.js';
