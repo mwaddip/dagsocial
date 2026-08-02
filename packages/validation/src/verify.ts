@@ -119,6 +119,16 @@ function hasLeadingZeroBits(hash: Uint8Array, targetBits: number): boolean {
  * that is not a byte view overruns the preimage buffer, and a symbol in
  * `content` / `parentRefs` / `protocolVersion` / `timestamp` throws in
  * `TextEncoder.encode` / `String()`.
+ *
+ * The numerics use `isU64Safe`, not a loose `typeof === 'number'`. The loose
+ * check admitted `NaN` / `Infinity` / negative / fractional values, which the
+ * canonical encoder in `@dagsocial/types` has to absorb by writing an all-ones
+ * sentinel to stay panic-free — and two such malformed posts then share an
+ * encoding. Rejecting them here instead keeps that sentinel path out of reach
+ * for anything that passes this guard, and matches the M-6 integer-guard
+ * invariant already applied to `verifyPoW`'s nonce and target bits. No
+ * well-formed post is affected: a timestamp is a non-negative safe integer and
+ * `protocolVersion` must equal `PROTOCOL_VERSION` to pass Stage 1 at all.
  */
 function isSignablePost(post: unknown): post is Post {
   if (!isObject(post)) return false;
@@ -129,8 +139,8 @@ function isSignablePost(post: unknown): post is Post {
     if (typeof ref !== 'string') return false;
   }
   if (!isBytes(post.challenge)) return false;
-  if (typeof post.protocolVersion !== 'number') return false;
-  if (typeof post.timestamp !== 'number') return false;
+  if (!isU64Safe(post.protocolVersion)) return false;
+  if (!isU64Safe(post.timestamp)) return false;
   return true;
 }
 

@@ -28,10 +28,12 @@ export class ByteWriter {
     if (value > Number.MAX_SAFE_INTEGER) {
       throw new Error('writeVlqU: value exceeds safe integer range');
     }
+    // Arithmetic, not bitwise: `&`/`>>>` coerce to 32 bits, which silently
+    // mis-encodes every value at or above 2^32. Keep in sync with encodeVlqU.
     let v = value;
     while (v >= 0x80) {
-      this.writeU8((v & 0x7f) | 0x80);
-      v >>>= 7;
+      this.writeU8((v % 128) + 0x80);
+      v = Math.floor(v / 128);
     }
     this.writeU8(v);
   }
@@ -40,8 +42,12 @@ export class ByteWriter {
     if (!Number.isInteger(value)) {
       throw new Error(`writeVlqS: not an integer: ${value}`);
     }
-    const zz = (value << 1) ^ (value >> 31);
-    this.writeVlqU(zz >>> 0);
+    // ZigZag, arithmetic rather than `(v << 1) ^ (v >> 31)`: the bitwise form is
+    // 32-bit and corrupts anything outside ±2^31. Doubling can push a large
+    // magnitude past the safe-integer range — writeVlqU then rejects it loudly
+    // instead of truncating. Keep in sync with encodeVlqZigZag.
+    const zz = value >= 0 ? value * 2 : -value * 2 - 1;
+    this.writeVlqU(zz);
   }
 
   writeArray<T>(items: T[], serializer: (w: ByteWriter, item: T) => void): void {

@@ -83,9 +83,23 @@ describe('ByteReader', () => {
       expect(r.readVlqU()).toBe(0xffffffff);
     });
 
+    it('decodes past 2^32 (full [0, 2^53-1] range)', () => {
+      const r = new ByteReader(new Uint8Array([0x80, 0x80, 0x80, 0x80, 0x10]));
+      expect(r.readVlqU()).toBe(2 ** 32);
+    });
+
     it('throws on overflow', () => {
-      // more than 5 bytes with continuation bits set
-      const r = new ByteReader(new Uint8Array([0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80]));
+      // Continuation bits past the 10-byte cap — a bounded read, never an
+      // unbounded loop. (Seven padding bytes are legal now that the range
+      // reaches 2^53, so the cap is what has to fire here.)
+      const r = new ByteReader(new Uint8Array(11).fill(0x80));
+      expect(() => r.readVlqU()).toThrow(ReaderError);
+    });
+
+    it('throws when the decoded value would exceed the safe-integer range', () => {
+      const r = new ByteReader(
+        new Uint8Array([0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f]),
+      );
       expect(() => r.readVlqU()).toThrow(ReaderError);
     });
 

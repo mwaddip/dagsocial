@@ -136,6 +136,24 @@ UsernameClaim = Post with content { type: "username_claim", claim: "@alice" }
 before finding the PoW nonce. It is included in `computePostId` to ensure
 uniqueness. `signature` is excluded from both.
 
+### Merkle primitives (`merkle.ts`)
+
+| Export | Description |
+|--------|-------------|
+| `leafHash(domain, data)` | `blake2b512(utf8(domain ‖ "\0") ‖ data)[:32]` — domain-separated leaf so a leaf in one tree can't collide with a leaf in another. |
+| `nodeHash(left, right)` | `blake2b512(NODE_TAG ‖ left ‖ right)[:32]` — internal-node hash of two children. |
+| `buildMerkleRoot(leaves)` | Binary Merkle root over ordered leaf hashes. Empty → 32 zero bytes; single leaf → that leaf. |
+
+**Leaf/node domain separation (L-9).** `nodeHash` carries a fixed `NODE_TAG`
+(one reserved byte that is not a valid `leafHash` domain prefix — leaves begin
+with a domain string, so e.g. `0x00` works) so an internal node can never be
+reinterpreted as a leaf, and vice versa. Without it, a 64-byte leaf preimage
+could be presented as `nodeHash(left,right)` for a forged inclusion proof
+(second-preimage). This is **protocol-breaking** — it changes every Merkle root
+(`subBlockRoot`, `utxoTxRoot`), unversioned, devnet DBs wiped on deploy. No demo-UI
+mirror (the UI computes no roots). Node re-derives all roots through `types`, so
+producer and verifier stay consistent automatically.
+
 ---
 
 ## UTXO Types (`utxo.ts`)

@@ -2,6 +2,14 @@ import { ReaderError } from './errors.js';
 
 export const MAX_ARRAY_LENGTH = 1 << 24;
 
+/**
+ * Hard cap on the number of bytes a single VLQ may occupy. A canonical value in
+ * the documented range [0, 2^53-1] needs at most 8 bytes; the slack tolerates
+ * non-canonical zero-padded encodings while still bounding the read loop on a
+ * malformed stream. Matches the contract's "exceeds 10 bytes" rule.
+ */
+const MAX_VLQ_BYTES = 10;
+
 export class ByteReader {
   private _position = 0;
   private _positionLimit: number;
@@ -51,14 +59,23 @@ export class ByteReader {
   readVlqU(): number {
     let value = 0;
     let shift = 0;
+    let bytesRead = 0;
     while (true) {
       const b = this.readU8();
-      // Use multiplication instead of bitwise shift to avoid 32-bit signed overflow
-      value += (b & 0x7f) * (2 ** shift);
+      bytesRead++;
+      // Multiplication instead of bitwise shift: `<<` coerces to 32 bits and
+      // would silently corrupt anything at or above 2^32. `(b & 0x7f) * 2**shift`
+      // is exact for every shift used here (7 significant bits scaled by a power
+      // of two), so the only inexactness risk is the running sum — guarded below.
+      const chunk = (b & 0x7f) * (2 ** shift);
+      if (chunk > Number.MAX_SAFE_INTEGER - value) {
+        throw new ReaderError('readVlqU: value exceeds safe integer range', 'vlq-overflow');
+      }
+      value += chunk;
       if ((b & 0x80) === 0) break;
       shift += 7;
-      if (shift > 35) {
-        throw new ReaderError('readVlqU: VLQ too long (overflow)', 'vlq-overflow');
+      if (bytesRead >= MAX_VLQ_BYTES) {
+        throw new ReaderError(`readVlqU: VLQ exceeds ${MAX_VLQ_BYTES} bytes`, 'vlq-overflow');
       }
     }
     return value;
@@ -66,8 +83,11 @@ export class ByteReader {
 
   readVlqS(): number {
     const u = this.readVlqU();
-    // zigzag decode: (n >>> 1) ^ -(n & 1)
-    return (u >>> 1) ^ -(u & 1);
+    // ZigZag decode, arithmetic rather than `(u >>> 1) ^ -(u & 1)`: the bitwise
+    // form coerces to 32 bits and misdecodes any zigzag value at or above 2^32.
+    // even -> u/2, odd -> -(u+1)/2.
+    const half = Math.floor(u / 2);
+    return u % 2 === 0 ? half : -(half + 1);
   }
 
   readArray<T>(reader: (r: ByteReader) => T): T[] {

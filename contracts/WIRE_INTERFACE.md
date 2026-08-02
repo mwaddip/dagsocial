@@ -84,17 +84,20 @@ Reads one byte. `0` => `false`, `1` => `true`.
 
 #### `readVlqU(): number`
 
-Reads an unsigned variable-length quantity (VLQ). Result clamped to
-`Number.MAX_SAFE_INTEGER`.
+Reads an unsigned variable-length quantity (VLQ) over the full documented
+range `[0, Number.MAX_SAFE_INTEGER]`. Accumulates with multiplication, not
+bitwise shift (which would coerce to 32 bits and corrupt values ≥ 2³²);
+**throws** on out-of-range input rather than clamping.
 
 - **Throws:** `ReaderError('truncated')` if truncated mid-byte
-- **Throws:** `ReaderError('vlq-overflow')` if exceeds 10 bytes or safe
-  integer range
+- **Throws:** `ReaderError('vlq-overflow')` if the running value would exceed
+  `Number.MAX_SAFE_INTEGER`, or the encoding exceeds 10 bytes
 
 #### `readVlqS(): number`
 
 Reads a signed VLQ (ZigZag-decoded unsigned). Delegates to `readVlqU()`
-then applies ZigZag decode: `(zz >>> 1) ^ -(zz & 1)`.
+then applies ZigZag decode arithmetically: `u even → u/2, odd → -(u+1)/2`
+(not `(zz >>> 1) ^ -(zz & 1)`, which is 32-bit). Signed domain ≈ ±2⁵².
 
 #### `readArray<T>(reader: (r: ByteReader) => T): T[]`
 
@@ -172,7 +175,10 @@ Encodes unsigned integer as VLQ bytes.
 #### `writeVlqS(value: number): void`
 
 Encodes signed integer via ZigZag then VLQ.
-ZigZag transform: `((value << 1) ^ (value >> 31)) >>> 0`, then `writeVlqU`.
+ZigZag transform (arithmetic, not the 32-bit `((value << 1) ^ (value >> 31))`):
+`value >= 0 ? value * 2 : -value * 2 - 1`, then `writeVlqU`. A magnitude large
+enough to push the doubled value past `Number.MAX_SAFE_INTEGER` throws in
+`writeVlqU` rather than truncating (signed domain ≈ ±2⁵²).
 
 - **Throws:** `Error` if non-integer
 
