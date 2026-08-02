@@ -14,7 +14,8 @@ import type { DecayDeps } from './decay.js';
 import { config } from '../config.js';
 import { computeBlockReward, computeSubBlockRoot, computeUtxoTxRoot, clearTemplate, computeEpochTally } from './block-creator.js';
 import { DagService } from './dag-service.js';
-import { applyTx } from './utxo-engine.js';
+import { applyTx, validateTx } from './utxo-engine.js';
+import { getSystemKeypair } from '../store/system.js';
 import {
   getKarmaBox,
   getKarmaBoxes,
@@ -66,7 +67,36 @@ function processVouchCooldowns(currentHeight: number): void {
   }
 }
 
+/**
+ * Signals "this block is invalid" from inside the transaction that wraps block
+ * application. Thrown rather than returned because better-sqlite3 only rolls a
+ * transaction back on a thrown error. Never escapes this module.
+ */
+class BlockRejected extends Error {}
+
+/**
+ * Apply an ordering block — all of it, or none of it.
+ *
+ * A block is a single unit of state transition, so every mutation it makes
+ * (coinbase mint, sub-block confirmation, prune settlement, epoch tally, UTXO
+ * transactions, decay) lives in one SQLite transaction. Any rejection — at any
+ * step — rolls the whole thing back, leaving the node on the state it had
+ * before the block arrived. Returns false for a rejected block; `reorg()`
+ * nests this inside its own transaction, which SQLite handles as a savepoint.
+ */
 export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService): boolean {
+  try {
+    return getDb().transaction(() => {
+      if (!applyBlockBody(block, dagService)) throw new BlockRejected();
+      return true;
+    })();
+  } catch (err) {
+    if (err instanceof BlockRejected) return false;
+    throw err;
+  }
+}
+
+function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean {
   const currentHeight = getCurrentHeight();
 
   // Initialize journal
@@ -425,11 +455,21 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
   }
 
   // 11. Apply UTXO transactions from the block.
-  // Use a multi-pass approach: txs whose inputs don't exist yet are
-  // deferred and retried after other txs in the same block may have
-  // created those inputs.  This resolves intra-block dependencies
-  // without inflating the UTXO set (unlike permissive single-pass).
-  // Txs whose inputs still don't exist after all retries are skipped.
+  //
+  // Two distinct failure modes, deliberately handled differently:
+  //
+  //  - Inputs not present yet → defer and retry. A tx may consume a box
+  //    created by an earlier tx in the same block, and block order does not
+  //    have to be dependency order, so the loop makes repeated passes until it
+  //    stops making progress. Txs whose inputs never appear are skipped.
+  //
+  //  - Inputs present but the tx is invalid → reject the whole block. Validator
+  //    selection is permissionless PoW, so the producer is untrusted and
+  //    nothing about an embedded tx may be assumed: it may never have passed
+  //    pool entry or relay validation on any node. Once a tx's inputs are all
+  //    present it is fully decidable, so it is re-validated here in full —
+  //    signatures, guards, transitions, conservation — and a failure means the
+  //    block itself is malformed. A valid block cannot contain an invalid tx.
   const utxoDeps = {
     getBox,
     insertBox,
@@ -437,6 +477,20 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
     getKarmaBox,
     runInTransaction: (fn: () => void) => {
       getDb().transaction(fn)();
+    },
+    // The faucet grant is the one transaction allowed to move karma between
+    // owners, and `checkTransitions` recognises it by the system box. Without
+    // this the re-validation below would reject every block carrying a grant.
+    // Consensus-safe: the system keypair is a protocol constant, so every node
+    // classifies the same box the same way.
+    isSystemBox: (boxId: string): boolean => {
+      const sysKey = getSystemKeypair();
+      if (!sysKey) return false;
+      const box = getBox(boxId);
+      if (!box || box.boxType !== 'karma') return false;
+      return Buffer.from((box as import('@dagsocial/types').KarmaBox).owner).equals(
+        Buffer.from(sysKey.publicKey),
+      );
     },
   };
   const pendingEntries = getPendingEntries(1000);
@@ -490,6 +544,21 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
       if (!allInputsExist) {
         remaining.push(item);
         continue;
+      }
+
+      // Every input is present, so the verdict cannot change on a later pass:
+      // full re-validation, and anything it rejects rejects the block. Testing
+      // presence first is what keeps the two cases apart — the only reason
+      // validateTx could still fail on liveness is a tx that lists the same
+      // input twice, which is malformed, not deferrable.
+      const revalidated = validateTx(utxoDeps, item.tx, block.header.height);
+      if (!revalidated.valid) {
+        console.warn(
+          `Rejected block height=${block.header.height}: embedded UTXO tx ` +
+          `${item.txId} failed re-validation: ${revalidated.error}`,
+        );
+        currentJournal = null;
+        return false;
       }
 
       // Detect vouch unvouch before the VouchBox is consumed

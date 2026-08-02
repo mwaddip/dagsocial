@@ -365,16 +365,14 @@ mismatch — see Known Gaps in SESSION_CONTEXT.md).
 revalidateTxInContext(deps, tx: UtxoTransaction, currentBlockHeight: number): UtxoResult
 ```
 
-Lightweight re-validation at block application time. Skips expensive checks
-(signatures, transitions) and only verifies:
-
-- Input liveness — are inputs still unspent?
-- Karma decay is handled by the periodic decay engine (applied separately
-  during block application, not at individual transaction revalidation)
-
-**Used during block finalization** when applying UTXO transactions from the
-mempool. Signatures and transitions were already verified (either at pool
-entry or at relay receipt). Only height-dependent liveness needs re-checking.
+Lightweight liveness-only re-check (are inputs still unspent?). **Not sufficient
+for block application on its own** — a permissionless block producer can embed a
+tx that never passed pool entry or relay validation, so signatures, guards,
+transitions, and conservation must NOT be assumed. Block finalization fully
+re-validates every embedded tx with `validateTx` (see Block finalization step 5).
+`revalidateTxInContext` remains available for the mempool's own staleness pruning,
+where the tx was already validated on entry — never as the sole gate on applying
+an untrusted, block-embedded tx.
 
 ### applyTx
 
@@ -469,10 +467,16 @@ Architecture document for the full model. Key properties:
 2. Apply coinbase — mint credits for each output
 3. Broadcast ordering block to peers
 4. Confirm sub-blocks and their posts (`confirmPost`)
-5. Apply UTXO transactions — for each confirmed UTXO tx, re-validate
-   in context (`revalidateTxInContext`) then apply (`applyTx`).
-   Idempotent: skips boxes already inserted or spent (survives gossip
-   loopback where the same tx arrives via both local mining and relay).
+5. Apply UTXO transactions — for each embedded UTXO tx, once its inputs are all
+   present, **fully re-validate with `validateTx`** (signatures, guards,
+   transitions, conservation — not just liveness), then apply (`applyTx`). A block
+   producer is untrusted (permissionless PoW), so nothing is assumed verified. **If
+   a tx whose inputs are present fails validation, the entire block is rejected**
+   and nothing is applied — a valid block must not contain an invalid tx. This runs
+   on every apply path (local finalization, gossip receipt, reorg). The multi-pass
+   handling of input *presence* is unchanged: a tx whose inputs are not yet present
+   is deferred and retried (intra-block dependency). Idempotent: skips boxes already
+   inserted or spent (survives gossip loopback).
 6. Remove confirmed entries from mempool (`removeEntry` for each confirmed rowid)
 7. Reset pending counter and template
 

@@ -30,6 +30,7 @@ import type {
   DecayJournalEntry,
 } from '@dagsocial/types';
 import type Database from 'better-sqlite3';
+import { signTransaction } from '../helpers.js';
 
 // ---------------------------------------------------------------------------
 // Test config (small epoch for boundary testing)
@@ -242,18 +243,37 @@ function makeKarmaBox(
   return box;
 }
 
+/**
+ * Build a signed, value-conserving like transaction — the shape a real client
+ * submits: the liker's karma box is consumed and split into a karma change box
+ * and the LikeBox.
+ *
+ * Block application re-validates every embedded tx in full, so a fixture that
+ * omitted the signature or the change output would be indistinguishable from a
+ * forgery and would take the whole block down with it.
+ */
 function makeLikeTx(
+  liker: TestIdentity,
   karmaBox: KarmaBox,
   targetPostId: string,
 ): UtxoTransaction {
-  return {
+  const tx: UtxoTransaction = {
     inputs: [karmaBox.id!],
     outputs: [
+      {
+        boxType: 'karma',
+        value: karmaBox.value - LIKE_COST,
+        createdAtBlock: 0,
+        owner: liker.userId,
+        guard: 'owner_signature',
+        proofSource: 'like_op',
+        lastTouchBlock: 0,
+      } as KarmaBox,
       {
         boxType: 'like',
         value: LIKE_COST,
         createdAtBlock: 0,
-        likerId: karmaBox.owner,
+        likerId: liker.userId,
         targetPostId,
         guard: 'epoch_tally',
       } as LikeBox,
@@ -261,6 +281,14 @@ function makeLikeTx(
     signatures: {},
     protocolVersion: PROTOCOL_VERSION,
   };
+  signTransaction(tx, liker.privateKey, Buffer.from(liker.userId).toString('hex'));
+  return tx;
+}
+
+/** The karma change box a `makeLikeTx` output creates, with its stored id. */
+function changeBoxOf(tx: UtxoTransaction): KarmaBox {
+  const change = tx.outputs[0] as KarmaBox;
+  return { ...change, id: computeBoxId(change) };
 }
 
 // ---------------------------------------------------------------------------
@@ -483,7 +511,7 @@ describe('block-apply journal recording', () => {
     // Insert a standalone UTXO transaction in mempool
     const karmaBox = makeKarmaBox(100, author.userId, 0);
     utxo.insertBox(karmaBox);
-    const likeTx = makeLikeTx(karmaBox, 'unrelated_post_id');
+    const likeTx = makeLikeTx(author, karmaBox, 'unrelated_post_id');
     mempool.insertUtxoTx(likeTx, null, 1000);
 
     bc.startBlockCreator(testConfig);
@@ -647,31 +675,46 @@ describe('block-apply journal recording', () => {
 
     const blockApply = await importBlockApply();
 
-    // Genesis with coinbase output but no value (coinbase should be > 0)
-    const block: OrderingBlock = {
+    // Genesis paying a zero coinbase when the emission schedule says 100.
+    //
+    // Every earlier check is made to pass so the block reaches the coinbase
+    // check on every run: powTargetBits 0 satisfies PoW unconditionally and
+    // the Merkle roots are computed rather than zeroed. With a non-zero target
+    // over a Date.now() header it was a coin flip whether PoW or the Merkle
+    // root did the rejecting, and the coinbase check went untested.
+    const { computeSubBlockRoot, computeUtxoTxRoot } = await import(
+      '../../src/services/block-creator.js'
+    );
+    const subBlockTree = {
+      subBlockRefs: [],
+      subBlockEntries: [],
+      pruneEntries: [],
+    };
+    const utxoTxTree = {
+      utxoTxIds: [],
+      utxoTxs: [],
+      likeBoxIds: [],
+      coinbaseOutputs: [
+        { value: 0, owner: new Uint8Array(32), lockedUntilBlock: null },
+      ],
+    };
+    const block = {
       header: {
         protocolVersion: PROTOCOL_VERSION,
         height: 1,
         prevBlockHash: '0000000000000000000000000000000000000000000000000000000000000000',
-        subBlockRoot: '0000000000000000000000000000000000000000000000000000000000000000',
-        utxoTxRoot: '0000000000000000000000000000000000000000000000000000000000000000',
-        stateRoot: '0000000000000000000000000000000000000000000000000000000000000000000',
+        subBlockRoot: computeSubBlockRoot(subBlockTree),
+        utxoTxRoot: computeUtxoTxRoot(utxoTxTree),
+        stateRoot: '0000000000000000000000000000000000000000000000000000000000000000',
         validatorId: new Uint8Array(32),
         powNonce: 0,
-        powTargetBits: 4,
+        powTargetBits: 0,
         createdAt: Date.now(),
       },
-      subBlockTree: { subBlockRefs: [], subBlockEntries: [], stumpIds: [] },
-      utxoTxTree: {
-        utxoTxIds: [],
-        utxoTxs: [],
-        likeBoxIds: [],
-        coinbaseOutputs: [
-          { value: 0, owner: new Uint8Array(32), lockedUntilBlock: null },
-        ], // zero coinbase when reward should be 100
-      },
+      subBlockTree,
+      utxoTxTree,
       validatorSignature: new Uint8Array(64),
-    };
+    } as unknown as OrderingBlock;
 
     const result = blockApply.applyOrderingBlock(block);
     expect(result).toBe(false);
@@ -767,5 +810,214 @@ describe('block-apply journal recording', () => {
     // New decay-burn box exists with reduced value
     expect(karmaBox!.boxType).toBe('karma');
     expect(karmaBox!.value).toBe(100 - expectedBurn);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Embedded UTXO tx re-validation at block application
+// ---------------------------------------------------------------------------
+
+describe('block-apply embedded tx re-validation', () => {
+  beforeEach(async () => {
+    vi.resetModules();
+  });
+
+  afterEach(async () => {
+    try {
+      const bc = await importBlockCreator();
+      bc.stopBlockCreator();
+    } catch {
+      // Module might not have been imported
+    }
+    vi.resetModules();
+  });
+
+  /**
+   * Mine and apply a block over whatever sits in the mempool.
+   *
+   * The block creator does not validate what it picks up, so putting a
+   * transaction into the mempool directly — around the service layer that
+   * would have refused it — reproduces the malicious-producer case exactly:
+   * validator selection is permissionless PoW, so a producer can embed a
+   * transaction that passed validation on no node at all.
+   */
+  async function mineBlockOverMempool() {
+    const bc = await importBlockCreator();
+    bc.startBlockCreator(testConfig);
+    return bc.createOrderingBlock();
+  }
+
+  it('rejects the whole block when an embedded tx spends a live box unsigned', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    const utxo = await importUtxo();
+    const mempool = await importMempoolFresh();
+
+    const victim = makeTestIdentity();
+    const victimBox = makeKarmaBox(100, victim.userId, 0);
+    utxo.insertBox(victimBox);
+
+    // Well-formed, conserving, spending a box that really exists. The only
+    // thing it lacks is the victim's authorisation.
+    const forged = makeLikeTx(victim, victimBox, 'target_post');
+    forged.signatures = {};
+    mempool.insertUtxoTx(forged, null, 1000);
+
+    await mineBlockOverMempool();
+
+    // Nothing the block would have done survives — not the block row, not the
+    // coinbase mint, not the spend.
+    const ordering = await importOrdering();
+    expect(ordering.getOrderingBlock(1)).toBeNull();
+    expect(ordering.getCurrentHeight()).toBe(0);
+
+    const journal = await importJournalStore();
+    expect(journal.getBlockJournal(1)).toBeNull();
+
+    const survivor = utxo.getBox(victimBox.id!) as KarmaBox | null;
+    expect(survivor).not.toBeNull();
+    expect(survivor!.value).toBe(100);
+  });
+
+  it('rejects the whole block when an embedded tx mints value', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    const utxo = await importUtxo();
+    const mempool = await importMempoolFresh();
+
+    const attacker = makeTestIdentity();
+    const attackerBox = makeKarmaBox(100, attacker.userId, 0);
+    utxo.insertBox(attackerBox);
+
+    // Correctly signed by the owner and a legal karma → karma + like shape,
+    // but the outputs total 102 against a 100 karma input: the change box
+    // keeps the full balance and the LikeBox is conjured out of nothing.
+    const inflating: UtxoTransaction = {
+      inputs: [attackerBox.id!],
+      outputs: [
+        {
+          boxType: 'karma',
+          value: 100,
+          createdAtBlock: 0,
+          owner: attacker.userId,
+          guard: 'owner_signature',
+          proofSource: 'like_op',
+          lastTouchBlock: 0,
+        } as KarmaBox,
+        {
+          boxType: 'like',
+          value: LIKE_COST,
+          createdAtBlock: 0,
+          likerId: attacker.userId,
+          targetPostId: 'target_post',
+          guard: 'epoch_tally',
+        } as LikeBox,
+      ],
+      signatures: {},
+      protocolVersion: PROTOCOL_VERSION,
+    };
+    signTransaction(
+      inflating,
+      attacker.privateKey,
+      Buffer.from(attacker.userId).toString('hex'),
+    );
+    mempool.insertUtxoTx(inflating, null, 1000);
+
+    await mineBlockOverMempool();
+
+    const ordering = await importOrdering();
+    expect(ordering.getOrderingBlock(1)).toBeNull();
+    expect(ordering.getCurrentHeight()).toBe(0);
+
+    const journal = await importJournalStore();
+    expect(journal.getBlockJournal(1)).toBeNull();
+
+    // The attacker's balance is exactly what it was — no 102 anywhere.
+    const survivor = utxo.getBox(attackerBox.id!) as KarmaBox | null;
+    expect(survivor).not.toBeNull();
+    expect(survivor!.value).toBe(100);
+  });
+
+  it('applies a block whose embedded txs are all valid', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    const utxo = await importUtxo();
+    const mempool = await importMempoolFresh();
+    const { computeTxId } = await import('@dagsocial/types');
+
+    const alice = makeTestIdentity();
+    const bob = makeTestIdentity();
+    const aliceBox = makeKarmaBox(100, alice.userId, 0);
+    const bobBox = makeKarmaBox(40, bob.userId, 0);
+    utxo.insertBox(aliceBox);
+    utxo.insertBox(bobBox);
+
+    const aliceTx = makeLikeTx(alice, aliceBox, 'post_a');
+    const bobTx = makeLikeTx(bob, bobBox, 'post_b');
+    mempool.insertUtxoTx(aliceTx, null, 1000);
+    mempool.insertUtxoTx(bobTx, null, 1000);
+
+    await mineBlockOverMempool();
+
+    const journal = await importJournalStore();
+    const saved = journal.getBlockJournal(1);
+    expect(saved).not.toBeNull();
+    expect(saved!.appliedUtxoTxs.map((t) => t.txId).sort()).toEqual(
+      [computeTxId(aliceTx), computeTxId(bobTx)].sort(),
+    );
+
+    // Inputs consumed, change boxes live at the conserved values.
+    expect(utxo.getBox(aliceBox.id!)).toBeNull();
+    expect(utxo.getBox(bobBox.id!)).toBeNull();
+    expect((utxo.getBox(changeBoxOf(aliceTx).id!) as KarmaBox).value).toBe(
+      100 - LIKE_COST,
+    );
+    expect((utxo.getBox(changeBoxOf(bobTx).id!) as KarmaBox).value).toBe(
+      40 - LIKE_COST,
+    );
+  });
+
+  it('still defers and retries a tx that consumes a box created in the same block', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    const utxo = await importUtxo();
+    const mempool = await importMempoolFresh();
+    const { computeTxId } = await import('@dagsocial/types');
+
+    const liker = makeTestIdentity();
+    const startBox = makeKarmaBox(100, liker.userId, 0);
+    utxo.insertBox(startBox);
+
+    const txA = makeLikeTx(liker, startBox, 'post_a');
+    const txB = makeLikeTx(liker, changeBoxOf(txA), 'post_b');
+
+    // B goes in first, so the block lists it first and its input does not
+    // exist on the first pass — the "inputs not present yet" case, which must
+    // still defer and retry rather than take the block down.
+    mempool.insertUtxoTx(txB, null, 1000);
+    mempool.insertUtxoTx(txA, null, 1000);
+
+    const block = await mineBlockOverMempool();
+    expect(block!.utxoTxTree.utxoTxIds[0]).toBe(computeTxId(txB));
+
+    const journal = await importJournalStore();
+    const saved = journal.getBlockJournal(1);
+    expect(saved).not.toBeNull();
+    // Applied in dependency order, not block order.
+    expect(saved!.appliedUtxoTxs.map((t) => t.txId)).toEqual([
+      computeTxId(txA),
+      computeTxId(txB),
+    ]);
+
+    // 100 → 98 → 96, with both intermediate boxes spent.
+    expect(utxo.getBox(startBox.id!)).toBeNull();
+    expect(utxo.getBox(changeBoxOf(txA).id!)).toBeNull();
+    const finalBox = utxo.getBox(changeBoxOf(txB).id!) as KarmaBox | null;
+    expect(finalBox).not.toBeNull();
+    expect(finalBox!.value).toBe(100 - 2 * LIKE_COST);
   });
 });

@@ -29,6 +29,7 @@ import type {
   BlockJournal,
 } from '@dagsocial/types';
 import type Database from 'better-sqlite3';
+import { signTransaction } from '../helpers.js';
 
 // ---------------------------------------------------------------------------
 // Test config
@@ -236,18 +237,36 @@ function makeKarmaBox(
   return box;
 }
 
+/**
+ * Build a signed, value-conserving like transaction: the liker's karma box is
+ * consumed and split into a karma change box and the LikeBox.
+ *
+ * Block application re-validates every embedded tx in full, so a fixture that
+ * omitted the signature or the change output would be indistinguishable from a
+ * forgery and would take the whole block down with it.
+ */
 function makeLikeTx(
+  liker: TestIdentity,
   karmaBox: KarmaBox,
   targetPostId: string,
 ): UtxoTransaction {
-  return {
+  const tx: UtxoTransaction = {
     inputs: [karmaBox.id!],
     outputs: [
+      {
+        boxType: 'karma',
+        value: karmaBox.value - LIKE_COST,
+        createdAtBlock: 0,
+        owner: liker.userId,
+        guard: 'owner_signature',
+        proofSource: 'like_op',
+        lastTouchBlock: 0,
+      } as KarmaBox,
       {
         boxType: 'like',
         value: LIKE_COST,
         createdAtBlock: 0,
-        likerId: karmaBox.owner,
+        likerId: liker.userId,
         targetPostId,
         guard: 'epoch_tally',
       } as LikeBox,
@@ -255,6 +274,8 @@ function makeLikeTx(
     signatures: {},
     protocolVersion: PROTOCOL_VERSION,
   };
+  signTransaction(tx, liker.privateKey, Buffer.from(liker.userId).toString('hex'));
+  return tx;
 }
 
 // ---------------------------------------------------------------------------
@@ -749,7 +770,7 @@ describe('revertBlock', () => {
     // Insert a standalone UTXO tx
     const karmaBox = makeKarmaBox(100, author.userId, 0);
     utxo.insertBox(karmaBox);
-    const likeTx = makeLikeTx(karmaBox, 'unrelated');
+    const likeTx = makeLikeTx(author, karmaBox, 'unrelated');
     mempool.insertUtxoTx(likeTx, null, 1000);
 
     bc.startBlockCreator(testConfig);

@@ -630,18 +630,24 @@ export function createOrderingBlock(): OrderingBlock | null {
 function finalizeBlock(block: OrderingBlock): void {
   // applyOrderingBlock handles validation, storage, coinbase, confirmations,
   // UTXO tx application, journal recording, and basic mempool cleanup
-  applyOrderingBlock(block, dagService);
+  const applied = applyOrderingBlock(block, dagService);
 
   // Clean up any remaining mempool entries that applyOrderingBlock didn't
   // remove (e.g. UTXO txs that were attached to sub-blocks and removed
   // from utxoTxIds). Double-removal is harmless.
+  //
+  // This runs even when the block was rejected: whatever made it invalid came
+  // out of the mempool, so leaving those entries in place would rebuild the
+  // same rejected block every interval and stall the chain.
   for (const rowid of confirmedRowids) {
     removeEntry(rowid);
   }
 
-  // Broadcast (not handled by applyOrderingBlock)
+  // Broadcast (not handled by applyOrderingBlock) — only for a block we
+  // ourselves accepted. Peers apply the same rules, so gossiping a block our
+  // own validation rejected can only waste their bandwidth.
   const net = getNet();
-  if (net) {
+  if (net && applied) {
     net.broadcastOrderingBlock(block).catch((err: Error) => {
       console.warn(`Failed to broadcast ordering block: ${err.message}`);
     });
