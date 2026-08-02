@@ -42,8 +42,9 @@ This project uses Design by Contract for multi-session workflow. The `contracts/
 # Capture main window id
 MAIN_WINDOW=$KITTY_WINDOW_ID
 
-# Spawn new window in project root
-NEW_WIN=$(kitty @ launch --type=window --cwd=/home/mwaddip/projects/dagsocial)
+# Spawn new window with cwd INSIDE the target package, so packages/<component>/CLAUDE.md
+# auto-loads (along with the repo-root CLAUDE.md) as the session's standing context.
+NEW_WIN=$(kitty @ launch --type=window --cwd=/home/mwaddip/projects/dagsocial/packages/<component>)
 
 # Launch dclaude
 kitty @ send-text --match=id:$NEW_WIN 'dclaude'
@@ -61,14 +62,13 @@ kitty @ send-text --match=id:$NEW_WIN $'\r'
 
 ### Prompt boilerplate
 
-Every dispatch prompt must start with:
+The session launches with its cwd inside the target package (step 3), so that package's `CLAUDE.md`
+auto-loads and supplies the read-first list (OVERRIDES, RTK, root CLAUDE.md, ARCHITECTURE, the
+interface contract). A dispatch prompt therefore doesn't repeat those reads — it opens with a
+one-line reminder and the task:
 
 ```
-Read ~/projects/OVERRIDES.md.
-Read ~/.claude/RTK.md.
-Read CLAUDE.md.
-Read contracts/ARCHITECTURE.md.
-Read the relevant interface contract(s) for this task.
+Read ./CLAUDE.md and follow its read-first list before starting.
 
 ## <task title>
 ...
