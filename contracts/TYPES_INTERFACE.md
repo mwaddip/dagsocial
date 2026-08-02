@@ -49,13 +49,65 @@ Post {
   signature: Uint8Array(64)    // Ed25519 over signingHash(post)
 }
 
-PostId = blake2b512(content || author || parentRefs || challenge ||
-         protocolVersion || powNonce || timestamp)
+PostId = blake2b512(POST_ID_DOMAIN || postFieldBytes(post) || u64LE(powNonce))
          .subarray(0, 32).toString('hex')
+         // postFieldBytes is the canonical length-prefixed encoding below
 ```
 
 `PostId` is a hex string. `author` is binary (Uint8Array) — hex on the HTTP
 wire, raw bytes in CBOR.
+
+### Canonical field encoding (M-1 — injective, protocol-breaking)
+
+The old preimages concatenated fields with **no delimiters**
+(`content || author || ... || String(protocolVersion) || String(powNonce) ||
+String(timestamp)`), so distinct field tuples collided: `(powNonce=5,
+timestamp=23)` and `(52, 3)` produce the byte string `…"5""23"…` ==
+`…"52""3"…` → the **same id**. Both the signing preimage and the id preimage
+are now built from one injective, length-prefixed encoder.
+
+```
+u32LE(n)  = 4-byte little-endian unsigned
+u64LE(n)  = 8-byte little-endian unsigned
+LP(bytes) = u32LE(byteLength(bytes)) || bytes          // length-prefixed
+
+postFieldBytes(post) =
+      LP(utf8(content))
+   || LP(author)                                        // 32 raw bytes
+   || u32LE(parentRefs.length)                          // ref count
+   || LP(utf8(ref))   for each ref, in array order
+   || LP(challenge)                                     // 32 raw bytes
+   || u32LE(protocolVersion)
+   || u64LE(timestamp)
+
+POST_ID_DOMAIN = utf8("dagsocial/post-id/1")            // domain separ/version tag
+```
+
+Every variable-length field is length-prefixed and the ref array carries an
+explicit count, so no two distinct posts share a `postFieldBytes`. Numeric
+fields are fixed-width little-endian, never `String(n)`. `powNonce` is **not**
+in `postFieldBytes` (the author signs before mining, and PoW appends the nonce
+itself); it enters only the id, as a trailing `u64LE`.
+
+The fixed-width numeric writers are **total**: a numeric field outside the
+encodable domain (non-negative safe integers ≤ 2⁵³−1) encodes to an all-ones
+sentinel rather than throwing. This keeps `signingHash` panic-free on malformed
+input (the `@dagsocial/validation` no-panic contract, M-5/M-6), and — because a
+valid field's top bits are always zero — no malformed post can encode to the
+same bytes as a well-formed one. A mirror implementation must reproduce this,
+not reintroduce a throw.
+
+`computePostId` prefixes `POST_ID_DOMAIN` so the id is a distinct, full-entropy
+hash — not equal to the PoW hash `blake2b512(postFieldBytes || u64LE(powNonce))`,
+which shares the same tail. `signingHash` carries no tag (it stays
+`blake2b512(postFieldBytes)`, the exact bytes PoW is solved over).
+
+**This encoding is protocol-breaking and unversioned.** It changes every post
+hash and must be byte-identical in `@dagsocial/types` **and** the demo-UI JS
+(`packages/node/public/index.html`). `PROTOCOL_VERSION` stays `1`; both devnet
+DBs are wiped on deploy — no legacy-post path. A **golden test vector** (a fixed
+`Post` → its exact `signingHash` and `postId` hex) is frozen in the types tests
+and reproduced by the UI mirror; it is the cross-implementation anchor.
 
 ### Profile posts
 
@@ -74,8 +126,9 @@ UsernameClaim = Post with content { type: "username_claim", claim: "@alice" }
 
 | Export | Signature | Description |
 |--------|-----------|-------------|
-| `signingHash(post)` | `(Post) => Buffer(32)` | `blake2b512(content \|\| author \|\| parentRefs \|\| challenge \|\| protocolVersion \|\| timestamp).subarray(0,32)` — what the author signs. Excludes `powNonce` and `signature`. |
-| `computePostId(post)` | `(Post) => PostId` | `blake2b512(content \|\| author \|\| parentRefs \|\| challenge \|\| protocolVersion \|\| powNonce \|\| timestamp).subarray(0,32).toString('hex')` — includes PoW nonce |
+| `postPowPreimage(post)` | `(Post) => Uint8Array` | `postFieldBytes(post)` — the canonical length-prefixed encoding (see above). What PoW is solved over and what `signingHash` hashes. Excludes `powNonce` and `signature`. |
+| `signingHash(post)` | `(Post) => Buffer(32)` | `blake2b512(postFieldBytes(post)).subarray(0,32)` — what the author signs. Excludes `powNonce` and `signature`. |
+| `computePostId(post)` | `(Post) => PostId` | `blake2b512(POST_ID_DOMAIN \|\| postFieldBytes(post) \|\| u64LE(powNonce)).subarray(0,32).toString('hex')` — includes PoW nonce; domain-tagged so it ≠ the PoW hash |
 | `getPostDiscriminator(content)` | `(string) => string \| null` | Parse JSON content and extract `type` field, or null |
 | `buildProfileContent(type, extra)` | `(string, Record?) => string` | Build JSON content string with type discriminator |
 

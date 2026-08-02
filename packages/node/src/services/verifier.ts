@@ -8,6 +8,7 @@ import {
   POST_LOCK_REPLY_COST,
   computePostId,
   decodePost,
+  postPowPreimage,
 } from '@dagsocial/types';
 import type { Post } from '@dagsocial/types';
 import { verifyPoW, verifyPostSignature, verifyContentCharacters } from '@dagsocial/validation';
@@ -130,15 +131,10 @@ export function verifyPost(
     return { valid: false, error: 'Challenge mismatch' };
   }
 
-  // 5. Proof of Work.
-  const powInput = Buffer.concat([
-    Buffer.from(post.content),
-    Buffer.from(post.author),
-    ...post.parentRefs.map((r) => Buffer.from(r)),
-    Buffer.from(post.challenge),
-    Buffer.from(String(post.protocolVersion)),
-    Buffer.from(String(post.timestamp)),
-  ]);
+  // 5. Proof of Work. The preimage comes from @dagsocial/types — the single
+  //    canonical encoder (audit M-1). Rebuilding it here would be a third copy
+  //    that silently drifts from the miner's.
+  const powInput = postPowPreimage(post);
   if (!verifyPoW(powInput, post.powNonce, POST_POW_TARGET_BITS)) {
     return { valid: false, error: 'Proof of Work invalid' };
   }
@@ -218,15 +214,9 @@ export function verifyPostForRelay(
 
   // 4. Challenge is NOT checked — challenge was node-local to origin
 
-  // 5. PoW: re-verify (stateless, cheap)
-  const powInput = Buffer.concat([
-    Buffer.from(post.content),
-    Buffer.from(post.author),
-    ...post.parentRefs.map((r) => Buffer.from(r)),
-    Buffer.from(post.challenge),
-    Buffer.from(String(post.protocolVersion)),
-    Buffer.from(String(post.timestamp)),
-  ]);
+  // 5. PoW: re-verify (stateless, cheap). Canonical preimage from
+  //    @dagsocial/types — see verifyPost above.
+  const powInput = postPowPreimage(post);
   if (!verifyPoW(powInput, post.powNonce, POST_POW_TARGET_BITS)) {
     return { valid: false, error: 'Proof of Work invalid' };
   }

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { generateKeyPair, computePostId } from '@dagsocial/types';
+import { generateKeyPair, computePostId, postPowPreimage } from '@dagsocial/types';
 import type { Post, SubBlock, OrderingBlock } from '@dagsocial/types';
 import {
   verifyPoW,
@@ -139,22 +139,12 @@ describe('Two-node integration', () => {
       timestamp: Date.now(),
       signature: new Uint8Array(64),
     };
-    // Compute valid PoW nonce (20-bit target, Stage 1 validates it)
-    const encoder = new TextEncoder();
-    const powParts: Uint8Array[] = [
-      encoder.encode(postBase.content),
-      postBase.author,  // raw 32-byte Ed25519 public key
-      postBase.challenge,
-      encoder.encode(String(postBase.protocolVersion)),
-      encoder.encode(String(postBase.timestamp)),
-    ];
-    const powTotal = powParts.reduce((s, p) => s + p.length, 0);
-    const powInput = new Uint8Array(powTotal);
-    let powOff = 0;
-    for (const p of powParts) {
-      powInput.set(p, powOff);
-      powOff += p.length;
-    }
+    // Compute valid PoW nonce (20-bit target, Stage 1 validates it).
+    // The preimage comes from @dagsocial/types — gossip's Stage-1 check calls
+    // postPowPreimage(post), so mining against a local copy of the encoding
+    // (as this test used to) silently stops matching (audit M-1).
+    // powNonce is excluded from the preimage, so the placeholder is irrelevant.
+    const powInput = postPowPreimage({ ...postBase, powNonce: 0 });
     const nonce = solvePoW(powInput, 20);
     const post: Post = { ...postBase, powNonce: nonce };
     const sb: SubBlock = {

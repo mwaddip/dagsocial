@@ -1,9 +1,13 @@
 // packages/node/test/harness/crypto-helpers.ts
 import { createHash, sign as cryptoSign, type KeyObject } from 'node:crypto';
-import { computeTxId, PROTOCOL_VERSION, LIKE_COST } from '@dagsocial/types';
-import type { UtxoTransaction } from '@dagsocial/types';
-
-const encoder = new TextEncoder();
+import {
+  computeTxId,
+  postPowPreimage,
+  signingHash,
+  PROTOCOL_VERSION,
+  LIKE_COST,
+} from '@dagsocial/types';
+import type { Post, UtxoTransaction } from '@dagsocial/types';
 
 export const hex = (b: Uint8Array): string => Buffer.from(b).toString('hex');
 export const unhex = (s: string): Uint8Array => new Uint8Array(Buffer.from(s, 'hex'));
@@ -26,17 +30,37 @@ export function le64(n: number): Uint8Array {
   return b;
 }
 
+/**
+ * The Post shape the canonical encoders read. `powNonce` and `signature` are
+ * excluded from both the PoW preimage and the signing hash, so the placeholders
+ * here never reach the bytes.
+ */
+function preimagePost(
+  content: string, author: Uint8Array, parents: string[],
+  chal: Uint8Array, ts: number,
+): Post {
+  return {
+    content,
+    author,
+    parentRefs: parents,
+    challenge: chal,
+    powNonce: 0,
+    protocolVersion: PROTOCOL_VERSION,
+    timestamp: ts,
+    signature: new Uint8Array(64),
+  };
+}
+
+/**
+ * PoW preimage — delegates to @dagsocial/types rather than rebuilding the
+ * canonical encoding (audit M-1). A local copy here would let the harness mine
+ * against bytes the node no longer verifies.
+ */
 export function powInput(
   content: string, author: Uint8Array, parents: string[],
   chal: Uint8Array, ts: number,
 ): Uint8Array {
-  return concat(
-    encoder.encode(content), author,
-    ...parents.map(p => encoder.encode(p)),
-    chal,
-    encoder.encode(String(PROTOCOL_VERSION)),
-    encoder.encode(String(ts)),
-  );
+  return postPowPreimage(preimagePost(content, author, parents, chal, ts));
 }
 
 export function leadingZeroBits(hash: Uint8Array): number {
@@ -61,14 +85,8 @@ export function signPost(
   content: string, author: Uint8Array, parents: string[],
   chal: Uint8Array, ts: number, userKey: KeyObject,
 ): string {
-  const h = createHash('blake2b512');
-  h.update(content);
-  h.update(author);
-  for (const ref of parents) h.update(ref);
-  h.update(chal);
-  h.update(String(PROTOCOL_VERSION));
-  h.update(String(ts));
-  return hex(new Uint8Array(cryptoSign(null, h.digest().subarray(0, 32), userKey)));
+  const h = signingHash(preimagePost(content, author, parents, chal, ts));
+  return hex(new Uint8Array(cryptoSign(null, h, userKey)));
 }
 
 export function signTx(tx: UtxoTransaction, userKey: KeyObject, pubHex: string): void {

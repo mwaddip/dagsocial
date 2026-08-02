@@ -241,10 +241,78 @@ function concatUint8Arrays(arrays) {
   return result;
 }
 
+// ===========================================================================
+// Canonical post field encoding (audit M-1)
+// ===========================================================================
+//
+// Byte-identical mirror of postFieldBytes() in @dagsocial/types (src/post.ts).
+// See contracts/TYPES_INTERFACE.md → "Canonical field encoding (M-1)".
+//
+// The old encoding concatenated fields with no delimiters, so distinct field
+// tuples collided — (powNonce=5, timestamp=23) and (52, 3) both produced
+// …"5""23"… == …"52""3"… → the same postId. Every variable-length field is now
+// length-prefixed and the ref array carries an explicit count.
+//
+// A post mined here must verify on the node, so ANY change below must land in
+// packages/types/src/post.ts in the same commit. The golden vector frozen in
+// the types tests (and re-asserted against this file by the node package's
+// ui-crypto-mirror test) is the anchor that catches drift.
+
+const POST_ID_DOMAIN = encoder.encode('dagsocial/post-id/1');
+
+/**
+ * Sentinel for a numeric field outside the encodable domain. The encoders are
+ * total — they never throw — and the encodable domain is the non-negative safe
+ * integers, whose top 11 bits are always zero, so no valid value can encode to
+ * all-ones.
+ */
+const U32_SENTINEL = 0xffffffff;
+
+function isEncodableU32(n) {
+  return typeof n === 'number' && Number.isSafeInteger(n) && n >= 0 && n < U32_SENTINEL;
+}
+
+function isEncodableU64(n) {
+  return typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
+}
+
+/** u32LE(n) — 4-byte little-endian. */
+function encodeU32LE(n) {
+  const v = isEncodableU32(n) ? n : U32_SENTINEL;
+  return new Uint8Array([v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff]);
+}
+
+/** u64LE(n) — 8-byte little-endian. The sole u64 encoder (PoW nonce + fields). */
 function encodeLE64(n) {
-  const buf = new ArrayBuffer(8);
-  new DataView(buf).setBigUint64(0, BigInt(n), true);
-  return new Uint8Array(buf);
+  if (!isEncodableU64(n)) return new Uint8Array(8).fill(0xff);
+  const lo = n >>> 0;
+  const hi = Math.floor(n / 0x100000000) >>> 0;
+  return new Uint8Array([
+    lo & 0xff, (lo >>> 8) & 0xff, (lo >>> 16) & 0xff, (lo >>> 24) & 0xff,
+    hi & 0xff, (hi >>> 8) & 0xff, (hi >>> 16) & 0xff, (hi >>> 24) & 0xff,
+  ]);
+}
+
+/** LP(bytes) = u32LE(byteLength) ‖ bytes. */
+function lengthPrefixed(bytes) {
+  return concatUint8Arrays([encodeU32LE(bytes.length), bytes]);
+}
+
+/**
+ * postFieldBytes — the canonical, injective encoding shared by the signing
+ * hash, the PoW preimage, and the post id. Excludes powNonce (the author signs
+ * before mining) and signature.
+ */
+function postFieldBytes(content, authorBytes, parentRefs, challengeBytes, protocolVersion, timestamp) {
+  return concatUint8Arrays([
+    lengthPrefixed(encoder.encode(content)),
+    lengthPrefixed(authorBytes),
+    encodeU32LE(parentRefs.length),
+    ...parentRefs.map(r => lengthPrefixed(encoder.encode(r))),
+    lengthPrefixed(challengeBytes),
+    encodeU32LE(protocolVersion),
+    encodeLE64(timestamp),
+  ]);
 }
 
 // ===========================================================================
@@ -387,16 +455,9 @@ function countLeadingZeroBits(buf) {
   return bits;
 }
 
+/** PoW preimage = postFieldBytes; solvePoW appends u64LE(nonce). */
 function buildPowInput(content, authorBytes, parentRefs, challengeBytes, protocolVersion, timestamp) {
-  const parts = [
-    encoder.encode(content),
-    authorBytes,
-    ...parentRefs.map(r => encoder.encode(r)),
-    challengeBytes,
-    encoder.encode(String(protocolVersion)),
-    encoder.encode(String(timestamp)),
-  ];
-  return concatUint8Arrays(parts);
+  return postFieldBytes(content, authorBytes, parentRefs, challengeBytes, protocolVersion, timestamp);
 }
 
 function solvePoW(powInput, targetBits, onProgress) {
@@ -787,19 +848,19 @@ function computeBoxId(box) {
 // Post ID computation (client-side, matches server computePostId)
 // ===========================================================================
 
+/**
+ * postId = blake2b512(POST_ID_DOMAIN ‖ postFieldBytes ‖ u64LE(powNonce))[0..32]
+ *
+ * Domain-tagged, so the id is never equal to the PoW hash over the same post.
+ */
 function computePostId(post) {
   const cBytes = typeof post.challenge === 'string' ? hex2buf(post.challenge) : post.challenge;
   const aBytes = typeof post.author === 'string' ? hex2buf(post.author) : post.author;
-  const parts = [
-    encoder.encode(post.content),
-    aBytes,
-    ...post.parentRefs.map(r => encoder.encode(r)),
-    cBytes,
-    encoder.encode(String(post.protocolVersion)),
-    encoder.encode(String(post.powNonce)),
-    encoder.encode(String(post.timestamp)),
-  ];
-  const combined = concatUint8Arrays(parts);
+  const combined = concatUint8Arrays([
+    POST_ID_DOMAIN,
+    postFieldBytes(post.content, aBytes, post.parentRefs, cBytes, post.protocolVersion, post.timestamp),
+    encodeLE64(post.powNonce),
+  ]);
   const hash = blake2b(combined, null, 64).slice(0, 32);
   return buf2hex(hash);
 }

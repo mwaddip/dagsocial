@@ -14,6 +14,8 @@ import type { KeyObject } from 'node:crypto';
 import {
   computeTxId,
   computePostId,
+  postPowPreimage,
+  signingHash,
   leafHash,
   buildMerkleRoot,
   hexToBuf,
@@ -54,8 +56,6 @@ const unhex = (s: string) => new Uint8Array(Buffer.from(s, 'hex'));
 const blake32 = (d: Uint8Array) => new Uint8Array(createHash('blake2b512').update(d).digest().subarray(0, 32));
 const concat = (...arrs: Uint8Array[]) => { const t = arrs.reduce((s,a)=>s+a.length,0); const o=new Uint8Array(t); let p=0; for(const a of arrs){o.set(a,p);p+=a.length;} return o; };
 const le64 = (n: number) => { const b = new Uint8Array(8); new DataView(b.buffer).setBigUint64(0, BigInt(n), true); return b; };
-
-const encoder = new TextEncoder();
 
 /**
  * One request on a fresh, non-pooled socket (`agent: false`).
@@ -120,9 +120,19 @@ function txToApi(tx: UtxoTransaction): Record<string, unknown> {
   };
 }
 
-// PoW — matches demo UI format (text-encoded fields, LE64 nonce)
+/** Shape the canonical encoders read; powNonce/signature never reach the bytes. */
+function preimagePost(content: string, author: Uint8Array, parents: string[], chal: Uint8Array, ts: number) {
+  return {
+    content, author, parentRefs: parents, challenge: chal,
+    powNonce: 0, protocolVersion: PROTOCOL_VERSION, timestamp: ts,
+    signature: new Uint8Array(64),
+  };
+}
+
+// PoW preimage — the canonical encoding from @dagsocial/types (audit M-1).
+// A local copy would mine against bytes the node no longer verifies.
 function powInput(content: string, author: Uint8Array, parents: string[], chal: Uint8Array, ts: number): Uint8Array {
-  return concat(encoder.encode(content), author, ...parents.map(p => encoder.encode(p)), chal, encoder.encode(String(PROTOCOL_VERSION)), encoder.encode(String(ts)));
+  return postPowPreimage(preimagePost(content, author, parents, chal, ts));
 }
 function leadingZeroBits(hash: Uint8Array): number {
   let bits = 0;
@@ -134,15 +144,8 @@ function solve(pi: Uint8Array, target: number): number {
   throw new Error('PoW timeout');
 }
 function signPost(content: string, author: Uint8Array, parents: string[], chal: Uint8Array, ts: number): string {
-  // Must match signingHash() in @dagsocial/types: h.update() takes strings/bytes directly
-  const h = createHash('blake2b512');
-  h.update(content);                   // string
-  h.update(author);                    // Uint8Array
-  for (const ref of parents) h.update(ref); // string
-  h.update(chal);                      // Uint8Array
-  h.update(String(PROTOCOL_VERSION));  // string
-  h.update(String(ts));                // string
-  return hex(new Uint8Array(cryptoSign(null, h.digest().subarray(0, 32), userKey)));
+  const h = signingHash(preimagePost(content, author, parents, chal, ts));
+  return hex(new Uint8Array(cryptoSign(null, h, userKey)));
 }
 
 // Tx builders

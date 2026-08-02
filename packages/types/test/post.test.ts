@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { computePostId, signingHash, getPostDiscriminator, buildProfileContent } from '../src/post.js';
+import { createHash } from 'crypto';
+import {
+  computePostId,
+  signingHash,
+  postPowPreimage,
+  getPostDiscriminator,
+  buildProfileContent,
+} from '../src/post.js';
 import {
   PROTOCOL_VERSION,
   MAX_CONTENT_BYTES,
@@ -41,7 +48,7 @@ const signature = new Uint8Array(64).fill(0xcd);
 
 const post: Post = {
   content: 'hello world',
-  author: 'abc123',
+  author: new Uint8Array(32).fill(0x11),
   parentRefs: [],
   challenge,
   powNonce: 42,
@@ -104,6 +111,150 @@ describe('post', () => {
     const otherChallenge = new Uint8Array(32).fill(0xff);
     const other = { ...post, challenge: otherChallenge };
     expect(computePostId(post)).not.toBe(computePostId(other));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Canonical field encoding (audit M-1)
+// ---------------------------------------------------------------------------
+
+/**
+ * The pre-M-1 encoding, kept verbatim so every test below can be shown to be
+ * non-vacuous: each case that passes under the canonical encoding is asserted
+ * to have *failed* under this one.
+ */
+function legacyPostId(p: Post): string {
+  const h = createHash('blake2b512');
+  h.update(p.content);
+  h.update(p.author);
+  for (const ref of p.parentRefs) h.update(ref);
+  h.update(p.challenge);
+  h.update(String(p.protocolVersion));
+  h.update(String(p.powNonce));
+  h.update(String(p.timestamp));
+  return h.digest().subarray(0, 32).toString('hex');
+}
+
+/**
+ * Frozen golden vector — the cross-implementation anchor.
+ *
+ * These three hex strings are reproduced by the demo-UI JS mirror
+ * (packages/node/public/index.html, asserted in the node package's
+ * ui-crypto-mirror test). A change to either implementation that is not
+ * mirrored in the other breaks this vector. Do not "fix" a failure by editing
+ * the constants — the encoding is protocol-breaking and unversioned.
+ */
+const GOLDEN_AUTHOR = new Uint8Array(32);
+for (let i = 0; i < 32; i++) GOLDEN_AUTHOR[i] = i;
+const GOLDEN_CHALLENGE = new Uint8Array(32);
+for (let i = 0; i < 32; i++) GOLDEN_CHALLENGE[i] = 0x20 + i;
+
+const GOLDEN_POST: Post = {
+  content: 'dagsocial golden vector ✓',
+  author: GOLDEN_AUTHOR,
+  parentRefs: [
+    '1111111111111111111111111111111111111111111111111111111111111111',
+    '2222222222222222222222222222222222222222222222222222222222222222',
+  ],
+  challenge: GOLDEN_CHALLENGE,
+  powNonce: 4294967296,     // 2^32 — the nonce's u64 high half must be written
+  protocolVersion: 1,
+  timestamp: 1767225600000, // > 2^32 — the timestamp's high half must be written
+  signature: new Uint8Array(64).fill(0xcd),
+};
+
+const GOLDEN_SIGNING_HASH =
+  '24157bd74276c86556b41ce0402f8ef9ba4850fc086519c838eb77300ce681d0';
+const GOLDEN_POST_ID =
+  '0150b9bf676c88c715f0b1fbdf142f8bd0ccf7bb8769e2059488d6c300b6b08f';
+
+describe('canonical field encoding (M-1)', () => {
+  it('golden vector: signingHash is frozen', () => {
+    expect(signingHash(GOLDEN_POST).toString('hex')).toBe(GOLDEN_SIGNING_HASH);
+  });
+
+  it('golden vector: postId is frozen', () => {
+    expect(computePostId(GOLDEN_POST)).toBe(GOLDEN_POST_ID);
+  });
+
+  it('golden vector: preimage is the exact length-prefixed layout', () => {
+    const pre = postPowPreimage(GOLDEN_POST);
+    // LP(content 27) + LP(author 32) + u32(refCount) + 2×LP(ref 64)
+    // + LP(challenge 32) + u32(protocolVersion) + u64(timestamp)
+    expect(pre.length).toBe(31 + 36 + 4 + 2 * 68 + 36 + 4 + 8);
+    expect(Buffer.from(pre.subarray(0, 4)).toString('hex')).toBe('1b000000');   // u32LE(27)
+    expect(Buffer.from(pre.subarray(-8)).toString('hex')).toBe('00a8da769b010000'); // u64LE(ts)
+  });
+
+  it('the M-1 collision pair now yields distinct ids', () => {
+    const a: Post = { ...GOLDEN_POST, powNonce: 5, timestamp: 23 };
+    const b: Post = { ...GOLDEN_POST, powNonce: 52, timestamp: 3 };
+    expect(computePostId(a)).not.toBe(computePostId(b));
+    // Vacuity check: this pair DID collide under the old concatenation.
+    expect(legacyPostId(a)).toBe(legacyPostId(b));
+  });
+
+  it('parentRef boundaries are unambiguous', () => {
+    const split: Post = { ...GOLDEN_POST, parentRefs: ['ab', 'cd'] };
+    const joined: Post = { ...GOLDEN_POST, parentRefs: ['abcd'] };
+    expect(computePostId(split)).not.toBe(computePostId(joined));
+    // Vacuity check: undelimited concatenation made these identical.
+    expect(legacyPostId(split)).toBe(legacyPostId(joined));
+  });
+
+  it('the content/author boundary is unambiguous', () => {
+    const a: Post = { ...GOLDEN_POST, content: 'ab', parentRefs: ['cd'] };
+    const b: Post = { ...GOLDEN_POST, content: 'abcd', parentRefs: [] };
+    // Different ref counts alone are enough; the explicit count seals it.
+    expect(computePostId(a)).not.toBe(computePostId(b));
+  });
+
+  it('an empty parentRefs array is distinguishable from an empty ref', () => {
+    const none: Post = { ...GOLDEN_POST, parentRefs: [] };
+    const empty: Post = { ...GOLDEN_POST, parentRefs: [''] };
+    expect(computePostId(none)).not.toBe(computePostId(empty));
+    // Vacuity check: both appended nothing under the old encoding.
+    expect(legacyPostId(none)).toBe(legacyPostId(empty));
+  });
+
+  it('the post id is domain-tagged — it is not the PoW hash', () => {
+    const nonce = Buffer.alloc(8);
+    nonce.writeBigUInt64LE(BigInt(GOLDEN_POST.powNonce));
+    const powHash = createHash('blake2b512')
+      .update(postPowPreimage(GOLDEN_POST))
+      .update(nonce)
+      .digest()
+      .subarray(0, 32)
+      .toString('hex');
+    expect(computePostId(GOLDEN_POST)).not.toBe(powHash);
+  });
+
+  it('postPowPreimage excludes powNonce, computePostId includes it', () => {
+    const other: Post = { ...GOLDEN_POST, powNonce: GOLDEN_POST.powNonce + 1 };
+    expect(Buffer.compare(
+      Buffer.from(postPowPreimage(GOLDEN_POST)),
+      Buffer.from(postPowPreimage(other)),
+    )).toBe(0);
+    expect(computePostId(GOLDEN_POST)).not.toBe(computePostId(other));
+  });
+
+  it('never throws on out-of-domain numerics (validation no-panic contract)', () => {
+    // `@dagsocial/validation`'s isSignablePost admits any `typeof === 'number'`,
+    // so these reach the encoder. BigInt/writeBigUInt64LE would throw here.
+    for (const bad of [NaN, Infinity, -Infinity, -1, 1.5, 2 ** 64, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => signingHash({ ...GOLDEN_POST, timestamp: bad })).not.toThrow();
+      expect(() => computePostId({ ...GOLDEN_POST, timestamp: bad })).not.toThrow();
+      expect(() => computePostId({ ...GOLDEN_POST, powNonce: bad })).not.toThrow();
+      expect(() => computePostId({ ...GOLDEN_POST, protocolVersion: bad })).not.toThrow();
+    }
+  });
+
+  it('an out-of-domain numeric cannot impersonate a valid one', () => {
+    // The all-ones sentinel is unreachable from a non-negative safe integer.
+    const valid = computePostId({ ...GOLDEN_POST, timestamp: 0 });
+    for (const bad of [NaN, Infinity, -1, 1.5]) {
+      expect(computePostId({ ...GOLDEN_POST, timestamp: bad })).not.toBe(valid);
+    }
   });
 });
 
