@@ -375,25 +375,62 @@ Sub-blocks are user-produced. A sub-block carries exactly one post plus any
 pending like boxes queued since the last sub-block. Sub-block identity IS post
 identity — they are the same object.
 
+### Block header
+
+```
+BlockHeader {
+  protocolVersion: number        // 1
+  height: number                 // Monotonically increasing, starting from 1
+  prevBlockHash: string          // hex(32) — hash of the previous block's header
+  subBlockRoot: string           // hex(32) — Merkle root over the sub-block tree (DAG content)
+  utxoTxRoot: string             // hex(32) — Merkle root over the UTXO tx tree
+  stateRoot: string              // hex(33) — AVL+ digest (EMPTY_STATE_ROOT until enabled)
+  validatorId: UserId            // Block producer's 32-byte public key
+  powNonce: number               // PoW solution
+  powTargetBits: number          // Difficulty target for this block
+  createdAt: number              // Unix ms
+}
+```
+
+The header is what gets hashed. `blockHash(header) = blake2b512(encodeHeader(header))[:32]`
+(hex) is both the block's canonical hash — the next block's `prevBlockHash` — and the
+message the validator signs. The PoW preimage is the same encoding with `powNonce`
+zeroed (`computePowHash`). Both functions live in `@dagsocial/validation`. The body is
+bound into the header transitively through `subBlockRoot` / `utxoTxRoot` / `stateRoot`,
+so the header alone commits to the whole block.
+
 ### Ordering block
+
+Validator-produced, and a **nested** structure — a header plus two body trees and a
+signature. There is no flat `hash` field (the hash is derived on demand via
+`blockHash(header)`), and `height` / `powNonce` / `validatorId` / `prevBlockHash` live
+on `header`, not on the block.
 
 ```
 OrderingBlock {
-  height: number                   // Monotonically increasing, starting from 1
-  hash: string                     // blake2b512(serializeBlock(...)).subarray(0,32).toString('hex')
-  prevBlockHash: string            // Previous ordering block hash (64 hex)
-  subBlockRefs: PostId[]           // Sub-blocks anchored by this block
-  likeBoxIds: BoxId[]              // Standalone likes (no sub-block to ride)
-  utxoTxIds: TxId[]                // UTXO transactions in this block
-  pruneEntries: PruneEntry[]      // Prune entries committed in this block
-  validatorId: UserId              // Block producer
-  validatorSignature: Uint8Array(64)  // Ed25519 over body hash
-  powNonce: number                 // PoW solution
-  powTargetBits: number            // Difficulty target for this block
-  coinbaseOutputs: CoinbaseOutput[] // Block reward distribution
-  epochTallyResults?: EpochTally   // Present if epoch transition triggered
-  protocolVersion: number          // 1
-  createdAt: number                // Unix ms
+  header: BlockHeader
+  subBlockTree: SubBlockTree
+  utxoTxTree: UtxoTxTree
+  validatorSignature: Uint8Array(64)  // raw Ed25519 over blockHash(header)
+}
+
+SubBlockTree {
+  subBlockRefs: PostId[]            // sub-block IDs anchored by this block (ordering)
+  subBlockEntries: SubBlockEntry[]  // committed topology, aligned 1:1 with subBlockRefs
+  pruneEntries: PruneEntry[]        // prune entries committed in this block
+}
+
+SubBlockEntry {
+  postId: string        // hex(32) post ID
+  parentRefs: string[]  // hex(32) parent post IDs (0–8)
+}
+
+UtxoTxTree {
+  utxoTxIds: TxId[]                  // UTXO transaction IDs
+  utxoTxs: Uint8Array[]              // CBOR-encoded UtxoTransactions, aligned with utxoTxIds
+  likeBoxIds: BoxId[]                // standalone likes (no sub-block to ride)
+  coinbaseOutputs: CoinbaseOutput[]  // block reward distribution
+  epochTallyResults?: EpochTally     // present if an epoch transition triggered
 }
 ```
 
@@ -412,7 +449,11 @@ CoinbaseOutput {
 
 ```
 EpochTally {
-  rewards: Record<PostId, LikeReward>
+  rewards: Record<PostId, LikeReward>       // per-post like rewards this epoch
+  talliedLockedLikeBoxIds: string[]         // locked like boxes marked tallied (anti-double-count)
+  processedFreeLikeIds: string[]            // free like rows marked processed
+  consumedPostLockBoxIds: string[]          // post lock boxes consumed during this tally
+  newPostLockBoxes: PostLockBox[]           // replacement post lock boxes (reduced value; empty if fully unlocked)
 }
 
 LikeReward {
@@ -441,8 +482,14 @@ keys are hex-encoded on wire (HTTP JSON); raw bytes in CBOR.
 | `decodeStump(bytes)` | `(Uint8Array) => Stump` | CBOR decode |
 | `encodeSubBlock(sb)` | `(SubBlock) => Uint8Array` | CBOR encode |
 | `decodeSubBlock(bytes)` | `(Uint8Array) => SubBlock` | CBOR decode |
-| `encodeOrderingBlock(b)` | `(OrderingBlock) => Uint8Array` | CBOR encode |
-| `decodeOrderingBlock(bytes)` | `(Uint8Array) => OrderingBlock` | CBOR decode |
+| `encodeHeader(h)` | `(BlockHeader) => Uint8Array` | CBOR encode — the input to `blockHash` / `computePowHash` |
+| `decodeHeader(bytes)` | `(Uint8Array) => BlockHeader` | CBOR decode |
+| `encodeSubBlockTree(t)` | `(SubBlockTree) => Uint8Array` | CBOR encode (body section) |
+| `decodeSubBlockTree(bytes)` | `(Uint8Array) => SubBlockTree` | CBOR decode |
+| `encodeUtxoTxTree(t)` | `(UtxoTxTree) => Uint8Array` | CBOR encode (body section) |
+| `decodeUtxoTxTree(bytes)` | `(Uint8Array) => UtxoTxTree` | CBOR decode |
+| `encodeOrderingBlock(b)` | `(OrderingBlock) => Uint8Array` | Length-prefixed wire framing: `u32BE(len)‖headerCbor ‖ … ‖ validatorSignature(64)` |
+| `decodeOrderingBlock(bytes)` | `(Uint8Array) => OrderingBlock` | Inverse of `encodeOrderingBlock` |
 | `encodeTx(tx)` | `(UtxoTransaction) => Uint8Array` | CBOR encode |
 | `decodeTx(bytes)` | `(Uint8Array) => UtxoTransaction` | CBOR decode |
 
