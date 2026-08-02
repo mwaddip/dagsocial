@@ -70,8 +70,19 @@ type DataEvent =
 // Constants
 // ---------------------------------------------------------------------------
 
-/** 60 seconds without progress triggers a peer rotation. */
+/** 60 seconds without real progress triggers a peer rotation. */
 const STALL_TIMEOUT_MS = 60_000;
+/**
+ * Cap on the total number of outstanding requested modifier ids (audit M-10).
+ *
+ * New requests are trimmed rather than growing the set past this. One Inv
+ * announces at most MAX_INV_IDS ids and responses are byte-capped, so several
+ * requested batches can legitimately be in flight at once; four batches keep
+ * the worst case around 100 KB of id strings. There is no per-request timer —
+ * stall rotation clears the set, so a wedged budget self-heals within one
+ * stall window.
+ */
+const MAX_OUTSTANDING_IDS = 4 * MAX_INV_IDS;
 /** Send SyncInfo to sync peer every 30 seconds while active. */
 const SYNCED_POLL_INTERVAL_MS = 30_000;
 /** Maximum data events in the queue before dropping oldest. */
@@ -106,6 +117,16 @@ export class SyncMachine {
 
   private lastProgressMs: number = 0;
   private lastSyncInfoMs: number = 0;
+
+  /**
+   * Outstanding requested modifier ids, keyed by the peer the request was sent
+   * to (audit M-10). A response modifier is accepted only if its id is present
+   * under its sender's key — "this sender was sent a request containing this
+   * id" — so no peer can push blocks into the store via the sync path
+   * unsolicited. Bounded by MAX_OUTSTANDING_IDS across all keys; cleared on
+   * peer rotation and on sync-peer disconnect.
+   */
+  private outstanding = new Map<string, Set<string>>();
 
   private readonly magic: number;
 
@@ -515,6 +536,9 @@ export class SyncMachine {
     if (this.state.syncPeerId === peerId) {
       this.state.stalledPeers.add(peerId);
       this.state.syncPeerId = null;
+      // The sync conversation died with the peer — a response that crosses the
+      // disconnect in flight is dropped without penalty by response binding.
+      this.outstanding.clear();
       if (this.state.phase === 'syncing' || this.state.phase === 'synced') {
         this.state.phase = 'idle';
       }
@@ -579,19 +603,54 @@ export class SyncMachine {
    * Process an Inv (inventory) message.
    *
    * If we're syncing, request the announced modifiers from our sync peer.
-   * Unknown IDs that we already have are filtered before requesting.
+   * Only the current sync peer's Invs are honoured (request provenance, audit
+   * M-10): a third party's Inv must neither cause requests nor grow the
+   * outstanding set. Dropped without penalty — Invs from other peers are
+   * legitimate gossip-adjacent noise.
+   *
+   * IDs we already have, and IDs already outstanding, are filtered before
+   * requesting. Every id actually requested is recorded as outstanding for the
+   * sync peer; the set never grows past MAX_OUTSTANDING_IDS — the request is
+   * trimmed instead.
    */
-  private handleInvMsg(_peerId: string, inv: Inv): void {
-    if (this.state.phase !== 'syncing' || !this.state.syncPeerId) return;
+  private handleInvMsg(peerId: string, inv: Inv): void {
+    const syncPeerId = this.state.syncPeerId;
+    if (this.state.phase !== 'syncing' || !syncPeerId) return;
+    if (peerId !== syncPeerId) return;
     // Unknown modifier types are dropped before any store work is done.
     if (inv.typeId !== MODIFIER_ORDERING_BLOCK) return;
 
     const known = this.blockIdIndex();
-    const missing = inv.ids.filter((id) => !known.has(id));
-    if (missing.length === 0) return;
+    const requested = this.outstanding.get(syncPeerId);
+    // A Set both deduplicates ids repeated within one Inv and preserves
+    // announcement order for the trim below.
+    const fresh = new Set<string>();
+    for (const id of inv.ids) {
+      if (known.has(id) || requested?.has(id)) continue;
+      fresh.add(id);
+    }
+    if (fresh.size === 0) return;
 
-    const req: ModifierRequest = { typeId: inv.typeId, ids: missing };
-    this.sendToPeer(this.state.syncPeerId, encodeModifierRequest(this.magic, req));
+    const budget = MAX_OUTSTANDING_IDS - this.outstandingTotal();
+    if (budget <= 0) return;
+    const ids = [...fresh].slice(0, budget);
+
+    let target = requested;
+    if (!target) {
+      target = new Set();
+      this.outstanding.set(syncPeerId, target);
+    }
+    for (const id of ids) target.add(id);
+
+    const req: ModifierRequest = { typeId: inv.typeId, ids };
+    this.sendToPeer(syncPeerId, encodeModifierRequest(this.magic, req));
+  }
+
+  /** Total outstanding requested ids across all request targets. */
+  private outstandingTotal(): number {
+    let total = 0;
+    for (const set of this.outstanding.values()) total += set.size;
+    return total;
   }
 
   /**
@@ -630,39 +689,60 @@ export class SyncMachine {
   }
 
   /**
-   * Process a ModifierResponse — apply received headers/blocks to the store.
+   * Process a ModifierResponse — apply received blocks to the store.
+   *
+   * Response binding (audit M-10): a modifier is accepted only if its id is
+   * still outstanding for THIS sender, i.e. it answers a ModifierRequest we
+   * previously sent to that same peer. Anything else — a response from a peer
+   * we never asked, or ids we never requested — is dropped without penalty: a
+   * response can legitimately cross a peer rotation in flight. Partial
+   * responses are normal (the serve side truncates at MAX_SERVE_BODY_BYTES);
+   * unanswered ids stay outstanding for a later response.
    */
-  private handleModifierResponseMsg(_peerId: string, resp: ModifierResponse): void {
+  private handleModifierResponseMsg(peerId: string, resp: ModifierResponse): void {
     if (resp.modifiers.length === 0) return;
+    // We only ever request ordering blocks, so a response of any other type
+    // answers nothing and must not consume outstanding ids.
+    if (resp.typeId !== MODIFIER_ORDERING_BLOCK) return;
 
-    this.lastProgressMs = Date.now();
+    const requested = this.outstanding.get(peerId);
+    if (!requested || requested.size === 0) return;
 
-    if (resp.typeId === MODIFIER_ORDERING_BLOCK) {
-      // Each modifier carries a full ordering block. Apply them and track
-      // progress via the count of received blocks.
-      const blocks: unknown[] = [];
-
-      for (const mod of resp.modifiers) {
-        if (mod.data.length > 0) {
-          blocks.push(mod.data);
-        }
-        // If the store can extract height from the block ID or data, it
-        // would update maxHeight. For now, track count-based progress.
-      }
-
-      if (blocks.length > 0) {
-        this.store.appendBlocks(blocks);
-        const newHeight = this.store.chainHeight();
-        this.state.downloadedHeight = Math.max(
-          this.state.downloadedHeight,
-          newHeight,
-        );
-        this.state.stateAppliedHeight = Math.max(
-          this.state.stateAppliedHeight,
-          newHeight,
-        );
-      }
+    const blocks: unknown[] = [];
+    for (const mod of resp.modifiers) {
+      // Unsolicited and already-consumed ids are dropped; a duplicate id
+      // within one response processes once (the first occurrence consumes it).
+      if (!requested.has(mod.id)) continue;
+      // An empty payload answers nothing — the id stays outstanding so a
+      // later response can still deliver it; a peer abusing this makes no
+      // progress and stalls out.
+      if (mod.data.length === 0) continue;
+      requested.delete(mod.id);
+      blocks.push(mod.data);
     }
+    if (requested.size === 0) this.outstanding.delete(peerId);
+    if (blocks.length === 0) return;
+
+    const heightBefore = this.store.chainHeight();
+    this.store.appendBlocks(blocks);
+    const newHeight = this.store.chainHeight();
+
+    // Stall progress = chain height (audit M-10): the stall clock advances
+    // only when applying a response strictly increased the chain — junk and
+    // already-known blocks leave it untouched, so a peer feeding non-advancing
+    // responses is rotated away within one stall window.
+    if (newHeight > heightBefore) {
+      this.lastProgressMs = Date.now();
+    }
+
+    this.state.downloadedHeight = Math.max(
+      this.state.downloadedHeight,
+      newHeight,
+    );
+    this.state.stateAppliedHeight = Math.max(
+      this.state.stateAppliedHeight,
+      newHeight,
+    );
   }
 
   // -----------------------------------------------------------------------
@@ -735,5 +815,9 @@ export class SyncMachine {
     }
     this.state.syncPeerId = null;
     this.state.phase = 'idle';
+    // Rotation ends the sync conversation: outstanding ids are void. A late
+    // response that crosses the rotation is dropped without penalty by
+    // response binding.
+    this.outstanding.clear();
   }
 }

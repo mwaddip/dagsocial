@@ -399,19 +399,9 @@ describe('SyncMachine', () => {
   // -----------------------------------------------------------------------
 
   describe('handleModifierResponse', () => {
-    it('updates last progress timestamp', () => {
-      const { machine } = makeMachine({ store: { chainHeight: () => 0 } });
-      // Trigger progress tracking via a ModifierResponse
-      const body = new Uint8Array(
-        encode({
-          typeId: MODIFIER_ORDERING_BLOCK,
-          modifiers: [{ id: 'block1', data: new Uint8Array([1, 2, 3]) }],
-        }),
-      );
-      machine.handleMessage('peer1', MSG_MODIFIER_RESPONSE, body);
-      machine.flush();
-      // This is an internal effect — verified by stall tests
-    });
+    // Responses only apply when they answer an outstanding request from the
+    // same peer (audit M-10) — each test solicits via an Inv from the sync
+    // peer first. The unsolicited paths are covered in sync-integrity.test.ts.
 
     it('no-ops on empty modifier list', () => {
       const { machine } = makeMachine({ store: { chainHeight: () => 0 } });
@@ -423,7 +413,7 @@ describe('SyncMachine', () => {
       machine.flush();
     });
 
-    it('calls appendBlocks for ordering block responses', () => {
+    it('calls appendBlocks for solicited ordering block responses', () => {
       const appended: unknown[] = [];
       const { machine } = makeMachine({
         store: {
@@ -431,6 +421,8 @@ describe('SyncMachine', () => {
           appendBlocks: (blocks: unknown[]) => { appended.push(...blocks); },
         },
       });
+      peerActive(machine, 'peer1', 100);
+      sendInv(machine, 'peer1', { typeId: MODIFIER_ORDERING_BLOCK, ids: ['b1', 'b2'] });
       const body = new Uint8Array(
         encode({
           typeId: MODIFIER_ORDERING_BLOCK,
@@ -453,6 +445,8 @@ describe('SyncMachine', () => {
           appendBlocks: (blocks: unknown[]) => { appended.push(...blocks); },
         },
       });
+      peerActive(machine, 'peer1', 100);
+      sendInv(machine, 'peer1', { typeId: MODIFIER_ORDERING_BLOCK, ids: ['b1', 'b2'] });
       const body = new Uint8Array(
         encode({
           typeId: MODIFIER_ORDERING_BLOCK,
@@ -554,10 +548,18 @@ describe('SyncMachine', () => {
     });
 
     it('does not rotate if progress was made recently', () => {
-      const { machine } = makeMachine({ store: { chainHeight: () => 0 } });
+      // Progress must be solicited AND chain-advancing to count (audit M-10).
+      let height = 0;
+      const { machine } = makeMachine({
+        store: {
+          chainHeight: () => height,
+          appendBlocks: (blocks: unknown[]) => { height += blocks.length; },
+        },
+      });
       peerActive(machine, 'peer1', 100);
+      sendInv(machine, 'peer1', { typeId: MODIFIER_ORDERING_BLOCK, ids: ['b1'] });
 
-      // Simulate progress by sending a ModifierResponse
+      // Real progress: a solicited response that advances the chain
       vi.advanceTimersByTime(30_000); // 30s
       const body = new Uint8Array(
         encode({
@@ -577,11 +579,17 @@ describe('SyncMachine', () => {
     });
 
     it('rotates after stall even with progress long ago', () => {
-      const { machine } = makeMachine({ store: { chainHeight: () => 0 } });
+      let height = 0;
+      const { machine } = makeMachine({
+        store: {
+          chainHeight: () => height,
+          appendBlocks: (blocks: unknown[]) => { height += blocks.length; },
+        },
+      });
       peerActive(machine, 'peer1', 100);
+      sendInv(machine, 'peer1', { typeId: MODIFIER_ORDERING_BLOCK, ids: ['b1'] });
 
-      // Progress at t=0 (the onPeerActive itself doesn't set lastProgressMs)
-      // Explicitly trigger progress
+      // Solicited, chain-advancing progress at t=0
       const body = new Uint8Array(
         encode({
           typeId: MODIFIER_ORDERING_BLOCK,

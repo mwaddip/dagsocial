@@ -285,13 +285,38 @@ pick_sync_peer() → sync_from_peer() → synced()
   chain height
 - **Sync:** send SyncInfo, process Inv → request headers, validate, append
   to chain, repeat
-- **Stall:** 60s no progress → rotate to different peer, mark current as
-  stalled. On progress, clear stall set.
+- **Stall:** 60s without **real progress** (see Sync Integrity below) →
+  rotate to different peer, mark current as stalled. On progress, clear
+  stall set.
 - **Peer rotation:** `stalledPeers: Set<PeerId>` — peers that failed to
   produce progress. On stall, pick next outbound peer not in set. If all
   stalled, clear set and retry.
 - **Synced:** periodic SyncInfo (30s) to detect new blocks. React to Inv
   from any peer.
+
+### Sync Integrity (audit M-10)
+
+- **Response binding.** A `ModifierResponse` is processed only if it
+  answers an outstanding `ModifierRequest` this node previously sent **to
+  that same peer**: the machine tracks the requested modifier ids per
+  request target; a response modifier whose id was not requested from its
+  sender is dropped — dropped, not penalized, because a response can
+  legitimately cross a peer rotation in flight. Requests are only ever
+  sent to the current sync peer, so this implies: no other peer can push
+  blocks into the store via the sync path.
+- **Request provenance.** While syncing, only an Inv from the current sync
+  peer may trigger a `ModifierRequest`. A third party's Inv must neither
+  cause requests nor grow the outstanding set.
+- **Outstanding-set lifecycle.** Ids are added when a request is sent,
+  removed as matching response modifiers are accepted, bounded by a fixed
+  cap (new requests must not grow the set past it), and cleared on peer
+  rotation and on sync-peer disconnect. The framed sync path has no
+  per-request timer — stall rotation IS the request timeout.
+- **Stall progress = chain height.** The stall clock advances only when
+  applying a response strictly increases `chainHeight` — never on mere
+  receipt of bytes or non-advancing modifiers. A peer feeding junk
+  therefore stalls out and is rotated away within one stall window; it
+  cannot pin sync indefinitely.
 
 ### Watermarks
 
