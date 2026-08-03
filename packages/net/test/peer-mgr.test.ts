@@ -67,9 +67,9 @@ describe('PeerManager', () => {
 
   it('bans peer when threshold exceeded', () => {
     mgr.addPeer(makePeer('peer1'));
+    // Same instant, so no decay window straddles the threshold crossing.
     vi.spyOn(Date, 'now').mockReturnValue(0);
     mgr.recordPenalty('misbehavior', 'peer1', 499, 'bad');
-    vi.spyOn(Date, 'now').mockReturnValue(config.penaltySafeIntervalMs + 1);
     mgr.recordPenalty('misbehavior', 'peer1', 1, 'one more');
     expect(mgr.getPeerCount()).toBe(0);
     expect(mgr.isBanned('peer1')).toBe(true);
@@ -82,15 +82,89 @@ describe('PeerManager', () => {
     expect(mgr.getPeerCount()).toBe(0);
   });
 
-  it('respects penalty safe interval (cooldown)', () => {
+  // -----------------------------------------------------------------------
+  // Penalty accrual + decay (contract: "Accrual and decay (audit L-13)")
+  // -----------------------------------------------------------------------
+
+  it('always accrues: 5 rapid MisbehaviorPenalties ban the peer (fails pre-fix)', () => {
+    // Pre-fix, the safe-interval cooldown discarded 4 of the 5 rapid
+    // penalties (score 100, no ban) — ban pressure was independent of attack
+    // rate. Post-fix every penalty accrues: 5 × 100 = 500 >= threshold.
+    // Nonzero timestamp: the pre-fix cooldown skipped itself while
+    // lastPenaltyTime was 0, so a t=0 flood would ban even pre-fix.
     mgr.addPeer(makePeer('peer1'));
-    const now = Date.now();
-    vi.spyOn(Date, 'now').mockReturnValue(now);
+    vi.spyOn(Date, 'now').mockReturnValue(1_000);
+    for (let i = 0; i < 5; i++) {
+      mgr.recordPenalty('misbehavior', 'peer1', 100, `invalid gossip ${i}`);
+    }
+    expect(mgr.isBanned('peer1')).toBe(true);
+    expect(mgr.getPeerCount()).toBe(0);
+  });
+
+  it('control: the same 5 penalties spaced two intervals apart decay away — no ban', () => {
+    mgr.addPeer(makePeer('peer1'));
+    for (let i = 0; i < 5; i++) {
+      vi.spyOn(Date, 'now').mockReturnValue(i * 2 * config.penaltySafeIntervalMs);
+      mgr.recordPenalty('misbehavior', 'peer1', 100, `sporadic ${i}`);
+    }
+    expect(mgr.isBanned('peer1')).toBe(false);
+    expect(mgr.getPeerCount()).toBe(1);
+    // Each 2-interval gap drains 200 — more than the 100 accrued — so the
+    // score is back at 100 after every penalty, far from the 500 threshold.
+    expect((mgr as any).peers.get('peer1').penaltyScore).toBe(100);
+  });
+
+  it('decays the score by 100 per elapsed interval, flooring at 0', () => {
+    mgr.addPeer(makePeer('peer1'));
+    vi.spyOn(Date, 'now').mockReturnValue(0);
     mgr.recordPenalty('misbehavior', 'peer1', 100, 'first');
-    mgr.recordPenalty('misbehavior', 'peer1', 100, 'too soon — should be ignored');
-    // Only first penalty should count
-    const entry = (mgr as any).peers.get('peer1');
-    expect(entry.penaltyScore).toBe(100);
+    mgr.recordPenalty('misbehavior', 'peer1', 100, 'second');
+    expect((mgr as any).peers.get('peer1').penaltyScore).toBe(200);
+
+    // Decay is lazy — a zero-score probe forces it without adding pressure.
+    vi.spyOn(Date, 'now').mockReturnValue(config.penaltySafeIntervalMs);
+    mgr.recordPenalty('misbehavior', 'peer1', 0, 'probe');
+    expect((mgr as any).peers.get('peer1').penaltyScore).toBe(100);
+
+    vi.spyOn(Date, 'now').mockReturnValue(2 * config.penaltySafeIntervalMs);
+    mgr.recordPenalty('misbehavior', 'peer1', 0, 'probe');
+    expect((mgr as any).peers.get('peer1').penaltyScore).toBe(0);
+
+    // Ten further intervals on a zero score: floored at 0, never negative.
+    vi.spyOn(Date, 'now').mockReturnValue(12 * config.penaltySafeIntervalMs);
+    mgr.recordPenalty('misbehavior', 'peer1', 0, 'probe');
+    expect((mgr as any).peers.get('peer1').penaltyScore).toBe(0);
+  });
+
+  it('decay is proportional, not stepwise: half an interval drains half', () => {
+    mgr.addPeer(makePeer('peer1'));
+    vi.spyOn(Date, 'now').mockReturnValue(0);
+    mgr.recordPenalty('misbehavior', 'peer1', 200, 'seed');
+    vi.spyOn(Date, 'now').mockReturnValue(config.penaltySafeIntervalMs / 2);
+    mgr.recordPenalty('misbehavior', 'peer1', 0, 'probe');
+    expect((mgr as any).peers.get('peer1').penaltyScore).toBe(150);
+  });
+
+  it('break-even: one MisbehaviorPenalty per interval holds steady, never bans', () => {
+    mgr.addPeer(makePeer('peer1'));
+    for (let i = 0; i < 20; i++) {
+      vi.spyOn(Date, 'now').mockReturnValue(i * config.penaltySafeIntervalMs);
+      mgr.recordPenalty('misbehavior', 'peer1', 100, `steady ${i}`);
+    }
+    expect(mgr.isBanned('peer1')).toBe(false);
+    expect(mgr.getPeerCount()).toBe(1);
+    expect((mgr as any).peers.get('peer1').penaltyScore).toBe(100);
+  });
+
+  it('just above break-even: one MisbehaviorPenalty per half interval bans', () => {
+    mgr.addPeer(makePeer('peer1'));
+    // Net +50 per penalty after the first: 100, 150, … 500 on the 9th.
+    for (let i = 0; i < 9; i++) {
+      vi.spyOn(Date, 'now').mockReturnValue(i * (config.penaltySafeIntervalMs / 2));
+      mgr.recordPenalty('misbehavior', 'peer1', 100, `pressure ${i}`);
+    }
+    expect(mgr.isBanned('peer1')).toBe(true);
+    expect(mgr.getPeerCount()).toBe(0);
   });
 
   it('evicts a random peer', () => {

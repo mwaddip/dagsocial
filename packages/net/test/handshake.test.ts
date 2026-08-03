@@ -124,16 +124,19 @@ describe('handshake', () => {
 
     it('keeps a retrying version-mismatched peer on an expiring ban only', () => {
       const mgr = makeMgr();
-      // Hammer past the score threshold: the worst outcome must still be a
-      // temporal ban that lifts on its own once the peer upgrades.
-      for (let i = 0; i < 10; i++) {
-        vi.spyOn(Date, 'now').mockReturnValue(i * 120_001);
+      // Hammer past the score threshold: retrying every 12s sits well above
+      // the decay break-even (a 50-point Transient drains within half the
+      // 120s interval), so pressure accrues at net +40 per attempt and
+      // crosses 500 on the 13th. The worst outcome must still be a temporal
+      // ban that lifts on its own once the peer upgrades.
+      for (let i = 0; i < 13; i++) {
+        vi.spyOn(Date, 'now').mockReturnValue(i * 12_000);
         applyPolicy(mgr, { ...testMsg, protocolVersion: 99 });
       }
-      vi.spyOn(Date, 'now').mockReturnValue(9 * 120_001);
+      vi.spyOn(Date, 'now').mockReturnValue(12 * 12_000);
       expect(mgr.isBanned('peer1')).toBe(true);
 
-      vi.spyOn(Date, 'now').mockReturnValue(9 * 120_001 + BAN_MS + 1);
+      vi.spyOn(Date, 'now').mockReturnValue(12 * 12_000 + BAN_MS + 1);
       expect(mgr.isBanned('peer1')).toBe(false);
     });
 

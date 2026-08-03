@@ -473,13 +473,40 @@ Node start
 | PermanentPenalty | Wrong magic bytes, incompatible version | 500 (instant ban) |
 
 Accumulated score >= threshold → temporal ban for `temporalBanDuration`.
-Safe interval cooldown between penalties for the same peer.
+
+### Accrual and decay (audit L-13)
+
+**Every penalty accrues.** A penalty is never discarded because another
+one arrived recently — that made ban pressure independent of attack
+rate, since a peer flooding invalid messages paid exactly what a peer
+misbehaving once every safe interval paid, while each invalid message
+still cost full Stage-1 work (which now includes PoW and signature
+verification).
+
+Instead the accumulated score **decays with time**: it is reduced by
+`PENALTY_DECAY_PER_INTERVAL` (100 — one MisbehaviorPenalty) for every
+`PENALTY_SAFE_INTERVAL_MS` of elapsed time since the peer's score was
+last updated, floored at zero. Decay is applied lazily at penalty time,
+before the new score is added — no timers.
+
+The break-even point is therefore **one MisbehaviorPenalty per safe
+interval**: a peer misbehaving faster than that accrues pressure and is
+eventually banned, one misbehaving more slowly fades back to zero and is
+never banned. A flooding peer crosses the threshold in five messages
+rather than ten minutes.
+
+Permanent penalties (`PenaltyKind.ProtocolViolation`, `'permanent'`)
+bypass scoring entirely and ban instantly — decay never applies to them.
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `PENALTY_SCORE_THRESHOLD` | `500` | Score to trigger ban |
 | `TEMPORAL_BAN_DURATION_MS` | `3600000` | Ban duration (60 min) |
-| `PENALTY_SAFE_INTERVAL_MS` | `120000` | Cooldown between penalties (2 min) |
+| `PENALTY_SAFE_INTERVAL_MS` | `120000` | Decay interval — `PENALTY_DECAY_PER_INTERVAL` points of accumulated score decay per interval (2 min) |
+
+The parameter keeps its `SAFE_INTERVAL` name because it is set from the
+environment by `@dagsocial/node`; renaming it is a cross-package change
+tracked as a follow-up.
 
 ---
 

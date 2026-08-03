@@ -97,12 +97,14 @@ describe('bogus vs malformed distinction', () => {
     expect(meta!.penaltyCount).toBe(1);
   });
 
-  it('accumulating bogus penalties eventually triggers temporal ban (not permanent)', () => {
+  it('accumulating bogus penalties above break-even triggers temporal ban (not permanent)', () => {
     mgr.addPeer(makePeer('peer1'));
 
-    // 10 × Transient penalties at 50 each = 500 (= threshold)
-    for (let i = 0; i < 10; i++) {
-      vi.spyOn(Date, 'now').mockReturnValue(i * (120_000 + 1)); // outside safe interval
+    // A Transient (50) decays away within half the 120s safe interval, so
+    // only faster misbehavior accrues pressure. One penalty every 12s nets
+    // +40 per step — 50, 90, 130, … crossing the 500 threshold on the 13th.
+    for (let i = 0; i < 13; i++) {
+      vi.spyOn(Date, 'now').mockReturnValue(i * 12_000);
       mgr.recordPenaltyKind(PenaltyKind.Transient, 'peer1', `invalid content ${i}`);
     }
 
@@ -111,7 +113,7 @@ describe('bogus vs malformed distinction', () => {
     expect(mgr.getPeerCount()).toBe(0);
 
     // After temporal ban expires, peer is no longer banned
-    vi.spyOn(Date, 'now').mockReturnValue(10 * 120_001 + 3_600_001); // after ban duration
+    vi.spyOn(Date, 'now').mockReturnValue(12 * 12_000 + 3_600_001); // after ban duration
     expect(mgr.isBanned('peer1')).toBe(false); // temporal ban expired
   });
 

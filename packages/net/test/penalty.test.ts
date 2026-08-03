@@ -92,11 +92,13 @@ describe('penalty attribution (using PeerManager)', () => {
     expect(rMeta?.penaltyCount).toBe(1);
   });
 
-  it('accumulating Transient penalties eventually triggers temporal ban', () => {
+  it('accumulating Transient penalties above break-even triggers temporal ban', () => {
     mgr.addPeer(makePeer('peer1'));
-    // 10 × Transient penalties at 50 each = 500 (threshold)
-    for (let i = 0; i < 10; i++) {
-      vi.spyOn(Date, 'now').mockReturnValue(i * (config.penaltySafeIntervalMs + 1));
+    // A Transient (50) decays away within half a safe interval, so only
+    // faster misbehavior accrues pressure. One penalty per interval/10 nets
+    // +40 per step — 50, 90, 130, … crossing 500 on the 13th penalty.
+    for (let i = 0; i < 13; i++) {
+      vi.spyOn(Date, 'now').mockReturnValue(i * (config.penaltySafeIntervalMs / 10));
       mgr.recordPenaltyKind(PenaltyKind.Transient, 'peer1', `timeout ${i}`);
     }
 
@@ -104,18 +106,65 @@ describe('penalty attribution (using PeerManager)', () => {
     expect(mgr.getPeerCount()).toBe(0);
   });
 
-  it('respects penalty safe interval (cooldown) for non-fatal kinds', () => {
+  it('rapid non-fatal penalties all accrue — none are discarded (fails pre-fix)', () => {
+    // Pre-fix the safe-interval cooldown swallowed the second penalty
+    // (penaltyCount 1); post-fix every penalty counts. Nonzero timestamp:
+    // the pre-fix cooldown skipped itself while lastPenaltyTime was 0.
     mgr.addPeer(makePeer('peer1'));
-    const now = Date.now();
-    vi.spyOn(Date, 'now').mockReturnValue(now);
+    vi.spyOn(Date, 'now').mockReturnValue(1_000);
 
     mgr.recordPenaltyKind(PenaltyKind.Transient, 'peer1', 'first');
-    // Second call within cooldown — should be ignored
-    mgr.recordPenaltyKind(PenaltyKind.Transient, 'peer1', 'too soon');
+    mgr.recordPenaltyKind(PenaltyKind.Transient, 'peer1', 'second — counts too');
 
     const meta = mgr.getPeerMetadata('peer1');
-    // Only first penalty counted
-    expect(meta?.penaltyCount).toBe(1);
+    expect(meta?.penaltyCount).toBe(2);
+    expect((mgr as any).peers.get('peer1').penaltyScore).toBe(100);
+  });
+
+  it('kind path bans a flood too: 5 rapid RateLimit penalties (parity with recordPenalty)', () => {
+    // Nonzero timestamp for the same reason as the recordPenalty flood test.
+    mgr.addPeer(makePeer('peer1'));
+    vi.spyOn(Date, 'now').mockReturnValue(1_000);
+    for (let i = 0; i < 5; i++) {
+      mgr.recordPenaltyKind(PenaltyKind.RateLimit, 'peer1', `flood ${i}`);
+    }
+    expect(mgr.isBanned('peer1')).toBe(true);
+    expect(mgr.getPeerCount()).toBe(0);
+  });
+
+  it('kind path decays too: two RateLimits one interval apart hold at 100, not 200', () => {
+    mgr.addPeer(makePeer('peer1'));
+    vi.spyOn(Date, 'now').mockReturnValue(0);
+    mgr.recordPenaltyKind(PenaltyKind.RateLimit, 'peer1', 'first');
+    vi.spyOn(Date, 'now').mockReturnValue(config.penaltySafeIntervalMs);
+    mgr.recordPenaltyKind(PenaltyKind.RateLimit, 'peer1', 'second');
+
+    expect((mgr as any).peers.get('peer1').penaltyScore).toBe(100);
+    expect(mgr.getPeerMetadata('peer1')?.penaltyCount).toBe(2);
+    expect(mgr.isBanned('peer1')).toBe(false);
+  });
+
+  it('ProtocolViolation bans instantly at zero score and regardless of decay', () => {
+    // Permanent bans bypass scoring entirely — no accumulated score needed.
+    mgr.addPeer(makePeer('peer1'));
+    vi.spyOn(Date, 'now').mockReturnValue(0);
+    mgr.recordPenaltyKind(PenaltyKind.ProtocolViolation, 'peer1', 'malformed');
+    expect(mgr.isBanned('peer1')).toBe(true);
+    expect(mgr.getPeerMetadata('peer1')).toBeNull();
+
+    // A peer whose score has long since decayed to nothing is still
+    // permanently banned on the spot — decay never applies to permanents.
+    mgr.addPeer(makePeer('peer2'));
+    mgr.recordPenaltyKind(PenaltyKind.RateLimit, 'peer2', 'noise');
+    vi.spyOn(Date, 'now').mockReturnValue(1000 * config.penaltySafeIntervalMs);
+    mgr.recordPenaltyKind(PenaltyKind.ProtocolViolation, 'peer2', 'malformed later');
+    expect(mgr.isBanned('peer2')).toBe(true);
+    expect(mgr.getPeerCount()).toBe(0);
+
+    // Permanent = survives any clock advance.
+    vi.spyOn(Date, 'now').mockReturnValue(Number.MAX_SAFE_INTEGER);
+    expect(mgr.isBanned('peer1')).toBe(true);
+    expect(mgr.isBanned('peer2')).toBe(true);
   });
 
   it('penalty for unknown peer is a no-op', () => {

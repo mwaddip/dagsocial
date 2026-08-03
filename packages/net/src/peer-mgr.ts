@@ -3,6 +3,14 @@ import type { NetConfig, Peer, PenaltyType, PeerMetadata } from './types.js';
 
 const STALL_TIMEOUT_MS = 30_000; // 30 seconds
 
+/**
+ * Points drained from an accumulated penalty score per elapsed
+ * `penaltySafeIntervalMs` (contract: "Accrual and decay (audit L-13)").
+ * Break-even is one MisbehaviorPenalty (100) per interval: misbehave
+ * faster and the score climbs toward a ban, slower and it fades to zero.
+ */
+const PENALTY_DECAY_PER_INTERVAL = 100;
+
 interface PeerEntry {
   peer: Peer;
   penaltyScore: number;
@@ -86,39 +94,7 @@ export class PeerManager {
       return;
     }
 
-    const entry = this.peers.get(peerId);
-    if (!entry) return;
-
-    // Respect safe interval for non-permanent penalties.
-    // Skip the cooldown when lastPenaltyTime is 0 (first penalty ever) so that
-    // tests mocking Date.now() to 0 don't incorrectly trigger the safe interval.
-    if (entry.lastPenaltyTime > 0 && now - entry.lastPenaltyTime < this.config.penaltySafeIntervalMs) {
-      return; // within cooldown, skip
-    }
-
-    entry.penaltyScore += score;
-    entry.lastPenaltyTime = now;
-
-    // Update metadata penalty count
-    const meta = this.metadata.get(peerId);
-    if (meta) {
-      meta.penaltyCount++;
-      meta.lastSeenMs = now;
-    }
-
-    if (entry.penaltyScore >= this.config.penaltyScoreThreshold) {
-      // Temporal ban
-      this.bans.set(peerId, {
-        peerId,
-        bannedAt: now,
-        banExpiresAt: now + this.config.temporalBanDurationMs,
-      });
-      this.peers.delete(peerId);
-      if (meta) {
-        meta.state = PeerState.Banned;
-        meta.bannedUntil = now + this.config.temporalBanDurationMs;
-      }
-    }
+    this.accrueScoredPenalty(peerId, score, now);
   }
 
   // -----------------------------------------------------------------------
@@ -128,9 +104,11 @@ export class PeerManager {
   /**
    * Record a penalty using the three-tier system.
    *
-   * - Transient: cooldown, peer stays in PeerDb (timeout, slow response)
+   * - Transient: scored (50), decays over time, peer stays in PeerDb
+   *   (timeout, slow response)
    * - ProtocolViolation: permanent ban, peer removed from PeerDb
-   * - RateLimit: cooldown, peer stays (too many messages)
+   * - RateLimit: scored (100), decays over time, peer stays (too many
+   *   messages)
    */
   recordPenaltyKind(kind: PenaltyKind, peerId: string, reason: string): void {
     const now = Date.now();
@@ -146,39 +124,52 @@ export class PeerManager {
       }
       case PenaltyKind.Transient:
       case PenaltyKind.RateLimit: {
-        const meta = this.metadata.get(peerId);
-        const entry = this.peers.get(peerId);
-        if (!entry) return;
-
-        // Respect safe interval
-        if (entry.lastPenaltyTime > 0 && now - entry.lastPenaltyTime < this.config.penaltySafeIntervalMs) {
-          return;
-        }
-
-        const score = kind === PenaltyKind.Transient ? 50 : 100;
-        entry.penaltyScore += score;
-        entry.lastPenaltyTime = now;
-
-        if (meta) {
-          meta.penaltyCount++;
-          meta.lastSeenMs = now;
-        }
-
-        // Check threshold — temporal ban if exceeded
-        if (entry.penaltyScore >= this.config.penaltyScoreThreshold) {
-          const banExpiry = now + this.config.temporalBanDurationMs;
-          this.bans.set(peerId, {
-            peerId,
-            bannedAt: now,
-            banExpiresAt: banExpiry,
-          });
-          this.peers.delete(peerId);
-          if (meta) {
-            meta.state = PeerState.Banned;
-            meta.bannedUntil = banExpiry;
-          }
-        }
+        this.accrueScoredPenalty(peerId, kind === PenaltyKind.Transient ? 50 : 100, now);
         return;
+      }
+    }
+  }
+
+  /**
+   * Shared accrual + decay for every non-permanent penalty (contract:
+   * "Accrual and decay (audit L-13)").
+   *
+   * Every penalty accrues — none are discarded for arriving quickly.
+   * Instead the accumulated score decays by PENALTY_DECAY_PER_INTERVAL per
+   * `penaltySafeIntervalMs` elapsed since the last penalty, proportionally
+   * and floored at zero, computed lazily here — no timers. The config field
+   * keeps its "safe interval" name because @dagsocial/node sets it from the
+   * environment, but it is a decay interval, not a cooldown.
+   */
+  private accrueScoredPenalty(peerId: string, score: number, now: number): void {
+    const entry = this.peers.get(peerId);
+    if (!entry) return;
+
+    const intervalMs = this.config.penaltySafeIntervalMs;
+    // Clamped: a clock running backwards must not mint negative decay,
+    // which would inflate the score.
+    const elapsedMs = Math.max(0, now - entry.lastPenaltyTime);
+    if (intervalMs > 0 && elapsedMs > 0) {
+      const decay = (elapsedMs / intervalMs) * PENALTY_DECAY_PER_INTERVAL;
+      entry.penaltyScore = Math.max(0, entry.penaltyScore - decay);
+    }
+
+    entry.penaltyScore += score;
+    entry.lastPenaltyTime = now;
+
+    const meta = this.metadata.get(peerId);
+    if (meta) {
+      meta.penaltyCount++;
+      meta.lastSeenMs = now;
+    }
+
+    if (entry.penaltyScore >= this.config.penaltyScoreThreshold) {
+      const banExpiresAt = now + this.config.temporalBanDurationMs;
+      this.bans.set(peerId, { peerId, bannedAt: now, banExpiresAt });
+      this.peers.delete(peerId);
+      if (meta) {
+        meta.state = PeerState.Banned;
+        meta.bannedUntil = banExpiresAt;
       }
     }
   }
