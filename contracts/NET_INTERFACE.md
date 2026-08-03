@@ -291,8 +291,10 @@ pick_sync_peer() → sync_from_peer() → synced()
 - **Peer rotation:** `stalledPeers: Set<PeerId>` — peers that failed to
   produce progress. On stall, pick next outbound peer not in set. If all
   stalled, clear set and retry.
-- **Synced:** periodic SyncInfo (30s) to detect new blocks. React to Inv
-  from any peer.
+- **Synced:** periodic SyncInfo (30s) to detect new blocks. An Inv is
+  acted on only while syncing and only from the current sync peer (see
+  Sync Integrity — request provenance); an Inv from any other peer, or
+  while not syncing, is dropped without penalty.
 
 ### Sync Integrity (audit M-10)
 
@@ -384,11 +386,45 @@ Key behaviors:
 - **Persistence:** write-through via `PeerStorage` trait. `put` failures
   logged and swallowed — in-memory state demotes to ephemeral.
 
+#### Persistence seam
+
+`PeerStorage` (`loadAll`/`put`/`delete`) is defined by `@dagsocial/net`
+and **implemented by `@dagsocial/node`** over the `peer_*` tables — net
+must not depend on SQLite. The implementation is supplied to
+`NetNode` at construction, alongside `NetValidators`, and handed to the
+`PeerDb` constructor so `loadAll()` repopulates the table at startup.
+Omitting it yields an ephemeral PeerDb (the current state); that is a
+valid test/embedded configuration, not the production one.
+
+#### Ban surfaces are unified
+
+`PeerManager` bans by **peerId**; `PeerDb` bans by **address**. These
+must not drift apart: a peer that `PeerManager` bans is otherwise still
+served in `Peers` responses and re-dialed by the outbound fill phase.
+
+- `PeerMetadata` carries the peer's declared `address`, recorded when the
+  peer reaches `Active` (the handshake is the only place both identities
+  are known).
+- Every `PeerManager` ban — temporal or permanent — propagates to
+  `PeerDb.ban(address)` for the peer's recorded address, so the address
+  leaves `recent()` and is refused re-entry by `record()`.
+- Expiry of a temporal ban calls `PeerDb.unban(address)`.
+
+**Known limitation, deliberately not solved here:** a libp2p peerId is
+freely regenerable and an address can be re-dialed from a new identity,
+so peerId-keyed banning deters unsophisticated abuse only. Address-keyed
+pressure is the stronger surface; treating it as authoritative is a
+future design decision, not an implementation detail.
+
 ### GetPeers (code 8)
 
 Body: empty. A peer receiving this queries PeerDb for up to 8 recently-seen
 non-blacklisted, non-self peers (excluding the requester's address) and
 responds with `Peers`.
+
+Sent to each connected peer every `GET_PEERS_INTERVAL_MS` (120000, 2 min)
+while connected. An inbound `GetPeers` is answered whatever our own sync
+phase is — serving discovery does not depend on being synced.
 
 ### Peers (code 9)
 
@@ -407,6 +443,17 @@ responds with `Peers`.
 Max 64 entries per response. Cap is enforced on the receiver — bodies
 declaring more trigger a permanent ban of the sender. Empty selection
 produces `{ peers: [] }`.
+
+**Encoding.** Both bodies are CBOR, like every other framed message
+(`encodeFrame(magic, code, encode(body))`); there is no bespoke
+byte-level codec. Decoding follows the `sync-codec.ts` pattern: a decoder
+returns `null` for anything that is not well-formed CBOR **or** does not
+match the declared shape — `peers` an array, and every entry an object
+with a string `address`, string `agentName`, string `nodeName`, a
+safe-integer `protocolVersion`, and a `capabilities` array of
+safe integers. `null` is a `ProtocolViolation` (permanent ban); shape
+checking is not optional, because each field reaches string and dial
+paths that a CBOR payload can otherwise feed any type.
 
 ### Peers Intake
 
@@ -434,17 +481,33 @@ penalize the source — they are silently dropped.
 
 Two phases:
 
-**Floor phase** (connections < `minPeers`):
+Both phases are driven by the count of **outbound** connections, never
+by the total peer count. This is load-bearing: an attacker who fills
+every inbound slot must not be able to stop us from dialing out, which
+is how a node gets eclipsed. Inbound connections are counted toward
+`maxPeers` capacity, but never toward the floor/fill thresholds.
+
+**Floor phase** (outbound connections < `minPeers`):
 - Dial bootstrap seeds aggressively with retry/backoff
 - PeerDb not consulted — seeds are the bootstrap source
 
-**Fill phase** (connections >= `minPeers`, < `maxPeers`):
+**Fill phase** (outbound connections >= `minPeers`, < `maxPeers`):
 - Every `outboundFillIntervalMs` (30s), query
-  `PeerDb.recent(N, exclude=connected)` where
-  `N = maxPeers - connectedOutbound`
+  `PeerDb.recent(N, exclude)` where `N = maxPeers - connectedOutbound`
+- `exclude` is the union of **currently-connected addresses** and
+  addresses in redial cooldown. Excluding connected addresses is
+  required, not an optimization — without it the manager re-dials peers
+  it already holds and starves genuinely new candidates.
 - Dial one candidate per tick (most recently seen first)
 - Respect blacklist and redial cooldown (`outboundRedialCooldownMs`, 60s)
 - If PeerDb exhausted, idle until new gossip arrives
+
+The discovery-related knobs (`minPeers`, `peerDbCap`,
+`outboundFillIntervalMs`, `outboundRedialCooldownMs`) are optional in
+`NetConfig` and fall back to net-internal defaults. A node that leaves
+them unset inherits those defaults rather than the values in this
+document — `@dagsocial/node` MUST pass them for the documented behavior
+to hold.
 
 ### Bootstrap Flow (New Node)
 
