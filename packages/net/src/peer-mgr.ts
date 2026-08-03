@@ -22,6 +22,24 @@ interface BanEntry {
   peerId: string;
   bannedAt: number;
   banExpiresAt: number | null; // null = permanent
+  /**
+   * The peer's declared address at ban time, captured before the ban path
+   * deletes the metadata. Expiry propagates the unban from here — by then
+   * the metadata may be long gone (removePeer on disconnect).
+   */
+  address: string | null;
+}
+
+/**
+ * Optional callbacks fired when a ban is imposed or expires, carrying the
+ * peer's declared address. NetNode binds these to PeerDb.ban/unban so the
+ * peerId-keyed and address-keyed ban surfaces cannot drift apart (contract:
+ * "Ban surfaces are unified"). Callbacks — not a PeerDb import — keep
+ * peer-mgr a leaf module.
+ */
+export interface PeerBanHooks {
+  onBan?: (address: string) => void;
+  onUnban?: (address: string) => void;
 }
 
 export class PeerManager {
@@ -30,9 +48,11 @@ export class PeerManager {
   private metadata: Map<string, PeerMetadata> = new Map();
   private stalledPeers: Set<string> = new Set();
   private config: NetConfig;
+  private hooks: PeerBanHooks;
 
-  constructor(config: NetConfig) {
+  constructor(config: NetConfig, hooks: PeerBanHooks = {}) {
     this.config = config;
+    this.hooks = hooks;
   }
 
   // -----------------------------------------------------------------------
@@ -64,8 +84,20 @@ export class PeerManager {
         bannedUntil: null,
         stalled: false,
         lastSeenMs: Date.now(),
+        address: null,
       });
     }
+  }
+
+  /**
+   * Record the peer's declared address once the handshake reveals it. No-op
+   * for an untracked peer, like setPeerState. A peer banned before this is
+   * called simply has no address to propagate — that is correct, not an
+   * error.
+   */
+  setPeerAddress(peerId: string, address: string): void {
+    const meta = this.metadata.get(peerId);
+    if (meta) meta.address = address;
   }
 
   removePeer(peerId: string): void {
@@ -86,8 +118,9 @@ export class PeerManager {
     const now = Date.now();
 
     if (type === 'permanent') {
-      // Instant permanent ban — works even if peer was never added
-      this.bans.set(peerId, { peerId, bannedAt: now, banExpiresAt: null });
+      // Instant permanent ban — works even if peer was never added.
+      // imposeBan reads the address before the metadata.delete below.
+      this.imposeBan(peerId, now, null);
       this.peers.delete(peerId);
       this.metadata.delete(peerId);
       this.stalledPeers.delete(peerId);
@@ -95,6 +128,19 @@ export class PeerManager {
     }
 
     this.accrueScoredPenalty(peerId, score, now);
+  }
+
+  /**
+   * Impose a ban and propagate it to the address surface. The metadata read
+   * happens here, before the permanent-ban callers delete the metadata —
+   * reading after that delete would silently drop the propagation. A peer
+   * with no recorded address (banned before its handshake completed) has
+   * nothing to propagate.
+   */
+  private imposeBan(peerId: string, now: number, banExpiresAt: number | null): void {
+    const address = this.metadata.get(peerId)?.address ?? null;
+    this.bans.set(peerId, { peerId, bannedAt: now, banExpiresAt, address });
+    if (address !== null) this.hooks.onBan?.(address);
   }
 
   // -----------------------------------------------------------------------
@@ -115,8 +161,9 @@ export class PeerManager {
 
     switch (kind) {
       case PenaltyKind.ProtocolViolation: {
-        // Permanent ban — remove peer entirely
-        this.bans.set(peerId, { peerId, bannedAt: now, banExpiresAt: null });
+        // Permanent ban — remove peer entirely.
+        // imposeBan reads the address before the metadata.delete below.
+        this.imposeBan(peerId, now, null);
         this.peers.delete(peerId);
         this.metadata.delete(peerId);
         this.stalledPeers.delete(peerId);
@@ -165,7 +212,7 @@ export class PeerManager {
 
     if (entry.penaltyScore >= this.config.penaltyScoreThreshold) {
       const banExpiresAt = now + this.config.temporalBanDurationMs;
-      this.bans.set(peerId, { peerId, bannedAt: now, banExpiresAt });
+      this.imposeBan(peerId, now, banExpiresAt);
       this.peers.delete(peerId);
       if (meta) {
         meta.state = PeerState.Banned;
@@ -249,8 +296,9 @@ export class PeerManager {
     if (!ban) return false;
     if (ban.banExpiresAt === null) return true; // permanent
     if (Date.now() >= ban.banExpiresAt) {
-      // Ban expired, clean up
+      // Ban expired, clean up and lift the address-surface ban with it
       this.bans.delete(peerId);
+      if (ban.address !== null) this.hooks.onUnban?.(ban.address);
       return false;
     }
     return true;

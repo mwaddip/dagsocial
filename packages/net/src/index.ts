@@ -4,6 +4,7 @@ export {
   GET_PEERS_RESPONSE_LIMIT,
 } from './node.js';
 export { PeerManager } from './peer-mgr.js';
+export type { PeerBanHooks } from './peer-mgr.js';
 export { SYNC_PROTOCOL, HEADERS_PROTOCOL } from './sync.js';
 export { TOPICS } from './gossip.js';
 export {
@@ -56,6 +57,7 @@ export {
 export { isBogusAddress } from './bogus-addr.js';
 export { PeerDb } from './peerdb.js';
 export { OutboundManager } from './outbound-mgr.js';
+export type { ConnectionLike, OutboundTickPlan } from './outbound-mgr.js';
 export type { PeerStorage } from './peerdb.js';
 export {
   PeerState,

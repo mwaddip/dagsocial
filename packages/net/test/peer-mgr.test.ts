@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { PeerManager } from '../src/peer-mgr.js';
+import { PeerDb } from '../src/peerdb.js';
 import { PeerState, PenaltyKind } from '../src/types.js';
 import type { NetConfig, Peer } from '../src/types.js';
 
@@ -375,5 +376,158 @@ describe('PeerManager', () => {
     mgr.addPeer(makePeer('peer1'));
     const meta2 = mgr.getPeerMetadata('peer1');
     expect(meta2!.state).toBe(PeerState.Active); // preserved
+  });
+
+  // -----------------------------------------------------------------------
+  // Ban propagation to PeerDb (contract: "Ban surfaces are unified",
+  // audit L-14 phase 2)
+  // -----------------------------------------------------------------------
+
+  describe('ban propagation to PeerDb', () => {
+    const ADDR = '/ip4/51.15.0.1/tcp/4001';
+    const OTHER = '/ip4/51.15.0.2/tcp/4001';
+
+    // Real PeerManager + real PeerDb, joined exactly as NetNode joins them:
+    // hooks bound to peerDb.ban/unban. The wrappers count calls so "nothing
+    // was propagated" is distinguishable from "propagated but harmless".
+    function makeBanPair() {
+      const peerDb = new PeerDb(null, 100, []);
+      const calls = { ban: 0, unban: 0 };
+      const pairMgr = new PeerManager(makeConfig(), {
+        onBan: (addr) => { calls.ban++; peerDb.ban(addr); },
+        onUnban: (addr) => { calls.unban++; peerDb.unban(addr); },
+      });
+      return { pairMgr, peerDb, calls };
+    }
+
+    /** Track a peer with a declared address, mirrored into PeerDb. */
+    function trackPeer(pairMgr: PeerManager, peerDb: PeerDb, id: string, addr: string): void {
+      pairMgr.addPeer(makePeer(id));
+      pairMgr.setPeerAddress(id, addr);
+      peerDb.record({
+        address: addr,
+        lastSeenMs: 1000,
+        agentName: 'test',
+        nodeName: id,
+        protocolVersion: 1,
+        capabilities: [],
+      });
+    }
+
+    it('metadata records the declared address, null until set', () => {
+      const { pairMgr } = makeBanPair();
+      pairMgr.addPeer(makePeer('peer1'));
+      expect(pairMgr.getPeerMetadata('peer1')!.address).toBeNull();
+      pairMgr.setPeerAddress('peer1', ADDR);
+      expect(pairMgr.getPeerMetadata('peer1')!.address).toBe(ADDR);
+      // Untracked peer: no-op, no throw
+      pairMgr.setPeerAddress('ghost', ADDR);
+      expect(pairMgr.getPeerMetadata('ghost')).toBeNull();
+    });
+
+    it("permanent ban via recordPenalty('permanent') propagates despite the metadata delete (ordering trap)", () => {
+      const { pairMgr, peerDb, calls } = makeBanPair();
+      trackPeer(pairMgr, peerDb, 'peer1', ADDR);
+      trackPeer(pairMgr, peerDb, 'peer2', OTHER);
+
+      pairMgr.recordPenalty('permanent', 'peer1', 0, 'wrong magic');
+
+      // This path deletes the metadata — propagation only happens if the
+      // address was read before that delete, so this assertion fails if the
+      // read is moved after it.
+      expect(pairMgr.getPeerMetadata('peer1')).toBeNull();
+      expect(calls.ban).toBe(1);
+      expect(peerDb.isBanned(ADDR)).toBe(true);
+      const recent = peerDb.recent(10, new Set()).map((r) => r.address);
+      expect(recent).not.toContain(ADDR);
+      // Control: the unbanned peer's address survives on both surfaces
+      expect(peerDb.isBanned(OTHER)).toBe(false);
+      expect(recent).toContain(OTHER);
+    });
+
+    it('permanent ban via recordPenaltyKind(ProtocolViolation) propagates despite the metadata delete (ordering trap)', () => {
+      const { pairMgr, peerDb, calls } = makeBanPair();
+      trackPeer(pairMgr, peerDb, 'peer1', ADDR);
+      trackPeer(pairMgr, peerDb, 'peer2', OTHER);
+
+      pairMgr.recordPenaltyKind(PenaltyKind.ProtocolViolation, 'peer1', 'malformed Peers');
+
+      expect(pairMgr.getPeerMetadata('peer1')).toBeNull();
+      expect(calls.ban).toBe(1);
+      expect(peerDb.isBanned(ADDR)).toBe(true);
+      const recent = peerDb.recent(10, new Set()).map((r) => r.address);
+      expect(recent).not.toContain(ADDR);
+      expect(peerDb.isBanned(OTHER)).toBe(false);
+      expect(recent).toContain(OTHER);
+    });
+
+    it('temporal ban via score threshold propagates', () => {
+      const { pairMgr, peerDb, calls } = makeBanPair();
+      trackPeer(pairMgr, peerDb, 'peer1', ADDR);
+      trackPeer(pairMgr, peerDb, 'peer2', OTHER);
+
+      vi.spyOn(Date, 'now').mockReturnValue(1_000);
+      pairMgr.recordPenalty('misbehavior', 'peer1', 500, 'threshold crossed');
+
+      expect(pairMgr.isBanned('peer1')).toBe(true);
+      expect(calls.ban).toBe(1);
+      expect(peerDb.isBanned(ADDR)).toBe(true);
+      const recent = peerDb.recent(10, new Set()).map((r) => r.address);
+      expect(recent).not.toContain(ADDR);
+      expect(peerDb.isBanned(OTHER)).toBe(false);
+      expect(recent).toContain(OTHER);
+    });
+
+    it('temporal ban expiry lifts the PeerDb ban (control: still banned inside the window)', () => {
+      const { pairMgr, peerDb, calls } = makeBanPair();
+      trackPeer(pairMgr, peerDb, 'peer1', ADDR);
+
+      vi.spyOn(Date, 'now').mockReturnValue(1_000);
+      pairMgr.recordPenalty('misbehavior', 'peer1', 500, 'threshold crossed');
+      expect(peerDb.isBanned(ADDR)).toBe(true);
+
+      // Control: one ms before expiry, both surfaces stay banned
+      vi.spyOn(Date, 'now').mockReturnValue(1_000 + config.temporalBanDurationMs - 1);
+      expect(pairMgr.isBanned('peer1')).toBe(true);
+      expect(peerDb.isBanned(ADDR)).toBe(true);
+      expect(calls.unban).toBe(0);
+
+      // At expiry the lazy check lifts both surfaces together
+      vi.spyOn(Date, 'now').mockReturnValue(1_000 + config.temporalBanDurationMs);
+      expect(pairMgr.isBanned('peer1')).toBe(false);
+      expect(calls.unban).toBe(1);
+      expect(peerDb.isBanned(ADDR)).toBe(false);
+    });
+
+    it('expiry propagates even after the peer disconnected and metadata is gone', () => {
+      const { pairMgr, peerDb } = makeBanPair();
+      trackPeer(pairMgr, peerDb, 'peer1', ADDR);
+
+      vi.spyOn(Date, 'now').mockReturnValue(1_000);
+      pairMgr.recordPenalty('misbehavior', 'peer1', 500, 'threshold crossed');
+      // Disconnect during the ban window: metadata is deleted, the ban is not.
+      // The BanEntry carries the address, so expiry can still unban it.
+      pairMgr.removePeer('peer1');
+      expect(pairMgr.getPeerMetadata('peer1')).toBeNull();
+      expect(peerDb.isBanned(ADDR)).toBe(true);
+
+      vi.spyOn(Date, 'now').mockReturnValue(1_000 + config.temporalBanDurationMs);
+      expect(pairMgr.isBanned('peer1')).toBe(false);
+      expect(peerDb.isBanned(ADDR)).toBe(false);
+    });
+
+    it('a ban with no recorded address propagates nothing and does not throw', () => {
+      const { pairMgr, calls } = makeBanPair();
+      // Tracked, but the handshake never completed — no declared address
+      pairMgr.addPeer(makePeer('peer1'));
+      pairMgr.recordPenaltyKind(PenaltyKind.ProtocolViolation, 'peer1', 'pre-handshake violation');
+      expect(pairMgr.isBanned('peer1')).toBe(true);
+      expect(calls.ban).toBe(0);
+
+      // Never added at all (the works-even-if-never-added permanent path)
+      pairMgr.recordPenalty('permanent', 'ghost', 0, 'never added');
+      expect(pairMgr.isBanned('ghost')).toBe(true);
+      expect(calls.ban).toBe(0);
+    });
   });
 });

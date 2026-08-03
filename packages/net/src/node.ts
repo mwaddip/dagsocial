@@ -358,7 +358,13 @@ export class NetNode {
   constructor(config: NetConfig, validators: NetValidators) {
     this.config = config;
     this.validators = validators;
-    this.peerMgr = new PeerManager(config);
+    // Ban hooks late-bind this.peerDb: it is created in start(), and the
+    // closures read it at call time, so bans imposed before start (or after
+    // stop) simply have no address surface to propagate to.
+    this.peerMgr = new PeerManager(config, {
+      onBan: (address) => this.peerDb?.ban(address),
+      onUnban: (address) => this.peerDb?.unban(address),
+    });
   }
 
   // -----------------------------------------------------------------------
@@ -406,7 +412,7 @@ export class NetNode {
     // Create PeerDb with self-address filtering
     const listenAddrs = this.libp2p.getMultiaddrs();
     const selfAddrs = listenAddrs.map(a => a.toString());
-    this.peerDb = new PeerDb(null, this.config.peerDbCap ?? 100, selfAddrs);
+    this.peerDb = new PeerDb(null, this.config.peerDbCap ?? 1000, selfAddrs);
 
     // Create SyncMachine with lazy store bridge
     const magic = this.config.magic ?? MAGIC_MAINNET;
@@ -518,19 +524,21 @@ export class NetNode {
     this.syncTimer = setInterval(() => {
       this.syncMachine?.onTimerTick();
       if (this.libp2p && this.outboundMgr) {
-        const connectedOutbound = this.peerMgr.getPeerCount();
+        // Both phases count outbound connections only — inbound connections
+        // filling our slots must never suppress our own dialing (eclipse
+        // setup). planTick also feeds the connected addresses into the fill
+        // phase's exclude set.
+        const plan = this.outboundMgr.planTick(this.libp2p.getConnections());
 
-        // Floor phase: re-dial bootstrap peers when below minPeers.
-        // The OutboundManager.pickCandidate returns null below minPeers
-        // (caller handles bootstrap seed dialing separately).
-        if (connectedOutbound < (this.config.minPeers ?? 3)) {
+        // Floor phase: re-dial bootstrap peers while outbound < minPeers.
+        if (plan.dialBootstrap) {
           for (const addr of this.config.bootstrapPeers) {
             this.dialBootstrapPeer(addr);
           }
         }
 
-        // Fill phase: use PeerDb candidates above minPeers
-        const candidate = this.outboundMgr.pickCandidate(connectedOutbound);
+        // Fill phase: dial one PeerDb candidate per tick
+        const candidate = plan.candidate;
         if (candidate) {
           console.log(`[net] outbound manager dialing: ${candidate}`);
           this.libp2p.dial(multiaddr(candidate)).then((conn) => {
@@ -596,6 +604,7 @@ export class NetNode {
         const result = await this.runOutboundHandshake(conn.remotePeer.toString());
         if (result.ok) {
           this.peerMgr.setPeerState(conn.remotePeer.toString(), PeerState.Active);
+          this.peerMgr.setPeerAddress(conn.remotePeer.toString(), addr);
           this.peerDb?.record({
             address: addr,
             lastSeenMs: Date.now(),
@@ -686,6 +695,7 @@ export class NetNode {
         console.log(`[net] inbound handshake from ${peerId}: ok=true height=${msg.chainHeight}`);
 
         const addr = msg.declaredAddress ?? connection.remoteAddr?.toString() ?? peerId;
+        this.peerMgr.setPeerAddress(peerId, addr);
         this.peerDb?.record({
           address: addr,
           lastSeenMs: Date.now(),
@@ -788,11 +798,16 @@ export class NetNode {
         // handler callback — PeerDb is internal to net. Served whatever our
         // sync phase is; an empty PeerDb still answers { peers: [] }.
         if (code === MSG_GET_PEERS) {
+          // Prefer the requester's declared address: an inbound connection's
+          // remoteAddr carries an ephemeral source port, which would make the
+          // requester-exclusion in servePeersBody a no-op.
           const response = servePeersBody(body, {
             peerDb: this.peerDb,
             peerMgr: this.peerMgr,
             peerId,
-            requesterAddr: connection.remoteAddr?.toString() ?? null,
+            requesterAddr: this.peerMgr.getPeerMetadata(peerId)?.address
+              ?? connection.remoteAddr?.toString()
+              ?? null,
             magic,
           });
           if (response) await stream.sink([response]);

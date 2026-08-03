@@ -1,6 +1,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { encode } from 'cbor-x';
 import {
+  verifyPoW,
+  verifyOrderingBlockPoW,
+  verifyPostSignature,
+  verifyProtocolVersion,
+  verifyContentLimits,
+  verifyParentRefsCount,
+  verifySubBlockStructure,
+  verifyTxStructure,
+  verifyOrderingBlockStructure,
+} from '@dagsocial/validation';
+import {
+  NetNode,
   servePeersBody,
   intakePeersBody,
   duePeerExchange,
@@ -217,6 +229,43 @@ describe('intakePeersBody', () => {
     expect(usable).toBeNull();
     expect(peerDb.count()).toBe(0);
     expect(peerMgr.isBanned('sender')).toBe(true);
+  });
+});
+
+describe('peerDbCap default (contract: soft cap 1000)', () => {
+  const validators = {
+    verifyPoW,
+    verifyOrderingBlockPoW,
+    verifyPostSignature,
+    verifyProtocolVersion,
+    verifyContentLimits,
+    verifyParentRefsCount,
+    verifySubBlockStructure,
+    verifyTxStructure,
+    verifyOrderingBlockStructure,
+  };
+
+  // The fallback lives in NetNode.start(), so the test starts a real node.
+  // The cap is a private PeerDb field — read via the any-escape the other
+  // suites use for internals.
+  it('constructs PeerDb with 1000 when peerDbCap is unset', async () => {
+    const node = new NetNode(makeConfig(), validators);
+    await node.start();
+    try {
+      expect((node as any).peerDb.cap).toBe(1000);
+    } finally {
+      await node.stop();
+    }
+  });
+
+  it('control: an explicit peerDbCap is honored unchanged', async () => {
+    const node = new NetNode({ ...makeConfig(), peerDbCap: 42 }, validators);
+    await node.start();
+    try {
+      expect((node as any).peerDb.cap).toBe(42);
+    } finally {
+      await node.stop();
+    }
   });
 });
 

@@ -85,6 +85,13 @@ export interface PeerMetadata {
   bannedUntil: number | null; // null = not banned, timestamp = ban expiration
   stalled: boolean;
   lastSeenMs: number;
+  /**
+   * The peer's declared multiaddr, or null until the handshake reveals it.
+   * This is the join key between the two ban surfaces: PeerManager bans by
+   * peerId, PeerDb bans by address, and every PeerManager ban propagates to
+   * PeerDb through this field (contract: "Ban surfaces are unified").
+   */
+  address: string | null;
 }
 
 // ---------------------------------------------------------------------------
