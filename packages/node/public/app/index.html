@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="lightsout" data-accent="blue" data-font="md">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>Notis</title>
+<meta name="description" content="An X-style client for Notis — posts, likes and vouches signed in your browser and settled on the DAG.">
+
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23fff' d='M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="stylesheet" href="styles.css">
+
+<script>
+  // Applied before first paint so the saved theme never flashes the default.
+  try {
+    var saved = JSON.parse(localStorage.getItem('notis-x-appearance') || '{}');
+    var root = document.documentElement;
+    if (saved.theme) root.dataset.theme = saved.theme;
+    if (saved.accent) root.dataset.accent = saved.accent;
+    if (saved.font) root.dataset.font = saved.font;
+    root.style.colorScheme = (saved.theme || 'lightsout') === 'default' ? 'light' : 'dark';
+  } catch (e) { /* first visit, or storage blocked */ }
+</script>
+</head>
+<body>
+
+<div id="app">
+  <!-- Replaced by the shell on boot; shown while the modules load. -->
+  <div class="loading" style="padding-top:40vh"><span class="spinner spinner-lg"></span></div>
+</div>
+
+<noscript>
+  <div class="empty-state" style="margin-top:20vh">
+    <h2>JavaScript is required</h2>
+    <p>
+      This client signs posts and mines their proof of work in your browser, so it cannot work without
+      JavaScript. The node's read-only post previews are still available at <code>/preview/&lt;post id&gt;</code>.
+    </p>
+  </div>
+</noscript>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

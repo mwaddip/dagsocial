@@ -255,15 +255,45 @@ Node 1 is the bootstrap seed; the rest dial it and join the mesh. Logs land in
 | `EPOCH_BLOCKS` | 60 | Blocks per epoch (like processing) |
 | `PUBLIC_URL` | `/` | Base path for the demo UI (e.g. `/testnet/` behind nginx) |
 
-### Demo UI
+### Web UIs
 
-Open `http://localhost:3000` (behind nginx with path isolation: UI at
-`/testnet/`, API at `/testnet/api/`). Single HTML page, vanilla JS, no build
-step. Create an identity, hit the testnet faucets, post (the browser solves
-PoW), like, invite, transfer credits. Click a post's timestamp for thread view
-— full ancestor chain and reply tree — and copy a shareable link with OG
-metadata for rich previews in chat apps. Admin tools (faucets, invites,
-transfers) appear in testnet mode only.
+The node serves two browser clients from `packages/node/public`. Both are
+vanilla JS with no build step, both manage keys and solve PoW in the browser,
+and both talk to the same HTTP API — nothing is proxied or simulated.
+
+**Demo UI — `http://localhost:3000`**
+
+Single HTML page. Create an identity, hit the testnet faucets, post (the browser
+solves PoW), like, invite, transfer credits. Click a post's timestamp for thread
+view — full ancestor chain and reply tree — and copy a shareable link with OG
+metadata for rich previews in chat apps. Shows box ids, transaction ids and raw
+invite secrets, which makes it the surface to reach for when the node is
+misbehaving. Admin tools (faucets, invites, transfers) appear in testnet mode
+only.
+
+**X-style client — `http://localhost:3000/app/`**
+
+The same chain as a product: X's layout, icons, themes and interactions over the
+same endpoints. Timeline and threads, a composer whose ring counts UTF-8 bytes
+against the 300-byte limit, likes that lock and return karma, and **follow
+implemented as vouching** — the closest real primitive the protocol has.
+Notifications, trends, search and follow suggestions are derived in the browser
+from the timeline the node returns. Karma, credits, faucets, credit transfer and
+the full invite lifecycle live under Wallet, so it is a superset of the demo UI's
+functionality.
+
+Three things are browser-local and labelled as such wherever they appear:
+bookmarks, the display-name override, and like receipts. Direct messages are
+absent — the wire format has no encrypted envelope — and the Messages view says
+so rather than faking an inbox.
+
+Both clients share the same localStorage identity list, so an account created in
+one appears in the other. Full notes, including the complete X-concept →
+protocol-concept mapping, are in
+[packages/node/public/app/README.md](packages/node/public/app/README.md).
+
+Behind nginx with path isolation the UIs sit at `/testnet/` and `/testnet/app/`,
+with the API at `/testnet/api/`; both detect the prefix at runtime.
 
 ---
 
