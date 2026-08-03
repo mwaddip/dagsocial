@@ -23,13 +23,6 @@ export interface StoreEntry {
   data: Uint8Array;
 }
 
-export interface PeerRecord {
-  peerId: string;
-  lastSeenMs: number;
-  addresses: string[];
-  features: Uint8Array;
-}
-
 // ---------------------------------------------------------------------------
 // Interface
 // ---------------------------------------------------------------------------
@@ -71,12 +64,6 @@ export interface PostStore {
 
   metaGet(key: string): Uint8Array | null;
   metaPut(key: string, value: Uint8Array): void;
-
-  // ---- Peer records ----
-
-  listPeers(): PeerRecord[];
-  putPeer(peer: PeerRecord): void;
-  deletePeer(peerId: string): void;
 
   // ---- Maintenance ----
 

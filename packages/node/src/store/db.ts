@@ -148,6 +148,18 @@ const MIGRATIONS = [
     granted_at_height INTEGER NOT NULL,
     PRIMARY KEY (user_id, asset)
   )`,
+
+  // Discovered peers — persistence behind net's PeerStorage seam (audit L-14).
+  // Shaped to net's PeerRecord, keyed by multiaddr: PeerDb dedupes by address,
+  // and a libp2p peerId is freely regenerable so it makes a worthless key.
+  `CREATE TABLE IF NOT EXISTS peers (
+    address           TEXT PRIMARY KEY,
+    last_seen_ms      INTEGER NOT NULL,
+    agent_name        TEXT NOT NULL,
+    node_name         TEXT NOT NULL,
+    protocol_version  INTEGER NOT NULL,
+    capabilities      TEXT NOT NULL    -- JSON array of message codes
+  )`,
 ];
 
 function migrateMempoolForStumps(database: Database.Database): void {

@@ -36,6 +36,7 @@ import {
   getOrderingBlock,
   insertStump,
   getStump,
+  peerStorage,
 } from './store/index.js';
 import { encodePost, cumulativeWork, MEMPOOL_EXPIRY_BLOCKS, subBlockFromPost, verifyPostId, VOUCH_COOLDOWN_BLOCKS } from '@dagsocial/types';
 import type { BlockHeader, Stump } from '@dagsocial/types';
@@ -125,18 +126,25 @@ if (currentHeight > 0 && avlHandle.storage.version() === null) {
 }
 
 // 2. Create NetNode
+// The four discovery knobs are passed explicitly: NET_INTERFACE.md documents
+// their defaults as binding only when node supplies them — unset, net's
+// internal fallbacks silently govern instead.
 const net = new NetNode(
   {
     bootstrapPeers: config.bootstrapPeers,
     listenAddrs: config.listenAddrs,
     maxPeers: config.maxPeers,
+    minPeers: parseInt(process.env['MIN_PEERS'] ?? '3', 10),
+    peerDbCap: parseInt(process.env['PEER_DB_CAP'] ?? '1000', 10),
+    outboundFillIntervalMs: parseInt(process.env['OUTBOUND_FILL_INTERVAL_MS'] ?? '30000', 10),
+    outboundRedialCooldownMs: parseInt(process.env['OUTBOUND_REDIAL_COOLDOWN_MS'] ?? '60000', 10),
     penaltyScoreThreshold: parseInt(process.env['PENALTY_SCORE_THRESHOLD'] ?? '500', 10),
     temporalBanDurationMs: parseInt(process.env['TEMPORAL_BAN_DURATION_MS'] ?? '3600000', 10),
     penaltySafeIntervalMs: parseInt(process.env['PENALTY_SAFE_INTERVAL_MS'] ?? '120000', 10),
-    peerEvictionIntervalMs: parseInt(process.env['PEER_EVICTION_INTERVAL_MS'] ?? '3600000', 10),
     syncRequestTimeoutMs: parseInt(process.env['SYNC_REQUEST_TIMEOUT_MS'] ?? '10000', 10),
   },
   validation,
+  peerStorage,
 );
 setNet(net);
 

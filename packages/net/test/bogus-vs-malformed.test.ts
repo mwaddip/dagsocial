@@ -10,7 +10,6 @@ function makeConfig(overrides: Partial<NetConfig> = {}): NetConfig {
     penaltyScoreThreshold: 500,
     temporalBanDurationMs: 3_600_000,
     penaltySafeIntervalMs: 120_000,
-    peerEvictionIntervalMs: 3_600_000,
     syncRequestTimeoutMs: 10_000,
     ...overrides,
   };

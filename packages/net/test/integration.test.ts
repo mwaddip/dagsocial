@@ -24,7 +24,6 @@ function makeConfig(bootstrapPeers: string[] = []): NetConfig {
     penaltyScoreThreshold: 500,
     temporalBanDurationMs: 3600000,
     penaltySafeIntervalMs: 120000,
-    peerEvictionIntervalMs: 3600000,
     syncRequestTimeoutMs: 10000,
   };
 }

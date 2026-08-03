@@ -66,7 +66,6 @@ describe('handshake', () => {
         penaltyScoreThreshold: 500,
         temporalBanDurationMs: BAN_MS,
         penaltySafeIntervalMs: 120_000,
-        peerEvictionIntervalMs: 3_600_000,
         syncRequestTimeoutMs: 10_000,
       };
       const mgr = new PeerManager(config);

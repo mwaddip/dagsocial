@@ -43,7 +43,7 @@ import {
 import { isBogusAddress } from './bogus-addr.js';
 import { readStreamBounded } from './util.js';
 import { MAX_STREAM_BYTES } from './msg-guards.js';
-import { PeerDb } from './peerdb.js';
+import { PeerDb, type PeerStorage } from './peerdb.js';
 import { SyncMachine } from './sync-machine.js';
 import type { SyncStore } from './sync-machine.js';
 import { OutboundManager } from './outbound-mgr.js';
@@ -341,6 +341,7 @@ export class NetNode {
 
   // New sync infrastructure
   private peerDb: PeerDb | null = null;
+  private peerStorage: PeerStorage | null;
   private syncMachine: SyncMachine | null = null;
   private outboundMgr: OutboundManager | null = null;
   private syncStore: LazySyncStore = new LazySyncStore();
@@ -355,9 +356,12 @@ export class NetNode {
   private pendingBootstrapDials: Set<string> = new Set();
   private lastGetPeersSentMs: Map<string, number> = new Map();
 
-  constructor(config: NetConfig, validators: NetValidators) {
+  constructor(config: NetConfig, validators: NetValidators, peerStorage?: PeerStorage) {
     this.config = config;
     this.validators = validators;
+    // Omitted in tests/embedded use — PeerDb then runs ephemeral (contract:
+    // "Persistence seam"), which is the valid non-production configuration.
+    this.peerStorage = peerStorage ?? null;
     // Ban hooks late-bind this.peerDb: it is created in start(), and the
     // closures read it at call time, so bans imposed before start (or after
     // stop) simply have no address surface to propagate to.
@@ -412,7 +416,7 @@ export class NetNode {
     // Create PeerDb with self-address filtering
     const listenAddrs = this.libp2p.getMultiaddrs();
     const selfAddrs = listenAddrs.map(a => a.toString());
-    this.peerDb = new PeerDb(null, this.config.peerDbCap ?? 1000, selfAddrs);
+    this.peerDb = new PeerDb(this.peerStorage, this.config.peerDbCap ?? 1000, selfAddrs);
 
     // Create SyncMachine with lazy store bridge
     const magic = this.config.magic ?? MAGIC_MAINNET;

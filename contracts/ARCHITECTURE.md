@@ -859,6 +859,7 @@ Phase 2 uses a fresh SQLite database with namespaced tables:
 | `utxo_*` | Karma boxes, credit boxes, like boxes, invite boxes, bond boxes |
 | `sub_*` | Sub-blocks, sub-block-to-post mapping |
 | `block_*` | Ordering blocks, block-to-sub-block mapping |
+| `peers` | Discovered peer addresses (unprefixed — it belongs to none of the four ledgers; it backs `@dagsocial/net`'s PeerDb across restarts) |
 
 Single WAL, single connection. Phase 1 schema is not migrated — Phase 2 starts
 fresh. Namespacing keeps the option open to split into separate stores later

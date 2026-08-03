@@ -1,6 +1,6 @@
 import { getDb } from './db.js';
 import { metaGet, metaPut, schemaVersion } from './meta.js';
-import type { PostStore, StoreEntry, PeerRecord } from './post-store.js';
+import type { PostStore, StoreEntry } from './post-store.js';
 
 export class SqlitePostStore implements PostStore {
   putBatch(entries: StoreEntry[]): void {
@@ -83,34 +83,6 @@ export class SqlitePostStore implements PostStore {
 
   metaPut(key: string, value: Uint8Array): void {
     metaPut(key, value);
-  }
-
-  listPeers(): PeerRecord[] {
-    const db = getDb();
-    const rows = db.prepare(
-      'SELECT peer_id, last_seen_ms, addresses, features FROM peers'
-    ).all() as Array<{
-      peer_id: string; last_seen_ms: number; addresses: string; features: Buffer;
-    }>;
-    return rows.map(r => ({
-      peerId: r.peer_id,
-      lastSeenMs: r.last_seen_ms,
-      addresses: JSON.parse(r.addresses),
-      features: new Uint8Array(r.features),
-    }));
-  }
-
-  putPeer(peer: PeerRecord): void {
-    const db = getDb();
-    db.prepare(
-      `INSERT OR REPLACE INTO peers (peer_id, last_seen_ms, addresses, features)
-       VALUES (?, ?, ?, ?)`
-    ).run(peer.peerId, peer.lastSeenMs, JSON.stringify(peer.addresses), Buffer.from(peer.features));
-  }
-
-  deletePeer(peerId: string): void {
-    const db = getDb();
-    db.prepare('DELETE FROM peers WHERE peer_id = ?').run(peerId);
   }
 
   pruneBelowHorizon(horizon: number, typeIds: number[]): void {

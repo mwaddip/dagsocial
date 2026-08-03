@@ -10,7 +10,6 @@ describe('loadNetConfig', () => {
     delete process.env['PENALTY_SCORE_THRESHOLD'];
     delete process.env['TEMPORAL_BAN_DURATION_MS'];
     delete process.env['PENALTY_SAFE_INTERVAL_MS'];
-    delete process.env['PEER_EVICTION_INTERVAL_MS'];
     delete process.env['SYNC_REQUEST_TIMEOUT_MS'];
   });
 
@@ -26,7 +25,6 @@ describe('loadNetConfig', () => {
     expect(cfg.penaltyScoreThreshold).toBe(500);
     expect(cfg.temporalBanDurationMs).toBe(3600000);
     expect(cfg.penaltySafeIntervalMs).toBe(120000);
-    expect(cfg.peerEvictionIntervalMs).toBe(3600000);
     expect(cfg.syncRequestTimeoutMs).toBe(10000);
   });
 

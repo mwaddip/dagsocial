@@ -361,8 +361,8 @@ to the sync peer.
 
 ### PeerDb
 
-In-memory registry backed by persistent storage (`peer_*` tables in the
-store). Entries sourced from:
+In-memory registry backed by persistent storage (the `peers` table in the
+store — see the persistence seam below). Entries sourced from:
 1. Our own handshake with a peer (authoritative)
 2. `Peers` messages from other peers (hearsay)
 
@@ -389,7 +389,7 @@ Key behaviors:
 #### Persistence seam
 
 `PeerStorage` (`loadAll`/`put`/`delete`) is defined by `@dagsocial/net`
-and **implemented by `@dagsocial/node`** over the `peer_*` tables — net
+and **implemented by `@dagsocial/node`** over the `peers` table — net
 must not depend on SQLite. The implementation is supplied to
 `NetNode` at construction, alongside `NetValidators`, and handed to the
 `PeerDb` constructor so `loadAll()` repopulates the table at startup.
@@ -786,7 +786,6 @@ interface NetConfig {
   penaltyScoreThreshold: number
   temporalBanDurationMs: number
   penaltySafeIntervalMs: number
-  peerEvictionIntervalMs: number
 }
 ```
 

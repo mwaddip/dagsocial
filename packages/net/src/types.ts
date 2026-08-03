@@ -139,7 +139,6 @@ export interface NetConfig {
   penaltyScoreThreshold: number;
   temporalBanDurationMs: number;
   penaltySafeIntervalMs: number;
-  peerEvictionIntervalMs: number;
   syncRequestTimeoutMs: number;
 }
 

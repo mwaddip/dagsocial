@@ -57,7 +57,6 @@ function makeConfig(): NetConfig {
     penaltyScoreThreshold: 1000,
     temporalBanDurationMs: 3_600_000,
     penaltySafeIntervalMs: 0,
-    peerEvictionIntervalMs: 3_600_000,
     syncRequestTimeoutMs: 10_000,
   };
 }
