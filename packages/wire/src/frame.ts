@@ -54,12 +54,15 @@ export function decodeFrame(
   const r = new ByteReader(data);
 
   // magic
+  // `>>> 0` reinterprets the assembled value as unsigned: the `<<`/`|` chain
+  // works in signed 32-bit, so any magic with the high bit set (>= 0x80000000)
+  // would come out negative and never equal the expected value.
   const magicRead =
-    (r.readU8() << 24) | (r.readU8() << 16) | (r.readU8() << 8) | r.readU8();
+    ((r.readU8() << 24) | (r.readU8() << 16) | (r.readU8() << 8) | r.readU8()) >>> 0;
   if (magicRead !== magic) {
     throw new ReaderError(
       `decodeFrame: wrong magic 0x${magicRead.toString(16)} (expected 0x${magic.toString(16)})`,
-      'truncated',
+      'wrong-magic',
     );
   }
 
@@ -68,7 +71,7 @@ export function decodeFrame(
   if (version > FRAME_VERSION) {
     throw new ReaderError(
       `decodeFrame: unsupported frame version ${version}`,
-      'truncated',
+      'unsupported-version',
     );
   }
   // version < FRAME_VERSION: accept (forward compat for older peers)
@@ -89,7 +92,7 @@ export function decodeFrame(
   const expectedChecksum = hashFn(body).subarray(0, 4);
   for (let i = 0; i < 4; i++) {
     if (checksum[i] !== expectedChecksum[i]) {
-      throw new ReaderError('decodeFrame: checksum mismatch', 'truncated');
+      throw new ReaderError('decodeFrame: checksum mismatch', 'checksum-mismatch');
     }
   }
 

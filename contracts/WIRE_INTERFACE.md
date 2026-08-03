@@ -35,6 +35,44 @@ BigInt paths for u64 wire values are deferred to a future version.
 
 ---
 
+## ReaderError codes (audit L-15)
+
+Every `ReaderError` carries a `code` naming **what kind of wrong** the
+bytes were. Callers switch on `code`; they MUST NOT match on `message`,
+which is diagnostic text and may be reworded at any time.
+
+| Code | Meaning |
+|------|---------|
+| `truncated` | The bytes ran out — EOF, or fewer than `n` remaining. Genuine short read, nothing more. |
+| `invalid-tag` | A discriminant byte was outside its allowed set (`readBool` not 0/1, `readOption` not 0/1). The bytes were present and wrong, which is not truncation. |
+| `wrong-magic` | Frame magic did not match the expected network. Signals a wrong-network peer, not corruption. |
+| `unsupported-version` | Frame version exceeds `FRAME_VERSION`. A newer peer, not corruption. |
+| `checksum-mismatch` | The body's checksum failed — corrupted in transit or forged. |
+| `vlq-overflow` | A VLQ exceeded the safe-integer range or the byte cap. |
+| `array-too-large` | A length prefix exceeded `MAX_ARRAY_LENGTH`. |
+| `position-limit-exceeded` | A read passed a caller-imposed position limit. |
+
+The distinction is load-bearing rather than cosmetic. `@dagsocial/net`
+decides what to do with a failed frame from the code: a checksum mismatch
+or an unsupported version is rejected outright, never retried down
+another path.
+
+`wrong-magic` needs one more bit of judgement, because it covers two
+unrelated situations. If the leading four bytes are a **recognized
+foreign magic** (another `MAGIC_*` constant), the sender is a
+wrong-network peer and the stream is closed. If they are not a frame
+magic at all — an unframed legacy CBOR handshake begins `0xb9 …`, which
+is simply not a frame — the payload may fall back to the legacy
+raw-CBOR path. A `truncated` frame may fall back likewise. Consumers
+MUST make that split themselves; the code alone cannot, since both cases
+are genuinely "these bytes are not the magic I expected".
+
+Collapsing all of this into one code forces the consumer to guess — or,
+worse, to match on message text, which breaks silently the moment the
+text changes.
+
+---
+
 ## ByteReader
 
 Wraps a `Uint8Array` with a cursor. Reads advance the cursor and throw
@@ -80,7 +118,7 @@ Reads `n` bytes, advances position by `n`.
 
 Reads one byte. `0` => `false`, `1` => `true`.
 
-- **Throws:** `ReaderError('truncated')` on any other byte value
+- **Throws:** `ReaderError('invalid-tag')` on any other byte value
 
 #### `readVlqU(): number`
 
@@ -111,7 +149,7 @@ Reads a tag byte:
 - `0` => `null`
 - `1` => `reader(this)`
 
-- **Throws:** `ReaderError('truncated')` on any other tag value
+- **Throws:** `ReaderError('invalid-tag')` on any other tag value
 
 ### Guards
 
@@ -263,17 +301,22 @@ Decodes and validates a framed message.
 
 **Validation steps:**
 1. Read and validate magic bytes (4 bytes) — must match `magic` parameter.
-   Mismatch throws `ReaderError('truncated')` with message indicating wrong
-   network.
-2. Read version byte (1 byte). If `> FRAME_VERSION`, throws `ReaderError`.
-   If `< FRAME_VERSION`, accepted (forward-compat).
+   Mismatch throws `ReaderError('wrong-magic')`. The four bytes are
+   assembled **unsigned**: a magic with its high bit set must compare
+   equal, so the assembly cannot use a signed `<<` chain, whose result is
+   negative for any value ≥ `0x80000000` and would never match.
+2. Read version byte (1 byte). If `> FRAME_VERSION`, throws
+   `ReaderError('unsupported-version')`. If `< FRAME_VERSION`, accepted
+   (forward-compat).
 3. Read VLQ code.
 4. Read VLQ length.
 5. Read checksum (4 bytes).
 6. Read body (`length` bytes).
 7. Compute `hashFn(body)`, verify first 4 bytes match checksum.
-   Mismatch throws `ReaderError('truncated')` with message indicating
-   checksum failure.
+   Mismatch throws `ReaderError('checksum-mismatch')`.
+
+A frame that ends early at any step throws `ReaderError('truncated')`
+from the underlying read, unchanged.
 
 **Preconditions:**
 - `magic` is a valid network magic
@@ -305,11 +348,16 @@ class ReaderError extends Error {
 
 type ReaderErrorCode =
   | 'truncated'              // Unexpected EOF mid-read
+  | 'invalid-tag'            // Discriminant byte outside its allowed set
+  | 'wrong-magic'            // Frame magic did not match the expected network
+  | 'unsupported-version'    // Frame version > FRAME_VERSION
+  | 'checksum-mismatch'      // Body checksum failed
   | 'vlq-overflow'           // VLQ exceeded 10 bytes or safe integer range
   | 'array-too-large'        // Array length > MAX_ARRAY_LENGTH
   | 'position-limit-exceeded' // Position advanced beyond position limit
-  | 'slice-out-of-bounds'    // Requested slice extends past buffer end
 ```
+
+See "ReaderError codes (audit L-15)" above for the normative meanings.
 
 ---
 

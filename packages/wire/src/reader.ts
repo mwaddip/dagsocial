@@ -53,7 +53,7 @@ export class ByteReader {
     const b = this.readU8();
     if (b === 0) return false;
     if (b === 1) return true;
-    throw new ReaderError(`readBool: expected 0 or 1, got ${b}`, 'truncated');
+    throw new ReaderError(`readBool: expected 0 or 1, got ${b}`, 'invalid-tag');
   }
 
   readVlqU(): number {
@@ -104,6 +104,6 @@ export class ByteReader {
     const tag = this.readU8();
     if (tag === 0) return null;
     if (tag === 1) return reader(this);
-    throw new ReaderError(`readOption: expected tag 0 or 1, got ${tag}`, 'truncated');
+    throw new ReaderError(`readOption: expected tag 0 or 1, got ${tag}`, 'invalid-tag');
   }
 }

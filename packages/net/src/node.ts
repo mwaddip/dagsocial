@@ -81,6 +81,67 @@ function asGossip(libp2p: Libp2p): Libp2pGossip {
 }
 
 /**
+ * Every frame magic this protocol has ever shipped. Used to tell a frame from
+ * the wrong network apart from a payload that is not a frame at all: both
+ * fail the magic compare with `wrong-magic`, but only the former starts with
+ * a magic we recognize.
+ */
+const KNOWN_FRAME_MAGICS: readonly number[] = [MAGIC_MAINNET, MAGIC_TESTNET];
+
+/** First 4 bytes as a big-endian u32 (unsigned — see decodeFrame), or null if shorter. */
+function leadingMagic(data: Uint8Array): number | null {
+  if (data.length < 4) return null;
+  return ((data[0]! << 24) | (data[1]! << 16) | (data[2]! << 8) | data[3]!) >>> 0;
+}
+
+export type HandshakePayload =
+  | { kind: 'framed'; body: Uint8Array }
+  | { kind: 'legacy'; body: Uint8Array }
+  | { kind: 'reject'; code: 'wrong-magic' | 'unsupported-version' | 'checksum-mismatch' };
+
+/**
+ * Decode a handshake payload per the frame error-code policy
+ * (WIRE_INTERFACE.md → "ReaderError codes", audit L-15):
+ *
+ * - a valid frame yields its body;
+ * - a frame bearing a recognized foreign network magic is a wrong-network
+ *   peer — closed, never retried as raw CBOR;
+ * - a frame with our magic but a version above ours (a newer peer) or a
+ *   failed checksum (corrupt or forged body) is rejected — falling through
+ *   to the raw-CBOR parser would feed it frame bytes and misclassify the
+ *   peer as adversarial (`malformed` → permanent ban);
+ * - anything else — a truncated frame, or a payload whose leading bytes are
+ *   no frame magic at all — falls back to the legacy unframed raw-CBOR
+ *   handshake and is validated on its own merits.
+ *
+ * Shared by the inbound handler and the outbound response path so the two
+ * cannot drift apart.
+ */
+export function decodeHandshakePayload(magic: number, data: Uint8Array): HandshakePayload {
+  try {
+    return { kind: 'framed', body: decodeFrame(magic, data).body };
+  } catch (err) {
+    if (err instanceof ReaderError) {
+      switch (err.code) {
+        case 'wrong-magic': {
+          const lead = leadingMagic(data);
+          if (lead !== null && KNOWN_FRAME_MAGICS.includes(lead)) {
+            return { kind: 'reject', code: 'wrong-magic' };
+          }
+          break; // not a frame at all — try the legacy path
+        }
+        case 'unsupported-version':
+        case 'checksum-mismatch':
+          return { kind: 'reject', code: err.code };
+        default:
+          break; // truncated etc. — try the legacy path
+      }
+    }
+    return { kind: 'legacy', body: data };
+  }
+}
+
+/**
  * Lazy adapter implementing SyncStore by delegating to functions that are set
  * after construction (via setSyncHandler / setHeadersHandler).
  */
@@ -666,19 +727,16 @@ export class NetNode {
           return;
         }
 
-        let body: Uint8Array;
-        try {
-          const framed = decodeFrame(magic, data);
-          body = framed.body;
-        } catch (err) {
-          if (err instanceof ReaderError && err.message.includes('wrong magic')) {
-            // Wrong network — reject, don't fall through to raw CBOR
-            await stream.sink([new Uint8Array(0)]);
-            return;
-          }
-          // Older peers may send raw CBOR without frame
-          body = data;
+        const decoded = decodeHandshakePayload(magic, data);
+        if (decoded.kind === 'reject') {
+          // Wrong network, newer frame version, or corrupt body — close the
+          // stream without the raw-CBOR retry. No penalty: none of these are
+          // evidence of misbehavior (see decodeHandshakePayload).
+          console.warn(`[net] inbound handshake frame from ${peerId} rejected: ${decoded.code}`);
+          await stream.sink([new Uint8Array(0)]);
+          return;
         }
+        const body = decoded.body;
 
         const result = validateHandshake(parseHandshakeBody(body), [PROTOCOL_VERSION]);
         if (!result.ok || !result.msg) {
@@ -929,13 +987,21 @@ export class NetNode {
         return { ok: false, error: 'empty handshake response', peerHeight: 0, peerCapabilities: [] };
       }
 
-      let body: Uint8Array;
-      try {
-        const framed = decodeFrame(magic, data);
-        body = framed.body;
-      } catch {
-        body = data;
+      const decoded = decodeHandshakePayload(magic, data);
+      if (decoded.kind === 'reject') {
+        // Same policy as the inbound handler: close without the raw-CBOR
+        // retry and without a penalty. Pre-taxonomy this fell through to the
+        // CBOR parser, which misclassified the peer as malformed (permanent
+        // ban) for what is a network mismatch or a corrupt link.
+        console.warn(`[net] outbound handshake with ${peerId}: frame rejected (${decoded.code})`);
+        return {
+          ok: false,
+          error: `handshake frame rejected: ${decoded.code}`,
+          peerHeight: 0,
+          peerCapabilities: [],
+        };
       }
+      const body = decoded.body;
 
       const result = validateHandshake(parseHandshakeBody(body), [PROTOCOL_VERSION]);
       if (!result.ok) {

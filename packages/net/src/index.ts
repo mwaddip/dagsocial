@@ -2,7 +2,9 @@ export {
   NetNode,
   GET_PEERS_INTERVAL_MS,
   GET_PEERS_RESPONSE_LIMIT,
+  decodeHandshakePayload,
 } from './node.js';
+export type { HandshakePayload } from './node.js';
 export { PeerManager } from './peer-mgr.js';
 export type { PeerBanHooks } from './peer-mgr.js';
 export { SYNC_PROTOCOL, HEADERS_PROTOCOL } from './sync.js';

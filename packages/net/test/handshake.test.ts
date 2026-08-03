@@ -2,11 +2,13 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { encode } from 'cbor-x';
 import {
   buildHandshakeFrame,
+  decodeHandshakePayload,
   handshakePenalty,
   parseHandshakeBody,
   validateHandshake,
 } from '@dagsocial/net';
-import { MAGIC_TESTNET, decodeFrame, MAX_ADVERTISED_HEIGHT } from '@dagsocial/net';
+import { MAGIC_TESTNET, MAGIC_MAINNET, decodeFrame, MAX_ADVERTISED_HEIGHT } from '@dagsocial/net';
+import { FRAME_VERSION } from '@dagsocial/wire';
 import { PeerManager, PenaltyKind } from '@dagsocial/net';
 import type { HandshakeMsg, NetConfig } from '@dagsocial/net';
 
@@ -31,6 +33,62 @@ describe('handshake', () => {
     expect(code).toBe(1);
     const parsed = parseHandshakeBody(body);
     expect(parsed).toEqual(testMsg);
+  });
+
+  // -------------------------------------------------------------------------
+  // Frame fallback policy (audit L-15) — which decode failures may fall back
+  // to the legacy unframed raw-CBOR handshake, decided by ReaderError code
+  // (never by message text)
+  // -------------------------------------------------------------------------
+
+  describe('frame fallback policy', () => {
+    it('accepts a well-formed frame (control)', () => {
+      const frame = buildHandshakeFrame(MAGIC_TESTNET, testMsg);
+      const decoded = decodeHandshakePayload(MAGIC_TESTNET, frame);
+      expect(decoded.kind).toBe('framed');
+      if (decoded.kind === 'reject') return;
+      expect(validateHandshake(parseHandshakeBody(decoded.body), [1]).ok).toBe(true);
+    });
+
+    it('rejects a frame from the wrong network without a raw-CBOR retry', () => {
+      const frame = buildHandshakeFrame(MAGIC_MAINNET, testMsg);
+      expect(decodeHandshakePayload(MAGIC_TESTNET, frame))
+        .toEqual({ kind: 'reject', code: 'wrong-magic' });
+    });
+
+    it('rejects a checksum-mismatched frame (pre-fix: retried as raw CBOR)', () => {
+      // Pre-fix the inbound handler string-matched err.message on 'wrong
+      // magic'; a checksum failure matched nothing and fell through to the
+      // raw-CBOR parser, which read the corrupt frame bytes as a handshake
+      // and misclassified the peer as malformed.
+      const frame = buildHandshakeFrame(MAGIC_TESTNET, testMsg);
+      frame[frame.length - 1] ^= 0xff;
+      expect(decodeHandshakePayload(MAGIC_TESTNET, frame))
+        .toEqual({ kind: 'reject', code: 'checksum-mismatch' });
+    });
+
+    it('rejects a frame with a version above ours (pre-fix: retried as raw CBOR)', () => {
+      const frame = buildHandshakeFrame(MAGIC_TESTNET, testMsg);
+      frame[4] = FRAME_VERSION + 1; // version byte follows the 4 magic bytes
+      expect(decodeHandshakePayload(MAGIC_TESTNET, frame))
+        .toEqual({ kind: 'reject', code: 'unsupported-version' });
+    });
+
+    it('falls back to legacy raw CBOR for an unframed handshake, which still validates', () => {
+      const raw = new Uint8Array(encode(testMsg));
+      const decoded = decodeHandshakePayload(MAGIC_TESTNET, raw);
+      expect(decoded.kind).toBe('legacy');
+      if (decoded.kind === 'reject') return;
+      const result = validateHandshake(parseHandshakeBody(decoded.body), [1]);
+      expect(result.ok).toBe(true);
+      expect(result.msg).toEqual(testMsg);
+    });
+
+    it('falls back for a truncated frame', () => {
+      const frame = buildHandshakeFrame(MAGIC_TESTNET, testMsg);
+      const cut = frame.subarray(0, 6); // magic (4) + version (1) + code start
+      expect(decodeHandshakePayload(MAGIC_TESTNET, cut).kind).toBe('legacy');
+    });
   });
 
   it('validates compatible protocol version', () => {

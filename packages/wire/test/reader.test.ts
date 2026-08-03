@@ -16,11 +16,11 @@ describe('ByteReader', () => {
     expect(r.position).toBe(3);
   });
 
-  it('reads bool', () => {
+  it('reads bool; a byte outside {0,1} is invalid-tag, not truncated', () => {
     const r = new ByteReader(new Uint8Array([0, 1, 2]));
-    expect(r.readBool()).toBe(false);
-    expect(r.readBool()).toBe(true);
-    expect(() => r.readBool()).toThrow(ReaderError);
+    expect(r.readBool()).toBe(false); // control: 0x00
+    expect(r.readBool()).toBe(true);  // control: 0x01
+    expect(readerErrorCode(() => r.readBool())).toBe('invalid-tag');
   });
 
   it('tracks position and remaining', () => {
@@ -162,11 +162,23 @@ describe('ByteReader', () => {
     expect(r.readOption((rr) => rr.readU8())).toBe(42);
   });
 
-  it('readOption throws on invalid tag', () => {
+  it('readOption on a tag outside {0,1} is invalid-tag, not truncated', () => {
+    // Controls for tags 0 and 1 are the two tests above.
     const r = new ByteReader(new Uint8Array([2, 42]));
-    expect(() => r.readOption((rr) => rr.readU8())).toThrow(ReaderError);
+    expect(readerErrorCode(() => r.readOption((rr) => rr.readU8()))).toBe('invalid-tag');
   });
 });
+
+/** Run fn, assert it throws a ReaderError, and return its code. */
+function readerErrorCode(fn: () => unknown): string {
+  try {
+    fn();
+  } catch (e) {
+    expect(e).toBeInstanceOf(ReaderError);
+    return (e as ReaderError).code;
+  }
+  expect.unreachable('expected a ReaderError');
+}
 
 /** Helper: encode an unsigned integer as VLQ bytes */
 function encodeVlqU(n: number): Uint8Array {
