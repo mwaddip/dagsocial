@@ -4,77 +4,186 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Notis DEMO UI</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,600;0,700;0,800;1,400&display=swap" rel="stylesheet">
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: system-ui, sans-serif; background: #0d1117; color: #c9d1d9; display: flex; height: 100vh; }
-  .panel { padding: 20px; overflow-y: auto; }
-  .left { width: 420px; min-width: 420px; border-right: 1px solid #30363d; display: flex; flex-direction: column; gap: 16px; }
-  .right { flex: 1; }
-  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: #8b949e; margin-bottom: 8px; }
-  h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: #6e7681; margin: 8px 0 4px; }
-  h4 { font-size: 11px; color: #8b949e; margin: 6px 0 2px; }
-  textarea, input, select { width: 100%; background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 10px; color: #c9d1d9; font-size: 13px; font-family: inherit; }
-  textarea { height: 120px; resize: vertical; }
-  input, select { height: 36px; }
-  select { cursor: pointer; }
-  button { background: #238636; color: #fff; border: none; border-radius: 6px; padding: 8px 16px; font-size: 13px; cursor: pointer; font-weight: 500; }
-  button:hover { background: #2ea043; }
-  button:disabled { opacity: 0.5; cursor: not-allowed; }
-  button.small { padding: 4px 10px; font-size: 11px; }
-  button.danger { background: #da3633; }
-  button.danger:hover { background: #f85149; }
-  .id-badge { font-size: 11px; color: #58a6ff; font-family: monospace; word-break: break-all; background: #161b22; padding: 8px; border-radius: 6px; border: 1px solid #30363d; }
-  .post { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 12px; margin-bottom: 10px; }
-  .post-author { font-size: 11px; color: #58a6ff; font-family: monospace; margin-bottom: 6px; }
-  .post-content { font-size: 14px; line-height: 1.5; }
-  .post-meta { font-size: 11px; color: #484f58; margin-top: 8px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-  .status { font-size: 11px; padding: 4px 8px; border-radius: 10px; }
-  .status-ok { background: #163b23; color: #3fb950; }
-  .status-busy { background: #3b2816; color: #d29922; }
-  .status-error { background: #3b1616; color: #f85149; }
-  .empty { color: #484f58; font-style: italic; padding: 20px; text-align: center; }
-  .row { display: flex; gap: 8px; align-items: center; }
-  .row label { font-size: 12px; color: #8b949e; min-width: 0; white-space: nowrap; }
-  .like-btn { background: none; border: 1px solid #30363d; border-radius: 4px; color: #8b949e; cursor: pointer; font-size: 12px; padding: 2px 8px; }
-  .like-btn:hover { border-color: #f85149; color: #f85149; background: #3b1616; }
-  .like-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-  .like-btn.liked { border-color: #f85149; color: #f85149; background: #2d1216; }
-  .like-btn .spinner {
-    display: inline-block; width: 10px; height: 10px; border: 2px solid #30363d;
-    border-top-color: #f85149; border-radius: 50%; animation: spin 0.6s linear infinite;
-    margin-right: 4px; vertical-align: middle;
+:root{
+  --bg:#020D07; --bg-2:#06190F; --bg-3:#082514;
+  --p:#2CFF87; --on-p:#01160B;
+  --p-hi:#D6FFEA; --p-md:#A6E7C6; --p-lo:#57B084; --p-dk:#1A6B40;
+  --p-04:rgba(44,255,135,.055); --p-08:rgba(44,255,135,.10); --p-30:rgba(44,255,135,.34);
+  --amber:#FFB000; --amber-bd:rgba(255,176,0,.35); --amber-bg:rgba(255,176,0,.08);
+  --red:#FF4E3A; --red-bd:rgba(255,78,58,.42); --red-bg:rgba(255,78,58,.05); --on-red:#160302;
+  --glow-accent:0 0 8px rgba(44,255,135,.42);
+  --glow-strong:0 0 18px rgba(44,255,135,.4);
+  --glow-input:0 0 0 1px var(--p-30),0 0 14px rgba(44,255,135,.12);
+  --panel-grad:linear-gradient(160deg,rgba(44,255,135,.03),rgba(1,10,5,.35));
+  --post-grad:linear-gradient(155deg,rgba(44,255,135,.05),rgba(3,18,10,.4) 60%,rgba(1,10,5,.5));
+  --scan:rgba(0,0,0,.10);
+  --vig-shadow:inset 0 0 150px rgba(0,0,0,.5),inset 0 0 70px rgba(44,255,135,.06);
+  --vig-grad:radial-gradient(130% 100% at 50% 40%,transparent 60%,rgba(0,0,0,.3));
+  --m:"JetBrains Mono",ui-monospace,"Cascadia Mono","SF Mono",Menlo,Consolas,monospace;
+}
+:root[data-theme="light"]{
+  --bg:#EDF3EE; --bg-2:#E4EDE6; --bg-3:#DBE7DE;
+  --p:#0B8A46; --on-p:#F4FBF6;
+  --p-hi:#0B2C1B; --p-md:#26493A; --p-lo:#557460; --p-dk:#CBDDD0;
+  --p-04:rgba(11,138,70,.05); --p-08:rgba(11,138,70,.09); --p-30:rgba(11,138,70,.30);
+  --amber:#9A6000; --amber-bd:rgba(154,96,0,.4); --amber-bg:rgba(154,96,0,.08);
+  --red:#C22E1C; --red-bd:rgba(194,46,28,.4); --red-bg:rgba(194,46,28,.06); --on-red:#FCEDEB;
+  --glow-accent:none;
+  --glow-strong:0 6px 16px rgba(11,138,70,.20);
+  --glow-input:0 0 0 1px var(--p-30);
+  --panel-grad:linear-gradient(160deg,rgba(11,138,70,.05),rgba(237,243,238,.55));
+  --post-grad:linear-gradient(155deg,rgba(11,138,70,.05),rgba(228,237,230,.55) 60%,rgba(219,231,222,.7));
+  --scan:rgba(11,42,27,.035);
+  --vig-shadow:inset 0 0 120px rgba(11,42,27,.045);
+  --vig-grad:none;
+}
+@media(prefers-color-scheme:light){
+  :root:not([data-theme="dark"]){
+    --bg:#EDF3EE; --bg-2:#E4EDE6; --bg-3:#DBE7DE;
+    --p:#0B8A46; --on-p:#F4FBF6;
+    --p-hi:#0B2C1B; --p-md:#26493A; --p-lo:#557460; --p-dk:#CBDDD0;
+    --p-04:rgba(11,138,70,.05); --p-08:rgba(11,138,70,.09); --p-30:rgba(11,138,70,.30);
+    --amber:#9A6000; --amber-bd:rgba(154,96,0,.4); --amber-bg:rgba(154,96,0,.08);
+    --red:#C22E1C; --red-bd:rgba(194,46,28,.4); --red-bg:rgba(194,46,28,.06); --on-red:#FCEDEB;
+    --glow-accent:none; --glow-strong:0 6px 16px rgba(11,138,70,.20); --glow-input:0 0 0 1px var(--p-30);
+    --panel-grad:linear-gradient(160deg,rgba(11,138,70,.05),rgba(237,243,238,.55));
+    --post-grad:linear-gradient(155deg,rgba(11,138,70,.05),rgba(228,237,230,.55) 60%,rgba(219,231,222,.7));
+    --scan:rgba(11,42,27,.035); --vig-shadow:inset 0 0 120px rgba(11,42,27,.045); --vig-grad:none;
   }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  .status-bar { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 10px; font-size: 12px; line-height: 1.6; }
-  .status-bar span { color: #8b949e; }
-  .status-bar strong { color: #c9d1d9; }
-  pre { background: #0d1117; border: 1px solid #30363d; border-radius: 4px; padding: 8px; font-size: 11px; font-family: monospace; color: #7ee787; overflow-x: auto; white-space: pre-wrap; word-break: break-all; margin: 4px 0; }
-  .result-msg { font-size: 11px; padding: 4px 0; color: #8b949e; }
-  .result-msg.ok { color: #3fb950; }
-  .result-msg.err { color: #f85149; }
-  hr { border: none; border-top: 1px solid #21262d; margin: 8px 0; }
+}
 
-  /* Thread view & permalink */
-  .permalink { color: #484f58; text-decoration: none; cursor: pointer; }
-  .permalink:hover { color: #58a6ff; text-decoration: underline; }
-  .post-highlighted { border-color: #d29922 !important; background: #1a1a13 !important; }
-  .thread-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
-  .thread-header h2 { margin-bottom: 0; }
-  .ancestor-post { opacity: 0.75; }
-  .ancestor-connector { color: #484f58; font-size: 11px; padding: 2px 0 2px 12px; border-left: 2px solid #30363d; margin-left: 0; }
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--p-md);font-family:var(--m);font-size:13.5px;line-height:1.6;
+  display:flex;height:100vh;overflow:hidden;-webkit-font-smoothing:antialiased;transition:background .3s,color .3s}
+body::before{content:"";position:fixed;inset:0;z-index:900;pointer-events:none;
+  background:repeating-linear-gradient(0deg,var(--scan) 0,var(--scan) 1px,transparent 1px,transparent 3px);mix-blend-mode:multiply}
+body::after{content:"";position:fixed;inset:0;z-index:901;pointer-events:none;box-shadow:var(--vig-shadow);background:var(--vig-grad)}
+::selection{background:var(--p);color:var(--on-p)}
+a{color:inherit;text-decoration:none}
+:focus-visible{outline:1px solid var(--p);outline-offset:2px}
+.panel::-webkit-scrollbar{width:9px}
+.panel::-webkit-scrollbar-thumb{background:var(--p-dk)}
+.panel::-webkit-scrollbar-track{background:transparent}
 
-  /* Mobile: stack panels vertically, let body scroll */
-  @media (max-width: 768px) {
-    body { flex-direction: column; height: auto; min-height: 100vh; }
-    .left { width: 100%; min-width: 0; border-right: none; border-bottom: 1px solid #30363d; flex-shrink: 0; }
-    .right { flex: none; }
-    .panel { overflow-y: visible; }
-  }
+.panel{padding:22px;overflow-y:auto;position:relative;z-index:2}
+.left{width:430px;min-width:430px;border-right:1px solid var(--p-dk);display:flex;flex-direction:column;gap:15px;background:var(--panel-grad)}
+.right{flex:1}
+
+.brand{display:flex;align-items:center;gap:10px;padding-bottom:14px;border-bottom:1px solid var(--p-dk)}
+.brand svg{width:22px;height:22px;filter:drop-shadow(0 0 6px rgba(44,255,135,.5))}
+:root[data-theme="light"] .brand svg{filter:none}
+.brand b{font-size:15px;font-weight:800;letter-spacing:.08em;color:var(--p-hi)}
+.brand b i{font-style:normal;color:var(--p)}
+.brand .tag{margin-left:auto;font-size:9px;letter-spacing:.24em;text-transform:uppercase;color:var(--p-lo)}
+.brand .tag u{width:6px;height:6px;border-radius:50%;background:var(--p);display:inline-block;box-shadow:0 0 8px var(--p);margin-right:6px;vertical-align:1px;animation:blip 2.2s infinite}
+@keyframes blip{0%,100%{opacity:1}50%{opacity:.35}}
+
+.theme-toggle{position:fixed;top:14px;right:16px;z-index:950;width:38px;height:38px;padding:0;
+  display:inline-flex;align-items:center;justify-content:center;font-size:16px;line-height:1;letter-spacing:0;
+  border:1px solid #B4D3C1;background:#EDF3EE;color:#0B8A46;cursor:pointer;
+  box-shadow:0 2px 12px rgba(0,0,0,.35);transition:transform .2s,box-shadow .2s,filter .2s}
+.theme-toggle::before{content:none}
+.theme-toggle:hover{transform:translateY(-1px);box-shadow:0 4px 16px rgba(0,0,0,.45);filter:brightness(1.06)}
+:root[data-theme="light"] .theme-toggle{background:#020D07;color:#2CFF87;border-color:#1F6B41}
+@media(prefers-color-scheme:light){:root:not([data-theme="dark"]) .theme-toggle{background:#020D07;color:#2CFF87;border-color:#1F6B41}}
+
+h2{font-size:10px;font-weight:700;letter-spacing:.26em;text-transform:uppercase;color:var(--p);margin-bottom:8px;display:flex;align-items:center;gap:9px}
+h2::before{content:"//";color:var(--p-lo)}
+h3{font-size:9.5px;font-weight:700;letter-spacing:.2em;text-transform:uppercase;color:var(--p-lo);margin:11px 0 4px}
+h4{font-size:10px;letter-spacing:.05em;color:var(--p-lo);margin:8px 0 3px;font-weight:600}
+
+textarea,input,select{width:100%;background:var(--bg-2);border:1px solid var(--p-dk);color:var(--p-md);font-size:12.5px;font-family:var(--m);padding:10px 11px;transition:border-color .2s,box-shadow .2s}
+textarea{height:120px;resize:vertical;line-height:1.55}
+input,select{height:36px}
+select{cursor:pointer}
+textarea:focus,input:focus,select:focus{outline:none;border-color:var(--p-30);box-shadow:var(--glow-input)}
+::placeholder{color:var(--p-lo);opacity:.75}
+
+button{display:inline-flex;align-items:center;gap:6px;font-family:var(--m);font-size:10px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;padding:9px 15px;border:1px solid var(--p-30);color:var(--p);background:var(--p-04);cursor:pointer;transition:background .22s,color .22s,border-color .22s,box-shadow .22s,transform .22s cubic-bezier(.16,.84,.32,1)}
+button::before{content:">";opacity:.65}
+button:hover{background:var(--p);color:var(--on-p);border-color:var(--p);box-shadow:var(--glow-strong);transform:translateY(-1px)}
+button:disabled{opacity:.32;cursor:not-allowed;transform:none;box-shadow:none;background:var(--p-04);color:var(--p)}
+button.small{padding:6px 10px;font-size:9px;letter-spacing:.14em}
+button.danger{border-color:var(--red-bd);color:var(--red);background:var(--red-bg)}
+button.danger::before{content:"!"}
+button.danger:hover{background:var(--red);color:var(--on-red);border-color:var(--red);box-shadow:none}
+
+.id-badge{font-size:10.5px;color:var(--p-lo);background:var(--bg-2);border:1px solid var(--p-dk);padding:9px 10px;word-break:break-all;letter-spacing:.02em}
+.post-author,.id-badge{font-family:var(--m)}
+.status-bar{background:var(--bg-2);border:1px solid var(--p-dk);padding:11px 12px;font-size:11.5px;line-height:1.75}
+.status-bar span{color:var(--p-lo)}
+.status-bar strong{color:var(--p-hi);font-weight:600}
+
+.status{font-size:9px;letter-spacing:.14em;text-transform:uppercase;padding:3px 9px;border:1px solid}
+.status-ok{color:var(--p);border-color:var(--p-30);background:var(--p-08)}
+.status-busy{color:var(--amber);border-color:var(--amber-bd);background:var(--amber-bg)}
+.status-error{color:var(--red);border-color:var(--red-bd);background:var(--red-bg)}
+
+.empty{color:var(--p-lo);font-style:italic;padding:22px;text-align:center;letter-spacing:.04em}
+.row{display:flex;gap:8px;align-items:center}
+.row label{font-size:12px;color:var(--p-lo);white-space:nowrap}
+
+.like-btn{display:inline-flex;align-items:center;gap:5px;background:none;border:1px solid var(--p-dk);color:var(--p-lo);cursor:pointer;font-size:11px;font-family:var(--m);letter-spacing:.04em;padding:2px 9px;text-transform:none;transition:border-color .2s,color .2s,background .2s}
+.like-btn::before{content:none}
+.like-btn:hover{border-color:var(--p-30);color:var(--p);background:var(--p-04);box-shadow:none;transform:none}
+.like-btn:disabled{opacity:.4;cursor:not-allowed}
+.like-btn.liked{border-color:var(--p);color:var(--p);background:var(--p-08);text-shadow:var(--glow-accent)}
+.like-btn .spinner{display:inline-block;width:10px;height:10px;border:2px solid var(--p-dk);border-top-color:var(--p);border-radius:50%;animation:spin .6s linear infinite;margin-right:4px;vertical-align:middle}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+pre{background:var(--bg-2);border:1px solid var(--p-dk);padding:9px 10px;font-size:10.5px;font-family:var(--m);color:var(--p);overflow-x:auto;white-space:pre-wrap;word-break:break-all;margin:5px 0;line-height:1.7}
+.result-msg{font-size:10.5px;padding:4px 0;color:var(--p-lo);letter-spacing:.02em}
+.result-msg.ok{color:var(--p)}
+.result-msg.err{color:var(--red)}
+hr{border:none;border-top:1px solid var(--p-dk);margin:6px 0}
+
+.post{position:relative;border:1px solid var(--p-dk);padding:14px 16px;margin-bottom:11px;background:var(--post-grad);transition:border-color .3s,box-shadow .3s}
+.post::before,.post::after{content:"";position:absolute;width:9px;height:9px;pointer-events:none}
+.post::before{top:-1px;left:-1px;border-top:1px solid var(--p);border-left:1px solid var(--p)}
+.post::after{bottom:-1px;right:-1px;border-bottom:1px solid var(--p);border-right:1px solid var(--p)}
+.post:hover{border-color:var(--p-30);box-shadow:var(--glow-strong)}
+.post-author{font-size:10.5px;color:var(--p);letter-spacing:.04em;margin-bottom:7px;text-shadow:var(--glow-accent)}
+.post-content{font-size:13.5px;line-height:1.56;color:var(--p-hi);font-weight:300}
+:root[data-theme="light"] .post-content{font-weight:400}
+.post-meta{font-size:10px;color:var(--p-lo);margin-top:11px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;letter-spacing:.03em}
+
+.permalink{color:var(--p-lo);text-decoration:none;cursor:pointer}
+.permalink:hover{color:var(--p);text-decoration:underline}
+.post-highlighted{border-color:var(--amber)!important}
+.thread-header{display:flex;align-items:center;gap:12px;margin-bottom:16px}
+.thread-header h2{margin-bottom:0}
+.ancestor-post{opacity:.72}
+.ancestor-connector{color:var(--p-lo);font-size:10px;padding:2px 0 2px 12px;border-left:2px solid var(--p-dk);margin-left:0}
+
+@media(max-width:768px){
+  body{flex-direction:column;height:auto;min-height:100vh;overflow:auto}
+  .left{width:100%;min-width:0;border-right:none;border-bottom:1px solid var(--p-dk);flex-shrink:0}
+  .right{flex:none}
+  .panel{overflow-y:visible}
+}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition-duration:.01ms!important}}
 </style>
 </head>
 <body>
+<button class="theme-toggle" id="themeToggle" title="Toggle light / dark" aria-label="Toggle theme">☀</button>
 
 <div class="panel left">
+  <div class="brand">
+    <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
+      <circle cx="16" cy="5"  r="2.6" fill="#2CFF87"/>
+      <circle cx="6"  cy="16" r="2"   fill="#2CFF87" opacity=".8"/>
+      <circle cx="26" cy="16" r="2"   fill="#2CFF87" opacity=".8"/>
+      <circle cx="11" cy="27" r="1.7" fill="#2CFF87" opacity=".5"/>
+      <circle cx="22" cy="27" r="1.7" fill="#2CFF87" opacity=".5"/>
+      <path d="M16 7.6 6 13.9M16 7.6 26 13.9M6 18 11 25M26 18 22 25" stroke="#2CFF87" stroke-width="1.1" opacity=".55"/>
+    </svg>
+    <b>NOTIS<i>//</i></b>
+    <span class="tag"><u></u>testnet</span>
+  </div>
   <h2>Identity</h2>
   <div class="row">
     <select id="identitySelect"></select>
@@ -137,19 +246,19 @@
     <div id="inviteResult"></div>
 
     <h4>Redeem</h4>
-    <div style="font-size:11px;color:#8b949e;margin:4px 0 2px">Invite Box ID:</div>
+    <div style="font-size:11px;color:var(--p-lo);margin:4px 0 2px">Invite Box ID:</div>
     <div class="row">
       <input id="inviteBoxIdInput" placeholder="Invite Box ID" style="flex:1;font-size:11px">
     </div>
-    <div style="font-size:11px;color:#8b949e;margin:4px 0 2px">Bond Box ID:</div>
+    <div style="font-size:11px;color:var(--p-lo);margin:4px 0 2px">Bond Box ID:</div>
     <div class="row" style="margin-top:2px">
       <input id="bondBoxIdForClaimInput" placeholder="Bond Box ID" style="flex:1;font-size:11px">
     </div>
-    <div style="font-size:11px;color:#8b949e;margin:4px 0 2px">Inviter ID (hex):</div>
+    <div style="font-size:11px;color:var(--p-lo);margin:4px 0 2px">Inviter ID (hex):</div>
     <div class="row" style="margin-top:2px">
       <input id="inviterIdForClaimInput" placeholder="Inviter ID (hex)" style="flex:1;font-size:11px">
     </div>
-    <div style="font-size:11px;color:#8b949e;margin:4px 0 2px">Secret (hex):</div>
+    <div style="font-size:11px;color:var(--p-lo);margin:4px 0 2px">Secret (hex):</div>
     <div class="row" style="margin-top:2px">
       <input id="inviteSecretInput" placeholder="Secret (hex)" style="flex:1;font-size:11px">
       <button id="redeemInviteBtn" class="small">Redeem</button>
@@ -1178,10 +1287,10 @@ function updateFilterBtn() {
   const btn = document.getElementById('feedFilterBtn');
   if (feedFilter === userId) {
     btn.textContent = 'My posts';
-    btn.style.background = '#1f6feb';
+    btn.style.background = 'var(--p)';
   } else if (feedFilter !== 'all') {
     btn.textContent = "Author's posts";
-    btn.style.background = '#1f6feb';
+    btn.style.background = 'var(--p)';
   } else {
     btn.textContent = 'All posts';
     btn.style.background = '';
@@ -1429,12 +1538,12 @@ function renderPost(p, id, depth, highlighted = false) {
   const indent = depth * 20;
   const isOwn = userId && p.author === userId;
   const deleteBtn = isOwn
-    ? `<button class="like-btn delete-btn" data-post-id="${id}" style="color:#f85149">&#10005; Delete</button>`
+    ? `<button class="like-btn delete-btn" data-post-id="${id}" style="color:var(--red)">&#10005; Delete</button>`
     : '';
   const { relative, absolute } = formatRelativeTime(p.timestamp);
   const hlClass = highlighted ? ' post-highlighted' : '';
   return `
-    <div class="post${hlClass}" data-post-id="${id}" style="margin-left:${indent}px;border-left:${depth > 0 ? '2px solid #30363d' : 'none'};padding-left:${depth > 0 ? '10px' : '12px'}">
+    <div class="post${hlClass}" data-post-id="${id}" style="margin-left:${indent}px;border-left:${depth > 0 ? '2px solid var(--p-dk)' : 'none'};padding-left:${depth > 0 ? '10px' : '12px'}">
       <div class="post-author" style="cursor:pointer" onclick="event.stopPropagation();viewProfile('${esc(p.author)}')" title="View posts by this author">${esc(p.author.slice(0, 12))}...</div>
       <div class="post-content">${escWithBreaks(p.content)}</div>
       <div class="post-meta">
@@ -1588,8 +1697,8 @@ async function loadThread(postId, pushState = true) {
     feed.innerHTML = `
       <div class="thread-header">
         <button id="threadBackBtn" class="small">← Back to feed</button>
-        <button id="copyLinkBtn" class="small" style="background:#30363d">Copy link</button>
-        <span id="copyLinkMsg" style="font-size:11px;color:#3fb950;display:none">Copied!</span>
+        <button id="copyLinkBtn" class="small" style="background:var(--p-dk)">Copy link</button>
+        <span id="copyLinkMsg" style="font-size:11px;color:var(--p);display:none">Copied!</span>
       </div>
       ${ancestorsHtml}
       ${targetHtml}
@@ -1756,14 +1865,14 @@ async function loadIdentityStatus() {
     if (res.ok) {
       const data = await res.json();
       karmaEl.textContent = data.total;
-      karmaEl.style.color = data.total > 0 ? '#3fb950' : '#8b949e';
+      karmaEl.style.color = data.total > 0 ? 'var(--p)' : 'var(--p-lo)';
     } else {
       karmaEl.textContent = '0';
-      karmaEl.style.color = '#8b949e';
+      karmaEl.style.color = 'var(--p-lo)';
     }
   } catch {
     karmaEl.textContent = '—';
-    karmaEl.style.color = '#8b949e';
+    karmaEl.style.color = 'var(--p-lo)';
   }
 
   try {
@@ -1771,14 +1880,14 @@ async function loadIdentityStatus() {
     if (res.ok) {
       const data = await res.json();
       creditsEl.textContent = data.total;
-      creditsEl.style.color = data.total > 0 ? '#3fb950' : '#8b949e';
+      creditsEl.style.color = data.total > 0 ? 'var(--p)' : 'var(--p-lo)';
     } else {
       creditsEl.textContent = '0';
-      creditsEl.style.color = '#8b949e';
+      creditsEl.style.color = 'var(--p-lo)';
     }
   } catch {
     creditsEl.textContent = '—';
-    creditsEl.style.color = '#8b949e';
+    creditsEl.style.color = 'var(--p-lo)';
   }
 }
 
@@ -1792,7 +1901,7 @@ async function loadStatus() {
     currentBlockHeight = s.blockHeight || 0;
 
     bar.innerHTML = `
-      <div><span>Network:</span> <strong style="color:${networkMode === 'testnet' ? '#d29922' : '#3fb950'}">${esc(networkMode)}</strong></div>
+      <div><span>Network:</span> <strong style="color:${networkMode === 'testnet' ? 'var(--amber)' : 'var(--p)'}">${esc(networkMode)}</strong></div>
       <div><span>Block height:</span> <strong>${s.blockHeight}</strong></div>
       <div><span>Posts (confirmed / pending):</span> <strong>${s.postCount} / ${s.pendingPosts}</strong></div>
       <div><span>Identities:</span> <strong>${s.identityCount}</strong></div>
@@ -2020,15 +2129,15 @@ document.getElementById('createInviteBtn').addEventListener('click', async () =>
     if (res.ok) {
       result.innerHTML = `
         <span class="result-msg ok">Invite created!</span>
-        <div style="font-size:11px;color:#8b949e;margin:4px 0">Invite Box ID:</div>
+        <div style="font-size:11px;color:var(--p-lo);margin:4px 0">Invite Box ID:</div>
         <pre>${esc(data.inviteBoxId)}</pre>
-        <div style="font-size:11px;color:#8b949e;margin:4px 0">Bond Box ID:</div>
+        <div style="font-size:11px;color:var(--p-lo);margin:4px 0">Bond Box ID:</div>
         <pre>${esc(data.bondBoxId)}</pre>
-        <div style="font-size:11px;color:#8b949e;margin:4px 0">Inviter ID:</div>
+        <div style="font-size:11px;color:var(--p-lo);margin:4px 0">Inviter ID:</div>
         <pre>${esc(pubKeyHex)}</pre>
-        <div style="font-size:11px;color:#8b949e;margin:4px 0">Secret (share with invitee):</div>
+        <div style="font-size:11px;color:var(--p-lo);margin:4px 0">Secret (share with invitee):</div>
         <pre>${esc(secretHex)}</pre>
-        <div style="font-size:11px;color:#8b949e;margin:4px 0">Secret Hash (for verification):</div>
+        <div style="font-size:11px;color:var(--p-lo);margin:4px 0">Secret Hash (for verification):</div>
         <pre>${esc(secretHashHex)}</pre>
       `;
       loadStatus();
@@ -2126,9 +2235,9 @@ document.getElementById('redeemInviteBtn').addEventListener('click', async () =>
           sessionStorage.removeItem('reveal_' + inviteBoxId);
           result.innerHTML = `
             <span class="result-msg ok">Invite claimed!</span>
-            <div style="font-size:11px;color:#8b949e;margin:4px 0">User ID:</div>
+            <div style="font-size:11px;color:var(--p-lo);margin:4px 0">User ID:</div>
             <pre>${esc(revealData.userId)}</pre>
-            <div style="font-size:11px;color:#8b949e;margin:4px 0">Karma Box ID:</div>
+            <div style="font-size:11px;color:var(--p-lo);margin:4px 0">Karma Box ID:</div>
             <pre>${esc(revealData.karmaBoxId)}</pre>
           `;
           loadStatus();
@@ -2262,6 +2371,18 @@ setInterval(() => {
   loadStatus();
 }, 5000);
 setInterval(loadStatus, 15000);
+</script>
+<script>
+(function(){
+  var root=document.documentElement, btn=document.getElementById("themeToggle");
+  function eff(){ var t=root.getAttribute("data-theme"); if(t==="dark"||t==="light") return t;
+    return (window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark"; }
+  function apply(t){ root.setAttribute("data-theme",t); if(btn) btn.textContent=(t==="dark"?"\u2600":"\u263E");
+    try{ localStorage.setItem("notis-theme",t); }catch(e){} }
+  var saved=null; try{ saved=localStorage.getItem("notis-theme"); }catch(e){}
+  apply(saved||eff());
+  if(btn) btn.addEventListener("click",function(){ apply(eff()==="dark"?"light":"dark"); });
+})();
 </script>
 </body>
 </html>
