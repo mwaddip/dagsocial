@@ -449,11 +449,28 @@ produces `{ peers: [] }`.
 byte-level codec. Decoding follows the `sync-codec.ts` pattern: a decoder
 returns `null` for anything that is not well-formed CBOR **or** does not
 match the declared shape — `peers` an array, and every entry an object
-with a string `address`, string `agentName`, string `nodeName`, a
-safe-integer `protocolVersion`, and a `capabilities` array of
-safe integers. `null` is a `ProtocolViolation` (permanent ban); shape
-checking is not optional, because each field reaches string and dial
-paths that a CBOR payload can otherwise feed any type.
+with a string `address`, string `agentName`, string `nodeName`, plus
+`protocolVersion` and `capabilities` bounded **exactly as
+`validateHandshake` bounds the same two fields** (`isBoundedInt` /
+`isBoundedIntArray` against `MAX_CAPABILITY_CODE`). Pinning them to the
+handshake's bounds rather than "any safe integer" is deliberate: the two
+carry the same values, and a looser rule here would mean two
+implementations disagreeing about which sender gets banned. `null` is a
+`ProtocolViolation` (permanent ban); shape checking is not optional,
+because each field reaches string and dial paths that a CBOR payload can
+otherwise feed any type.
+
+A single invalid entry rejects the **whole** body, banning the sender.
+That is not collateral damage: a node serves `Peers` from its own PeerDb,
+and every PeerDb entry has already passed this same validation on the way
+in (from a handshake or from intake), so a well-behaved node cannot
+produce an invalid entry.
+
+`Peers` is accepted **only as the response to a `GetPeers` this node
+sent** on that stream. An unsolicited `Peers` frame is ignored — the same
+posture as Sync Integrity's response binding, and for the same reason:
+otherwise any peer could push addresses into our PeerDb unasked, which is
+the cheapest possible table-poisoning primitive.
 
 ### Peers Intake
 

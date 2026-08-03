@@ -13,7 +13,7 @@ import type { SubBlock, OrderingBlock, UtxoTransaction, BlockHeader, Stump } fro
 import { PROTOCOL_VERSION, encodeSubBlock, decodeSubBlock, encodeOrderingBlock, decodeOrderingBlock } from '@dagsocial/types';
 import { blockHash } from '@dagsocial/validation';
 import { ReaderError } from '@dagsocial/wire';
-import type { NetConfig, NetValidators, Peer, PeerRecord, PostsMsg, PostsEntry, StumpsEntry, StumpsMsg } from './types.js';
+import type { NetConfig, NetValidators, Peer, PeerRecord, PeerEntryMsg, PostsMsg, PostsEntry, StumpsEntry, StumpsMsg } from './types.js';
 import { PeerState, PenaltyKind } from './types.js';
 import type { Libp2pGossip, GossipHandlers } from './gossip.js';
 import { PeerManager } from './peer-mgr.js';
@@ -26,6 +26,10 @@ import {
   requestBlocks,
 } from './sync.js';
 import {
+  encodeGetPeers,
+  decodeGetPeers,
+  encodePeers,
+  decodePeers,
   encodeGetPosts,
   decodeGetPosts,
   encodePosts,
@@ -36,6 +40,7 @@ import {
   decodeStumps,
   decodeLegacyHeadersRequest,
 } from './sync-codec.js';
+import { isBogusAddress } from './bogus-addr.js';
 import { readStreamBounded } from './util.js';
 import { MAX_STREAM_BYTES } from './msg-guards.js';
 import { PeerDb } from './peerdb.js';
@@ -53,6 +58,8 @@ import type { HandshakeResult } from './handshake.js';
 import {
   MSG_GET_SUB_BLOCK,
   MSG_SUB_BLOCK_RESPONSE,
+  MSG_GET_PEERS,
+  MSG_PEERS,
   MSG_GET_POSTS,
   MSG_POSTS,
   MSG_GET_STUMPS,
@@ -199,6 +206,128 @@ class LazySyncStore implements SyncStore {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Peer exchange (GetPeers / Peers — NET_INTERFACE → Peer Discovery)
+//
+// The serve, intake, and cadence decisions live in module-level functions so
+// the tests drive the same code the stream handler and timer call — not a
+// copy. The stream plumbing around them is exercised by the integration suite.
+// ---------------------------------------------------------------------------
+
+/** Cadence for sending GetPeers to each Active peer. */
+export const GET_PEERS_INTERVAL_MS = 120_000;
+
+/** Most entries served in one Peers response ("up to 8"). */
+export const GET_PEERS_RESPONSE_LIMIT = 8;
+
+/**
+ * Serve one GetPeers request body: reply with up to GET_PEERS_RESPONSE_LIMIT
+ * recently-seen PeerDb entries, excluding the requester's own address. Returns
+ * the framed Peers response — `{ peers: [] }` when PeerDb has nothing, so the
+ * requester is answered rather than left to time out — or `null` for a
+ * malformed request, which is a protocol violation (permanent ban).
+ *
+ * Discovery is served whatever our own sync phase is: nothing here consults
+ * the sync machine.
+ */
+export function servePeersBody(
+  body: Uint8Array,
+  deps: {
+    peerDb: PeerDb | null;
+    peerMgr: PeerManager;
+    peerId: string;
+    requesterAddr: string | null;
+    magic: number;
+  },
+): Uint8Array | null {
+  const request = decodeGetPeers(body);
+  if (!request) {
+    console.warn(`[net] malformed GetPeers from ${deps.peerId}, dropping`);
+    deps.peerMgr.recordPenaltyKind(PenaltyKind.ProtocolViolation, deps.peerId, 'malformed GetPeers');
+    return null;
+  }
+  const exclude = new Set<string>();
+  if (deps.requesterAddr !== null) exclude.add(deps.requesterAddr);
+  const records = deps.peerDb?.recent(GET_PEERS_RESPONSE_LIMIT, exclude) ?? [];
+  const peers: PeerEntryMsg[] = records.map((r) => ({
+    address: r.address,
+    agentName: r.agentName,
+    nodeName: r.nodeName,
+    protocolVersion: r.protocolVersion,
+    capabilities: r.capabilities,
+  }));
+  return encodePeers(deps.magic, { peers });
+}
+
+/**
+ * Intake one Peers response body into PeerDb, stamping every recorded entry
+ * with `nowMs` — the sender's opinion of when a peer was last seen is hearsay
+ * and never travels on the wire.
+ *
+ * A body that fails decode (malformed, or over the 64-entry cap) permanently
+ * bans the sender. A bogus address inside a valid body is dropped silently
+ * with NO penalty — a NAT'd peer advertising its private address is normal
+ * operation, not misbehavior. Self and banned addresses are refused by
+ * `PeerDb.record` itself.
+ *
+ * Returns the number of entries handed to PeerDb, or `null` when the body was
+ * malformed.
+ */
+export function intakePeersBody(
+  body: Uint8Array,
+  deps: {
+    peerDb: PeerDb | null;
+    peerMgr: PeerManager;
+    peerId: string;
+    magic: number;
+    nowMs: number;
+  },
+): number | null {
+  const msg = decodePeers(body);
+  if (!msg) {
+    console.warn(`[net] malformed Peers from ${deps.peerId}, banning`);
+    deps.peerMgr.recordPenaltyKind(PenaltyKind.ProtocolViolation, deps.peerId, 'malformed Peers response');
+    return null;
+  }
+  let usable = 0;
+  for (const e of msg.peers) {
+    if (isBogusAddress(e.address, deps.magic)) continue;
+    deps.peerDb?.record({
+      address: e.address,
+      lastSeenMs: deps.nowMs,
+      agentName: e.agentName,
+      nodeName: e.nodeName,
+      protocolVersion: e.protocolVersion,
+      capabilities: e.capabilities,
+    });
+    usable++;
+  }
+  return usable;
+}
+
+/**
+ * Which peers are due a GetPeers this tick: Active state, and no send within
+ * the last GET_PEERS_INTERVAL_MS. Stamps `lastSentMs` for every returned id,
+ * so a peer is never picked twice inside one interval. A peer with no stamp
+ * (fresh handshake) is due immediately — the bootstrap flow sends GetPeers
+ * right after handshake, not two minutes later.
+ */
+export function duePeerExchange(
+  peerMgr: PeerManager,
+  lastSentMs: Map<string, number>,
+  nowMs: number,
+): string[] {
+  const due: string[] = [];
+  for (const peer of peerMgr.getPeers()) {
+    if (!peerMgr.isPeerActive(peer.id)) continue;
+    const last = lastSentMs.get(peer.id);
+    if (last !== undefined && nowMs - last < GET_PEERS_INTERVAL_MS) continue;
+    lastSentMs.set(peer.id, nowMs);
+    due.push(peer.id);
+  }
+  return due;
+}
+
 export class NetNode {
   private libp2p: Libp2p | null = null;
   private peerMgr: PeerManager;
@@ -224,6 +353,7 @@ export class NetNode {
   private syncCompleteHandlers: Array<() => void> = [];
   private peerActiveHandlers: Array<(peerId: string) => void> = [];
   private pendingBootstrapDials: Set<string> = new Set();
+  private lastGetPeersSentMs: Map<string, number> = new Map();
 
   constructor(config: NetConfig, validators: NetValidators) {
     this.config = config;
@@ -352,6 +482,7 @@ export class NetNode {
       const peerId = evt.detail?.toString() ?? 'unknown';
       console.log(`[net] peer:disconnect ${peerId} (total=${Math.max(0, this.peerMgr.getPeerCount() - 1)})`);
       this.peerMgr.removePeer(peerId);
+      this.lastGetPeersSentMs.delete(peerId);
       this.syncMachine?.onPeerDisconnect(peerId);
     });
 
@@ -411,6 +542,14 @@ export class NetNode {
           });
         }
       }
+
+      // Peer discovery cadence: GetPeers to each Active peer every
+      // GET_PEERS_INTERVAL_MS, riding this tick rather than a second timer.
+      if (this.libp2p) {
+        for (const peerId of duePeerExchange(this.peerMgr, this.lastGetPeersSentMs, Date.now())) {
+          this.requestPeers(peerId);
+        }
+      }
     }, 30_000);
 
     this.started = true;
@@ -423,6 +562,7 @@ export class NetNode {
       this.syncTimer = null;
     }
     this.pendingBootstrapDials.clear();
+    this.lastGetPeersSentMs.clear();
     await this.libp2p.stop();
     this.libp2p = null;
     this.peerDb = null;
@@ -641,6 +781,21 @@ export class NetNode {
           } else {
             await stream.sink([encodeFrame(magic, MSG_SUB_BLOCK_RESPONSE, new Uint8Array([0x00]))]);
           }
+          return;
+        }
+
+        // Handle peer discovery requests (MSG_GET_PEERS). No registered
+        // handler callback — PeerDb is internal to net. Served whatever our
+        // sync phase is; an empty PeerDb still answers { peers: [] }.
+        if (code === MSG_GET_PEERS) {
+          const response = servePeersBody(body, {
+            peerDb: this.peerDb,
+            peerMgr: this.peerMgr,
+            peerId,
+            requesterAddr: connection.remoteAddr?.toString() ?? null,
+            magic,
+          });
+          if (response) await stream.sink([response]);
           return;
         }
 
@@ -1004,6 +1159,55 @@ export class NetNode {
     } catch (err) {
       console.warn(`[net] requestStumps failed for peer ${peerId}: ${String(err)}`);
       return { entries: [] };
+    } finally {
+      if (stream) await stream.close().catch(() => {});
+    }
+  }
+
+  /**
+   * Ask `peerId` for its recent peers and feed the response into PeerDb
+   * (NET_INTERFACE → GetPeers / Peers Intake). A malformed Peers response is
+   * a protocol violation — permanent ban of the sender; bogus addresses in a
+   * valid response are dropped silently, without penalty.
+   */
+  async requestPeers(peerId: string): Promise<void> {
+    if (!this.libp2p) return;
+    const peer = this.libp2p.getPeers().find(p => p.toString() === peerId);
+    if (!peer) {
+      console.warn(`[net] requestPeers: peer ${peerId} not found`);
+      return;
+    }
+    const magic = this.config.magic ?? MAGIC_MAINNET;
+    const request = encodeGetPeers(magic);
+    let stream: import('@libp2p/interface').Stream | undefined;
+    try {
+      stream = await this.libp2p.dialProtocol(peer, SYNC_PROTOCOL);
+      await stream.sink([request]);
+      const data = await readStreamBounded(stream.source);
+      if (data === null) {
+        console.warn(`[net] requestPeers: response from ${peerId} exceeded ${MAX_STREAM_BYTES} bytes`);
+        return;
+      }
+      if (data.length === 0) {
+        return;
+      }
+      const frame = decodeFrame(magic, data);
+      if (frame.code !== MSG_PEERS) {
+        console.warn(`[net] requestPeers: unexpected response code ${frame.code}`);
+        return;
+      }
+      const usable = intakePeersBody(frame.body, {
+        peerDb: this.peerDb,
+        peerMgr: this.peerMgr,
+        peerId,
+        magic,
+        nowMs: Date.now(),
+      });
+      if (usable !== null && usable > 0) {
+        console.log(`[net] Peers from ${peerId}: recorded ${usable} address(es)`);
+      }
+    } catch (err) {
+      console.warn(`[net] requestPeers failed for peer ${peerId}: ${String(err)}`);
     } finally {
       if (stream) await stream.close().catch(() => {});
     }

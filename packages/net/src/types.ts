@@ -153,6 +153,35 @@ export interface NetValidators {
 }
 
 // ---------------------------------------------------------------------------
+// GetPeers / Peers message types
+// ---------------------------------------------------------------------------
+
+/**
+ * Body of a GetPeers request (code 8). Empty by design — the request carries no
+ * parameters. Encoded as an empty CBOR map so a future version can add fields
+ * without changing the framing.
+ */
+export interface GetPeersMsg {}
+
+/**
+ * One advertised peer inside a Peers response. This is the wire shape: unlike
+ * `PeerRecord` it carries no `lastSeenMs` — a peer's claim about when it last
+ * saw someone is worthless hearsay, so the receiver stamps its own clock at
+ * intake time.
+ */
+export interface PeerEntryMsg {
+  address: string;
+  agentName: string;
+  nodeName: string;
+  protocolVersion: number;
+  capabilities: number[];
+}
+
+export interface PeersMsg {
+  peers: PeerEntryMsg[];
+}
+
+// ---------------------------------------------------------------------------
 // GetPosts / Posts message types
 // ---------------------------------------------------------------------------
 

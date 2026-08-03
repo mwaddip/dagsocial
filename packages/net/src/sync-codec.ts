@@ -1,17 +1,20 @@
 import { encode, decode } from 'cbor-x';
 import { encodeFrame } from './frame.js';
 import type { SyncInfo, Inv, ModifierRequest, ModifierResponse } from './sync-types.js';
-import { MSG_SYNC_INFO, MSG_INV, MSG_MODIFIER_REQUEST, MSG_MODIFIER_RESPONSE, MSG_GET_POSTS, MSG_POSTS, MSG_GET_STUMPS, MSG_STUMPS } from './types.js';
-import type { GetPostsMsg, PostsMsg, PostsEntry, GetStumpsMsg, StumpsMsg, StumpsEntry } from './types.js';
+import { MSG_SYNC_INFO, MSG_INV, MSG_MODIFIER_REQUEST, MSG_MODIFIER_RESPONSE, MSG_GET_PEERS, MSG_PEERS, MSG_GET_POSTS, MSG_POSTS, MSG_GET_STUMPS, MSG_STUMPS } from './types.js';
+import type { GetPeersMsg, PeersMsg, PeerEntryMsg, GetPostsMsg, PostsMsg, PostsEntry, GetStumpsMsg, StumpsMsg, StumpsEntry } from './types.js';
 import type { Post, LikeBox, Stump } from '@dagsocial/types';
 import {
   isRecord,
   isBoundedInt,
+  isBoundedIntArray,
   isHeight,
   isStringArray,
   isBytes,
   isWorkString,
   MAX_TYPE_ID,
+  MAX_CAPABILITY_CODE,
+  MAX_PEERS_ENTRIES,
 } from './msg-guards.js';
 
 function frameMessage(magic: number, code: number, body: unknown): Uint8Array {
@@ -108,6 +111,65 @@ export function decodeModifierResponse(body: Uint8Array): ModifierResponse | nul
   }
 
   return { typeId: v.typeId, modifiers };
+}
+
+export function encodeGetPeers(magic: number): Uint8Array {
+  // Empty CBOR map rather than zero bytes, so a future version can add fields
+  // without a framing change.
+  return frameMessage(magic, MSG_GET_PEERS, {});
+}
+
+/**
+ * A GetPeers body carries no information, so nothing about its content can be
+ * wrong: an empty body and a body with fields we do not know are both accepted
+ * (forward compat — a future version may add fields). The only rejection is
+ * bytes that are not well-formed CBOR at all, which violates the framing
+ * convention shared by every stream message.
+ */
+export function decodeGetPeers(body: Uint8Array): GetPeersMsg | null {
+  if (body.length === 0) return {};
+  if (tryDecode(body) === null) return null;
+  return {};
+}
+
+export function encodePeers(magic: number, msg: PeersMsg): Uint8Array {
+  return frameMessage(magic, MSG_PEERS, msg);
+}
+
+/**
+ * Every field of every entry is checked before use: `address` reaches dial
+ * paths, the rest reach PeerDb and are re-served to other peers, so nothing
+ * may pass through unvalidated. `protocolVersion` and `capabilities` get the
+ * same treatment the handshake gives the same fields (`validateHandshake`).
+ *
+ * A body declaring more than MAX_PEERS_ENTRIES collapses to `null` like every
+ * other malformed body — the contract makes both a permanent ban, so the
+ * caller has no need to tell them apart.
+ */
+export function decodePeers(body: Uint8Array): PeersMsg | null {
+  const v = tryDecode(body);
+  if (!isRecord(v)) return null;
+  if (!Array.isArray(v.peers)) return null;
+  if (v.peers.length > MAX_PEERS_ENTRIES) return null;
+
+  const peers: PeerEntryMsg[] = [];
+  for (const e of v.peers) {
+    if (!isRecord(e)) return null;
+    if (typeof e.address !== 'string') return null;
+    if (typeof e.agentName !== 'string') return null;
+    if (typeof e.nodeName !== 'string') return null;
+    if (!isBoundedInt(e.protocolVersion, MAX_CAPABILITY_CODE)) return null;
+    if (!isBoundedIntArray(e.capabilities, MAX_CAPABILITY_CODE)) return null;
+    peers.push({
+      address: e.address,
+      agentName: e.agentName,
+      nodeName: e.nodeName,
+      protocolVersion: e.protocolVersion,
+      capabilities: [...e.capabilities],
+    });
+  }
+
+  return { peers };
 }
 
 export function encodeGetPosts(magic: number, msg: GetPostsMsg): Uint8Array {

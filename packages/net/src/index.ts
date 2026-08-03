@@ -1,4 +1,8 @@
-export { NetNode } from './node.js';
+export {
+  NetNode,
+  GET_PEERS_INTERVAL_MS,
+  GET_PEERS_RESPONSE_LIMIT,
+} from './node.js';
 export { PeerManager } from './peer-mgr.js';
 export { SYNC_PROTOCOL, HEADERS_PROTOCOL } from './sync.js';
 export { TOPICS } from './gossip.js';
@@ -45,9 +49,11 @@ export {
   MAX_UINT32,
   MAX_CAPABILITY_CODE,
   MAX_INV_IDS,
+  MAX_PEERS_ENTRIES,
   MAX_STREAM_BYTES,
   MAX_SERVE_BODY_BYTES,
 } from './msg-guards.js';
+export { isBogusAddress } from './bogus-addr.js';
 export { PeerDb } from './peerdb.js';
 export { OutboundManager } from './outbound-mgr.js';
 export type { PeerStorage } from './peerdb.js';
@@ -65,6 +71,9 @@ export type {
   PeerMetadata,
   ControlEvent,
   DataEvent,
+  GetPeersMsg,
+  PeerEntryMsg,
+  PeersMsg,
   GetPostsMsg,
   PostsEntry,
   PostsMsg,
@@ -78,6 +87,8 @@ export {
   encodeInv, decodeInv,
   encodeModifierRequest, decodeModifierRequest,
   encodeModifierResponse, decodeModifierResponse,
+  encodeGetPeers, decodeGetPeers,
+  encodePeers, decodePeers,
   encodeGetPosts, decodeGetPosts,
   encodePosts, decodePosts,
   encodeGetStumps, decodeGetStumps,

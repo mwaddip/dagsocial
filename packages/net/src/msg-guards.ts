@@ -61,6 +61,16 @@ const WORK_STRING_RE = /^[0-9]{1,80}$/;
 export const MAX_INV_IDS = 400;
 
 /**
+ * Largest `peers` array accepted in a Peers response.
+ *
+ * 64 is the contract cap (NET_INTERFACE → Peers: "Max 64 entries per
+ * response"). We only ever serve 8, but the cap has to be enforced on receipt —
+ * an attacker has no reason to honour the one we apply to ourselves. A body
+ * declaring more is a permanent ban of the sender.
+ */
+export const MAX_PEERS_ENTRIES = 64;
+
+/**
  * Largest number of bytes buffered from a single inbound stream.
  *
  * Stream readers accumulate chunks until the peer closes its side, so without a
