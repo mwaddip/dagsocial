@@ -1,5 +1,17 @@
 import { computeBoxId } from '@dagsocial/types';
-import type { KarmaBox, DecayJournalEntry } from '@dagsocial/types';
+import type { KarmaBox } from '@dagsocial/types';
+
+/**
+ * Per-owner summary of one decay application. Node-local: block application
+ * journals the underlying box mutations at the store choke point; this
+ * return value exists for the decay service's own callers and tests.
+ */
+export interface DecayJournalEntry {
+  owner: Uint8Array;
+  consumedBoxIds: string[];
+  newBoxId: string;
+  burnAmount: bigint;
+}
 
 // ---------------------------------------------------------------------------
 // Pure helpers

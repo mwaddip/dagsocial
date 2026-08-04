@@ -2,10 +2,8 @@ import {
   getPostLockBox,
   getUnspentLikeBoxes,
   consumeBox,
-  getKarmaBoxes,
 } from '../store/index.js';
 import { mintKarma } from './karma.js';
-import type { BlockJournal } from '@dagsocial/types';
 
 /**
  * Deterministic UTXO settlement for a pruned subtree.
@@ -18,14 +16,11 @@ import type { BlockJournal } from '@dagsocial/types';
  *   same set of consumed/created boxes every time.
  * - No DAG walk: uses only the postId list (already verified against
  *   block_topology by the caller).
- * - Journal records all consumed and created box IDs for AVL state root
- *   computation and fork-resolution rollback.
+ * - Every box mutation — the settlement consumes and the merge-consumes
+ *   and inserts inside mintKarma — is recorded by the store choke point
+ *   while the caller's block journal is open.
  */
-export function settlePruneUtxo(
-  postIds: string[],
-  blockHeight: number,
-  journal: BlockJournal,
-): void {
+export function settlePruneUtxo(postIds: string[], blockHeight: number): void {
   const authorRefunds = new Map<string, bigint>();
   const likerRefunds = new Map<string, bigint>();
 
@@ -36,7 +31,6 @@ export function settlePruneUtxo(
       const key = Buffer.from(lockBox.owner).toString('hex');
       authorRefunds.set(key, (authorRefunds.get(key) ?? 0n) + lockBox.value);
       consumeBox(lockBox.id!, blockHeight);
-      journal.consumedBoxIds.push(lockBox.id!);
     }
 
     // Consume unspent LikeBoxes (likers' locked karma)
@@ -46,7 +40,6 @@ export function settlePruneUtxo(
         const key = Buffer.from(likeBox.likerId).toString('hex');
         likerRefunds.set(key, (likerRefunds.get(key) ?? 0n) + likeBox.value);
         consumeBox(likeBox.id!, blockHeight);
-        journal.consumedBoxIds.push(likeBox.id!);
       }
     }
   }
@@ -54,22 +47,12 @@ export function settlePruneUtxo(
   // Mint refund karma for authors
   for (const [hexUserId, amount] of authorRefunds) {
     const userId = new Uint8Array(Buffer.from(hexUserId, 'hex'));
-    const existingKarma = getKarmaBoxes(userId);
-    for (const kb of existingKarma) {
-      if (kb.id) journal.consumedBoxIds.push(kb.id);
-    }
-    const newBoxId = mintKarma(userId, amount, blockHeight);
-    if (newBoxId) journal.createdBoxIds.push(newBoxId);
+    mintKarma(userId, amount, blockHeight);
   }
 
   // Mint refund karma for likers
   for (const [hexUserId, amount] of likerRefunds) {
     const userId = new Uint8Array(Buffer.from(hexUserId, 'hex'));
-    const existingKarma = getKarmaBoxes(userId);
-    for (const kb of existingKarma) {
-      if (kb.id) journal.consumedBoxIds.push(kb.id);
-    }
-    const newBoxId = mintKarma(userId, amount, blockHeight);
-    if (newBoxId) journal.createdBoxIds.push(newBoxId);
+    mintKarma(userId, amount, blockHeight);
   }
 }

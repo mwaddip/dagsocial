@@ -21,7 +21,6 @@ import { getSystemKeypair } from '../store/system.js';
 import {
   getKarmaBox,
   getKarmaBoxes,
-  getCreditBoxes,
   getPost,
   insertStump,
   insertPostPlaceholder,
@@ -43,7 +42,15 @@ import {
   getTopologyAuthor,
 } from '../store/index.js';
 import { getDb } from '../store/db.js';
-import { insertBlockJournal, purgeOldJournals } from '../store/journal.js';
+import {
+  beginBlockJournal,
+  finishBlockJournal,
+  abortBlockJournal,
+  recordConfirmedSubBlocks,
+  recordAppliedUtxoTx,
+  insertBlockJournal,
+  purgeOldJournals,
+} from '../store/journal.js';
 import { tryGetAvlProver, applyBlockMutations, checkpointProver } from '../state/avl-prover.js';
 import {
   encodeTx,
@@ -56,13 +63,7 @@ import {
   buildMerkleRoot,
   hexToBuf,
 } from '@dagsocial/types';
-import type { AnyBox, BlockJournal, OrderingBlock, UtxoTransaction } from '@dagsocial/types';
-
-let currentJournal: BlockJournal | null = null;
-
-export function getCurrentJournal(): BlockJournal | null {
-  return currentJournal;
-}
+import type { AnyBox, OrderingBlock, UtxoTransaction } from '@dagsocial/types';
 
 function processVouchCooldowns(currentHeight: number): void {
   const matured = getMaturedVouchCooldowns(currentHeight);
@@ -114,22 +115,39 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
     console.warn(`Rejected block: invalid structure: ${structure.error}`);
     return false;
   }
+  // SQLite rollback does not reach the AVL prover's in-memory state, so the
+  // funnel snapshots the digest before the transaction and restores it on
+  // every rejection path — explicit rejection (including the stateRoot
+  // mismatch, whose §13-local rollback this replaces) and the totality catch.
+  const avlHandle = tryGetAvlProver();
+  const preDigest = avlHandle ? avlHandle.prover.digest() : null;
+  const restoreProver = (): void => {
+    if (!avlHandle || !preDigest) return;
+    const current = avlHandle.prover.digest();
+    if (current && Buffer.from(current).equals(Buffer.from(preDigest))) return;
+    avlHandle.prover.rollback(preDigest);
+  };
   try {
     return getDb().transaction(() => {
       if (!applyBlockBody(block, dagService)) throw new BlockRejected();
       return true;
     })();
   } catch (err) {
-    if (err instanceof BlockRejected) return false;
+    if (err instanceof BlockRejected) {
+      restoreProver();
+      return false;
+    }
     // better-sqlite3 has already rolled the transaction back by the time the
     // throw surfaces here (it issues ROLLBACK, or ROLLBACK TO for the nested
     // reorg savepoint, before re-throwing), so the node is on its pre-block
-    // state. What is left is to drop the half-built journal and answer the
-    // caller the same way an explicit rejection does.
+    // state. What is left is to drop the half-built journal (a no-op if the
+    // body already finished it), restore the prover, and answer the caller
+    // the same way an explicit rejection does.
     console.error(
       `Rejected block height=${block.header.height}: unexpected failure during apply: ${String(err)}`,
     );
-    currentJournal = null;
+    abortBlockJournal();
+    restoreProver();
     return false;
   }
 }
@@ -137,47 +155,41 @@ export function applyOrderingBlock(block: OrderingBlock, dagService?: DagService
 function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean {
   const currentHeight = getCurrentHeight();
 
-  // Initialize journal
-  currentJournal = {
-    blockHeight: block.header.height,
-    creditBoxIds: [],
-    confirmedSubBlockIds: [...block.subBlockTree.subBlockRefs],
-    talliedLikeBoxIds: [...block.utxoTxTree.likeBoxIds],
-    karmaMints: [],
-    appliedUtxoTxs: [],
-    decayBurns: [],
-    consumedBoxIds: [],
-    createdBoxIds: [],
-  };
+  // Open the record-once journal: from here on the store mutation primitives
+  // record automatically, and every rejection path below aborts it.
+  beginBlockJournal(block.header.height);
+  // All refs, independent of per-post confirm outcomes — same semantics as
+  // the confirm loop in §7, which tolerates per-post failures.
+  recordConfirmedSubBlocks([...block.subBlockTree.subBlockRefs]);
 
   // 1. Chain-link check
   if (currentHeight === 0) {
     // Genesis: prevBlockHash must be all zeros
     if (block.header.prevBlockHash !== '0000000000000000000000000000000000000000000000000000000000000000') {
       console.warn(`Rejected block height=${block.header.height}: genesis prevBlockHash mismatch`);
-      currentJournal = null;
+      abortBlockJournal();
       return false;
     }
     if (block.header.height !== 1) {
       console.warn(`Rejected block: first block must have height=1, got ${block.header.height}`);
-      currentJournal = null;
+      abortBlockJournal();
       return false;
     }
   } else {
     const prevBlock = getOrderingBlock(currentHeight);
     if (!prevBlock) {
       console.warn(`Rejected block height=${block.header.height}: cannot find previous block at height=${currentHeight}`);
-      currentJournal = null;
+      abortBlockJournal();
       return false;
     }
     if (block.header.prevBlockHash !== validation.blockHash(prevBlock.header)) {
       console.warn(`Rejected block height=${block.header.height}: prevBlockHash mismatch`);
-      currentJournal = null;
+      abortBlockJournal();
       return false;
     }
     if (block.header.height !== currentHeight + 1) {
       console.warn(`Rejected block height=${block.header.height}: expected ${currentHeight + 1}`);
-      currentJournal = null;
+      abortBlockJournal();
       return false;
     }
   }
@@ -185,7 +197,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
   // 2. Protocol version
   if (block.header.protocolVersion !== PROTOCOL_VERSION) {
     console.warn(`Rejected block height=${block.header.height}: unsupported protocol version ${block.header.protocolVersion}`);
-    currentJournal = null;
+    abortBlockJournal();
     return false;
   }
 
@@ -204,12 +216,12 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
       `Rejected block height=${block.header.height}: powTargetBits ` +
       `${block.header.powTargetBits} != scheduled ${scheduledTarget}`,
     );
-    currentJournal = null;
+    abortBlockJournal();
     return false;
   }
   if (!validation.verifyOrderingBlockPoW(block.header)) {
     console.warn(`Rejected block height=${block.header.height}: PoW invalid`);
-    currentJournal = null;
+    abortBlockJournal();
     return false;
   }
 
@@ -220,7 +232,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
   // funnel every apply path (gossip, sync, reorg) passes through — so no path skips it.
   if (!validation.verifyValidatorSignature(block.header, block.validatorSignature)) {
     console.warn(`Rejected block height=${block.header.height}: validator signature invalid`);
-    currentJournal = null;
+    abortBlockJournal();
     return false;
   }
 
@@ -229,12 +241,12 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
   const computedUtxoRoot = computeUtxoTxRoot(block.utxoTxTree);
   if (computedSubRoot !== block.header.subBlockRoot) {
     console.warn(`Rejected block height=${block.header.height}: subBlockRoot mismatch`);
-    currentJournal = null;
+    abortBlockJournal();
     return false;
   }
   if (computedUtxoRoot !== block.header.utxoTxRoot) {
     console.warn(`Rejected block height=${block.header.height}: utxoTxRoot mismatch`);
-    currentJournal = null;
+    abortBlockJournal();
     return false;
   }
 
@@ -245,7 +257,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
     console.warn(
       `Rejected block height=${block.header.height}: coinbase value ${totalCoinbase} != expected ${expectedReward}`,
     );
-    currentJournal = null;
+    abortBlockJournal();
     return false;
   }
 
@@ -265,7 +277,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
         `Rejected block height=${block.header.height}: coinbase lockedUntilBlock ` +
         `${out.lockedUntilBlock} != expected ${expectedLock}`,
       );
-      currentJournal = null;
+      abortBlockJournal();
       return false;
     }
   }
@@ -287,7 +299,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
       console.warn(
         `Rejected block height=${block.header.height}: epoch tally mismatch`,
       );
-      currentJournal = null;
+      abortBlockJournal();
       return false;
     }
   }
@@ -298,18 +310,10 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
   // 6. Clear the local mining template (this height is taken)
   clearTemplate();
 
-  // 7. Apply coinbase — mint credits for each output
+  // 7. Apply coinbase — mint credits for each output. The store choke point
+  // journals both the pre-existing boxes the mint merges in and the new box.
   for (const out of block.utxoTxTree.coinbaseOutputs) {
-    // Track existing credit boxes that will be consumed by mintCredits
-    const existingCredits = getCreditBoxes(out.owner);
-    for (const cb of existingCredits) {
-      if (cb.id) currentJournal.consumedBoxIds.push(cb.id);
-    }
-    const boxId = mintCredits(out.owner, out.value, block.header.height, out.lockedUntilBlock);
-    if (boxId) {
-      currentJournal.creditBoxIds.push(boxId);
-      currentJournal.createdBoxIds.push(boxId);
-    }
+    mintCredits(out.owner, out.value, block.header.height, out.lockedUntilBlock);
   }
 
   // 7. Confirm sub-blocks — create placeholders if post doesn't exist
@@ -337,7 +341,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
           `Rejected block height=${block.header.height}: subBlockEntry author ` +
           `mismatch for ${subBlockId}`,
         );
-        currentJournal = null;
+        abortBlockJournal();
         return false;
       }
       const realParents = localPost.parentRefs;
@@ -350,7 +354,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
           `Rejected block height=${block.header.height}: subBlockEntry parentRefs ` +
           `mismatch for ${subBlockId}`,
         );
-        currentJournal = null;
+        abortBlockJournal();
         return false;
       }
     }
@@ -443,7 +447,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
         `Block ${block.header.height}: prune authorId does not match the ` +
         `recorded author of ${entry.rootPostHash}`,
       );
-      currentJournal = null;
+      abortBlockJournal();
       return false;
     }
 
@@ -468,7 +472,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
     const sigBytes = Buffer.from(entry.authorSignature);
     if (!verify(null, payload, keyObject, sigBytes)) {
       console.error(`Block ${block.header.height}: invalid prune signature for ${entry.rootPostHash}`);
-      currentJournal = null;
+      abortBlockJournal();
       return false;
     }
 
@@ -478,7 +482,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
     if (topologyIds.size !== entryIds.size ||
         ![...topologyIds].every(id => entryIds.has(id))) {
       console.error(`Block ${block.header.height}: prune postId set mismatch for ${entry.rootPostHash}`);
-      currentJournal = null;
+      abortBlockJournal();
       return false;
     }
 
@@ -490,16 +494,16 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
     const entryRoot = Buffer.from(entry.subtreeMerkleRoot).toString('hex');
     if (computedRoot !== entryRoot) {
       console.error(`Block ${block.header.height}: prune Merkle root mismatch for ${entry.rootPostHash}`);
-      currentJournal = null;
+      abortBlockJournal();
       return false;
     }
 
     // 5. Settle UTXO — deterministic from post IDs
     try {
-      settlePruneUtxo(entry.subtreePostIds, block.header.height, currentJournal);
+      settlePruneUtxo(entry.subtreePostIds, block.header.height);
     } catch (err) {
       console.error(`Block ${block.header.height}: prune settlement failed for ${entry.rootPostHash}: ${String(err)}`);
-      currentJournal = null;
+      abortBlockJournal();
       return false;
     }
 
@@ -535,17 +539,12 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
       const reward = rewards[postId];
       if (!reward) continue;
 
-      // Author reward
+      // Author reward — the choke point journals the merge-consumed
+      // pre-existing karma boxes and the minted box.
       if (reward.authorReward > 0n) {
         const post = getPost(postId);
         if (post && 'author' in post) {
-          const existingKarma = getKarmaBoxes(post.author);
-          for (const kb of existingKarma) {
-            if (kb.id) currentJournal.consumedBoxIds.push(kb.id);
-          }
-          const boxId = mintKarma(post.author, reward.authorReward, block.header.height);
-          if (boxId) currentJournal.createdBoxIds.push(boxId);
-          currentJournal.karmaMints.push({ userId: post.author, amount: reward.authorReward, boxId });
+          mintKarma(post.author, reward.authorReward, block.header.height);
         }
       }
 
@@ -554,13 +553,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
         const refund = reward.likerRefunds[likerId];
         if (refund !== undefined && refund !== 0n) {
           const likerBytes = new Uint8Array(Buffer.from(likerId, "hex"));
-          const existingKarma = getKarmaBoxes(likerBytes);
-          for (const kb of existingKarma) {
-            if (kb.id) currentJournal.consumedBoxIds.push(kb.id);
-          }
-          const boxId = mintKarma(likerBytes, refund, block.header.height);
-          if (boxId) currentJournal.createdBoxIds.push(boxId);
-          currentJournal.karmaMints.push({ userId: likerBytes, amount: refund, boxId });
+          mintKarma(likerBytes, refund, block.header.height);
         }
       }
 
@@ -568,13 +561,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
       if (reward.postLockKarmaUnlocked && reward.postLockKarmaUnlocked > 0n) {
         const post = getPost(postId);
         if (post && 'author' in post) {
-          const existingKarma = getKarmaBoxes(post.author);
-          for (const kb of existingKarma) {
-            if (kb.id) currentJournal.consumedBoxIds.push(kb.id);
-          }
-          const boxId = mintKarma(post.author, reward.postLockKarmaUnlocked, block.header.height);
-          if (boxId) currentJournal.createdBoxIds.push(boxId);
-          currentJournal.karmaMints.push({ userId: post.author, amount: reward.postLockKarmaUnlocked, boxId });
+          mintKarma(post.author, reward.postLockKarmaUnlocked, block.header.height);
         }
       }
     }
@@ -595,11 +582,9 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
     // Consume old post lock boxes and insert replacement boxes
     for (const boxId of tally.consumedPostLockBoxIds) {
       consumeBox(boxId, block.header.height);
-      currentJournal.consumedBoxIds.push(boxId);
     }
     for (const newBox of tally.newPostLockBoxes) {
       insertBox(newBox);
-      if (newBox.id) currentJournal.createdBoxIds.push(newBox.id);
     }
   }
 
@@ -706,7 +691,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
           `Rejected block height=${block.header.height}: embedded UTXO tx ` +
           `${item.txId} failed re-validation: ${revalidated.error}`,
         );
-        currentJournal = null;
+        abortBlockJournal();
         return false;
       }
 
@@ -716,19 +701,14 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
         if (inputBox && inputBox.boxType === 'vouch') {
           const vb = inputBox as import('@dagsocial/types').VouchBox;
           if (item.tx.outputs.length === 0) {
+            // The store hook records the insertion side-record (including any
+            // replaced escrow row) — a second push here would double-record.
             insertVouchCooldown(
               vb.voucherId,
               vb.targetId,
               block.header.height + VOUCH_COOLDOWN_BLOCKS,
               VOUCH_KARMA_AMOUNT,
             );
-            if (!currentJournal.vouchCooldownInsertions) {
-              currentJournal.vouchCooldownInsertions = [];
-            }
-            currentJournal.vouchCooldownInsertions.push({
-              voucherId: vb.voucherId,
-              targetId: vb.targetId,
-            });
           }
           break;
         }
@@ -745,16 +725,9 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
       });
       if (mempoolEntry) removeEntry(mempoolEntry.rowid);
 
-      // Record in journal
-      const appliedTx = {
-        txId: item.txId,
-        txCbor: encodeTx(item.tx),
-        inputBoxIds: item.tx.inputs,
-        outputBoxIds: item.outputs.map((o) => o.id!),
-      };
-      currentJournal.appliedUtxoTxs.push(appliedTx);
-      currentJournal.consumedBoxIds.push(...appliedTx.inputBoxIds);
-      currentJournal.createdBoxIds.push(...appliedTx.outputBoxIds);
+      // Box mutations are journaled by the store choke point; the tx itself
+      // is kept for mempool re-insertion on reorg.
+      recordAppliedUtxoTx(item.txId, encodeTx(item.tx));
     }
 
     if (applied === 0) {
@@ -794,47 +767,59 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
       return rows.map((r) => new Uint8Array(r.owner));
     },
   };
-  const journalEntries = applyKarmaDecay(decayDeps, block.header.height, {
+  // Its box mutations flow through the deps' store consumeBox/insertBox and
+  // are journaled at the choke point; the per-owner return value is unused
+  // here (the decay service keeps it for its own tests).
+  applyKarmaDecay(decayDeps, block.header.height, {
     staleThresholdBlocks: config.karmaStaleThresholdBlocks,
     decayIntervalBlocks: config.karmaDecayIntervalBlocks,
     decayAmount: config.karmaDecayAmount,
     karmaMinimum: config.karmaMinimum,
   });
-  currentJournal.decayBurns.push(...journalEntries);
-
-  // Track decay mutations
-  for (const burn of currentJournal.decayBurns) {
-    currentJournal.consumedBoxIds.push(...burn.consumedBoxIds);
-    currentJournal.createdBoxIds.push(burn.newBoxId);
-  }
 
   // 12b. Process vouch cooldowns
   processVouchCooldowns(block.header.height);
 
   // 13. AVL state root update (skipped if prover not initialized)
+  //
+  // Nothing mutates boxes past §12b, so the journal is complete: close it and
+  // derive the prover feed from its mutation log. An insert later followed by
+  // a remove for the same boxId is a box that never existed outside this
+  // block — the pair nets out (drop both); survivors keep first-occurrence
+  // order. Created-box bytes come from the journal's recorded payload, never
+  // a store re-fetch: getBox returns null for a created-then-consumed box and
+  // used to silently drop it. (Canonical boxId ordering is Spec B P2.)
+  const journal = finishBlockJournal();
   const handle = tryGetAvlProver();
   if (handle) {
-    // Snapshot pre-mutation digest for rollback on verification failure
-    const preMutationDigest = handle.prover.digest();
-
-    // Collect all consumed box IDs (deduplicated)
-    const allConsumed = new Set(currentJournal.consumedBoxIds);
-
-    // Collect all created boxes by fetching from store
-    const allCreated: AnyBox[] = [];
-    for (const boxId of currentJournal.createdBoxIds) {
-      const box = getBox(boxId);
-      if (box) allCreated.push(box);
+    const cancelled = new Set<number>();
+    const pendingInsertIndex = new Map<string, number>();
+    for (let i = 0; i < journal.mutations.length; i++) {
+      const m = journal.mutations[i]!;
+      if (m.op === 'insert') {
+        pendingInsertIndex.set(m.boxId, i);
+      } else {
+        const insertIdx = pendingInsertIndex.get(m.boxId);
+        if (insertIdx !== undefined) {
+          cancelled.add(insertIdx);
+          cancelled.add(i);
+          pendingInsertIndex.delete(m.boxId);
+        }
+      }
+    }
+    const consumed: string[] = [];
+    const created: AnyBox[] = [];
+    for (let i = 0; i < journal.mutations.length; i++) {
+      if (cancelled.has(i)) continue;
+      const m = journal.mutations[i]!;
+      if (m.op === 'remove') consumed.push(m.boxId);
+      else created.push(m.box!);
     }
 
-    // Apply to prover
-    const computedDigest = applyBlockMutations(
-      handle.prover,
-      [...allConsumed],
-      allCreated,
-    );
+    const computedDigest = applyBlockMutations(handle.prover, consumed, created);
 
-    // Verify against block header (gated)
+    // Verify against block header (gated). The prover is restored by the
+    // funnel's single rollback point, not here.
     if (config.verifyStateRoot) {
       const expectedHex = Buffer.from(computedDigest).toString('hex');
       if (block.header.stateRoot !== expectedHex) {
@@ -843,11 +828,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
           `computed=${expectedHex.slice(0, 16)}... ` +
           `header=${block.header.stateRoot.slice(0, 16)}...`,
         );
-        // Roll back prover to pre-mutation state
-        if (preMutationDigest) {
-          handle.prover.rollback(preMutationDigest);
-        }
-        currentJournal = null;
+        abortBlockJournal();
         return false;
       }
     }
@@ -857,9 +838,8 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
   }
 
   // 14. Persist journal and purge old ones
-  insertBlockJournal(currentJournal);
+  insertBlockJournal(journal);
   purgeOldJournals(block.header.height - 20);
-  currentJournal = null;
 
   console.log(`Applied ordering block height=${block.header.height} hash=${validation.blockHash(block.header)} (${block.subBlockTree.subBlockRefs.length} sub-blocks)`);
   return true;

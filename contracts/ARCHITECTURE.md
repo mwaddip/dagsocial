@@ -288,6 +288,19 @@ existence or absence without storing the full UTXO set.
   the same height produces the identical stateRoot. Box `value` serializes as a
   `bigint` (CBOR uint64), so the AVL leaf bytes — hence the stateRoot — are
   stable across implementations (the demo UI mirrors the encoding)
+- **Journal-fed:** The per-block mutation set fed to the prover is derived from
+  the block journal (see Invariants → Block application journal), with
+  intra-block insert+remove pairs for the same boxId netted out
+  deterministically. Inserted box bytes come from the journal's recorded box,
+  never a store re-fetch. Canonical boxId ordering of the net set is Spec B P2
+  (M-12)
+- **Rejection-safe:** A rejected block leaves the prover at its pre-block
+  digest, whatever stage the rejection happened at — the apply funnel
+  snapshots the digest before any mutation and restores it on every rejection
+  path, including the totality catch. A failed reorg likewise leaves the
+  prover at its pre-reorg digest (SQLite rollback restores the storage rows
+  but cannot reach the prover's in-memory state — the reorg restores it
+  explicitly)
 
 ### 3. Stumps (Binding Layer)
 
@@ -804,6 +817,32 @@ forever. A node rejects objects with an unsupported protocol version.
   non-deterministic across platforms and credit sums exceed 2⁵³ (Spec B P0)
 - A box can only be consumed if its guard script evaluates to true
 - Karma decay applied periodically at block application time (not at spend time)
+
+### Block application journal (Spec B P1)
+
+- **One record-once mutation log.** Block application maintains a single
+  ordered journal of primitive box mutations —
+  `{ op: 'insert' | 'remove', boxId, box? }` — recorded automatically at the
+  store choke point (`insertBox`, `consumeBox`, `markLikeBoxesTallied`) while
+  a block journal is open. Call sites never maintain parallel mutation
+  bookkeeping; every box mutation a block makes appears in the log exactly
+  once, in application order.
+- **Accounting-agnostic.** The log carries no per-mutation-class fields.
+  Future mutation classes (invite/post bonds, one-way like accounting,
+  storage rent, coinbase splits) journal through the same log unchanged.
+- **Rollback replays inverses.** Reverting a block walks the log in reverse:
+  `insert` → delete the box, `remove` → un-spend it. Non-box side effects
+  (post confirmations, free-like processed flags, vouch-cooldown rows,
+  mempool re-insertion payloads) travel as typed side-records, each with an
+  exact inverse. Apply-then-revert restores the identical UTXO set and AVL
+  digest for every mutation class.
+- **Sole replay basis.** UTXO boxes + the journal are a complete replay
+  source. No mutation or rollback may read pruned DAG content.
+- **AVL feed derives from the journal.** The prover's per-block mutation set
+  is computed from the journal — never from hand-maintained consumed/created
+  lists (the drift source behind audit C-5/H-5/H-7).
+- **Prover restored on rejection.** A rejected block leaves the AVL prover at
+  its pre-block digest regardless of which stage rejected it.
 
 ### Sub-blocks and ordering
 

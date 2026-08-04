@@ -7,20 +7,11 @@ import {
   vi,
 } from 'vitest';
 import {
-  generateKeyPairSync,
-  createHash,
-  sign as cryptoSign,
-  type KeyObject,
-} from 'crypto';
-import {
   computeBoxId,
   computePostId,
   encodePost,
   encodeOrderingBlock,
   decodeOrderingBlock,
-  leafHash,
-  buildMerkleRoot,
-  hexToBuf,
   PROTOCOL_VERSION,
   LIKE_COST,
   LIKE_THRESHOLD,
@@ -33,18 +24,32 @@ import type {
   Post,
   LikeBox,
   KarmaBox,
+  PostLockBox,
   BlockHeader,
   OrderingBlock,
   SubBlockEntry,
   PruneEntry,
   UtxoTransaction,
-  BlockJournal,
-  DecayJournalEntry,
   EpochTally,
   LikeReward,
 } from '@dagsocial/types';
+import type { BlockJournal } from '../../src/store/journal.js';
+import type { DecayJournalEntry } from '../../src/services/decay.js';
 import type Database from 'better-sqlite3';
-import { signTransaction } from '../helpers.js';
+import {
+  signTransaction,
+  makeTestIdentity,
+  makePost,
+  makeLikeBox,
+  makeKarmaBox,
+  makeLikeTx,
+  changeBoxOf,
+  solveHeaderPow,
+  signHeader,
+  makeApplicableBlock,
+  makePruneEntry,
+  hex,
+} from '../helpers.js';
 
 // ---------------------------------------------------------------------------
 // Test config (small epoch for boundary testing)
@@ -161,7 +166,6 @@ async function importBlockApply() {
     '../../src/services/block-apply.js'
   )) as unknown as {
     applyOrderingBlock: (block: OrderingBlock) => boolean;
-    getCurrentJournal: () => BlockJournal | null;
   };
 }
 
@@ -170,7 +174,18 @@ async function importJournalStore() {
     getBlockJournal: (height: number) => BlockJournal | null;
     insertBlockJournal: (journal: BlockJournal) => void;
     deleteBlockJournal: (height: number) => void;
+    isBlockJournalOpen: () => boolean;
   };
+}
+
+/** boxIds of 'remove' mutations, in application order. */
+function removedIds(journal: BlockJournal): string[] {
+  return journal.mutations.filter((m) => m.op === 'remove').map((m) => m.boxId);
+}
+
+/** boxIds of 'insert' mutations, in application order. */
+function insertedIds(journal: BlockJournal): string[] {
+  return journal.mutations.filter((m) => m.op === 'insert').map((m) => m.boxId);
 }
 
 async function importOrdering() {
@@ -181,246 +196,11 @@ async function importOrdering() {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Ed25519 helpers
-// ---------------------------------------------------------------------------
-
-function rawPublicKey(keyObj: KeyObject): Uint8Array {
-  const der = keyObj.export({ type: 'spki', format: 'der' }) as Buffer;
-  return new Uint8Array(der.subarray(der.length - 32));
-}
-
-// ---------------------------------------------------------------------------
-// Test data helpers
-// ---------------------------------------------------------------------------
-
-interface TestIdentity {
-  userId: Uint8Array;
-  publicKey: Uint8Array;
-  privateKey: KeyObject;
-}
-
-function makeTestIdentity(): TestIdentity {
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const pubKey = rawPublicKey(publicKey);
-  const userId = pubKey;
-  return { userId, publicKey: pubKey, privateKey };
-}
-
-function makePost(authorId: Uint8Array, content = 'test post'): Post {
-  return {
-    content,
-    author: authorId,
-    parentRefs: [],
-    challenge: new Uint8Array(32),
-    powNonce: 0,
-    protocolVersion: PROTOCOL_VERSION,
-    timestamp: Date.now(),
-    signature: new Uint8Array(64),
-  };
-}
-
-function makeLikeBox(
-  likerId: Uint8Array,
-  targetPostId: string,
-  createdAtBlock: number,
-): LikeBox {
-  const box: LikeBox = {
-    boxType: 'like',
-    value: 2n,
-    createdAtBlock,
-    likerId,
-    targetPostId,
-    guard: 'epoch_tally',
-  };
-  const id = computeBoxId(box);
-  box.id = id;
-  return box;
-}
-
-function makeKarmaBox(
-  value: bigint,
-  owner: Uint8Array,
-  createdAtBlock: number,
-): KarmaBox {
-  const box: KarmaBox = {
-    boxType: 'karma',
-    value,
-    createdAtBlock,
-    owner,
-    guard: 'owner_signature',
-    proofSource: 'genesis',
-    lastTouchBlock: createdAtBlock,
-  };
-  const id = computeBoxId(box);
-  box.id = id;
-  return box;
-}
-
-/**
- * Build a signed, value-conserving like transaction — the shape a real client
- * submits: the liker's karma box is consumed and split into a karma change box
- * and the LikeBox.
- *
- * Block application re-validates every embedded tx in full, so a fixture that
- * omitted the signature or the change output would be indistinguishable from a
- * forgery and would take the whole block down with it.
- */
-function makeLikeTx(
-  liker: TestIdentity,
-  karmaBox: KarmaBox,
-  targetPostId: string,
-): UtxoTransaction {
-  const tx: UtxoTransaction = {
-    inputs: [karmaBox.id!],
-    outputs: [
-      {
-        boxType: 'karma',
-        value: karmaBox.value - LIKE_COST,
-        createdAtBlock: 0,
-        owner: liker.userId,
-        guard: 'owner_signature',
-        proofSource: 'like_op',
-        lastTouchBlock: 0,
-      } as KarmaBox,
-      {
-        boxType: 'like',
-        value: LIKE_COST,
-        createdAtBlock: 0,
-        likerId: liker.userId,
-        targetPostId,
-        guard: 'epoch_tally',
-      } as LikeBox,
-    ],
-    signatures: {},
-    protocolVersion: PROTOCOL_VERSION,
-  };
-  signTransaction(tx, liker.privateKey, Buffer.from(liker.userId).toString('hex'));
-  return tx;
-}
-
-/** The karma change box a `makeLikeTx` output creates, with its stored id. */
-function changeBoxOf(tx: UtxoTransaction): KarmaBox {
-  const change = tx.outputs[0] as KarmaBox;
-  return { ...change, id: computeBoxId(change) };
-}
-
-const ZERO_HASH = '0'.repeat(64);
-
-/**
- * The first nonce that satisfies the header's declared target, found with the
- * production verifier.
- *
- * Hand-built blocks have to carry a real solution now that `powTargetBits` must
- * equal the height schedule: declaring target 0 to sail past PoW — how these
- * tests used to reach the checks behind it — is itself a rejected block.
- */
-function solveHeaderPow(header: BlockHeader): number {
-  for (let nonce = 0; ; nonce++) {
-    if (verifyOrderingBlockPoW({ ...header, powNonce: nonce })) return nonce;
-  }
-}
-
 /** The first nonce that does NOT satisfy the header's declared target. */
 function unsolvedHeaderPow(header: BlockHeader): number {
   for (let nonce = 0; ; nonce++) {
     if (!verifyOrderingBlockPoW({ ...header, powNonce: nonce })) return nonce;
   }
-}
-
-/**
- * The validator signature a block creator produces: raw Ed25519 over the 32
- * bytes of `blockHash(header)` (block-creator.ts:238, :556).
- *
- * Hand-built blocks have to carry a real signature now that apply verifies it
- * (H-1) — an all-zero placeholder is rejected before any check behind it, which
- * would make every post-signature rejection test assert its own reason
- * vacuously. Call this only once `powNonce` is final: the nonce is a header
- * field, so it is inside the hash being signed.
- */
-function signHeader(header: BlockHeader, privateKey: KeyObject): Uint8Array {
-  return new Uint8Array(cryptoSign(null, Buffer.from(blockHash(header), 'hex'), privateKey));
-}
-
-/**
- * A hand-built block that passes every apply check: chain-linked at genesis,
- * correct Merkle roots, coinbase paying exactly the scheduled emission with the
- * scheduled maturity lock, a real PoW solution at the scheduled target, and a
- * real validator signature from the key its header names.
- *
- * Each override deviates in exactly one respect, so what a test measures is
- * that deviation and nothing else.
- */
-async function makeApplicableBlock(
-  opts: {
-    powTargetBits?: number;
-    lockedUntilBlock?: number;
-    /** Sign with this key instead of the miner's — a block whose signature does
-     *  not come from the key its `validatorId` names (H-1 forged authorship). */
-    signWith?: KeyObject;
-    /** Height to build at; anything above 1 chain-links to the stored block below. */
-    height?: number;
-    /** Sub-block entries this block confirms (topology + authorship). */
-    subBlockEntries?: SubBlockEntry[];
-    /** Prune entries this block settles. */
-    pruneEntries?: PruneEntry[];
-  } = {},
-): Promise<OrderingBlock> {
-  const { computeSubBlockRoot, computeUtxoTxRoot, computeBlockReward } = await import(
-    '../../src/services/block-creator.js'
-  );
-  const { expectedTarget } = await import('../../src/services/difficulty.js');
-
-  const height = opts.height ?? 1;
-  let prevBlockHash = ZERO_HASH;
-  if (height > 1) {
-    const { getOrderingBlock } = await import('../../src/store/ordering.js');
-    const prev = getOrderingBlock(height - 1) as OrderingBlock | null;
-    if (!prev) throw new Error(`makeApplicableBlock: no stored block at height ${height - 1}`);
-    prevBlockHash = blockHash(prev.header);
-  }
-  const miner = makeTestIdentity();
-  const subBlockEntries = opts.subBlockEntries ?? [];
-  const subBlockTree = {
-    subBlockRefs: subBlockEntries.map((e) => e.postId),
-    subBlockEntries,
-    pruneEntries: opts.pruneEntries ?? [],
-  };
-  const utxoTxTree = {
-    utxoTxIds: [],
-    utxoTxs: [],
-    likeBoxIds: [],
-    coinbaseOutputs: [
-      {
-        owner: miner.userId,
-        value: computeBlockReward(height),
-        lockedUntilBlock:
-          opts.lockedUntilBlock ?? height + CREDIT_MINER_REWARD_DELAY,
-        isTreasury: false,
-      },
-    ],
-  };
-
-  const header = {
-    protocolVersion: PROTOCOL_VERSION,
-    height,
-    prevBlockHash,
-    subBlockRoot: computeSubBlockRoot(subBlockTree),
-    utxoTxRoot: computeUtxoTxRoot(utxoTxTree),
-    stateRoot: ZERO_HASH,
-    validatorId: miner.userId,
-    powNonce: 0,
-    powTargetBits: opts.powTargetBits ?? expectedTarget(height),
-    createdAt: Date.now(),
-  } as BlockHeader;
-  header.powNonce = solveHeaderPow(header);
-
-  return {
-    header,
-    subBlockTree,
-    utxoTxTree,
-    validatorSignature: signHeader(header, opts.signWith ?? miner.privateKey),
-  } as unknown as OrderingBlock;
 }
 
 // ---------------------------------------------------------------------------
@@ -443,10 +223,10 @@ describe('block-apply journal recording', () => {
   });
 
   // -----------------------------------------------------------------------
-  // 1. Coinbase mint records creditBoxIds in journal
+  // 1. Coinbase mint records credit box inserts in journal
   // -----------------------------------------------------------------------
 
-  it('coinbase mint records creditBoxIds in journal', async () => {
+  it('coinbase mint records credit box inserts in journal', async () => {
     const db = await importDb();
     db.initDb(':memory:');
 
@@ -462,12 +242,14 @@ describe('block-apply journal recording', () => {
     const saved = journal.getBlockJournal(1);
     expect(saved).not.toBeNull();
     expect(saved!.blockHeight).toBe(1);
-    expect(saved!.creditBoxIds.length).toBeGreaterThan(0);
 
-    // Each coinbase output should produce one credit box ID
-    expect(saved!.creditBoxIds.length).toBe(
-      block!.utxoTxTree.coinbaseOutputs.length,
+    // Genesis miner has no prior credits, so each coinbase output is exactly
+    // one credit insert, its box bytes carried in the journal payload
+    const creditInserts = saved!.mutations.filter(
+      (m) => m.op === 'insert' && m.box!.boxType === 'credit',
     );
+    expect(creditInserts.length).toBe(block!.utxoTxTree.coinbaseOutputs.length);
+    expect(saved!.mutations.length).toBe(creditInserts.length);
   });
 
   // -----------------------------------------------------------------------
@@ -506,10 +288,10 @@ describe('block-apply journal recording', () => {
   });
 
   // -----------------------------------------------------------------------
-  // 3. Like tally records talliedLikeBoxIds in journal
+  // 3. Epoch like tally records the spent like boxes as removes (H-5)
   // -----------------------------------------------------------------------
 
-  it('like tally records talliedLikeBoxIds in journal', async () => {
+  it('epoch like tally records tallied like boxes as removes (H-5)', async () => {
     const db = await importDb();
     db.initDb(':memory:');
 
@@ -518,9 +300,6 @@ describe('block-apply journal recording', () => {
 
     const { encodePost } = await import('@dagsocial/types');
     const utxo = await importUtxo();
-
-    // Give author karma
-    utxo.insertBox(makeKarmaBox(100n, author.publicKey, 0));
 
     // Create a post
     const post = makePost(author.userId, 'like journal test');
@@ -528,33 +307,53 @@ describe('block-apply journal recording', () => {
     const posts = await importPosts();
     posts.insertPost(post, encodePost(post));
 
-    // Create a standalone like box (not attached to sub-block)
-    const liker = makeTestIdentity();
-    utxo.insertBox(makeKarmaBox(10n, liker.publicKey, 0));
-    const likeBox = makeLikeBox(liker.userId, postId, 0);
-    utxo.insertBox(likeBox);
+    // Enough locked likes that the epoch tally spends them
+    // (talliedLockedLikeBoxIds requires ≥ 2×LIKE_THRESHOLD likes on the post)
+    const likeBoxes: LikeBox[] = [];
+    for (let i = 0; i < 2 * LIKE_THRESHOLD; i++) {
+      const liker = makeTestIdentity();
+      utxo.insertBox(makeKarmaBox(10n, liker.publicKey, 0));
+      const likeBox = makeLikeBox(liker.userId, postId, 0);
+      utxo.insertBox(likeBox);
+      likeBoxes.push(likeBox);
+    }
 
-    // Insert sub-block ID for the post
     const mempool = await importMempoolFresh();
-    mempool.insertSubBlock(postId, 1000);
-
     const bc = await importBlockCreator();
-    bc.startBlockCreator(testConfig);
+    bc.startBlockCreator(testConfig); // epochBlocks = 2
+
+    // Fast-forward 2 blocks; the block after height 2 carries the tally
+    for (let i = 0; i < 2; i++) {
+      const dp = makePost(author.userId, `ff ${i}`);
+      const dpId = computePostId(dp);
+      posts.insertPost(dp, encodePost(dp));
+      mempool.insertSubBlock(dpId, 1000);
+      bc.createOrderingBlock();
+    }
+    const dp = makePost(author.userId, 'epoch trigger');
+    const dpId = computePostId(dp);
+    posts.insertPost(dp, encodePost(dp));
+    mempool.insertSubBlock(dpId, 1000);
     bc.createOrderingBlock();
 
+    // The old journal copied the block header's likeBoxIds list; the actual
+    // spend performed by markLikeBoxesTallied was invisible to the AVL feed
+    // (H-5). The record-once journal carries each tallied box as a remove.
     const journal = await importJournalStore();
-    const saved = journal.getBlockJournal(1);
+    const saved = journal.getBlockJournal(3);
     expect(saved).not.toBeNull();
-    expect(saved!.talliedLikeBoxIds.length).toBeGreaterThan(0);
-    // The standalone like box should be tallied
-    expect(saved!.talliedLikeBoxIds).toContain(likeBox.id);
+    const removed = removedIds(saved!);
+    for (const likeBox of likeBoxes) {
+      expect(removed).toContain(likeBox.id);
+      expect(utxo.getBox(likeBox.id!)).toBeNull(); // really spent in the DB
+    }
   });
 
   // -----------------------------------------------------------------------
-  // 4. Epoch tally karma mints records karmaMints in journal
+  // 4. Epoch tally mint journals the merge-consumed originals + merged box
   // -----------------------------------------------------------------------
 
-  it('epoch tally records karmaMints in journal', async () => {
+  it('epoch tally mint journals the merge-consumed karma originals', async () => {
     const db = await importDb();
     db.initDb(':memory:');
 
@@ -564,8 +363,9 @@ describe('block-apply journal recording', () => {
     const { encodePost } = await import('@dagsocial/types');
     const utxo = await importUtxo();
 
-    // Give author some initial karma
-    utxo.insertBox(makeKarmaBox(100n, author.publicKey, 0));
+    // Give author some initial karma — the epoch mint will merge it in
+    const authorStartBox = makeKarmaBox(100n, author.publicKey, 0);
+    utxo.insertBox(authorStartBox);
 
     // Create target post
     const post = makePost(author.userId, 'epoch journal test');
@@ -602,18 +402,31 @@ describe('block-apply journal recording', () => {
 
     bc.createOrderingBlock();
 
-    // Verify journal at height 3 (epoch block)
+    // Verify journal at height 3 (epoch block). The mint consumed the
+    // author's pre-existing box and created one merged box — BOTH sides must
+    // be in the journal: the old shape recorded only the new box, so revert
+    // deleted it without un-consuming the originals (value-loss on reorg).
     const journal = await importJournalStore();
     const saved = journal.getBlockJournal(3);
     expect(saved).not.toBeNull();
-    expect(saved!.karmaMints.length).toBeGreaterThan(0);
 
-    // At least one author reward karma mint for the post
-    const authorMints = saved!.karmaMints.filter(
-      (m) => Buffer.from(m.userId).equals(Buffer.from(author.userId)),
+    expect(removedIds(saved!)).toContain(authorStartBox.id);
+
+    const authorInserts = saved!.mutations.filter(
+      (m) =>
+        m.op === 'insert' &&
+        m.box!.boxType === 'karma' &&
+        Buffer.from((m.box as KarmaBox).owner).equals(Buffer.from(author.userId)),
     );
-    expect(authorMints.length).toBeGreaterThan(0);
-    expect(authorMints.reduce((sum, m) => sum + m.amount, 0n)).toBeGreaterThan(0n);
+    expect(authorInserts.length).toBe(1);
+    // Merged value: the 100n original plus the epoch author reward
+    expect((authorInserts[0]!.box as KarmaBox).value).toBeGreaterThan(100n);
+
+    // The merged box is what the store now holds, at the journal's value
+    const held = utxo.getKarmaBox(author.userId);
+    expect(held).not.toBeNull();
+    expect(held!.id).toBe(authorInserts[0]!.boxId);
+    expect(held!.value).toBe((authorInserts[0]!.box as KarmaBox).value);
   });
 
   // -----------------------------------------------------------------------
@@ -665,11 +478,17 @@ describe('block-apply journal recording', () => {
     expect(saved).not.toBeNull();
     expect(saved!.appliedUtxoTxs.length).toBeGreaterThan(0);
 
+    // The applied-tx record carries what mempool re-insertion needs: the id
+    // and the CBOR, which round-trips to the same transaction
     const applied = saved!.appliedUtxoTxs[0]!;
     expect(applied.txId).toBe(computeTxId(likeTx));
-    expect(applied.inputBoxIds).toEqual(likeTx.inputs);
-    expect(applied.outputBoxIds.length).toBeGreaterThan(0);
     expect(applied.txCbor).toBeInstanceOf(Uint8Array);
+    expect(computeTxId(decodeTx(applied.txCbor))).toBe(applied.txId);
+
+    // The tx's box mutations live in the primitive log: input consumed,
+    // outputs (change karma + like box) created
+    expect(removedIds(saved!)).toContain(karmaBox.id);
+    expect(insertedIds(saved!)).toContain(changeBoxOf(likeTx).id);
   });
 
   // -----------------------------------------------------------------------
@@ -886,10 +705,10 @@ describe('block-apply journal recording', () => {
   });
 
   // -----------------------------------------------------------------------
-  // 10. Successful block clears journal module state after persistence
+  // 10. Successful block leaves no journal open after persistence
   // -----------------------------------------------------------------------
 
-  it('getCurrentJournal returns null after successful block application', async () => {
+  it('no block journal is left open after successful block application', async () => {
     const db = await importDb();
     db.initDb(':memory:');
 
@@ -897,9 +716,8 @@ describe('block-apply journal recording', () => {
     bc.startBlockCreator(testConfig);
     bc.createOrderingBlock();
 
-    const blockApply = await importBlockApply();
-    // Journal module state should be cleared after successful apply
-    expect(blockApply.getCurrentJournal()).toBeNull();
+    const journal = await importJournalStore();
+    expect(journal.isBlockJournalOpen()).toBe(false);
   });
 
   // -----------------------------------------------------------------------
@@ -919,9 +737,9 @@ describe('block-apply journal recording', () => {
     utxo.insertBox(oldBox);
 
     // Import decay module directly — applyOrderingBlock delegates to it,
-    // and we can't build 20,000+ blocks in a test. The journal entries
-    // returned by applyKarmaDecay are exactly what get pushed into
-    // currentJournal.decayBurns.
+    // and we can't build 20,000+ blocks in a test. Inside block application
+    // its box mutations are journaled at the store choke point; the return
+    // value asserted here is the service's own per-owner summary.
     const { applyKarmaDecay } = await import(
       '../../src/services/decay.js'
     );
@@ -970,6 +788,61 @@ describe('block-apply journal recording', () => {
     // New decay-burn box exists with reduced value
     expect(karmaBox!.boxType).toBe('karma');
     expect(karmaBox!.value).toBe(100n - expectedBurn);
+  });
+
+  // -----------------------------------------------------------------------
+  // 12. Vouch-cooldown mint journals karma mutations + escrow deletion (H-7)
+  // -----------------------------------------------------------------------
+
+  it('vouch-cooldown mint journals karma mutations and the deleted escrow row (H-7)', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    const utxo = await importUtxo();
+    const { insertVouchCooldown } = (await import(
+      '../../src/store/vouch-cooldowns.js'
+    )) as {
+      insertVouchCooldown: (
+        voucherId: Uint8Array,
+        targetId: Uint8Array,
+        releaseAtBlock: number,
+        karmaAmount: bigint,
+      ) => void;
+    };
+
+    // Pre-block state: voucher karma + a matured escrow row (release ≤ 1)
+    const voucher = makeTestIdentity();
+    const target = makeTestIdentity();
+    const oldKarma = makeKarmaBox(50n, voucher.userId, 0);
+    utxo.insertBox(oldKarma);
+    insertVouchCooldown(voucher.userId, target.userId, 1, 7n);
+
+    const bc = await importBlockCreator();
+    bc.startBlockCreator(testConfig);
+    bc.createOrderingBlock();
+
+    // H-7: the cooldown mint was journaled in NEITHER old representation —
+    // the AVL never saw it, and revert neither reversed the mint nor
+    // restored the escrow row. Both now appear: merge-consume + merged
+    // insert in the mutation log, the deleted row as a side-record.
+    const journal = await importJournalStore();
+    const saved = journal.getBlockJournal(1)!;
+    expect(removedIds(saved)).toContain(oldKarma.id);
+    const voucherInserts = saved.mutations.filter(
+      (m) =>
+        m.op === 'insert' &&
+        m.box!.boxType === 'karma' &&
+        Buffer.from((m.box as KarmaBox).owner).equals(Buffer.from(voucher.userId)),
+    );
+    expect(voucherInserts.length).toBe(1);
+    expect((voucherInserts[0]!.box as KarmaBox).value).toBe(57n);
+
+    expect(saved.vouchCooldownDeletions).toHaveLength(1);
+    const del = saved.vouchCooldownDeletions[0]!;
+    expect(Buffer.from(del.voucherId).equals(Buffer.from(voucher.userId))).toBe(true);
+    expect(Buffer.from(del.targetId).equals(Buffer.from(target.userId))).toBe(true);
+    expect(del.releaseAtBlock).toBe(1);
+    expect(del.karmaAmount).toBe(7n);
   });
 });
 
@@ -1542,39 +1415,6 @@ describe('block-apply consensus schedules', () => {
 // H-3: consensus-carried sub-block authorship + prune authorship binding
 // ---------------------------------------------------------------------------
 
-function hex(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString('hex');
-}
-
-/**
- * A PruneEntry that is internally valid in every respect a node can check
- * without knowing who the author is: the Merkle root is the real root over the
- * subtree ids, and the signature is a real Ed25519 signature over
- * blake2b(rootPostHash ‖ merkleRoot) from `signWith`, whose public key it
- * carries as `authorId`. What a test varies is *whose* key that is.
- */
-function makePruneEntry(
-  rootPostHash: string,
-  subtreePostIds: string[],
-  signWith: TestIdentity,
-): PruneEntry {
-  const leaves = [...subtreePostIds].sort().map((id) => leafHash('stump', hexToBuf(id)));
-  const subtreeMerkleRoot = buildMerkleRoot(leaves);
-  const payload = createHash('blake2b512')
-    .update(rootPostHash)
-    .update(Buffer.from(subtreeMerkleRoot))
-    .digest()
-    .subarray(0, 32);
-  return {
-    rootPostHash,
-    subtreePostIds,
-    subtreeMerkleRoot,
-    authorId: signWith.userId,
-    authorSignature: new Uint8Array(cryptoSign(null, payload, signWith.privateKey)),
-    trigger: 'author',
-  };
-}
-
 describe('block-apply H-3 sub-block authorship and prune binding', () => {
   beforeEach(async () => {
     vi.resetModules();
@@ -1976,7 +1816,7 @@ describe('block-apply funnel totality', () => {
 
     const journal = await importJournalStore();
     expect(journal.getBlockJournal(2)).toBeNull();
-    expect(blockApply.getCurrentJournal()).toBeNull();
+    expect(journal.isBlockJournalOpen()).toBe(false);
 
     // The prune did not settle: the victim's content is untouched.
     const posts = await importPosts();
@@ -2102,7 +1942,8 @@ describe('block-apply funnel totality', () => {
     expect(getCreditBoxes(block.utxoTxTree.coinbaseOutputs[0]!.owner)).toHaveLength(0);
 
     // The half-built journal is dropped, so the next block does not inherit it.
-    expect(blockApply.getCurrentJournal()).toBeNull();
+    const journalStore = await importJournalStore();
+    expect(journalStore.isBlockJournalOpen()).toBe(false);
   });
 
   it('applies the same block with no stub in place (control)', async () => {
@@ -2125,3 +1966,4 @@ describe('block-apply funnel totality', () => {
     expect(getCreditBoxes(block.utxoTxTree.coinbaseOutputs[0]!.owner)).toHaveLength(1);
   });
 });
+

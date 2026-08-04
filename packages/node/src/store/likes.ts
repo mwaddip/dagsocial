@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { getDb } from './db.js';
+import { recordFreeLikesProcessed } from './journal.js';
 
 // ---------------------------------------------------------------------------
 // Row shape
@@ -51,33 +52,6 @@ export function hasLiked(targetPostId: string, likerId: Uint8Array): boolean {
     )
     .get(targetPostId, likerBuf, targetPostId, Buffer.from(likerId).toString('hex')) as unknown;
   return row !== undefined;
-}
-
-/**
- * Find a free like row for a specific user and post.
- * Returns the like row (with id) or null if not found.
- */
-export function getFreeLike(
-  targetPostId: string,
-  likerId: Uint8Array,
-): { id: string } | null {
-  const db = getDb();
-  const row = db
-    .prepare(
-      'SELECT id FROM dag_likes WHERE target_post_id = ? AND liker_id = ?',
-    )
-    .get(targetPostId, Buffer.from(likerId)) as { id: string } | undefined;
-  return row ?? null;
-}
-
-/**
- * Delete a free like row.
- */
-export function deleteFreeLike(targetPostId: string, likerId: Uint8Array): void {
-  const db = getDb();
-  db.prepare(
-    'DELETE FROM dag_likes WHERE target_post_id = ? AND liker_id = ?',
-  ).run(targetPostId, Buffer.from(likerId));
 }
 
 /**
@@ -137,5 +111,20 @@ export function markFreeLikesProcessed(likeIds: string[]): void {
   const placeholders = likeIds.map(() => '?').join(', ');
   db.prepare(
     `UPDATE dag_likes SET processed = 1 WHERE id IN (${placeholders})`,
+  ).run(...likeIds);
+  recordFreeLikesProcessed(likeIds);
+}
+
+/**
+ * Bulk-mark free likes as unprocessed — exact inverse of
+ * markFreeLikesProcessed. Fork-rollback inverse — never records to the
+ * block journal.
+ */
+export function markFreeLikesUnprocessed(likeIds: string[]): void {
+  if (likeIds.length === 0) return;
+  const db = getDb();
+  const placeholders = likeIds.map(() => '?').join(', ');
+  db.prepare(
+    `UPDATE dag_likes SET processed = 0 WHERE id IN (${placeholders})`,
   ).run(...likeIds);
 }
