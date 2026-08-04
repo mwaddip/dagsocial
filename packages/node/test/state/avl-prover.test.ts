@@ -5,6 +5,7 @@ import { SqliteAvlStorage } from '../../src/state/avl-storage.js';
 import {
   createAvlProver,
   applyBlockMutations,
+  bootstrapAvlProver,
   checkpointProver,
   HEIGHT_SENTINEL,
   encodeHeight,
@@ -141,6 +142,132 @@ describe('block-apply integration', () => {
     expect(digest!.length).toBe(33);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Spec B P2 (M-12): the AVL digest is insertion-order-sensitive, so the
+// prover boundary sorts every feed. Same box sets in any input order must
+// land on the identical digest.
+// ---------------------------------------------------------------------------
+
+describe('canonical prover-feed ordering (M-12)', () => {
+  let db: Database.Database;
+  let db2: Database.Database;
+
+  beforeEach(() => {
+    db = makeAvlDb();
+    db2 = makeAvlDb();
+  });
+
+  afterEach(() => {
+    db.close();
+    db2.close();
+  });
+
+  /** Ids deliberately NOT in sorted order, so input order ≠ canonical order. */
+  const BASE_IDS = ['55', 'aa', '11', 'ee', '88'].map((b) => b.repeat(32));
+
+  /** Fresh prover with the same five-box starting tree. */
+  function seededProver(database: Database.Database) {
+    const { prover } = createAvlProver(database);
+    applyBlockMutations(prover, [], BASE_IDS.map((id) => makeKarmaBox(id, 10n, 1)));
+    return prover;
+  }
+
+  it('same consumed/created sets in shuffled orders → identical digest', () => {
+    const p1 = seededProver(db);
+    const p2 = seededProver(db2);
+
+    const consumed = ['ee'.repeat(32), '11'.repeat(32), '88'.repeat(32)];
+    const created = ['cc', '22', '99'].map((b) => makeKarmaBox(b.repeat(32), 7n, 2));
+
+    const d1 = applyBlockMutations(p1, consumed, created);
+    const d2 = applyBlockMutations(
+      p2,
+      [consumed[2]!, consumed[0]!, consumed[1]!],
+      [created[1]!, created[2]!, created[0]!],
+    );
+
+    expect(Buffer.from(d1).equals(Buffer.from(d2))).toBe(true);
+  });
+
+  it('empty mutation set leaves the digest unchanged on both provers', () => {
+    const p1 = seededProver(db);
+    const p2 = seededProver(db2);
+    const before = new Uint8Array(p1.digest()!);
+
+    const d1 = applyBlockMutations(p1, [], []);
+    const d2 = applyBlockMutations(p2, [], []);
+
+    expect(Buffer.from(d1).equals(Buffer.from(before))).toBe(true);
+    expect(Buffer.from(d1).equals(Buffer.from(d2))).toBe(true);
+  });
+
+  it('removes-only in shuffled orders → identical digest', () => {
+    const p1 = seededProver(db);
+    const p2 = seededProver(db2);
+
+    const d1 = applyBlockMutations(
+      p1,
+      ['aa'.repeat(32), '55'.repeat(32), 'ee'.repeat(32)],
+      [],
+    );
+    const d2 = applyBlockMutations(
+      p2,
+      ['ee'.repeat(32), 'aa'.repeat(32), '55'.repeat(32)],
+      [],
+    );
+
+    expect(Buffer.from(d1).equals(Buffer.from(d2))).toBe(true);
+  });
+
+  it('inserts-only in shuffled orders → identical digest', () => {
+    const p1 = seededProver(db);
+    const p2 = seededProver(db2);
+
+    const boxes = ['cc', '22', '99', '44'].map((b) => makeKarmaBox(b.repeat(32), 5n, 2));
+    const d1 = applyBlockMutations(p1, [], boxes);
+    const d2 = applyBlockMutations(p2, [], [...boxes].reverse());
+
+    expect(Buffer.from(d1).equals(Buffer.from(d2))).toBe(true);
+  });
+
+  it('bootstrapAvlProver: same unspent set in shuffled orders → identical digest', () => {
+    const h1 = createAvlProver(db);
+    const h2 = createAvlProver(db2);
+
+    const boxes = ['bb', '33', 'dd', '66', '11'].map((b) =>
+      makeKarmaBox(b.repeat(32), 12n, 0),
+    );
+    bootstrapAvlProver(h1, boxes, 0);
+    bootstrapAvlProver(h2, [...boxes].reverse(), 0);
+
+    const d1 = h1.prover.digest();
+    const d2 = h2.prover.digest();
+    expect(d1).not.toBeNull();
+    expect(d2).not.toBeNull();
+    expect(Buffer.from(d1!).equals(Buffer.from(d2!))).toBe(true);
+  });
+});
+
+/** In-memory DB carrying the AVL storage schema (mirrors the suite setup). */
+function makeAvlDb(): Database.Database {
+  const database = new Database(':memory:');
+  database.pragma('journal_mode = WAL');
+  database.exec(`
+    CREATE TABLE avl_tree_versions (
+      version BLOB PRIMARY KEY,
+      height INTEGER NOT NULL,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE TABLE avl_tree_nodes (
+      version BLOB NOT NULL REFERENCES avl_tree_versions(version),
+      label BLOB NOT NULL,
+      node_data BLOB NOT NULL,
+      PRIMARY KEY (version, label)
+    );
+  `);
+  return database;
+}
 
 function makeKarmaBox(id: string, value: bigint, height: number) {
   return {
