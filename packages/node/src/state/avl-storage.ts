@@ -143,6 +143,27 @@ export class SqliteAvlStorage implements VersionedAVLStorage {
     return row ? row.height : null;
   }
 
+  /**
+   * Delete the stored version(s) recorded at exactly this block height.
+   * Fork rollback: a reverted height's version rows are per-block derived
+   * state, deleted alongside the block and journal rows. Leaving them behind
+   * makes `versionAtOrBeforeHeight` resolve rolled-back state, and re-applying
+   * a block at the height (reorg back to a previously-reverted chain) would
+   * re-insert the same content-addressed version and trip the PRIMARY KEY.
+   */
+  deleteVersionAtHeight(height: number): void {
+    const transaction = this.db.transaction(() => {
+      this.db.prepare(
+        'DELETE FROM avl_tree_nodes WHERE version IN ' +
+        '(SELECT version FROM avl_tree_versions WHERE height = ?)',
+      ).run(height);
+      this.db.prepare(
+        'DELETE FROM avl_tree_versions WHERE height = ?',
+      ).run(height);
+    });
+    transaction();
+  }
+
   pruneVersionsBefore(cutoffHeight: number): void {
     const transaction = this.db.transaction(() => {
       // Delete nodes first (FK to versions)

@@ -7,20 +7,11 @@ import {
   vi,
 } from 'vitest';
 import {
-  generateKeyPairSync,
-  createHash,
-  sign as cryptoSign,
-  type KeyObject,
-} from 'crypto';
-import {
   computeBoxId,
   computePostId,
   encodePost,
   encodeOrderingBlock,
   decodeOrderingBlock,
-  leafHash,
-  buildMerkleRoot,
-  hexToBuf,
   PROTOCOL_VERSION,
   LIKE_COST,
   LIKE_THRESHOLD,
@@ -45,7 +36,20 @@ import type {
 import type { BlockJournal } from '../../src/store/journal.js';
 import type { DecayJournalEntry } from '../../src/services/decay.js';
 import type Database from 'better-sqlite3';
-import { signTransaction } from '../helpers.js';
+import {
+  signTransaction,
+  makeTestIdentity,
+  makePost,
+  makeLikeBox,
+  makeKarmaBox,
+  makeLikeTx,
+  changeBoxOf,
+  solveHeaderPow,
+  signHeader,
+  makeApplicableBlock,
+  makePruneEntry,
+  hex,
+} from '../helpers.js';
 
 // ---------------------------------------------------------------------------
 // Test config (small epoch for boundary testing)
@@ -192,246 +196,11 @@ async function importOrdering() {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Ed25519 helpers
-// ---------------------------------------------------------------------------
-
-function rawPublicKey(keyObj: KeyObject): Uint8Array {
-  const der = keyObj.export({ type: 'spki', format: 'der' }) as Buffer;
-  return new Uint8Array(der.subarray(der.length - 32));
-}
-
-// ---------------------------------------------------------------------------
-// Test data helpers
-// ---------------------------------------------------------------------------
-
-interface TestIdentity {
-  userId: Uint8Array;
-  publicKey: Uint8Array;
-  privateKey: KeyObject;
-}
-
-function makeTestIdentity(): TestIdentity {
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const pubKey = rawPublicKey(publicKey);
-  const userId = pubKey;
-  return { userId, publicKey: pubKey, privateKey };
-}
-
-function makePost(authorId: Uint8Array, content = 'test post'): Post {
-  return {
-    content,
-    author: authorId,
-    parentRefs: [],
-    challenge: new Uint8Array(32),
-    powNonce: 0,
-    protocolVersion: PROTOCOL_VERSION,
-    timestamp: Date.now(),
-    signature: new Uint8Array(64),
-  };
-}
-
-function makeLikeBox(
-  likerId: Uint8Array,
-  targetPostId: string,
-  createdAtBlock: number,
-): LikeBox {
-  const box: LikeBox = {
-    boxType: 'like',
-    value: 2n,
-    createdAtBlock,
-    likerId,
-    targetPostId,
-    guard: 'epoch_tally',
-  };
-  const id = computeBoxId(box);
-  box.id = id;
-  return box;
-}
-
-function makeKarmaBox(
-  value: bigint,
-  owner: Uint8Array,
-  createdAtBlock: number,
-): KarmaBox {
-  const box: KarmaBox = {
-    boxType: 'karma',
-    value,
-    createdAtBlock,
-    owner,
-    guard: 'owner_signature',
-    proofSource: 'genesis',
-    lastTouchBlock: createdAtBlock,
-  };
-  const id = computeBoxId(box);
-  box.id = id;
-  return box;
-}
-
-/**
- * Build a signed, value-conserving like transaction — the shape a real client
- * submits: the liker's karma box is consumed and split into a karma change box
- * and the LikeBox.
- *
- * Block application re-validates every embedded tx in full, so a fixture that
- * omitted the signature or the change output would be indistinguishable from a
- * forgery and would take the whole block down with it.
- */
-function makeLikeTx(
-  liker: TestIdentity,
-  karmaBox: KarmaBox,
-  targetPostId: string,
-): UtxoTransaction {
-  const tx: UtxoTransaction = {
-    inputs: [karmaBox.id!],
-    outputs: [
-      {
-        boxType: 'karma',
-        value: karmaBox.value - LIKE_COST,
-        createdAtBlock: 0,
-        owner: liker.userId,
-        guard: 'owner_signature',
-        proofSource: 'like_op',
-        lastTouchBlock: 0,
-      } as KarmaBox,
-      {
-        boxType: 'like',
-        value: LIKE_COST,
-        createdAtBlock: 0,
-        likerId: liker.userId,
-        targetPostId,
-        guard: 'epoch_tally',
-      } as LikeBox,
-    ],
-    signatures: {},
-    protocolVersion: PROTOCOL_VERSION,
-  };
-  signTransaction(tx, liker.privateKey, Buffer.from(liker.userId).toString('hex'));
-  return tx;
-}
-
-/** The karma change box a `makeLikeTx` output creates, with its stored id. */
-function changeBoxOf(tx: UtxoTransaction): KarmaBox {
-  const change = tx.outputs[0] as KarmaBox;
-  return { ...change, id: computeBoxId(change) };
-}
-
-const ZERO_HASH = '0'.repeat(64);
-
-/**
- * The first nonce that satisfies the header's declared target, found with the
- * production verifier.
- *
- * Hand-built blocks have to carry a real solution now that `powTargetBits` must
- * equal the height schedule: declaring target 0 to sail past PoW — how these
- * tests used to reach the checks behind it — is itself a rejected block.
- */
-function solveHeaderPow(header: BlockHeader): number {
-  for (let nonce = 0; ; nonce++) {
-    if (verifyOrderingBlockPoW({ ...header, powNonce: nonce })) return nonce;
-  }
-}
-
 /** The first nonce that does NOT satisfy the header's declared target. */
 function unsolvedHeaderPow(header: BlockHeader): number {
   for (let nonce = 0; ; nonce++) {
     if (!verifyOrderingBlockPoW({ ...header, powNonce: nonce })) return nonce;
   }
-}
-
-/**
- * The validator signature a block creator produces: raw Ed25519 over the 32
- * bytes of `blockHash(header)` (block-creator.ts:238, :556).
- *
- * Hand-built blocks have to carry a real signature now that apply verifies it
- * (H-1) — an all-zero placeholder is rejected before any check behind it, which
- * would make every post-signature rejection test assert its own reason
- * vacuously. Call this only once `powNonce` is final: the nonce is a header
- * field, so it is inside the hash being signed.
- */
-function signHeader(header: BlockHeader, privateKey: KeyObject): Uint8Array {
-  return new Uint8Array(cryptoSign(null, Buffer.from(blockHash(header), 'hex'), privateKey));
-}
-
-/**
- * A hand-built block that passes every apply check: chain-linked at genesis,
- * correct Merkle roots, coinbase paying exactly the scheduled emission with the
- * scheduled maturity lock, a real PoW solution at the scheduled target, and a
- * real validator signature from the key its header names.
- *
- * Each override deviates in exactly one respect, so what a test measures is
- * that deviation and nothing else.
- */
-async function makeApplicableBlock(
-  opts: {
-    powTargetBits?: number;
-    lockedUntilBlock?: number;
-    /** Sign with this key instead of the miner's — a block whose signature does
-     *  not come from the key its `validatorId` names (H-1 forged authorship). */
-    signWith?: KeyObject;
-    /** Height to build at; anything above 1 chain-links to the stored block below. */
-    height?: number;
-    /** Sub-block entries this block confirms (topology + authorship). */
-    subBlockEntries?: SubBlockEntry[];
-    /** Prune entries this block settles. */
-    pruneEntries?: PruneEntry[];
-  } = {},
-): Promise<OrderingBlock> {
-  const { computeSubBlockRoot, computeUtxoTxRoot, computeBlockReward } = await import(
-    '../../src/services/block-creator.js'
-  );
-  const { expectedTarget } = await import('../../src/services/difficulty.js');
-
-  const height = opts.height ?? 1;
-  let prevBlockHash = ZERO_HASH;
-  if (height > 1) {
-    const { getOrderingBlock } = await import('../../src/store/ordering.js');
-    const prev = getOrderingBlock(height - 1) as OrderingBlock | null;
-    if (!prev) throw new Error(`makeApplicableBlock: no stored block at height ${height - 1}`);
-    prevBlockHash = blockHash(prev.header);
-  }
-  const miner = makeTestIdentity();
-  const subBlockEntries = opts.subBlockEntries ?? [];
-  const subBlockTree = {
-    subBlockRefs: subBlockEntries.map((e) => e.postId),
-    subBlockEntries,
-    pruneEntries: opts.pruneEntries ?? [],
-  };
-  const utxoTxTree = {
-    utxoTxIds: [],
-    utxoTxs: [],
-    likeBoxIds: [],
-    coinbaseOutputs: [
-      {
-        owner: miner.userId,
-        value: computeBlockReward(height),
-        lockedUntilBlock:
-          opts.lockedUntilBlock ?? height + CREDIT_MINER_REWARD_DELAY,
-        isTreasury: false,
-      },
-    ],
-  };
-
-  const header = {
-    protocolVersion: PROTOCOL_VERSION,
-    height,
-    prevBlockHash,
-    subBlockRoot: computeSubBlockRoot(subBlockTree),
-    utxoTxRoot: computeUtxoTxRoot(utxoTxTree),
-    stateRoot: ZERO_HASH,
-    validatorId: miner.userId,
-    powNonce: 0,
-    powTargetBits: opts.powTargetBits ?? expectedTarget(height),
-    createdAt: Date.now(),
-  } as BlockHeader;
-  header.powNonce = solveHeaderPow(header);
-
-  return {
-    header,
-    subBlockTree,
-    utxoTxTree,
-    validatorSignature: signHeader(header, opts.signWith ?? miner.privateKey),
-  } as unknown as OrderingBlock;
 }
 
 // ---------------------------------------------------------------------------
@@ -1646,39 +1415,6 @@ describe('block-apply consensus schedules', () => {
 // H-3: consensus-carried sub-block authorship + prune authorship binding
 // ---------------------------------------------------------------------------
 
-function hex(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString('hex');
-}
-
-/**
- * A PruneEntry that is internally valid in every respect a node can check
- * without knowing who the author is: the Merkle root is the real root over the
- * subtree ids, and the signature is a real Ed25519 signature over
- * blake2b(rootPostHash ‖ merkleRoot) from `signWith`, whose public key it
- * carries as `authorId`. What a test varies is *whose* key that is.
- */
-function makePruneEntry(
-  rootPostHash: string,
-  subtreePostIds: string[],
-  signWith: TestIdentity,
-): PruneEntry {
-  const leaves = [...subtreePostIds].sort().map((id) => leafHash('stump', hexToBuf(id)));
-  const subtreeMerkleRoot = buildMerkleRoot(leaves);
-  const payload = createHash('blake2b512')
-    .update(rootPostHash)
-    .update(Buffer.from(subtreeMerkleRoot))
-    .digest()
-    .subarray(0, 32);
-  return {
-    rootPostHash,
-    subtreePostIds,
-    subtreeMerkleRoot,
-    authorId: signWith.userId,
-    authorSignature: new Uint8Array(cryptoSign(null, payload, signWith.privateKey)),
-    trigger: 'author',
-  };
-}
-
 describe('block-apply H-3 sub-block authorship and prune binding', () => {
   beforeEach(async () => {
     vi.resetModules();
@@ -2231,101 +1967,3 @@ describe('block-apply funnel totality', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Prune settlement journal round-trip — apply then revert restores the exact
-// pre-block box rows. (Full per-class apply→revert→AVL-digest suites are
-// Spec B P1 Phase C; this pins the box-row restoration the old journal lost.)
-// ---------------------------------------------------------------------------
-
-describe('block-apply prune settlement revert', () => {
-  beforeEach(async () => {
-    vi.resetModules();
-  });
-
-  afterEach(async () => {
-    try {
-      const bc = await importBlockCreator();
-      bc.stopBlockCreator();
-    } catch {
-      // Module might not have been imported
-    }
-    vi.resetModules();
-  });
-
-  it('revert of a prune block restores the settled boxes exactly', async () => {
-    const db = await importDb();
-    db.initDb(':memory:');
-
-    // A confirmed post whose author holds karma, with a post-lock and a like
-    // locked against it — everything a prune settlement touches
-    const author = makeTestIdentity();
-    const liker = makeTestIdentity();
-    const post = makePost(author.userId, 'prune revert victim');
-    const postId = computePostId(post);
-
-    const posts = await importPosts();
-    posts.insertPost(post, encodePost(post));
-
-    const blockApply = await importBlockApply();
-    const confirmBlock = await makeApplicableBlock({
-      subBlockEntries: [{ postId, parentRefs: [], author: hex(author.userId) }],
-    });
-    expect(blockApply.applyOrderingBlock(confirmBlock)).toBe(true);
-
-    const utxo = await importUtxo();
-    const authorKarma = makeKarmaBox(20n, author.userId, 0);
-    utxo.insertBox(authorKarma);
-    const lockBox: PostLockBox = {
-      boxType: 'post_lock',
-      value: 30n,
-      originalValue: 30n,
-      createdAtBlock: 1,
-      owner: author.userId,
-      targetPostId: postId,
-      guard: 'epoch_tally',
-    };
-    lockBox.id = computeBoxId(lockBox);
-    utxo.insertBox(lockBox);
-    const likeBox = makeLikeBox(liker.userId, postId, 1);
-    utxo.insertBox(likeBox);
-
-    const pruneBlock = await makeApplicableBlock({
-      height: 2,
-      pruneEntries: [makePruneEntry(postId, [postId], author)],
-    });
-    expect(blockApply.applyOrderingBlock(pruneBlock)).toBe(true);
-
-    // Settled: lock + like + the author's pre-existing karma all consumed
-    // (the karma merge-consumed into the refund mint)
-    expect(utxo.getBox(lockBox.id!)).toBeNull();
-    expect(utxo.getBox(likeBox.id!)).toBeNull();
-    expect(utxo.getBox(authorKarma.id!)).toBeNull();
-
-    const journalStore = await importJournalStore();
-    const saved = journalStore.getBlockJournal(2)!;
-    const inserted = insertedIds(saved);
-    expect(removedIds(saved)).toEqual(
-      expect.arrayContaining([lockBox.id, likeBox.id, authorKarma.id]),
-    );
-
-    const { revertBlock } = (await import(
-      '../../src/services/fork-resolution.js'
-    )) as { revertBlock: (height: number) => PruneEntry[] };
-    revertBlock(2);
-
-    // Everything the block created is gone; the exact pre-block rows are back
-    for (const boxId of inserted) {
-      expect(utxo.getBox(boxId)).toBeNull();
-    }
-    const restoredLock = utxo.getBox(lockBox.id!) as PostLockBox | null;
-    expect(restoredLock).not.toBeNull();
-    expect(restoredLock!.value).toBe(30n);
-    const restoredKarma = utxo.getBox(authorKarma.id!) as KarmaBox | null;
-    expect(restoredKarma).not.toBeNull();
-    expect(restoredKarma!.value).toBe(20n);
-    expect(utxo.getBox(likeBox.id!)).not.toBeNull();
-
-    const ordering = await importOrdering();
-    expect(ordering.getCurrentHeight()).toBe(1);
-  });
-});

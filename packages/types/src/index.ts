@@ -94,9 +94,6 @@ export type {
   LikeReward,
 } from './block.js';
 
-// Journal
-export type { BlockJournal, KarmaMint, AppliedUtxoTx, DecayJournalEntry } from './journal.js';
-
 // Serialization
 export {
   serializeBox,

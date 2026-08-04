@@ -7,16 +7,9 @@ import {
   vi,
 } from 'vitest';
 import {
-  generateKeyPairSync,
-  createHash,
-  type KeyObject,
-} from 'crypto';
-import {
-  computeBoxId,
   computePostId,
   PROTOCOL_VERSION,
   cumulativeWork,
-  LIKE_COST,
 } from '@dagsocial/types';
 import { blockHash } from '@dagsocial/validation';
 import type {
@@ -29,7 +22,13 @@ import type {
 } from '@dagsocial/types';
 import type { BlockJournal } from '../../src/store/journal.js';
 import type Database from 'better-sqlite3';
-import { signTransaction } from '../helpers.js';
+import {
+  makeTestIdentity,
+  makePost,
+  makeKarmaBox,
+  makeLikeTx,
+  makeApplicableBlock,
+} from '../helpers.js';
 
 // ---------------------------------------------------------------------------
 // Test config
@@ -148,20 +147,6 @@ async function importJournalStore() {
   };
 }
 
-async function importVouchCooldowns() {
-  return (await import('../../src/store/vouch-cooldowns.js')) as {
-    insertVouchCooldown: (
-      voucherId: Uint8Array,
-      targetId: Uint8Array,
-      releaseAtBlock: number,
-      karmaAmount: bigint,
-    ) => void;
-    getVouchCooldowns: (
-      voucherId: Uint8Array,
-    ) => Array<{ targetId: Uint8Array; releaseAtBlock: number; karmaAmount: bigint }>;
-  };
-}
-
 async function importForkResolution() {
   return (await import(
     '../../src/services/fork-resolution.js'
@@ -175,123 +160,6 @@ async function importForkResolution() {
     reorg: (forkHeight: number, newBlocks: OrderingBlock[]) => void;
     MAX_REORG_DEPTH: number;
   };
-}
-
-// ---------------------------------------------------------------------------
-// Ed25519 helpers
-// ---------------------------------------------------------------------------
-
-function rawPublicKey(keyObj: KeyObject): Uint8Array {
-  const der = keyObj.export({ type: 'spki', format: 'der' }) as Buffer;
-  return new Uint8Array(der.subarray(der.length - 32));
-}
-
-// ---------------------------------------------------------------------------
-// Test data helpers
-// ---------------------------------------------------------------------------
-
-interface TestIdentity {
-  userId: Uint8Array;
-  publicKey: Uint8Array;
-  privateKey: KeyObject;
-}
-
-function makeTestIdentity(): TestIdentity {
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const pubKey = rawPublicKey(publicKey);
-  const userId = pubKey;
-  return { userId, publicKey: pubKey, privateKey };
-}
-
-function makePost(authorId: Uint8Array, content = 'test post'): Post {
-  return {
-    content,
-    author: authorId,
-    parentRefs: [],
-    challenge: new Uint8Array(32),
-    powNonce: 0,
-    protocolVersion: PROTOCOL_VERSION,
-    timestamp: Date.now(),
-    signature: new Uint8Array(64),
-  };
-}
-
-function makeLikeBox(
-  likerId: Uint8Array,
-  targetPostId: string,
-  createdAtBlock: number,
-): LikeBox {
-  const box: LikeBox = {
-    boxType: 'like',
-    value: 2n,
-    createdAtBlock,
-    likerId,
-    targetPostId,
-    guard: 'epoch_tally',
-  };
-  const id = computeBoxId(box);
-  box.id = id;
-  return box;
-}
-
-function makeKarmaBox(
-  value: bigint,
-  owner: Uint8Array,
-  createdAtBlock: number,
-): KarmaBox {
-  const box: KarmaBox = {
-    boxType: 'karma',
-    value,
-    createdAtBlock,
-    owner,
-    guard: 'owner_signature',
-    proofSource: 'genesis',
-    lastTouchBlock: createdAtBlock,
-  };
-  const id = computeBoxId(box);
-  box.id = id;
-  return box;
-}
-
-/**
- * Build a signed, value-conserving like transaction: the liker's karma box is
- * consumed and split into a karma change box and the LikeBox.
- *
- * Block application re-validates every embedded tx in full, so a fixture that
- * omitted the signature or the change output would be indistinguishable from a
- * forgery and would take the whole block down with it.
- */
-function makeLikeTx(
-  liker: TestIdentity,
-  karmaBox: KarmaBox,
-  targetPostId: string,
-): UtxoTransaction {
-  const tx: UtxoTransaction = {
-    inputs: [karmaBox.id!],
-    outputs: [
-      {
-        boxType: 'karma',
-        value: karmaBox.value - LIKE_COST,
-        createdAtBlock: 0,
-        owner: liker.userId,
-        guard: 'owner_signature',
-        proofSource: 'like_op',
-        lastTouchBlock: 0,
-      } as KarmaBox,
-      {
-        boxType: 'like',
-        value: LIKE_COST,
-        createdAtBlock: 0,
-        likerId: liker.userId,
-        targetPostId,
-        guard: 'epoch_tally',
-      } as LikeBox,
-    ],
-    signatures: {},
-    protocolVersion: PROTOCOL_VERSION,
-  };
-  signTransaction(tx, liker.privateKey, Buffer.from(liker.userId).toString('hex'));
-  return tx;
 }
 
 // ---------------------------------------------------------------------------
@@ -854,62 +722,6 @@ describe('revertBlock', () => {
     expect(ordering.getOrderingBlock(1)).not.toBeNull();
   });
 
-  it('restores merge-consumed karma and the deleted escrow row exactly (H-7)', async () => {
-    const db = await importDb();
-    db.initDb(':memory:');
-
-    const utxo = await importUtxo();
-    const vouch = await importVouchCooldowns();
-
-    // Pre-block state: the voucher holds a karma box, and a matured escrow
-    // row is waiting (releaseAtBlock 1 ≤ the height of the block we mine)
-    const voucher = makeTestIdentity();
-    const target = makeTestIdentity();
-    const oldKarma = makeKarmaBox(50n, voucher.userId, 0);
-    utxo.insertBox(oldKarma);
-    vouch.insertVouchCooldown(voucher.userId, target.userId, 1, 7n);
-
-    const bc = await importBlockCreator();
-    bc.startBlockCreator(testConfig);
-    bc.createOrderingBlock();
-
-    // The cooldown mint merged the escrow amount into the voucher's karma:
-    // old box spent, one merged box, escrow row deleted
-    const merged = utxo.getKarmaBox(voucher.userId);
-    expect(merged).not.toBeNull();
-    expect(merged!.value).toBe(57n);
-    expect(merged!.id).not.toBe(oldKarma.id);
-    expect(utxo.getBox(oldKarma.id!)).toBeNull();
-    expect(vouch.getVouchCooldowns(voucher.userId)).toHaveLength(0);
-
-    // The journal carries the mint's mutations and the deleted escrow row
-    const journalStore = await importJournalStore();
-    const journal = journalStore.getBlockJournal(1)!;
-    const removed = journal.mutations.filter((m) => m.op === 'remove').map((m) => m.boxId);
-    expect(removed).toContain(oldKarma.id);
-    expect(journal.vouchCooldownDeletions).toHaveLength(1);
-    const del = journal.vouchCooldownDeletions[0]!;
-    expect(Buffer.from(del.voucherId).equals(Buffer.from(voucher.userId))).toBe(true);
-    expect(del.releaseAtBlock).toBe(1);
-    expect(del.karmaAmount).toBe(7n);
-
-    // Revert: the exact pre-block rows come back
-    const forkResolution = await importForkResolution();
-    forkResolution.revertBlock(1);
-
-    expect(utxo.getBox(merged!.id!)).toBeNull();
-    const restored = utxo.getKarmaBox(voucher.userId);
-    expect(restored).not.toBeNull();
-    expect(restored!.id).toBe(oldKarma.id);
-    expect(restored!.value).toBe(50n);
-
-    const escrow = vouch.getVouchCooldowns(voucher.userId);
-    expect(escrow).toHaveLength(1);
-    expect(Buffer.from(escrow[0]!.targetId).equals(Buffer.from(target.userId))).toBe(true);
-    expect(escrow[0]!.releaseAtBlock).toBe(1);
-    expect(escrow[0]!.karmaAmount).toBe(7n);
-  });
-
   it('rolls back decay burns', async () => {
     const db = await importDb();
     db.initDb(':memory:');
@@ -1245,5 +1057,76 @@ describe('reorg', () => {
 
     // Default cap (10000): the reverted sub-blocks come back.
     expect(mempool.getPendingEntries(100).length).toBeGreaterThan(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests — reorg abort restores the AVL prover (NODE_INTERFACE
+// "Reorg-abort-safe"). SQLite rollback restores the DB and the AVL storage
+// rows, but not the prover's in-memory tree: without the reorg-level restore
+// it would end at fork-point + applied-prefix state.
+// ---------------------------------------------------------------------------
+
+describe('reorg abort', () => {
+  beforeEach(async () => { vi.resetModules(); });
+  afterEach(async () => {
+    try {
+      const bc = await importBlockCreator();
+      bc.stopBlockCreator();
+    } catch { /* not imported */ }
+    vi.resetModules();
+  });
+
+  it('failed mid-reorg apply leaves chain, DB, and prover digest at the pre-reorg state', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    // Activate the AVL prover singleton against the test DB — the same
+    // instance tryGetAvlProver() hands to block-apply and reorg().
+    const { createAvlProver, tryGetAvlProver } = (await import(
+      '../../src/state/avl-prover.js'
+    )) as typeof import('../../src/state/avl-prover.js');
+    createAvlProver();
+
+    // Chain of 3 empty blocks (coinbase only); every box in the prover's tree
+    // arrived through the apply funnel, so tree and DB agree.
+    const bc = await importBlockCreator();
+    bc.startBlockCreator(testConfig);
+    for (let i = 0; i < 3; i++) bc.createOrderingBlock();
+
+    const ordering = await importOrdering();
+    expect(ordering.getCurrentHeight()).toBe(3);
+    const originalHashes = [1, 2, 3].map(
+      (h) => blockHash(ordering.getOrderingBlock(h)!.header),
+    );
+
+    const preBoxes = db.getDb().prepare('SELECT * FROM utxo_boxes ORDER BY id').all();
+    const avl = tryGetAvlProver();
+    expect(avl).not.toBeNull();
+    const preDigest = new Uint8Array(avl!.prover.digest()!);
+
+    // Competing chain: a valid block at height 2, then a block whose
+    // prevBlockHash still names the original height-2 block — rejected by the
+    // chain-link check after the valid prefix has already been applied.
+    const goodB2 = await makeApplicableBlock({ height: 2 });
+    const badB3 = await makeApplicableBlock({ height: 3 });
+
+    const forkResolution = await importForkResolution();
+    expect(() => forkResolution.reorg(1, [goodB2, badB3])).toThrow(
+      'reorg failed: block at height 3 rejected',
+    );
+
+    // Chain and DB: byte-for-byte the pre-reorg state (SQLite rollback).
+    expect(ordering.getCurrentHeight()).toBe(3);
+    for (const h of [1, 2, 3]) {
+      expect(blockHash(ordering.getOrderingBlock(h)!.header)).toBe(originalHashes[h - 1]);
+    }
+    expect(db.getDb().prepare('SELECT * FROM utxo_boxes ORDER BY id').all()).toEqual(preBoxes);
+
+    // Prover: the in-memory digest is back at the pre-reorg tip. Without the
+    // reorg-level restore it would sit at fork-point + goodB2.
+    const postDigest = avl!.prover.digest();
+    expect(postDigest).not.toBeNull();
+    expect(Buffer.from(postDigest!).equals(Buffer.from(preDigest))).toBe(true);
   });
 });

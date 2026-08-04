@@ -55,33 +55,6 @@ export function hasLiked(targetPostId: string, likerId: Uint8Array): boolean {
 }
 
 /**
- * Find a free like row for a specific user and post.
- * Returns the like row (with id) or null if not found.
- */
-export function getFreeLike(
-  targetPostId: string,
-  likerId: Uint8Array,
-): { id: string } | null {
-  const db = getDb();
-  const row = db
-    .prepare(
-      'SELECT id FROM dag_likes WHERE target_post_id = ? AND liker_id = ?',
-    )
-    .get(targetPostId, Buffer.from(likerId)) as { id: string } | undefined;
-  return row ?? null;
-}
-
-/**
- * Delete a free like row.
- */
-export function deleteFreeLike(targetPostId: string, likerId: Uint8Array): void {
-  const db = getDb();
-  db.prepare(
-    'DELETE FROM dag_likes WHERE target_post_id = ? AND liker_id = ?',
-  ).run(targetPostId, Buffer.from(likerId));
-}
-
-/**
  * Get like counts for a post, split by locked (utxo_boxes) and free (dag_likes).
  */
 export function getLikeCount(postId: string): { locked: number; free: number } {

@@ -128,10 +128,17 @@ export function revertBlock(height: number): PruneEntry[] {
     insertVouchCooldown(del.voucherId, del.targetId, del.releaseAtBlock, del.karmaAmount);
   }
 
-  // 3. Roll back block_topology entries, delete block + journal
+  // 3. Roll back block_topology entries, delete block + journal + the
+  // height's AVL version rows. The version rows are per-block derived state
+  // exactly like the block and journal rows: left behind, they make
+  // versionAtOrBeforeHeight resolve rolled-back state, and re-applying a
+  // block at this height (reorg back to a previously-reverted chain) would
+  // re-insert the same content-addressed version and trip its PRIMARY KEY —
+  // the funnel's totality catch would then reject every re-applied block.
   rollbackBlockTopology(height);
   deleteOrderingBlock(height);
   deleteBlockJournal(height);
+  tryGetAvlProver()?.storage.deleteVersionAtHeight(height);
 
   return pruneEntries;
 }
@@ -164,7 +171,22 @@ function reinsert(insert: () => void, label: string): void {
  * then apply the competing chain forward.
  */
 export function reorg(forkHeight: number, newBlocks: OrderingBlock[], dagService?: DagService): void {
-  getDb().transaction(() => {
+  // A failed reorg rolls the whole transaction back — DB and AVL storage rows
+  // live in the same SQLite file — but SQLite rollback cannot reach the
+  // prover's in-memory state: the per-block funnel restore only covers the
+  // failing block, not the fork-point rollback plus the applied prefix. So the
+  // reorg snapshots the digest before anything is reverted and restores it on
+  // abort (mirrors the apply funnel's restoreProver).
+  const avlHandle = tryGetAvlProver();
+  const preDigest = avlHandle ? avlHandle.prover.digest() : null;
+  const restoreProver = (): void => {
+    if (!avlHandle || !preDigest) return;
+    const current = avlHandle.prover.digest();
+    if (current && Buffer.from(current).equals(Buffer.from(preDigest))) return;
+    avlHandle.prover.rollback(preDigest);
+  };
+  try {
+    getDb().transaction(() => {
   const currentHeight = getCurrentHeight();
 
   // Phase 1: revert our blocks, collecting journals and prune entries for re-insertion
@@ -179,7 +201,6 @@ export function reorg(forkHeight: number, newBlocks: OrderingBlock[], dagService
   }
 
   // Phase 1b: roll back AVL prover to fork point
-  const avlHandle = tryGetAvlProver();
   if (avlHandle) {
     const version = avlHandle.storage.versionAtOrBeforeHeight(forkHeight);
     if (version) {
@@ -217,5 +238,13 @@ export function reorg(forkHeight: number, newBlocks: OrderingBlock[], dagService
       throw new Error(`reorg failed: block at height ${block.header.height} rejected`);
     }
   }
-  })();
+    })();
+  } catch (err) {
+    // better-sqlite3 has already rolled the transaction back (chain, boxes,
+    // AVL storage rows — the pre-reorg version row this restore targets is
+    // back in place). Restore the in-memory prover, then rethrow: callers'
+    // error semantics are unchanged.
+    restoreProver();
+    throw err;
+  }
 }

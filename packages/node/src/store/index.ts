@@ -48,8 +48,6 @@ export {
   insertLike,
   hasLiked,
   getLikeCount,
-  getFreeLike,
-  deleteFreeLike,
   getUnprocessedFreeLikes,
   markFreeLikesProcessed,
   markFreeLikesUnprocessed,
