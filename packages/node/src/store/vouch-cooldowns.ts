@@ -1,4 +1,29 @@
 import { getDb } from './db.js';
+import {
+  isBlockJournalOpen,
+  recordVouchCooldownInsertion,
+  recordVouchCooldownDeletion,
+} from './journal.js';
+
+/** Fetch the cooldown row for a (voucher, target) pair, or null if none. */
+function getCooldownRow(
+  voucherId: Uint8Array,
+  targetId: Uint8Array,
+): { releaseAtBlock: number; karmaAmount: bigint } | null {
+  const row = getDb()
+    .prepare(
+      `SELECT release_at_block, karma_amount
+       FROM vouch_cooldowns WHERE voucher_id = ? AND target_id = ?`,
+    )
+    .safeIntegers()
+    .get(Buffer.from(voucherId), Buffer.from(targetId)) as
+      { release_at_block: bigint; karma_amount: bigint } | undefined;
+  if (!row) return null;
+  return {
+    releaseAtBlock: Number(row.release_at_block),
+    karmaAmount: row.karma_amount,
+  };
+}
 
 export function insertVouchCooldown(
   voucherId: Uint8Array,
@@ -6,12 +31,18 @@ export function insertVouchCooldown(
   releaseAtBlock: number,
   karmaAmount: bigint,
 ): void {
+  // INSERT OR REPLACE — while a journal is open, capture any row this
+  // overwrites so the rollback inverse can restore it exactly.
+  const replaced = isBlockJournalOpen()
+    ? (getCooldownRow(voucherId, targetId) ?? undefined)
+    : undefined;
   getDb()
     .prepare(
       `INSERT OR REPLACE INTO vouch_cooldowns (voucher_id, target_id, release_at_block, karma_amount)
        VALUES (?, ?, ?, ?)`,
     )
     .run(Buffer.from(voucherId), Buffer.from(targetId), releaseAtBlock, karmaAmount);
+  recordVouchCooldownInsertion(voucherId, targetId, replaced);
 }
 
 export function getVouchCooldowns(
@@ -56,9 +87,21 @@ export function deleteVouchCooldown(
   voucherId: Uint8Array,
   targetId: Uint8Array,
 ): void {
+  // While a journal is open, capture the escrow row before deleting so the
+  // rollback inverse can restore it (H-7). Fork rollback calls this with no
+  // journal open — plain delete, nothing recorded.
+  const captured = isBlockJournalOpen() ? getCooldownRow(voucherId, targetId) : null;
   getDb()
     .prepare(`DELETE FROM vouch_cooldowns WHERE voucher_id = ? AND target_id = ?`)
     .run(Buffer.from(voucherId), Buffer.from(targetId));
+  if (captured !== null) {
+    recordVouchCooldownDeletion(
+      voucherId,
+      targetId,
+      captured.releaseAtBlock,
+      captured.karmaAmount,
+    );
+  }
 }
 
 export function hasActiveVouchCooldown(

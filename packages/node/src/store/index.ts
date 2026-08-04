@@ -52,6 +52,7 @@ export {
   deleteFreeLike,
   getUnprocessedFreeLikes,
   markFreeLikesProcessed,
+  markFreeLikesUnprocessed,
 } from './likes.js';
 
 export {
@@ -62,6 +63,9 @@ export {
 } from './ordering.js';
 
 export {
+  beginBlockJournal,
+  finishBlockJournal,
+  abortBlockJournal,
   insertBlockJournal,
   getBlockJournal,
   deleteBlockJournal,

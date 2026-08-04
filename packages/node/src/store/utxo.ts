@@ -1,4 +1,5 @@
 import { getDb } from './db.js';
+import { isBlockJournalOpen, recordBoxInsert, recordBoxRemove } from './journal.js';
 import type {
   AnyBox,
   KarmaBox,
@@ -525,6 +526,12 @@ export function getPostTotalLikes(targetPostId: string): number {
  * into the extra_data JSON column.
  */
 export function insertBox(box: AnyBox): void {
+  // Never record an insert without its boxId — the apply funnel's totality
+  // catch converts this throw into a block rejection.
+  if (isBlockJournalOpen() && !box.id) {
+    throw new Error('insertBox: box.id must be set while a block journal is open');
+  }
+
   const db = getDb();
 
   // Build extra_data and column values per box type
@@ -630,6 +637,8 @@ export function insertBox(box: AnyBox): void {
     JSON.stringify(extraData),
     lastTouchBlock,
   );
+
+  recordBoxInsert(box);
 }
 
 /**
@@ -639,10 +648,12 @@ export function consumeBox(boxId: string, consumedAtBlock: number): void {
   getDb()
     .prepare('UPDATE utxo_boxes SET spent_at_block = ? WHERE id = ?')
     .run(consumedAtBlock, boxId);
+  recordBoxRemove(boxId);
 }
 
 /**
  * Reverse a consumeBox by clearing spent_at_block.
+ * Fork-rollback inverse — never records to the block journal.
  */
 export function unconsumeBox(boxId: string): void {
   getDb().prepare('UPDATE utxo_boxes SET spent_at_block = NULL WHERE id = ?').run(boxId);
@@ -650,6 +661,7 @@ export function unconsumeBox(boxId: string): void {
 
 /**
  * Delete a box entirely (for rolling back an insertBox).
+ * Fork-rollback inverse — never records to the block journal.
  */
 export function deleteBox(boxId: string): void {
   getDb().prepare('DELETE FROM utxo_boxes WHERE id = ?').run(boxId);
@@ -687,4 +699,7 @@ export function markLikeBoxesTallied(boxIds: string[]): void {
   db.prepare(
     `UPDATE utxo_boxes SET spent_at_block = -1 WHERE id IN (${placeholders})`,
   ).run(...boxIds);
+  for (const boxId of boxIds) {
+    recordBoxRemove(boxId);
+  }
 }

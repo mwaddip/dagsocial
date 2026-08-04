@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { getDb } from './db.js';
+import { recordFreeLikesProcessed } from './journal.js';
 
 // ---------------------------------------------------------------------------
 // Row shape
@@ -137,5 +138,20 @@ export function markFreeLikesProcessed(likeIds: string[]): void {
   const placeholders = likeIds.map(() => '?').join(', ');
   db.prepare(
     `UPDATE dag_likes SET processed = 1 WHERE id IN (${placeholders})`,
+  ).run(...likeIds);
+  recordFreeLikesProcessed(likeIds);
+}
+
+/**
+ * Bulk-mark free likes as unprocessed — exact inverse of
+ * markFreeLikesProcessed. Fork-rollback inverse — never records to the
+ * block journal.
+ */
+export function markFreeLikesUnprocessed(likeIds: string[]): void {
+  if (likeIds.length === 0) return;
+  const db = getDb();
+  const placeholders = likeIds.map(() => '?').join(', ');
+  db.prepare(
+    `UPDATE dag_likes SET processed = 0 WHERE id IN (${placeholders})`,
   ).run(...likeIds);
 }
