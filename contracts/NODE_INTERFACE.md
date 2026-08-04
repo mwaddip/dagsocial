@@ -677,7 +677,8 @@ Fresh schema — no Phase 1 migration.
 | `getFreeLike(targetPostId, likerId)` | `(PostId, UserId) => FreeLike \| null` |
 | `deleteFreeLike(likeId)` | `(string) => void` |
 | `getUnprocessedFreeLikes()` | `() => FreeLike[]` |
-| `markFreeLikesProcessed(likeIds)` | `(string[]) => void` |
+| `markFreeLikesProcessed(likeIds)` | `(string[]) => void` — records processed ids while a block journal is open |
+| `markFreeLikesUnprocessed(likeIds)` | `(string[]) => void` — fork-rollback inverse (never records) |
 
 ### UTXO
 
@@ -700,19 +701,19 @@ Fresh schema — no Phase 1 migration.
 | `getUnspentPostLockBoxes()` | `() => PostLockBox[]` |
 | `getPostLockBox(targetPostId)` | `(string) => PostLockBox \| null` |
 | `getPostTotalLikes(postId)` | `(PostId) => number` — locked + free |
-| `insertBox(box)` | `(AnyBox) => void` |
-| `consumeBox(boxId, consumedAtBlock)` | `(string, number) => void` — mark as spent |
-| `unconsumeBox(boxId)` | `(string) => void` — un-mark spent (fork rollback) |
-| `deleteBox(boxId)` | `(string) => void` |
-| `markLikeBoxesTallied(boxIds)` | `(string[]) => void` — after epoch processing |
+| `insertBox(box)` | `(AnyBox) => void` — records `{op:'insert', boxId, box}` while a block journal is open |
+| `consumeBox(boxId, consumedAtBlock)` | `(string, number) => void` — mark as spent; records `{op:'remove', boxId}` while a block journal is open |
+| `unconsumeBox(boxId)` | `(string) => void` — un-mark spent (fork-rollback inverse; never records) |
+| `deleteBox(boxId)` | `(string) => void` — (fork-rollback inverse; never records) |
+| `markLikeBoxesTallied(boxIds)` | `(string[]) => void` — after epoch processing (sentinel spend `-1`); records `{op:'remove', boxId}` per box while a block journal is open |
 
 ### Vouch Cooldowns
 
 | Function | Signature |
 |----------|-----------|
-| `insertVouchCooldown(voucherId, targetId, releaseAtBlock, karmaAmount)` | `(UserId, UserId, number, number) => void` |
+| `insertVouchCooldown(voucherId, targetId, releaseAtBlock, karmaAmount)` | `(UserId, UserId, number, bigint) => void` — `INSERT OR REPLACE`; while a block journal is open, records the insertion side-record, capturing any row it replaces |
 | `getMaturedVouchCooldowns(currentHeight)` | `(number) => Cooldown[]` |
-| `deleteVouchCooldown(voucherId, targetId)` | `(UserId, UserId) => void` |
+| `deleteVouchCooldown(voucherId, targetId)` | `(UserId, UserId) => void` — while a block journal is open, captures the row before deleting and records the deletion side-record (H-7 inverse); unrecorded when called from fork rollback (no journal open) |
 
 ### Block Topology
 
@@ -783,12 +784,79 @@ See `MEMPOOL_INTERFACE.md` for the full mempool contract.
 
 ### Block Journal
 
+The journal is the single source of truth for undoing a block and for feeding
+the AVL prover (ARCHITECTURE → "Block application journal"). One CBOR-encoded
+row per applied block, purged below `height − MAX_REORG_DEPTH` (20).
+
+**Types are node-owned** (`src/store/journal.ts`). The former
+`@dagsocial/types` journal exports — `BlockJournal`, `KarmaMint`,
+`AppliedUtxoTx`, `DecayJournalEntry` — are removed from types; node was their
+only consumer. (`applyKarmaDecay`'s return type moves into the node package
+with it.)
+
+```
+BoxMutation {
+  op: 'insert' | 'remove'
+  boxId: string                    // hex
+  box?: AnyBox                     // full box — present iff op === 'insert'
+}
+
+BlockJournal {
+  blockHeight: number
+  mutations: BoxMutation[]         // ordered, application order — box rollback + AVL feed
+  confirmedSubBlockIds: string[]   // inverse: unconfirmPost; also mempool re-insertion
+  appliedUtxoTxs: Array<{ txId: string, txCbor: Uint8Array }>   // mempool re-insertion only
+  processedFreeLikeIds: string[]   // inverse: markFreeLikesUnprocessed
+  vouchCooldownInsertions: Array<{ voucherId: UserId, targetId: UserId,
+    replaced?: { releaseAtBlock: number, karmaAmount: bigint } }>
+                                   // inverse: deleteVouchCooldown, then restore `replaced` if present
+                                   // (insertVouchCooldown is INSERT OR REPLACE — exact inverse
+                                   //  must restore a row it overwrote)
+  vouchCooldownDeletions: Array<{ voucherId: UserId, targetId: UserId,
+    releaseAtBlock: number, karmaAmount: bigint }>
+                                   // inverse: insertVouchCooldown (restores the escrow row — H-7)
+}
+```
+
+**Recording (choke point).** `beginBlockJournal(height)` opens the journal at
+the top of block application. While open, the store mutation primitives record
+automatically: `insertBox` appends `{op:'insert', boxId, box}`; `consumeBox`
+and `markLikeBoxesTallied` append `{op:'remove', boxId}`;
+`markFreeLikesProcessed`, `insertVouchCooldown`, and `deleteVouchCooldown`
+append their side-records, capturing the affected row(s) before writing.
+Services and call sites MUST NOT maintain parallel mutation bookkeeping —
+record-once at the choke point is the drift fix (C-5, H-5, H-7, and the
+merge-consume value-loss: the boxes `mintKarma`/`mintCredits` consume
+internally are now journaled by construction). With no journal open, every
+primitive behaves as before and records nothing (bootstrap and non-block
+paths). The rollback inverses — `deleteBox`, `unconsumeBox`,
+`markFreeLikesUnprocessed` — never record. `beginBlockJournal` while a
+journal is open throws (the apply funnel's totality catch turns that into a
+block rejection).
+
 | Function | Signature |
 |----------|-----------|
-| `insertBlockJournal(entry)` | `(BlockJournalEntry) => void` |
-| `getBlockJournal(height)` | `(number) => BlockJournalEntry \| null` |
+| `beginBlockJournal(height)` | `(number) => void` — throws if a journal is already open |
+| `finishBlockJournal()` | `() => BlockJournal` — returns and closes the open journal |
+| `abortBlockJournal()` | `() => void` — discards the open journal (no-op when none) |
+| `insertBlockJournal(journal)` | `(BlockJournal) => void` |
+| `getBlockJournal(height)` | `(number) => BlockJournal \| null` |
 | `deleteBlockJournal(height)` | `(number) => void` |
 | `purgeOldJournals(belowHeight)` | `(number) => void` |
+
+**Rollback (`revertBlock`).** Replays `mutations` in reverse order — `insert`
+→ `deleteBox(boxId)`, `remove` → `unconsumeBox(boxId)` — then the side-record
+inverses, then `rollbackBlockTopology`, block + journal deletion.
+Apply-then-revert MUST restore the exact pre-block UTXO set and AVL digest
+for every mutation class: coinbase (including pre-existing credit boxes
+merged in), epoch mints (including pre-existing karma merged in), like-tally,
+post-lock swap, decay, vouch-cooldown mint (escrow row restored), prune
+settlement, and user txs. Reorg re-insertion reads `appliedUtxoTxs` (txCbor)
+and `confirmedSubBlockIds` as before.
+
+**Breaking:** this shape replaces the former dual representation
+(`consumedBoxIds`/`createdBoxIds` alongside typed arrays). Fresh DB required
+(already mandated by P0's box-value change).
 
 ### Stumps
 
@@ -809,6 +877,15 @@ the UTXO set using AVL+ trees.
   light clients
 - **Config:** `VERIFY_STATE_ROOT` (validate on apply) and `MAX_PROOF_HISTORY`
   (prune old proof versions)
+- **Journal-fed:** the per-block mutation set is derived from
+  `BlockJournal.mutations` — intra-block insert+remove pairs for the same
+  boxId net out; inserted box bytes come from the journal's `box` payload,
+  never a store re-fetch (`getBox` returns null for created-then-consumed
+  boxes and silently dropped them). Canonical boxId ordering is Spec B P2
+- **Rejection-safe:** the apply funnel snapshots the prover digest before any
+  mutation and rolls the prover back on **every** rejection path — explicit
+  rejection, stateRoot mismatch, and the totality catch (closes the open
+  f4a683f remnant)
 
 ### dag_meta Table
 
@@ -1103,10 +1180,13 @@ same relocation already applied to the PoW target (M-2), coinbase maturity
 
 **The funnel is total.** `applyOrderingBlock` MUST NOT propagate an exception
 for any input. A block that causes an unexpected throw is a block the node
-rejects: the surrounding transaction rolls back and the function returns
-`false`, exactly as for an explicit rejection, with the error logged
-server-side. This is the ARCHITECTURE invariant "no method panics on untrusted
-input" applied at the consensus boundary, and it is load-bearing rather than
+rejects: the surrounding transaction rolls back, the open block journal is
+discarded, the AVL prover is restored to its pre-block digest (the funnel
+snapshots the digest before the body runs — SQLite rollback does not reach
+the prover's in-memory state), and the function returns `false`, exactly as
+for an explicit rejection, with the error logged server-side. This is the
+ARCHITECTURE invariant "no method panics on untrusted input" applied at the
+consensus boundary, and it is load-bearing rather than
 defensive: the gossip callback is `async` and its promise is discarded by the
 net layer, so a propagated throw becomes an unhandled rejection, which
 terminates the process on Node ≥ 15. Because a rejected block is never stored,
@@ -1214,3 +1294,7 @@ content sweep for placeholder and missing-stump resolution.
   block application. Zero direct `consumeBox`/`insertBox` calls in HTTP routes.
 - Mutating routes return `{ status: "pending", txId, expiresAtHeight }` —
   state is not applied until the enclosing ordering block is finalized.
+- Every box mutation during block application is recorded exactly once, at
+  the store choke point, in the block journal; rollback replays inverses in
+  reverse order; the AVL feed derives from the same journal (record-once,
+  Spec B P1).
