@@ -292,8 +292,13 @@ existence or absence without storing the full UTXO set.
   the block journal (see Invariants → Block application journal), with
   intra-block insert+remove pairs for the same boxId netted out
   deterministically. Inserted box bytes come from the journal's recorded box,
-  never a store re-fetch. Canonical boxId ordering of the net set is Spec B P2
-  (M-12)
+  never a store re-fetch
+- **Canonically ordered (M-12):** the AVL digest is insertion-order-sensitive,
+  so every prover feed is sorted before the operations run: the per-block net
+  set applies all removes then all inserts, each sorted lexicographically by
+  hex boxId, and the startup bootstrap feeds the unspent set sorted by boxId
+  as well. Two nodes holding the same box set — whatever order their rows
+  arrived in — always compute the identical digest
 - **Rejection-safe:** A rejected block leaves the prover at its pre-block
   digest, whatever stage the rejection happened at — the apply funnel
   snapshots the digest before any mutation and restores it on every rejection

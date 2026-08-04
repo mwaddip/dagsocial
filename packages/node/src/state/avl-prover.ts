@@ -65,7 +65,10 @@ export function bootstrapAvlProver(
   unspentBoxes: AnyBox[],
   currentHeight: number,
 ): void {
-  for (const box of unspentBoxes) {
+  // Sorted here rather than in getUnspentBoxes' SQL: the canonical order is a
+  // property of the prover feed, so it lives at this boundary and every other
+  // caller of getUnspentBoxes keeps its own ordering.
+  for (const box of sortByBoxId(unspentBoxes)) {
     const key = hexToBytes(box.id!);
     const value = serializeBox(box);
     handle.prover.performOneOperation({ tag: 'Insert', key, value });
@@ -79,8 +82,11 @@ export function bootstrapAvlProver(
 /**
  * Apply a block's UTXO mutations to the prover and return the new 33-byte digest.
  *
- * @param consumed - hex-encoded box IDs consumed in this block
- * @param created - full box objects created in this block
+ * The feed is sorted internally, so callers MUST NOT rely on their input order
+ * reaching the tree — it is deliberately discarded.
+ *
+ * @param consumed - hex-encoded box IDs consumed in this block, any order
+ * @param created - full box objects created in this block, any order
  * @returns 33-byte digest (root label || height)
  */
 export function applyBlockMutations(
@@ -88,14 +94,17 @@ export function applyBlockMutations(
   consumed: string[],
   created: AnyBox[],
 ): Uint8Array {
-  // Remove consumed boxes
-  for (const boxId of consumed) {
+  // Remove consumed boxes, canonically ordered (M-12). All removes precede all
+  // inserts; the two groups are disjoint by construction — box ids commit to
+  // createdAtBlock, and any intra-block insert+remove pair for one id was
+  // netted out upstream — so the split can never reorder ops on a single key.
+  for (const boxId of [...consumed].sort(byHexBoxId)) {
     const key = hexToBytes(boxId);
     prover.performOneOperation({ tag: 'Remove', key });
   }
 
-  // Insert created boxes
-  for (const box of created) {
+  // Insert created boxes, same canonical order
+  for (const box of sortByBoxId(created)) {
     const key = hexToBytes(box.id!);
     const value = serializeBox(box);
     prover.performOneOperation({ tag: 'Insert', key, value });
@@ -128,6 +137,20 @@ export function checkpointProver(
 /** Decode hex string to bytes. */
 function hexToBytes(hex: string): Uint8Array {
   return new Uint8Array(Buffer.from(hex, 'hex'));
+}
+
+/**
+ * Lexicographic order over hex box ids — the canonical prover-feed order
+ * (M-12; NODE_INTERFACE "AVL+ State Root"). Ids are fixed-width lowercase hex,
+ * so code-unit order is byte order over the underlying key.
+ */
+function byHexBoxId(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/** Boxes in canonical id order, without mutating the caller's array. */
+function sortByBoxId<T extends { id?: string }>(boxes: T[]): T[] {
+  return [...boxes].sort((a, b) => byHexBoxId(a.id!, b.id!));
 }
 
 /** Get the singleton prover handle (throws if not initialized). */

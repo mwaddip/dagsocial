@@ -886,7 +886,14 @@ the UTXO set using AVL+ trees.
   `BlockJournal.mutations` — intra-block insert+remove pairs for the same
   boxId net out; inserted box bytes come from the journal's `box` payload,
   never a store re-fetch (`getBox` returns null for created-then-consumed
-  boxes and silently dropped them). Canonical boxId ordering is Spec B P2
+  boxes and silently dropped them)
+- **Canonically ordered (M-12):** `applyBlockMutations` sorts internally —
+  all removes then all inserts, each lexicographically by hex boxId — so
+  every caller inherits the canonical order; callers MUST NOT rely on their
+  input order reaching the prover. `bootstrapAvlProver` sorts the unspent
+  set by boxId the same way. Same box set in any input order → same digest;
+  a net-set remove and insert can never share a boxId (ids embed
+  `createdAtBlock`, and same-id pairs were netted out)
 - **Rejection-safe:** the apply funnel snapshots the prover digest before any
   mutation and rolls the prover back on **every** rejection path — explicit
   rejection, stateRoot mismatch, and the totality catch (closes the open
