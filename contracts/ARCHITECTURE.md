@@ -297,7 +297,10 @@ existence or absence without storing the full UTXO set.
 - **Rejection-safe:** A rejected block leaves the prover at its pre-block
   digest, whatever stage the rejection happened at — the apply funnel
   snapshots the digest before any mutation and restores it on every rejection
-  path, including the totality catch
+  path, including the totality catch. A failed reorg likewise leaves the
+  prover at its pre-reorg digest (SQLite rollback restores the storage rows
+  but cannot reach the prover's in-memory state — the reorg restores it
+  explicitly)
 
 ### 3. Stumps (Binding Layer)
 

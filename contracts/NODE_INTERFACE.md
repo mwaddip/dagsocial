@@ -886,6 +886,11 @@ the UTXO set using AVL+ trees.
   mutation and rolls the prover back on **every** rejection path — explicit
   rejection, stateRoot mismatch, and the totality catch (closes the open
   f4a683f remnant)
+- **Reorg-abort-safe:** `reorg()` snapshots the prover digest before reverting
+  anything; if applying the new chain fails mid-way, the reorg transaction
+  rolls the DB (including AVL storage rows) back wholesale, and the reorg's
+  catch restores the in-memory prover to the pre-reorg digest — the per-block
+  funnel restore only covers the failing block, not the applied prefix
 
 ### dag_meta Table
 
