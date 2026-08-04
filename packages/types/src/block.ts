@@ -9,10 +9,10 @@ import type { PruneEntry } from './stump.js';
 
 export interface LikeReward {
   targetPostId: PostId;
-  likeCount: number;
-  authorReward: number;
-  likerRefunds: Record<string, number>;  // likerId → net karma refund
-  postLockKarmaUnlocked?: number;         // Karma released from post lock this epoch
+  likeCount: number;                      // count, not an amount — stays number
+  authorReward: bigint;
+  likerRefunds: Record<string, bigint>;  // likerId → net karma refund
+  postLockKarmaUnlocked?: bigint;         // Karma released from post lock this epoch
 }
 
 // ---------------------------------------------------------------------------
@@ -64,7 +64,7 @@ export interface EpochTally {
 
 export interface CoinbaseOutput {
   owner: UserId;              // 32-byte recipient public key
-  value: number;              // Credits minted
+  value: bigint;              // Credits minted (integer base units of 10^-8 credit)
   lockedUntilBlock: number;   // Height at which credits become spendable
   isTreasury: boolean;        // Treasury or miner output
 }

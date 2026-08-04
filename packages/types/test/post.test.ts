@@ -309,17 +309,17 @@ describe('constants', () => {
   });
 
   it('karma constants are defined', () => {
-    expect(KARMA_POSTING_MINIMUM).toBe(1);
+    expect(KARMA_POSTING_MINIMUM).toBe(1n);
     expect(KARMA_STALE_THRESHOLD_BLOCKS).toBe(20160);
     expect(KARMA_DECAY_INTERVAL_BLOCKS).toBe(720);
-    expect(KARMA_DECAY_AMOUNT).toBe(5);
-    expect(KARMA_MINIMUM).toBe(10);
+    expect(KARMA_DECAY_AMOUNT).toBe(5n);
+    expect(KARMA_MINIMUM).toBe(10n);
   });
 
   it('like constants are defined', () => {
-    expect(LIKE_COST).toBe(2);
+    expect(LIKE_COST).toBe(2n);
     expect(LIKE_THRESHOLD).toBe(5);
-    expect(LIKE_MAX_AUTHOR_REWARD).toBe(10);
+    expect(LIKE_MAX_AUTHOR_REWARD).toBe(10n);
     expect(LIKE_FREE_THRESHOLD).toBe(10);
   });
 
@@ -329,25 +329,25 @@ describe('constants', () => {
 
   it('invite constants are defined', () => {
     expect(MAX_PENDING_INVITES).toBe(5);
-    expect(INVITE_BOND_KARMA).toBe(25);
+    expect(INVITE_BOND_KARMA).toBe(25n);
     expect(INVITE_PROBATION_BLOCKS).toBe(1000);
-    expect(INVITE_KARMA_THRESHOLD).toBe(20);
+    expect(INVITE_KARMA_THRESHOLD).toBe(20n);
   });
 
   it('genesis constants are defined', () => {
     expect(GENESIS_COMMITTEE_KEYS).toEqual([]);
-    expect(GENESIS_KARMA_PER_MEMBER).toBe(1000);
-    expect(GENESIS_CREDITS_PER_MEMBER).toBe(10000);
+    expect(GENESIS_KARMA_PER_MEMBER).toBe(1000n);
+    expect(GENESIS_CREDITS_PER_MEMBER).toBe(10000n * 10n ** 8n);  // credits ×10^8 base units
     expect(BOOTSTRAP_PERIOD_BLOCKS).toBe(10000);
   });
 
   it('validator constants are defined', () => {
     expect(ORDERING_BLOCK_POW_TARGET_BITS).toBe(12);
-    expect(CREDIT_INITIAL_REWARD).toBe(100);
+    expect(CREDIT_INITIAL_REWARD).toBe(100n * 10n ** 8n);   // credits ×10^8 base units
     expect(CREDIT_FIXED_RATE_BLOCKS).toBe(1_051_200);
     expect(CREDIT_EPOCH_BLOCKS).toBe(129_600);
-    expect(CREDIT_REWARD_REDUCTION).toBe(2);
-    expect(CREDIT_TAIL_REWARD).toBe(2);
+    expect(CREDIT_REWARD_REDUCTION).toBe(2n * 10n ** 8n);
+    expect(CREDIT_TAIL_REWARD).toBe(2n * 10n ** 8n);
     expect(CREDIT_MINER_REWARD_DELAY).toBe(720);
     expect(CREDIT_TREASURY_PCT).toBe(10);
     expect(ORDERING_BLOCK_POW_TARGET_FLOOR).toBe(4);

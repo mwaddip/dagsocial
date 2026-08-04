@@ -2,7 +2,7 @@ import type { UserId } from './identity.js';
 
 export interface KarmaMint {
   userId: UserId;
-  amount: number;
+  amount: bigint;
   boxId?: string;
 }
 
@@ -17,7 +17,7 @@ export interface DecayJournalEntry {
   owner: Uint8Array;
   consumedBoxIds: string[];
   newBoxId: string;
-  burnAmount: number;
+  burnAmount: bigint;
 }
 
 export interface BlockJournal {
