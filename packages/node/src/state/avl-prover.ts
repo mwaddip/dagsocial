@@ -40,7 +40,7 @@ export function createAvlProver(db?: import('better-sqlite3').Database): AvlProv
   const keyLength = config.avlKeyLength;
   const valueLengthOpt = null; // variable-length box values
 
-  const newStorage = new SqliteAvlStorage(database);
+  const newStorage = new SqliteAvlStorage(database, { keyLength, valueLengthOpt });
   const innerProver = new BatchAVLProver(keyLength, valueLengthOpt);
 
   const newProver = new PersistentBatchAVLProver(innerProver, newStorage, [

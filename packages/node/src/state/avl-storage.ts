@@ -1,6 +1,6 @@
-import type { VersionedAVLStorage, BatchAVLProver } from '@ergots/avltree';
-import { serializeNode, deserializeNode, label } from '@ergots/avltree';
-import type { AvlNode, InternalNode } from '@ergots/avltree';
+import type { VersionedAVLStorage, BatchAVLProver, AvlTreeConfig } from '@ergots/avltree';
+import { serializeNode, deserializeNode, label, newInternal } from '@ergots/avltree';
+import type { AvlNode } from '@ergots/avltree';
 import type Database from 'better-sqlite3';
 
 /**
@@ -12,9 +12,11 @@ import type Database from 'better-sqlite3';
  */
 export class SqliteAvlStorage implements VersionedAVLStorage {
   private db: Database.Database;
+  private config: AvlTreeConfig;
 
-  constructor(db: Database.Database) {
+  constructor(db: Database.Database, config: AvlTreeConfig) {
     this.db = db;
+    this.config = config;
   }
 
   update(prover: BatchAVLProver, additionalData: [Uint8Array, Uint8Array][]): void {
@@ -65,7 +67,7 @@ export class SqliteAvlStorage implements VersionedAVLStorage {
     }
 
     const nodeLabel = label(node);
-    const nodeData = serializeNode(node);
+    const nodeData = serializeNode(node, this.config);
     insertStmt.run(version, nodeLabel, nodeData);
   }
 
@@ -81,37 +83,29 @@ export class SqliteAvlStorage implements VersionedAVLStorage {
     // Deserialize all nodes, index by label hex
     const nodeMap = new Map<string, AvlNode>();
     for (const row of rows) {
-      const node = deserializeNode(new Uint8Array(row.node_data));
+      const node = deserializeNode(new Uint8Array(row.node_data), this.config);
       const lbl = Buffer.from(row.label).toString('hex');
       nodeMap.set(lbl, node);
     }
 
-    // Re-link InternalNode children via leftLabel/rightLabel.
-    // Children deserialize as LabelNodes; we replace them with the real
-    // AvlNode from nodeMap so the prover can traverse the full tree.
-    for (const node of nodeMap.values()) {
-      if (node.kind === 'internal') {
-        const internal = node as InternalNode;
-        // Left child is referenced by label
-        const leftLabel = label(internal.left as AvlNode);
-        const leftKey = Buffer.from(leftLabel).toString('hex');
-        const leftNode = nodeMap.get(leftKey);
-        if (leftNode) internal.left = leftNode;
+    // Rebuild the tree bottom-up from the root label (version = rootLabel || height).
+    // deserializeNode returns each internal node's children as LabelNode stubs;
+    // nodes are immutable, so stubs are resolved into real subtrees by
+    // constructing fresh internal nodes rather than relinking in place.
+    // A stored version is self-contained -- a missing child means the stored
+    // data is corrupt, so fail closed instead of returning a tree the prover
+    // cannot traverse. The internal `key` is not part of the node's label but
+    // the prover needs it for descent, so it is carried through.
+    const resolve = (labelHex: string): AvlNode => {
+      const node = nodeMap.get(labelHex);
+      if (!node) throw new Error(`Missing node for label ${labelHex} in stored version`);
+      if (node.kind !== 'internal') return node;
+      const left = resolve(Buffer.from(label(node.left)).toString('hex'));
+      const right = resolve(Buffer.from(label(node.right)).toString('hex'));
+      return newInternal(left, right, node.balance, node.key);
+    };
 
-        const rightLabel = label(internal.right as AvlNode);
-        const rightKey = Buffer.from(rightLabel).toString('hex');
-        const rightNode = nodeMap.get(rightKey);
-        if (rightNode) internal.right = rightNode;
-      }
-    }
-
-    // Find root: the node whose label equals the first 32 bytes of the
-    // version digest (the version is rootLabel || height).
-    const rootLabel = version.slice(0, 32);
-    const rootKey = Buffer.from(rootLabel).toString('hex');
-    const root = nodeMap.get(rootKey);
-    if (!root) throw new Error('Root node not found in stored version');
-
+    const root = resolve(Buffer.from(version.slice(0, 32)).toString('hex'));
     const height = version[32]!;
     return [root, height];
   }
