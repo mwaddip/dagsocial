@@ -33,16 +33,17 @@ import type {
   Post,
   LikeBox,
   KarmaBox,
+  PostLockBox,
   BlockHeader,
   OrderingBlock,
   SubBlockEntry,
   PruneEntry,
   UtxoTransaction,
-  BlockJournal,
-  DecayJournalEntry,
   EpochTally,
   LikeReward,
 } from '@dagsocial/types';
+import type { BlockJournal } from '../../src/store/journal.js';
+import type { DecayJournalEntry } from '../../src/services/decay.js';
 import type Database from 'better-sqlite3';
 import { signTransaction } from '../helpers.js';
 
@@ -161,7 +162,6 @@ async function importBlockApply() {
     '../../src/services/block-apply.js'
   )) as unknown as {
     applyOrderingBlock: (block: OrderingBlock) => boolean;
-    getCurrentJournal: () => BlockJournal | null;
   };
 }
 
@@ -170,7 +170,18 @@ async function importJournalStore() {
     getBlockJournal: (height: number) => BlockJournal | null;
     insertBlockJournal: (journal: BlockJournal) => void;
     deleteBlockJournal: (height: number) => void;
+    isBlockJournalOpen: () => boolean;
   };
+}
+
+/** boxIds of 'remove' mutations, in application order. */
+function removedIds(journal: BlockJournal): string[] {
+  return journal.mutations.filter((m) => m.op === 'remove').map((m) => m.boxId);
+}
+
+/** boxIds of 'insert' mutations, in application order. */
+function insertedIds(journal: BlockJournal): string[] {
+  return journal.mutations.filter((m) => m.op === 'insert').map((m) => m.boxId);
 }
 
 async function importOrdering() {
@@ -443,10 +454,10 @@ describe('block-apply journal recording', () => {
   });
 
   // -----------------------------------------------------------------------
-  // 1. Coinbase mint records creditBoxIds in journal
+  // 1. Coinbase mint records credit box inserts in journal
   // -----------------------------------------------------------------------
 
-  it('coinbase mint records creditBoxIds in journal', async () => {
+  it('coinbase mint records credit box inserts in journal', async () => {
     const db = await importDb();
     db.initDb(':memory:');
 
@@ -462,12 +473,14 @@ describe('block-apply journal recording', () => {
     const saved = journal.getBlockJournal(1);
     expect(saved).not.toBeNull();
     expect(saved!.blockHeight).toBe(1);
-    expect(saved!.creditBoxIds.length).toBeGreaterThan(0);
 
-    // Each coinbase output should produce one credit box ID
-    expect(saved!.creditBoxIds.length).toBe(
-      block!.utxoTxTree.coinbaseOutputs.length,
+    // Genesis miner has no prior credits, so each coinbase output is exactly
+    // one credit insert, its box bytes carried in the journal payload
+    const creditInserts = saved!.mutations.filter(
+      (m) => m.op === 'insert' && m.box!.boxType === 'credit',
     );
+    expect(creditInserts.length).toBe(block!.utxoTxTree.coinbaseOutputs.length);
+    expect(saved!.mutations.length).toBe(creditInserts.length);
   });
 
   // -----------------------------------------------------------------------
@@ -506,10 +519,10 @@ describe('block-apply journal recording', () => {
   });
 
   // -----------------------------------------------------------------------
-  // 3. Like tally records talliedLikeBoxIds in journal
+  // 3. Epoch like tally records the spent like boxes as removes (H-5)
   // -----------------------------------------------------------------------
 
-  it('like tally records talliedLikeBoxIds in journal', async () => {
+  it('epoch like tally records tallied like boxes as removes (H-5)', async () => {
     const db = await importDb();
     db.initDb(':memory:');
 
@@ -518,9 +531,6 @@ describe('block-apply journal recording', () => {
 
     const { encodePost } = await import('@dagsocial/types');
     const utxo = await importUtxo();
-
-    // Give author karma
-    utxo.insertBox(makeKarmaBox(100n, author.publicKey, 0));
 
     // Create a post
     const post = makePost(author.userId, 'like journal test');
@@ -528,33 +538,53 @@ describe('block-apply journal recording', () => {
     const posts = await importPosts();
     posts.insertPost(post, encodePost(post));
 
-    // Create a standalone like box (not attached to sub-block)
-    const liker = makeTestIdentity();
-    utxo.insertBox(makeKarmaBox(10n, liker.publicKey, 0));
-    const likeBox = makeLikeBox(liker.userId, postId, 0);
-    utxo.insertBox(likeBox);
+    // Enough locked likes that the epoch tally spends them
+    // (talliedLockedLikeBoxIds requires ≥ 2×LIKE_THRESHOLD likes on the post)
+    const likeBoxes: LikeBox[] = [];
+    for (let i = 0; i < 2 * LIKE_THRESHOLD; i++) {
+      const liker = makeTestIdentity();
+      utxo.insertBox(makeKarmaBox(10n, liker.publicKey, 0));
+      const likeBox = makeLikeBox(liker.userId, postId, 0);
+      utxo.insertBox(likeBox);
+      likeBoxes.push(likeBox);
+    }
 
-    // Insert sub-block ID for the post
     const mempool = await importMempoolFresh();
-    mempool.insertSubBlock(postId, 1000);
-
     const bc = await importBlockCreator();
-    bc.startBlockCreator(testConfig);
+    bc.startBlockCreator(testConfig); // epochBlocks = 2
+
+    // Fast-forward 2 blocks; the block after height 2 carries the tally
+    for (let i = 0; i < 2; i++) {
+      const dp = makePost(author.userId, `ff ${i}`);
+      const dpId = computePostId(dp);
+      posts.insertPost(dp, encodePost(dp));
+      mempool.insertSubBlock(dpId, 1000);
+      bc.createOrderingBlock();
+    }
+    const dp = makePost(author.userId, 'epoch trigger');
+    const dpId = computePostId(dp);
+    posts.insertPost(dp, encodePost(dp));
+    mempool.insertSubBlock(dpId, 1000);
     bc.createOrderingBlock();
 
+    // The old journal copied the block header's likeBoxIds list; the actual
+    // spend performed by markLikeBoxesTallied was invisible to the AVL feed
+    // (H-5). The record-once journal carries each tallied box as a remove.
     const journal = await importJournalStore();
-    const saved = journal.getBlockJournal(1);
+    const saved = journal.getBlockJournal(3);
     expect(saved).not.toBeNull();
-    expect(saved!.talliedLikeBoxIds.length).toBeGreaterThan(0);
-    // The standalone like box should be tallied
-    expect(saved!.talliedLikeBoxIds).toContain(likeBox.id);
+    const removed = removedIds(saved!);
+    for (const likeBox of likeBoxes) {
+      expect(removed).toContain(likeBox.id);
+      expect(utxo.getBox(likeBox.id!)).toBeNull(); // really spent in the DB
+    }
   });
 
   // -----------------------------------------------------------------------
-  // 4. Epoch tally karma mints records karmaMints in journal
+  // 4. Epoch tally mint journals the merge-consumed originals + merged box
   // -----------------------------------------------------------------------
 
-  it('epoch tally records karmaMints in journal', async () => {
+  it('epoch tally mint journals the merge-consumed karma originals', async () => {
     const db = await importDb();
     db.initDb(':memory:');
 
@@ -564,8 +594,9 @@ describe('block-apply journal recording', () => {
     const { encodePost } = await import('@dagsocial/types');
     const utxo = await importUtxo();
 
-    // Give author some initial karma
-    utxo.insertBox(makeKarmaBox(100n, author.publicKey, 0));
+    // Give author some initial karma — the epoch mint will merge it in
+    const authorStartBox = makeKarmaBox(100n, author.publicKey, 0);
+    utxo.insertBox(authorStartBox);
 
     // Create target post
     const post = makePost(author.userId, 'epoch journal test');
@@ -602,18 +633,31 @@ describe('block-apply journal recording', () => {
 
     bc.createOrderingBlock();
 
-    // Verify journal at height 3 (epoch block)
+    // Verify journal at height 3 (epoch block). The mint consumed the
+    // author's pre-existing box and created one merged box — BOTH sides must
+    // be in the journal: the old shape recorded only the new box, so revert
+    // deleted it without un-consuming the originals (value-loss on reorg).
     const journal = await importJournalStore();
     const saved = journal.getBlockJournal(3);
     expect(saved).not.toBeNull();
-    expect(saved!.karmaMints.length).toBeGreaterThan(0);
 
-    // At least one author reward karma mint for the post
-    const authorMints = saved!.karmaMints.filter(
-      (m) => Buffer.from(m.userId).equals(Buffer.from(author.userId)),
+    expect(removedIds(saved!)).toContain(authorStartBox.id);
+
+    const authorInserts = saved!.mutations.filter(
+      (m) =>
+        m.op === 'insert' &&
+        m.box!.boxType === 'karma' &&
+        Buffer.from((m.box as KarmaBox).owner).equals(Buffer.from(author.userId)),
     );
-    expect(authorMints.length).toBeGreaterThan(0);
-    expect(authorMints.reduce((sum, m) => sum + m.amount, 0n)).toBeGreaterThan(0n);
+    expect(authorInserts.length).toBe(1);
+    // Merged value: the 100n original plus the epoch author reward
+    expect((authorInserts[0]!.box as KarmaBox).value).toBeGreaterThan(100n);
+
+    // The merged box is what the store now holds, at the journal's value
+    const held = utxo.getKarmaBox(author.userId);
+    expect(held).not.toBeNull();
+    expect(held!.id).toBe(authorInserts[0]!.boxId);
+    expect(held!.value).toBe((authorInserts[0]!.box as KarmaBox).value);
   });
 
   // -----------------------------------------------------------------------
@@ -665,11 +709,17 @@ describe('block-apply journal recording', () => {
     expect(saved).not.toBeNull();
     expect(saved!.appliedUtxoTxs.length).toBeGreaterThan(0);
 
+    // The applied-tx record carries what mempool re-insertion needs: the id
+    // and the CBOR, which round-trips to the same transaction
     const applied = saved!.appliedUtxoTxs[0]!;
     expect(applied.txId).toBe(computeTxId(likeTx));
-    expect(applied.inputBoxIds).toEqual(likeTx.inputs);
-    expect(applied.outputBoxIds.length).toBeGreaterThan(0);
     expect(applied.txCbor).toBeInstanceOf(Uint8Array);
+    expect(computeTxId(decodeTx(applied.txCbor))).toBe(applied.txId);
+
+    // The tx's box mutations live in the primitive log: input consumed,
+    // outputs (change karma + like box) created
+    expect(removedIds(saved!)).toContain(karmaBox.id);
+    expect(insertedIds(saved!)).toContain(changeBoxOf(likeTx).id);
   });
 
   // -----------------------------------------------------------------------
@@ -886,10 +936,10 @@ describe('block-apply journal recording', () => {
   });
 
   // -----------------------------------------------------------------------
-  // 10. Successful block clears journal module state after persistence
+  // 10. Successful block leaves no journal open after persistence
   // -----------------------------------------------------------------------
 
-  it('getCurrentJournal returns null after successful block application', async () => {
+  it('no block journal is left open after successful block application', async () => {
     const db = await importDb();
     db.initDb(':memory:');
 
@@ -897,9 +947,8 @@ describe('block-apply journal recording', () => {
     bc.startBlockCreator(testConfig);
     bc.createOrderingBlock();
 
-    const blockApply = await importBlockApply();
-    // Journal module state should be cleared after successful apply
-    expect(blockApply.getCurrentJournal()).toBeNull();
+    const journal = await importJournalStore();
+    expect(journal.isBlockJournalOpen()).toBe(false);
   });
 
   // -----------------------------------------------------------------------
@@ -919,9 +968,9 @@ describe('block-apply journal recording', () => {
     utxo.insertBox(oldBox);
 
     // Import decay module directly — applyOrderingBlock delegates to it,
-    // and we can't build 20,000+ blocks in a test. The journal entries
-    // returned by applyKarmaDecay are exactly what get pushed into
-    // currentJournal.decayBurns.
+    // and we can't build 20,000+ blocks in a test. Inside block application
+    // its box mutations are journaled at the store choke point; the return
+    // value asserted here is the service's own per-owner summary.
     const { applyKarmaDecay } = await import(
       '../../src/services/decay.js'
     );
@@ -970,6 +1019,61 @@ describe('block-apply journal recording', () => {
     // New decay-burn box exists with reduced value
     expect(karmaBox!.boxType).toBe('karma');
     expect(karmaBox!.value).toBe(100n - expectedBurn);
+  });
+
+  // -----------------------------------------------------------------------
+  // 12. Vouch-cooldown mint journals karma mutations + escrow deletion (H-7)
+  // -----------------------------------------------------------------------
+
+  it('vouch-cooldown mint journals karma mutations and the deleted escrow row (H-7)', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    const utxo = await importUtxo();
+    const { insertVouchCooldown } = (await import(
+      '../../src/store/vouch-cooldowns.js'
+    )) as {
+      insertVouchCooldown: (
+        voucherId: Uint8Array,
+        targetId: Uint8Array,
+        releaseAtBlock: number,
+        karmaAmount: bigint,
+      ) => void;
+    };
+
+    // Pre-block state: voucher karma + a matured escrow row (release ≤ 1)
+    const voucher = makeTestIdentity();
+    const target = makeTestIdentity();
+    const oldKarma = makeKarmaBox(50n, voucher.userId, 0);
+    utxo.insertBox(oldKarma);
+    insertVouchCooldown(voucher.userId, target.userId, 1, 7n);
+
+    const bc = await importBlockCreator();
+    bc.startBlockCreator(testConfig);
+    bc.createOrderingBlock();
+
+    // H-7: the cooldown mint was journaled in NEITHER old representation —
+    // the AVL never saw it, and revert neither reversed the mint nor
+    // restored the escrow row. Both now appear: merge-consume + merged
+    // insert in the mutation log, the deleted row as a side-record.
+    const journal = await importJournalStore();
+    const saved = journal.getBlockJournal(1)!;
+    expect(removedIds(saved)).toContain(oldKarma.id);
+    const voucherInserts = saved.mutations.filter(
+      (m) =>
+        m.op === 'insert' &&
+        m.box!.boxType === 'karma' &&
+        Buffer.from((m.box as KarmaBox).owner).equals(Buffer.from(voucher.userId)),
+    );
+    expect(voucherInserts.length).toBe(1);
+    expect((voucherInserts[0]!.box as KarmaBox).value).toBe(57n);
+
+    expect(saved.vouchCooldownDeletions).toHaveLength(1);
+    const del = saved.vouchCooldownDeletions[0]!;
+    expect(Buffer.from(del.voucherId).equals(Buffer.from(voucher.userId))).toBe(true);
+    expect(Buffer.from(del.targetId).equals(Buffer.from(target.userId))).toBe(true);
+    expect(del.releaseAtBlock).toBe(1);
+    expect(del.karmaAmount).toBe(7n);
   });
 });
 
@@ -1976,7 +2080,7 @@ describe('block-apply funnel totality', () => {
 
     const journal = await importJournalStore();
     expect(journal.getBlockJournal(2)).toBeNull();
-    expect(blockApply.getCurrentJournal()).toBeNull();
+    expect(journal.isBlockJournalOpen()).toBe(false);
 
     // The prune did not settle: the victim's content is untouched.
     const posts = await importPosts();
@@ -2102,7 +2206,8 @@ describe('block-apply funnel totality', () => {
     expect(getCreditBoxes(block.utxoTxTree.coinbaseOutputs[0]!.owner)).toHaveLength(0);
 
     // The half-built journal is dropped, so the next block does not inherit it.
-    expect(blockApply.getCurrentJournal()).toBeNull();
+    const journalStore = await importJournalStore();
+    expect(journalStore.isBlockJournalOpen()).toBe(false);
   });
 
   it('applies the same block with no stub in place (control)', async () => {
@@ -2123,5 +2228,104 @@ describe('block-apply funnel totality', () => {
       getCreditBoxes: (owner: Uint8Array) => unknown[];
     };
     expect(getCreditBoxes(block.utxoTxTree.coinbaseOutputs[0]!.owner)).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Prune settlement journal round-trip — apply then revert restores the exact
+// pre-block box rows. (Full per-class apply→revert→AVL-digest suites are
+// Spec B P1 Phase C; this pins the box-row restoration the old journal lost.)
+// ---------------------------------------------------------------------------
+
+describe('block-apply prune settlement revert', () => {
+  beforeEach(async () => {
+    vi.resetModules();
+  });
+
+  afterEach(async () => {
+    try {
+      const bc = await importBlockCreator();
+      bc.stopBlockCreator();
+    } catch {
+      // Module might not have been imported
+    }
+    vi.resetModules();
+  });
+
+  it('revert of a prune block restores the settled boxes exactly', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    // A confirmed post whose author holds karma, with a post-lock and a like
+    // locked against it — everything a prune settlement touches
+    const author = makeTestIdentity();
+    const liker = makeTestIdentity();
+    const post = makePost(author.userId, 'prune revert victim');
+    const postId = computePostId(post);
+
+    const posts = await importPosts();
+    posts.insertPost(post, encodePost(post));
+
+    const blockApply = await importBlockApply();
+    const confirmBlock = await makeApplicableBlock({
+      subBlockEntries: [{ postId, parentRefs: [], author: hex(author.userId) }],
+    });
+    expect(blockApply.applyOrderingBlock(confirmBlock)).toBe(true);
+
+    const utxo = await importUtxo();
+    const authorKarma = makeKarmaBox(20n, author.userId, 0);
+    utxo.insertBox(authorKarma);
+    const lockBox: PostLockBox = {
+      boxType: 'post_lock',
+      value: 30n,
+      originalValue: 30n,
+      createdAtBlock: 1,
+      owner: author.userId,
+      targetPostId: postId,
+      guard: 'epoch_tally',
+    };
+    lockBox.id = computeBoxId(lockBox);
+    utxo.insertBox(lockBox);
+    const likeBox = makeLikeBox(liker.userId, postId, 1);
+    utxo.insertBox(likeBox);
+
+    const pruneBlock = await makeApplicableBlock({
+      height: 2,
+      pruneEntries: [makePruneEntry(postId, [postId], author)],
+    });
+    expect(blockApply.applyOrderingBlock(pruneBlock)).toBe(true);
+
+    // Settled: lock + like + the author's pre-existing karma all consumed
+    // (the karma merge-consumed into the refund mint)
+    expect(utxo.getBox(lockBox.id!)).toBeNull();
+    expect(utxo.getBox(likeBox.id!)).toBeNull();
+    expect(utxo.getBox(authorKarma.id!)).toBeNull();
+
+    const journalStore = await importJournalStore();
+    const saved = journalStore.getBlockJournal(2)!;
+    const inserted = insertedIds(saved);
+    expect(removedIds(saved)).toEqual(
+      expect.arrayContaining([lockBox.id, likeBox.id, authorKarma.id]),
+    );
+
+    const { revertBlock } = (await import(
+      '../../src/services/fork-resolution.js'
+    )) as { revertBlock: (height: number) => PruneEntry[] };
+    revertBlock(2);
+
+    // Everything the block created is gone; the exact pre-block rows are back
+    for (const boxId of inserted) {
+      expect(utxo.getBox(boxId)).toBeNull();
+    }
+    const restoredLock = utxo.getBox(lockBox.id!) as PostLockBox | null;
+    expect(restoredLock).not.toBeNull();
+    expect(restoredLock!.value).toBe(30n);
+    const restoredKarma = utxo.getBox(authorKarma.id!) as KarmaBox | null;
+    expect(restoredKarma).not.toBeNull();
+    expect(restoredKarma!.value).toBe(20n);
+    expect(utxo.getBox(likeBox.id!)).not.toBeNull();
+
+    const ordering = await importOrdering();
+    expect(ordering.getCurrentHeight()).toBe(1);
   });
 });

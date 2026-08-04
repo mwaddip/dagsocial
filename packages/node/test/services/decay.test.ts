@@ -10,7 +10,8 @@ import {
   KARMA_DECAY_AMOUNT,
   KARMA_MINIMUM,
 } from '@dagsocial/types';
-import type { KarmaBox, DecayJournalEntry } from '@dagsocial/types';
+import type { KarmaBox } from '@dagsocial/types';
+import type { DecayJournalEntry } from '../../src/services/decay.js';
 
 const OWNER = new Uint8Array(32).fill(0xaa);
 

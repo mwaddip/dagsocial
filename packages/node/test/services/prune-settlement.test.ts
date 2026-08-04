@@ -3,8 +3,9 @@ import { computeBoxId } from '@dagsocial/types';
 import type {
   PostLockBox,
   LikeBox,
-  BlockJournal,
+  KarmaBox,
 } from '@dagsocial/types';
+import type { BlockJournal } from '../../src/store/journal.js';
 import type Database from 'better-sqlite3';
 
 // ---------------------------------------------------------------------------
@@ -49,8 +50,37 @@ async function importUtxo() {
 async function importSettlePruneUtxo() {
   const mod = await import('../../src/services/settle-prune-utxo.js');
   return mod as {
-    settlePruneUtxo: (postIds: string[], blockHeight: number, journal: BlockJournal) => void;
+    settlePruneUtxo: (postIds: string[], blockHeight: number) => void;
   };
+}
+
+async function importJournal() {
+  const mod = await import('../../src/store/journal.js');
+  return mod as {
+    beginBlockJournal: (height: number) => void;
+    finishBlockJournal: () => BlockJournal;
+  };
+}
+
+/**
+ * Run `fn` with a block journal open at `height` and return the finished
+ * journal — the record-once log the store choke point filled while it ran.
+ */
+async function journaled(height: number, fn: () => void): Promise<BlockJournal> {
+  const journal = await importJournal();
+  journal.beginBlockJournal(height);
+  fn();
+  return journal.finishBlockJournal();
+}
+
+/** boxIds of 'remove' mutations, in application order. */
+function removedIds(journal: BlockJournal): string[] {
+  return journal.mutations.filter((m) => m.op === 'remove').map((m) => m.boxId);
+}
+
+/** boxIds of 'insert' mutations, in application order. */
+function insertedIds(journal: BlockJournal): string[] {
+  return journal.mutations.filter((m) => m.op === 'insert').map((m) => m.boxId);
 }
 
 // ---------------------------------------------------------------------------
@@ -99,18 +129,22 @@ function makeLikeBox(
   return box;
 }
 
-function makeJournal(height = 10): BlockJournal {
-  return {
-    blockHeight: height,
-    creditBoxIds: [],
-    confirmedSubBlockIds: [],
-    talliedLikeBoxIds: [],
-    karmaMints: [],
-    appliedUtxoTxs: [],
-    decayBurns: [],
-    consumedBoxIds: [],
-    createdBoxIds: [],
+function makeKarmaBox(
+  value: bigint,
+  owner: Uint8Array,
+  createdAtBlock: number,
+): KarmaBox {
+  const box: KarmaBox = {
+    boxType: 'karma',
+    value,
+    createdAtBlock,
+    owner,
+    guard: 'owner_signature',
+    proofSource: 'genesis',
+    lastTouchBlock: createdAtBlock,
   };
+  box.id = computeBoxId(box);
+  return box;
 }
 
 /** Consensus-carried author for topology fixtures (hex(32)). */
@@ -273,22 +307,33 @@ describe('settlePruneUtxo', () => {
     const rootPostId = 'a'.repeat(64);
     const authorId = makeUserId('author1');
 
-    // Insert a PostLockBox for the author
+    // Insert a PostLockBox for the author, plus pre-existing karma the refund
+    // mint will merge in (seeded outside the journal, like any pre-block state)
     const lockBox = makePostLockBox(100, authorId, rootPostId, 1);
     utxo.insertBox(lockBox);
+    const oldKarma = makeKarmaBox(40n, authorId, 1);
+    utxo.insertBox(oldKarma);
 
-    const journal = makeJournal(10);
-    settlePruneUtxo([rootPostId], 10, journal);
+    const journal = await journaled(10, () => settlePruneUtxo([rootPostId], 10));
 
     // PostLockBox consumed
-    expect(journal.consumedBoxIds).toContain(lockBox.id);
+    expect(removedIds(journal)).toContain(lockBox.id);
+
+    // The pre-existing karma box the mint merged in is journaled too — the
+    // merge-consume the old hand-maintained journal lost (value-loss on reorg)
+    expect(removedIds(journal)).toContain(oldKarma.id);
 
     // PostLockBox marked spent in DB
     const db = getDb();
     expect(boxIsSpent(db, lockBox.id!)).toBe(true);
 
-    // Karma refund box created
-    expect(journal.createdBoxIds.length).toBeGreaterThanOrEqual(1);
+    // Merged karma refund box created with old + refund value, its bytes in
+    // the journal payload
+    const mintedKarma = journal.mutations.find(
+      (m) => m.op === 'insert' && (m.box as KarmaBox).boxType === 'karma',
+    );
+    expect(mintedKarma).toBeDefined();
+    expect((mintedKarma!.box as KarmaBox).value).toBe(140n);
   });
 
   it('consumes LikeBox and mints refund karma for liker', async () => {
@@ -303,27 +348,24 @@ describe('settlePruneUtxo', () => {
     const likeBox = makeLikeBox(likerId, rootPostId, 1);
     utxo.insertBox(likeBox);
 
-    const journal = makeJournal(10);
-    settlePruneUtxo([rootPostId], 10, journal);
+    const journal = await journaled(10, () => settlePruneUtxo([rootPostId], 10));
 
     // LikeBox consumed
-    expect(journal.consumedBoxIds).toContain(likeBox.id);
+    expect(removedIds(journal)).toContain(likeBox.id);
 
     // LikeBox marked spent in DB
     const db = getDb();
     expect(boxIsSpent(db, likeBox.id!)).toBe(true);
 
     // Karma refund box created for liker
-    expect(journal.createdBoxIds.length).toBeGreaterThanOrEqual(1);
+    expect(insertedIds(journal).length).toBeGreaterThanOrEqual(1);
   });
 
   it('handles empty postId list', async () => {
     const { settlePruneUtxo } = await importSettlePruneUtxo();
 
-    const journal = makeJournal(5);
-    expect(() => settlePruneUtxo([], 5, journal)).not.toThrow();
-    expect(journal.consumedBoxIds.length).toBe(0);
-    expect(journal.createdBoxIds.length).toBe(0);
+    const journal = await journaled(5, () => settlePruneUtxo([], 5));
+    expect(journal.mutations.length).toBe(0);
   });
 
   it('skips already-spent boxes', async () => {
@@ -339,15 +381,11 @@ describe('settlePruneUtxo', () => {
     utxo.insertBox(lockBox);
     utxo.consumeBox(lockBox.id!, 5); // Already spent at block 5
 
-    const journal = makeJournal(10);
-    settlePruneUtxo([rootPostId], 10, journal);
+    const journal = await journaled(10, () => settlePruneUtxo([rootPostId], 10));
 
-    // Already-spent box should not be re-consumed
-    expect(journal.consumedBoxIds).not.toContain(lockBox.id);
-
-    // No refund karma minted (box was already spent, value = 0 from settlePruneUtxo's perspective)
-    // getPostLockBox returns only unspent boxes, so it returns null
-    expect(journal.createdBoxIds.length).toBe(0);
+    // Already-spent box should not be re-consumed, and no refund karma minted
+    // (getPostLockBox returns only unspent boxes, so it returns null)
+    expect(journal.mutations.length).toBe(0);
   });
 
   it('skips already-spent LikeBoxes', async () => {
@@ -363,11 +401,10 @@ describe('settlePruneUtxo', () => {
     utxo.insertBox(likeBox);
     utxo.consumeBox(likeBox.id!, 3); // Already spent
 
-    const journal = makeJournal(10);
-    settlePruneUtxo([rootPostId], 10, journal);
+    const journal = await journaled(10, () => settlePruneUtxo([rootPostId], 10));
 
-    expect(journal.consumedBoxIds).not.toContain(likeBox.id);
-    expect(journal.createdBoxIds.length).toBe(0);
+    expect(removedIds(journal)).not.toContain(likeBox.id);
+    expect(journal.mutations.length).toBe(0);
   });
 
   it('aggregates refunds per user across multiple posts', async () => {
@@ -392,22 +429,23 @@ describe('settlePruneUtxo', () => {
     utxo.insertBox(like1);
     utxo.insertBox(like2);
 
-    const journal = makeJournal(10);
-    settlePruneUtxo([postId1, postId2], 10, journal);
+    const journal = await journaled(10, () =>
+      settlePruneUtxo([postId1, postId2], 10),
+    );
 
     // All four boxes consumed
-    expect(journal.consumedBoxIds).toContain(lb1.id);
-    expect(journal.consumedBoxIds).toContain(lb2.id);
-    expect(journal.consumedBoxIds).toContain(like1.id);
-    expect(journal.consumedBoxIds).toContain(like2.id);
+    expect(removedIds(journal)).toContain(lb1.id);
+    expect(removedIds(journal)).toContain(lb2.id);
+    expect(removedIds(journal)).toContain(like1.id);
+    expect(removedIds(journal)).toContain(like2.id);
 
     // Refund karma created (one per user, values aggregated)
     // Author: 100 + 50 = 150, Liker: 2 + 2 = 4
-    expect(journal.createdBoxIds.length).toBeGreaterThanOrEqual(2);
+    expect(insertedIds(journal).length).toBeGreaterThanOrEqual(2);
 
     // Verify the created karma box values
     const db = getDb();
-    for (const boxId of journal.createdBoxIds) {
+    for (const boxId of insertedIds(journal)) {
       const row = db
         .prepare(
           "SELECT value, owner FROM utxo_boxes WHERE id = ? AND box_type = 'karma'",
@@ -430,11 +468,8 @@ describe('settlePruneUtxo', () => {
     const { settlePruneUtxo } = await importSettlePruneUtxo();
 
     const postId = 'e'.repeat(64);
-    const journal = makeJournal(10);
-
-    expect(() => settlePruneUtxo([postId], 10, journal)).not.toThrow();
-    expect(journal.consumedBoxIds.length).toBe(0);
-    expect(journal.createdBoxIds.length).toBe(0);
+    const journal = await journaled(10, () => settlePruneUtxo([postId], 10));
+    expect(journal.mutations.length).toBe(0);
   });
 
   it('PostLockBox with zero value is not consumed', async () => {
@@ -448,13 +483,11 @@ describe('settlePruneUtxo', () => {
     const lockBox = makePostLockBox(0, authorId, rootPostId, 1);
     utxo.insertBox(lockBox);
 
-    const journal = makeJournal(10);
-    settlePruneUtxo([rootPostId], 10, journal);
+    const journal = await journaled(10, () => settlePruneUtxo([rootPostId], 10));
 
     // Zero-value box is skipped (lockBox.value > 0 check)
-    expect(journal.consumedBoxIds).not.toContain(lockBox.id);
-    expect(journal.consumedBoxIds.length).toBe(0);
-    expect(journal.createdBoxIds.length).toBe(0);
+    expect(removedIds(journal)).not.toContain(lockBox.id);
+    expect(journal.mutations.length).toBe(0);
   });
 
   it('LikeBoxes from different posts are not cross-consumed', async () => {
@@ -470,11 +503,12 @@ describe('settlePruneUtxo', () => {
     const otherLikeBox = makeLikeBox(likerId, otherPostId, 1);
     utxo.insertBox(otherLikeBox);
 
-    const journal = makeJournal(10);
-    settlePruneUtxo([targetPostId], 10, journal);
+    const journal = await journaled(10, () =>
+      settlePruneUtxo([targetPostId], 10),
+    );
 
     // LikeBox for otherPostId should not be consumed
-    expect(journal.consumedBoxIds).not.toContain(otherLikeBox.id);
+    expect(removedIds(journal)).not.toContain(otherLikeBox.id);
     // Box should remain unspent
     const db = getDb();
     expect(boxIsSpent(db, otherLikeBox.id!)).toBe(false);
@@ -525,19 +559,20 @@ describe('Full prune lifecycle (UTXO settlement path)', () => {
     utxo.insertBox(lk1);
 
     // 4. Apply settlement
-    const journal = makeJournal(10);
-    settlePruneUtxo([rootId, replyId], 10, journal);
+    const journal = await journaled(10, () =>
+      settlePruneUtxo([rootId, replyId], 10),
+    );
 
     // 5. Verify PostLockBoxes consumed
-    expect(journal.consumedBoxIds).toContain(lb1.id);
-    expect(journal.consumedBoxIds).toContain(lb2.id);
+    expect(removedIds(journal)).toContain(lb1.id);
+    expect(removedIds(journal)).toContain(lb2.id);
 
     // 6. Verify LikeBox consumed
-    expect(journal.consumedBoxIds).toContain(lk1.id);
+    expect(removedIds(journal)).toContain(lk1.id);
 
     // 7. Verify karma refunded: author gets 50+50=100, liker gets 2
     const db = getDb();
-    const createdBoxes = journal.createdBoxIds.map(
+    const createdBoxes = insertedIds(journal).map(
       (boxId) =>
         db
           .prepare('SELECT * FROM utxo_boxes WHERE id = ?')

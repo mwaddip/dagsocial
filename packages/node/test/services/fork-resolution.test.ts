@@ -26,8 +26,8 @@ import type {
   OrderingBlock,
   UtxoTransaction,
   BlockHeader,
-  BlockJournal,
 } from '@dagsocial/types';
+import type { BlockJournal } from '../../src/store/journal.js';
 import type Database from 'better-sqlite3';
 import { signTransaction } from '../helpers.js';
 
@@ -143,6 +143,22 @@ async function importJournalStore() {
   return (await import('../../src/store/journal.js')) as {
     getBlockJournal: (height: number) => BlockJournal | null;
     deleteBlockJournal: (height: number) => void;
+    beginBlockJournal: (height: number) => void;
+    abortBlockJournal: () => void;
+  };
+}
+
+async function importVouchCooldowns() {
+  return (await import('../../src/store/vouch-cooldowns.js')) as {
+    insertVouchCooldown: (
+      voucherId: Uint8Array,
+      targetId: Uint8Array,
+      releaseAtBlock: number,
+      karmaAmount: bigint,
+    ) => void;
+    getVouchCooldowns: (
+      voucherId: Uint8Array,
+    ) => Array<{ targetId: Uint8Array; releaseAtBlock: number; karmaAmount: bigint }>;
   };
 }
 
@@ -776,28 +792,122 @@ describe('revertBlock', () => {
     bc.startBlockCreator(testConfig);
     bc.createOrderingBlock();
 
-    // Verify journal has appliedUtxoTxs
+    // Verify journal has the applied tx (mempool re-insertion record) and the
+    // primitive mutation log the revert will replay
     const journalStore = await importJournalStore();
     const journal = journalStore.getBlockJournal(1);
     expect(journal).not.toBeNull();
     expect(journal!.appliedUtxoTxs.length).toBeGreaterThan(0);
-
     const txRecord = journal!.appliedUtxoTxs[0]!;
+    expect(txRecord.txId).toBeTruthy();
+    expect(txRecord.txCbor).toBeInstanceOf(Uint8Array);
+
+    const insertedIds = journal!.mutations
+      .filter((m) => m.op === 'insert')
+      .map((m) => m.boxId);
+    const removedIds = journal!.mutations
+      .filter((m) => m.op === 'remove')
+      .map((m) => m.boxId);
+    // The like tx's change box was created, its karma input consumed
+    expect(insertedIds.length).toBeGreaterThan(0);
+    expect(removedIds).toContain(karmaBox.id);
 
     // Revert
     const forkResolution = await importForkResolution();
     forkResolution.revertBlock(1);
 
-    // Output boxes should be deleted
-    for (const boxId of txRecord.outputBoxIds) {
-      const box = utxo.getBox(boxId);
-      expect(box).toBeNull();
+    // Every box the block created is gone; every box it consumed is live again
+    for (const boxId of insertedIds) {
+      expect(utxo.getBox(boxId)).toBeNull();
+    }
+    for (const boxId of removedIds) {
+      expect(utxo.getBox(boxId)).not.toBeNull();
     }
 
     // Block and journal should be gone
     const ordering = await importOrdering();
     expect(ordering.getOrderingBlock(1)).toBeNull();
     expect(journalStore.getBlockJournal(1)).toBeNull();
+  });
+
+  it('refuses to run while a block journal is open', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    const bc = await importBlockCreator();
+    bc.startBlockCreator(testConfig);
+    bc.createOrderingBlock();
+
+    const journalStore = await importJournalStore();
+    const forkResolution = await importForkResolution();
+    journalStore.beginBlockJournal(2);
+    try {
+      expect(() => forkResolution.revertBlock(1)).toThrow(
+        'a block journal is open',
+      );
+    } finally {
+      journalStore.abortBlockJournal();
+    }
+
+    // Nothing was reverted
+    const ordering = await importOrdering();
+    expect(ordering.getOrderingBlock(1)).not.toBeNull();
+  });
+
+  it('restores merge-consumed karma and the deleted escrow row exactly (H-7)', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    const utxo = await importUtxo();
+    const vouch = await importVouchCooldowns();
+
+    // Pre-block state: the voucher holds a karma box, and a matured escrow
+    // row is waiting (releaseAtBlock 1 ≤ the height of the block we mine)
+    const voucher = makeTestIdentity();
+    const target = makeTestIdentity();
+    const oldKarma = makeKarmaBox(50n, voucher.userId, 0);
+    utxo.insertBox(oldKarma);
+    vouch.insertVouchCooldown(voucher.userId, target.userId, 1, 7n);
+
+    const bc = await importBlockCreator();
+    bc.startBlockCreator(testConfig);
+    bc.createOrderingBlock();
+
+    // The cooldown mint merged the escrow amount into the voucher's karma:
+    // old box spent, one merged box, escrow row deleted
+    const merged = utxo.getKarmaBox(voucher.userId);
+    expect(merged).not.toBeNull();
+    expect(merged!.value).toBe(57n);
+    expect(merged!.id).not.toBe(oldKarma.id);
+    expect(utxo.getBox(oldKarma.id!)).toBeNull();
+    expect(vouch.getVouchCooldowns(voucher.userId)).toHaveLength(0);
+
+    // The journal carries the mint's mutations and the deleted escrow row
+    const journalStore = await importJournalStore();
+    const journal = journalStore.getBlockJournal(1)!;
+    const removed = journal.mutations.filter((m) => m.op === 'remove').map((m) => m.boxId);
+    expect(removed).toContain(oldKarma.id);
+    expect(journal.vouchCooldownDeletions).toHaveLength(1);
+    const del = journal.vouchCooldownDeletions[0]!;
+    expect(Buffer.from(del.voucherId).equals(Buffer.from(voucher.userId))).toBe(true);
+    expect(del.releaseAtBlock).toBe(1);
+    expect(del.karmaAmount).toBe(7n);
+
+    // Revert: the exact pre-block rows come back
+    const forkResolution = await importForkResolution();
+    forkResolution.revertBlock(1);
+
+    expect(utxo.getBox(merged!.id!)).toBeNull();
+    const restored = utxo.getKarmaBox(voucher.userId);
+    expect(restored).not.toBeNull();
+    expect(restored!.id).toBe(oldKarma.id);
+    expect(restored!.value).toBe(50n);
+
+    const escrow = vouch.getVouchCooldowns(voucher.userId);
+    expect(escrow).toHaveLength(1);
+    expect(Buffer.from(escrow[0]!.targetId).equals(Buffer.from(target.userId))).toBe(true);
+    expect(escrow[0]!.releaseAtBlock).toBe(1);
+    expect(escrow[0]!.karmaAmount).toBe(7n);
   });
 
   it('rolls back decay burns', async () => {

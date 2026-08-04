@@ -1,12 +1,6 @@
 import { getDb } from './db.js';
 import { encode, decode } from 'cbor-x';
-import type {
-  AnyBox,
-  UserId,
-  // Phase B retypes persistence to the new BlockJournal (legacy shape kept
-  // so the untouched services stay green through Phase A)
-  BlockJournal as LegacyBlockJournal,
-} from '@dagsocial/types';
+import type { AnyBox, UserId } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
 // Journal types (node-owned — NODE_INTERFACE "Block Journal")
@@ -138,6 +132,22 @@ export function recordFreeLikesProcessed(likeIds: string[]): void {
 }
 
 /**
+ * Record the block's confirmed sub-block refs — all refs, independent of
+ * per-post confirm outcomes. Inverse: unconfirmPost; also mempool
+ * re-insertion on reorg.
+ */
+export function recordConfirmedSubBlocks(ids: string[]): void {
+  if (openJournal === null) return;
+  openJournal.confirmedSubBlockIds.push(...ids);
+}
+
+/** Record an applied UTXO tx (mempool re-insertion on reorg only). */
+export function recordAppliedUtxoTx(txId: string, txCbor: Uint8Array): void {
+  if (openJournal === null) return;
+  openJournal.appliedUtxoTxs.push({ txId, txCbor });
+}
+
+/**
  * Record a vouch-cooldown insertion, capturing the row it replaced (if any)
  * so rollback can restore what INSERT OR REPLACE overwrote.
  */
@@ -173,20 +183,23 @@ function toBuffer(data: unknown): Buffer {
   return Buffer.from(encode(data) as unknown as Uint8Array);
 }
 
-export function insertBlockJournal(journal: LegacyBlockJournal): void {
+export function insertBlockJournal(journal: BlockJournal): void {
   const db = getDb();
   db.prepare(
     `INSERT OR REPLACE INTO block_journal (block_height, journal_cbor) VALUES (?, ?)`,
   ).run(journal.blockHeight, toBuffer(journal));
 }
 
-export function getBlockJournal(height: number): LegacyBlockJournal | null {
+// Note for consumers: CBOR round-trips the bigint and byte fields, but the
+// side-record `voucherId`/`targetId` come back as plain Uint8Array — never
+// assume Buffer.
+export function getBlockJournal(height: number): BlockJournal | null {
   const db = getDb();
   const row = db.prepare(
     'SELECT journal_cbor FROM block_journal WHERE block_height = ?',
   ).get(height) as { journal_cbor: Buffer } | undefined;
   if (!row) return null;
-  return decode(row.journal_cbor) as LegacyBlockJournal;
+  return decode(row.journal_cbor) as BlockJournal;
 }
 
 export function deleteBlockJournal(height: number): void {

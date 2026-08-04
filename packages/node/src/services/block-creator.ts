@@ -52,8 +52,6 @@ import type { Config } from '../config.js';
 import { canonicalEpochTallyJson } from './epoch-canonical.js';
 import { expectedTarget } from './difficulty.js';
 import { getNet } from './net-instance.js';
-import { mintKarma } from './karma.js';
-import { mintCredits } from './credits.js';
 import { revalidateTxInContext, applyTx } from './utxo-engine.js';
 import { applyOrderingBlock } from './block-apply.js';
 import { tryGetAvlProver } from '../state/avl-prover.js';
@@ -71,11 +69,7 @@ import {
   getCurrentHeight,
   confirmPost,
   getUnprocessedLockedLikeBoxes,
-  markLikeBoxesTallied,
   getUnprocessedFreeLikes,
-  markFreeLikesProcessed,
-  insertBox,
-  consumeBox,
   getBox,
   getKarmaBox,
   getPost,

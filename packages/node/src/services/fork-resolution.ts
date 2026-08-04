@@ -1,5 +1,5 @@
 import { blockHash } from '@dagsocial/validation';
-import type { BlockHeader, OrderingBlock, BlockJournal, PruneEntry } from '@dagsocial/types';
+import type { BlockHeader, OrderingBlock, PruneEntry } from '@dagsocial/types';
 import { decodeTx, MEMPOOL_EXPIRY_BLOCKS, computePruneEntryId } from '@dagsocial/types';
 import {
   getOrderingBlock,
@@ -10,6 +10,7 @@ import {
   unconsumeBox,
   deleteBox,
   unconfirmPost,
+  markFreeLikesUnprocessed,
   insertUtxoTx,
   insertMempoolSubBlock,
   insertMempoolPrune,
@@ -18,7 +19,8 @@ import {
   MempoolFullError,
 } from '../store/index.js';
 import { getDb } from '../store/db.js';
-import { deleteVouchCooldown } from '../store/vouch-cooldowns.js';
+import { isBlockJournalOpen, type BlockJournal } from '../store/journal.js';
+import { deleteVouchCooldown, insertVouchCooldown } from '../store/vouch-cooldowns.js';
 import { tryGetAvlProver } from '../state/avl-prover.js';
 import { applyOrderingBlock } from './block-apply.js';
 import type { DagService } from './dag-service.js';
@@ -73,6 +75,13 @@ export function findForkPoint(
  * ordering.
  */
 export function revertBlock(height: number): PruneEntry[] {
+  // Revert must never run while a journal is recording: the mutation replay
+  // uses the never-recording inverses, but the vouch-cooldown restores below
+  // go through recording primitives and would journal themselves into the
+  // open block's log.
+  if (isBlockJournalOpen()) {
+    throw new Error(`revertBlock(${height}): a block journal is open`);
+  }
   const journal = getBlockJournal(height);
   if (!journal) {
     throw new Error(`No journal for height ${height} — cannot revert`);
@@ -82,58 +91,45 @@ export function revertBlock(height: number): PruneEntry[] {
   const block = getOrderingBlock(height);
   const pruneEntries: PruneEntry[] = block?.subBlockTree.pruneEntries ?? [];
 
-  // 1. Reverse UTXO txs (reverse order)
-  for (let i = journal.appliedUtxoTxs.length - 1; i >= 0; i--) {
-    const txRecord = journal.appliedUtxoTxs[i]!;
-    for (const boxId of txRecord.outputBoxIds) {
-      deleteBox(boxId);
-    }
-    for (const boxId of txRecord.inputBoxIds) {
-      unconsumeBox(boxId);
-    }
-  }
-
-  // 2. Burn minted karma (delete karma boxes by box ID from journal)
-  for (const mint of journal.karmaMints) {
-    if (mint.boxId) {
-      deleteBox(mint.boxId);
+  // 1. Replay the primitive mutation log in reverse: insert → deleteBox,
+  // remove → unconsumeBox. This restores the exact pre-block UTXO set for
+  // every mutation class — including the pre-existing boxes merge-consumed
+  // inside mintKarma/mintCredits, tallied like boxes, and prune settlement.
+  for (let i = journal.mutations.length - 1; i >= 0; i--) {
+    const m = journal.mutations[i]!;
+    if (m.op === 'insert') {
+      deleteBox(m.boxId);
+    } else {
+      unconsumeBox(m.boxId);
     }
   }
 
-  // 2b. Reverse decay burns (delete new box, unconsume consumed boxes)
-  for (const decay of journal.decayBurns) {
-    deleteBox(decay.newBoxId);
-    for (const boxId of decay.consumedBoxIds) {
-      unconsumeBox(boxId);
-    }
-  }
-
-  // 2c. Reverse vouch cooldown insertions
-  if (journal.vouchCooldownInsertions) {
-    for (const cd of journal.vouchCooldownInsertions) {
-      deleteVouchCooldown(cd.voucherId, cd.targetId);
-    }
-  }
-
-  // 3. Unspend tallied like boxes
-  for (const boxId of journal.talliedLikeBoxIds) {
-    unconsumeBox(boxId);
-  }
-
-  // 4. Delete coinbase credit boxes
-  for (const boxId of journal.creditBoxIds) {
-    deleteBox(boxId);
-  }
-
-  // 5. Unconfirm posts
+  // 2. Side-record inverses
   for (const subBlockId of journal.confirmedSubBlockIds) {
     unconfirmPost(subBlockId);
   }
+  if (journal.processedFreeLikeIds.length > 0) {
+    markFreeLikesUnprocessed(journal.processedFreeLikeIds);
+  }
+  for (const ins of journal.vouchCooldownInsertions) {
+    deleteVouchCooldown(ins.voucherId, ins.targetId);
+    // insertVouchCooldown is INSERT OR REPLACE — restore the row it overwrote
+    if (ins.replaced) {
+      insertVouchCooldown(
+        ins.voucherId,
+        ins.targetId,
+        ins.replaced.releaseAtBlock,
+        ins.replaced.karmaAmount,
+      );
+    }
+  }
+  // Restore escrow rows the block's cooldown mints deleted (H-7)
+  for (const del of journal.vouchCooldownDeletions) {
+    insertVouchCooldown(del.voucherId, del.targetId, del.releaseAtBlock, del.karmaAmount);
+  }
 
-  // 5b. Roll back block_topology entries for reverted blocks
+  // 3. Roll back block_topology entries, delete block + journal
   rollbackBlockTopology(height);
-
-  // 6. Delete block + journal
   deleteOrderingBlock(height);
   deleteBlockJournal(height);
 
