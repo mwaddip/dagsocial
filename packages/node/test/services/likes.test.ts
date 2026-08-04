@@ -38,7 +38,7 @@ import { rawPublicKey, signTransaction } from '../helpers.js';
 /** Create and insert a karma box. */
 function createKarmaBox(
   owner: Uint8Array,
-  value: number,
+  value: bigint,
   createdAtBlock: number,
 ): KarmaBox {
   const box: Omit<KarmaBox, 'id'> & { id?: string } = {
@@ -159,7 +159,7 @@ describe('likes service', () => {
 
     const newKarma: KarmaBox = {
       boxType: 'karma',
-      value: 98,
+      value: 98n,
       createdAtBlock: 5,
       owner: likerPubKey,
       guard: 'owner_signature',
@@ -206,7 +206,7 @@ describe('likes service', () => {
 
     const newKarma: KarmaBox = {
       boxType: 'karma',
-      value: 98,
+      value: 98n,
       createdAtBlock: 5,
       owner: likerPubKey,
       guard: 'owner_signature',
@@ -266,7 +266,7 @@ describe('likes service', () => {
 
     const newKarma: KarmaBox = {
       boxType: 'karma',
-      value: 98,
+      value: 98n,
       createdAtBlock: 5,
       owner: likerPubKey,
       guard: 'owner_signature',
@@ -309,7 +309,7 @@ describe('likes service', () => {
 
     const newKarma: KarmaBox = {
       boxType: 'karma',
-      value: 98,
+      value: 98n,
       createdAtBlock: 5,
       owner: likerPubKey,
       guard: 'owner_signature',
@@ -354,7 +354,7 @@ describe('likes service', () => {
 
     const newKarma: KarmaBox = {
       boxType: 'karma',
-      value: 98,
+      value: 98n,
       createdAtBlock: 5,
       owner: likerPubKey,
       guard: 'owner_signature',
@@ -396,7 +396,7 @@ describe('likes service', () => {
 
     const newKarma: KarmaBox = {
       boxType: 'karma',
-      value: 98,
+      value: 98n,
       createdAtBlock: 5,
       owner: likerPubKey,
       guard: 'owner_signature',
@@ -457,7 +457,7 @@ describe('likes service', () => {
     function buildLikeTx(): UtxoTransaction {
       const newKarma: KarmaBox = {
         boxType: 'karma',
-        value: 98,
+        value: 98n,
         createdAtBlock: 5,
         owner: likerPubKey,
         guard: 'owner_signature',
@@ -501,7 +501,7 @@ describe('likes service', () => {
     const otherKarma = createKarmaBox(otherPub, 100, 1);
     const otherNewKarma: KarmaBox = {
       boxType: 'karma',
-      value: 98,
+      value: 98n,
       createdAtBlock: 5,
       owner: otherPub,
       guard: 'owner_signature',
@@ -539,7 +539,7 @@ describe('likes service', () => {
 
     const newKarma: KarmaBox = {
       boxType: 'karma',
-      value: 0,
+      value: 0n,
       createdAtBlock: 5,
       owner: likerPubKey,
       guard: 'owner_signature',
@@ -582,7 +582,7 @@ describe('likes service', () => {
 
     const newKarma: KarmaBox = {
       boxType: 'karma',
-      value: 98,
+      value: 98n,
       createdAtBlock: 5,
       owner: likerPubKey,
       guard: 'owner_signature',
@@ -616,6 +616,6 @@ describe('likes service', () => {
     // Karma should be unchanged (pending in mempool, not applied)
     const karmaBox = getKarmaBox(likerPubKey);
     expect(karmaBox).not.toBeNull();
-    expect(karmaBox!.value).toBe(100); // unchanged — pending
+    expect(karmaBox!.value).toBe(100n); // unchanged — pending
   });
 });

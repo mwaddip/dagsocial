@@ -40,7 +40,13 @@ export function emitEvent(event: JournalEvent): void {
     timestamp: new Date().toISOString(),
     ...event,
   };
-  process.stdout.write(JSON.stringify(record) + '\n');
+  // Amount fields (decay/mint events) are bigint — JSON.stringify throws on
+  // bigint, so serialize them as decimal strings.
+  process.stdout.write(
+    JSON.stringify(record, (_key, value) =>
+      typeof value === 'bigint' ? value.toString() : value,
+    ) + '\n',
+  );
 }
 
 // ---------------------------------------------------------------------------

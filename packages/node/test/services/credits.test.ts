@@ -39,7 +39,7 @@ describe('sendCredits', () => {
     closeDb();
   });
 
-  function seedCredits(value: number, lockedUntilBlock?: number): CreditBox {
+  function seedCredits(value: bigint, lockedUntilBlock?: number): CreditBox {
     const box: CreditBox = {
       boxType: 'credit',
       value,
@@ -57,10 +57,10 @@ describe('sendCredits', () => {
   }
 
   /** Build and sign a transfer tx the same way sendCredits will internally. */
-  function buildSignedTransfer(amount: number): { signature: Uint8Array } {
+  function buildSignedTransfer(amount: bigint): { signature: Uint8Array } {
     const boxes = getUnlockedCreditBoxes(alicePubKey, HEIGHT);
     const selected = selectBoxes(boxes, amount);
-    const total = selected.reduce((s, b) => s + b.value, 0);
+    const total = selected.reduce((s, b) => s + b.value, 0n);
     const change = total - amount;
 
     const outputs: CreditBox[] = [{
@@ -71,7 +71,7 @@ describe('sendCredits', () => {
       guard: 'owner_signature',
       proofSource: -1,
     }];
-    if (change > 0) {
+    if (change > 0n) {
       outputs.push({
         boxType: 'credit',
         value: change,
@@ -94,87 +94,87 @@ describe('sendCredits', () => {
   }
 
   it('transfers credits from alice to bob', () => {
-    seedCredits(500);
-    seedCredits(300);
+    seedCredits(500n);
+    seedCredits(300n);
 
-    const { signature } = buildSignedTransfer(400);
-    const result = sendCredits(alicePubKey, bobPubKey, 400, signature, HEIGHT);
+    const { signature } = buildSignedTransfer(400n);
+    const result = sendCredits(alicePubKey, bobPubKey, 400n, signature, HEIGHT);
 
-    expect(result.sent).toBe(400);
-    expect(result.change).toBe(100); // 500 - 400 = 100 (largest-first picks the 500 box only)
+    expect(result.sent).toBe(400n);
+    expect(result.change).toBe(100n); // 500 - 400 = 100 (largest-first picks the 500 box only)
     expect(result.boxesConsumed).toBe(1);
     expect(typeof result.txId).toBe('string');
 
     // Alice: 300 box untouched + 100 change = 400 total across 2 boxes
     const aliceBoxes = getCreditBoxes(alicePubKey);
-    const aliceTotal = aliceBoxes.reduce((s, b) => s + b.value, 0);
-    expect(aliceTotal).toBe(400);
+    const aliceTotal = aliceBoxes.reduce((s, b) => s + b.value, 0n);
+    expect(aliceTotal).toBe(400n);
 
     const bobBoxes = getCreditBoxes(bobPubKey);
     expect(bobBoxes).toHaveLength(1);
-    expect(bobBoxes[0]!.value).toBe(400);
+    expect(bobBoxes[0]!.value).toBe(400n);
   });
 
   it('exact-amount transfer produces no change', () => {
-    seedCredits(500);
-    const { signature } = buildSignedTransfer(500);
-    const result = sendCredits(alicePubKey, bobPubKey, 500, signature, HEIGHT);
+    seedCredits(500n);
+    const { signature } = buildSignedTransfer(500n);
+    const result = sendCredits(alicePubKey, bobPubKey, 500n, signature, HEIGHT);
 
-    expect(result.sent).toBe(500);
-    expect(result.change).toBe(0);
+    expect(result.sent).toBe(500n);
+    expect(result.change).toBe(0n);
     expect(result.boxesConsumed).toBe(1);
     expect(getCreditBoxes(alicePubKey)).toHaveLength(0);
-    expect(getCreditBoxes(bobPubKey)[0]!.value).toBe(500);
+    expect(getCreditBoxes(bobPubKey)[0]!.value).toBe(500n);
   });
 
   it('skips locked boxes', () => {
-    seedCredits(200, 200);
-    seedCredits(300);
+    seedCredits(200n, 200);
+    seedCredits(300n);
 
-    const { signature } = buildSignedTransfer(100);
-    const result = sendCredits(alicePubKey, bobPubKey, 100, signature, HEIGHT);
+    const { signature } = buildSignedTransfer(100n);
+    const result = sendCredits(alicePubKey, bobPubKey, 100n, signature, HEIGHT);
 
     expect(result.boxesConsumed).toBe(1);
-    expect(result.change).toBe(200);
+    expect(result.change).toBe(200n);
 
     const aliceBoxes = getCreditBoxes(alicePubKey);
     const lockedBox = aliceBoxes.find(b => b.lockedUntilBlock === 200);
     expect(lockedBox).toBeDefined();
-    expect(lockedBox!.value).toBe(200);
+    expect(lockedBox!.value).toBe(200n);
   });
 
   it('rejects insufficient balance', () => {
-    seedCredits(50);
+    seedCredits(50n);
     const badSig = new Uint8Array(64);
-    expect(() => sendCredits(alicePubKey, bobPubKey, 100, badSig, HEIGHT))
+    expect(() => sendCredits(alicePubKey, bobPubKey, 100n, badSig, HEIGHT))
       .toThrow('Insufficient total value');
   });
 
   it('rejects bad signature', () => {
-    seedCredits(500);
+    seedCredits(500n);
     const badSig = new Uint8Array(64);
-    expect(() => sendCredits(alicePubKey, bobPubKey, 100, badSig, HEIGHT))
+    expect(() => sendCredits(alicePubKey, bobPubKey, 100n, badSig, HEIGHT))
       .toThrow('invalid signature');
   });
 
   it('rejects zero or negative amount', () => {
-    expect(() => sendCredits(alicePubKey, bobPubKey, 0, new Uint8Array(64), HEIGHT))
+    expect(() => sendCredits(alicePubKey, bobPubKey, 0n, new Uint8Array(64), HEIGHT))
       .toThrow('amount must be positive');
-    expect(() => sendCredits(alicePubKey, bobPubKey, -5, new Uint8Array(64), HEIGHT))
+    expect(() => sendCredits(alicePubKey, bobPubKey, -5n, new Uint8Array(64), HEIGHT))
       .toThrow('amount must be positive');
   });
 
   it('transfer from multi-box wallet selects correctly', () => {
-    seedCredits(100);
-    seedCredits(50);
-    seedCredits(20);
-    seedCredits(10);
+    seedCredits(100n);
+    seedCredits(50n);
+    seedCredits(20n);
+    seedCredits(10n);
 
-    const { signature } = buildSignedTransfer(155);
-    const result = sendCredits(alicePubKey, bobPubKey, 155, signature, HEIGHT);
+    const { signature } = buildSignedTransfer(155n);
+    const result = sendCredits(alicePubKey, bobPubKey, 155n, signature, HEIGHT);
 
-    expect(result.sent).toBe(155);
-    expect(result.change).toBe(15);
+    expect(result.sent).toBe(155n);
+    expect(result.change).toBe(15n);
     expect(result.boxesConsumed).toBe(3);
   });
 });

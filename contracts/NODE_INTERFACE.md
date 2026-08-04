@@ -20,6 +20,43 @@ Depends on:
 
 ---
 
+## Values are BigInt (P0 — Spec B)
+
+Box `value` and every credit/karma **amount** are `bigint` (8-decimal integer base
+units of 10⁻⁸ credit; karma small bigints). Rationale + the type-level contract:
+`TYPES_INTERFACE.md` "Value denomination (P0)". No float math anywhere in a consensus
+value path. Node-side obligations:
+
+- **Authoritative value guard (`< 2⁶⁴`).** `utxo-engine.checkOutputValues` (engine) and
+  `assertValidBoxValue` (`routes/json-to-tx`, the HTTP→tx edge) enforce
+  `typeof value === 'bigint' && value >= 0n && value < 2⁶⁴` — the **tight** bound.
+  `@dagsocial/validation`'s coinbase check is the loose structural pre-filter; this is
+  the tight apply-side twin — the two move together. The HTTP edge coerces the incoming
+  JSON value (string or number) to `bigint` before it enters consensus.
+- **All value arithmetic is `bigint`** — conservation sums, coinbase split, epoch
+  rewards, decay, fees. `Math.max/min/floor` **throw** on bigint: use bigint operators
+  and manual min/max; bigint `/` truncates toward zero (the intended floor).
+- **JSON boundaries emit strings (client-visible).** JSON cannot carry a bigint
+  (`JSON.stringify(5n)` throws). Every HTTP response field carrying a box `value` or a
+  `total` is serialized as a **decimal string**; the demo UI parses them with `BigInt()`
+  (its phase). Same for the SQLite `extra_data` `originalValue` (coerce before
+  `JSON.stringify`) and any stdout log field carrying an amount.
+- **`epoch-canonical.canonicalValue` gets a `bigint` branch** returning the canonical
+  decimal (`value.toString()`). It forms the `'epoch'` Merkle leaf and the
+  block-acceptance compare — **consensus**; the branch must be deterministic.
+- **`block-creator.computeUtxoTxRoot` coinbase leaf** serializes `value` as
+  `value.toString()` in its `JSON.stringify` preimage (bigint throws otherwise). This
+  is the `utxoTxRoot` coinbase Merkle leaf — **consensus**; the *same* function is both
+  producer (block build) and verifier (`block-apply` recompute), so the leaf bytes
+  cannot diverge.
+- **SQLite `.safeIntegers()`** on every `value`-column read and on `SUM(value)`
+  (`getTotalKarma` / `getTotalCredits`) — without it better-sqlite3 returns a lossy
+  `number` and loses precision above 2⁵³.
+- **DB reset.** Box ids and the AVL `stateRoot` changed in the types phase — fresh
+  chain / coordinated cutover, no in-place migration.
+
+---
+
 ## Unified Mempool
 
 All state-changing operations flow through a single mempool. No operation
@@ -262,7 +299,10 @@ invites, vouches, credits, faucet, prune).
 | `GET` | `/invites/:userId` | `{ pending: InviteBox[], bonds: BondBox[] }` | — |
 
 Multi-box UTXO model — identities can hold multiple karma/credit boxes.
-`total` is the sum across all boxes.
+`total` is the sum across all boxes. **`value` and `total` are decimal strings** in
+the JSON (box values are `bigint`; JSON cannot carry one) — clients parse them with
+`BigInt(...)`. Applies to every response carrying a `value`/`total` (`/karma`,
+`/credits`, `/status` totals, mining template, etc.). See "Values are BigInt (P0)".
 
 ### Credits (testnet)
 
@@ -391,9 +431,10 @@ Full read-only validation. Performs all checks without modifying state:
    transactions — including karma, like, and vouch *cast* — conserve value; karma/
    credit mint and burn happen only in block-application paths (like rewards, decay,
    coinbase, bond forfeiture), never inside a user transaction. Box `value` fields
-   must be finite, non-negative integers (enforced both at the JSON→tx boundary and
-   in the engine — a negative value could otherwise balance the sums while minting
-   into a sibling box)
+   must be non-negative `bigint` base units `< 2⁶⁴` (enforced at the JSON→tx boundary
+   via `assertValidBoxValue` and in the engine via `checkOutputValues` — a negative
+   value could otherwise balance the sums while minting into a sibling box).
+   Conservation sums are `bigint` (P0 — see "Values are BigInt")
 5. Guard satisfaction (signatures verified against tx hash)
 6. Legal box transitions (per the transition table below)
 

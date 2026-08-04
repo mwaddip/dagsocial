@@ -49,7 +49,7 @@ const testConfig = {
   // Mining
   miningMode: 'internal' as const,
   orderingBlockPowTargetBits: 12,
-  creditInitialReward: 100,
+  creditInitialReward: 100n * 10n ** 8n,
   creditTreasuryPct: 10,
   treasuryPubKey: '',
   // Net settings
@@ -220,7 +220,7 @@ function makeLikeBox(
 ): LikeBox {
   const box: LikeBox = {
     boxType: 'like',
-    value: 2,
+    value: 2n,
     createdAtBlock,
     likerId,
     targetPostId,
@@ -231,8 +231,14 @@ function makeLikeBox(
   return box;
 }
 
+/** Consensus author-reward formula: min(floor(likes / threshold), cap). */
+function expectedAuthorReward(likeCount: number): bigint {
+  const steps = BigInt(Math.floor(likeCount / LIKE_THRESHOLD));
+  return steps < LIKE_MAX_AUTHOR_REWARD ? steps : LIKE_MAX_AUTHOR_REWARD;
+}
+
 function makeKarmaBox(
-  value: number,
+  value: bigint,
   owner: Uint8Array,
   createdAtBlock: number,
 ): KarmaBox {
@@ -517,7 +523,7 @@ describe('block-creator', () => {
     // Give author some initial karma
     const { encodePost } = await import('@dagsocial/types');
     const utxo = await importUtxo();
-    const authorKarmaBox = makeKarmaBox(100, author.publicKey, 0);
+    const authorKarmaBox = makeKarmaBox(100n, author.publicKey, 0);
     utxo.insertBox(authorKarmaBox);
 
     // Create target post
@@ -531,7 +537,7 @@ describe('block-creator', () => {
     for (let i = 0; i < 6; i++) {
       const liker = makeTestIdentity();
       // Give liker karma
-      utxo.insertBox(makeKarmaBox(10, liker.publicKey, 0));
+      utxo.insertBox(makeKarmaBox(10n, liker.publicKey, 0));
       // Create like box
       const likeBox = makeLikeBox(liker.userId, postId, 0);
       utxo.insertBox(likeBox);
@@ -540,7 +546,7 @@ describe('block-creator', () => {
 
     // Add one free like
     const freeLiker = makeTestIdentity();
-    utxo.insertBox(makeKarmaBox(10, freeLiker.publicKey, 0));
+    utxo.insertBox(makeKarmaBox(10n, freeLiker.publicKey, 0));
     const likesStore = await importLikes();
     likesStore.insertLike(postId, freeLiker.userId);
 
@@ -577,7 +583,7 @@ describe('block-creator', () => {
     expect(rewards[postId]).toBeDefined();
     expect(rewards[postId].likeCount).toBe(7); // 6 locked + 1 free
     // authorReward = min(floor(7/5), 10) = min(1, 10) = 1
-    expect(rewards[postId].authorReward).toBe(1);
+    expect(rewards[postId].authorReward).toBe(1n);
 
     // Liker refunds: totalLikes=7, below 2x threshold, likes stay locked — no refunds
     const refunds = rewards[postId].likerRefunds;
@@ -603,7 +609,7 @@ describe('block-creator', () => {
     const utxo = await importUtxo();
 
     // Give author karma
-    const authorKarmaBox = makeKarmaBox(100, author.publicKey, 0);
+    const authorKarmaBox = makeKarmaBox(100n, author.publicKey, 0);
     utxo.insertBox(authorKarmaBox);
 
     const posts = await importPosts();
@@ -615,7 +621,7 @@ describe('block-creator', () => {
     const likersA: TestIdentity[] = [];
     for (let i = 0; i < 3; i++) {
       const liker = makeTestIdentity();
-      utxo.insertBox(makeKarmaBox(10, liker.publicKey, 0));
+      utxo.insertBox(makeKarmaBox(10n, liker.publicKey, 0));
       const likeBox = makeLikeBox(liker.userId, postAId, 0);
       utxo.insertBox(likeBox);
       likersA.push(liker);
@@ -628,7 +634,7 @@ describe('block-creator', () => {
     const likersB: TestIdentity[] = [];
     for (let i = 0; i < 7; i++) {
       const liker = makeTestIdentity();
-      utxo.insertBox(makeKarmaBox(10, liker.publicKey, 0));
+      utxo.insertBox(makeKarmaBox(10n, liker.publicKey, 0));
       const likeBox = makeLikeBox(liker.userId, postBId, 0);
       utxo.insertBox(likeBox);
       likersB.push(liker);
@@ -641,7 +647,7 @@ describe('block-creator', () => {
     const likersC: TestIdentity[] = [];
     for (let i = 0; i < 12; i++) {
       const liker = makeTestIdentity();
-      utxo.insertBox(makeKarmaBox(10, liker.publicKey, 0));
+      utxo.insertBox(makeKarmaBox(10n, liker.publicKey, 0));
       const likeBox = makeLikeBox(liker.userId, postCId, 0);
       utxo.insertBox(likeBox);
       likersC.push(liker);
@@ -675,7 +681,7 @@ describe('block-creator', () => {
     // Post A: 3 likes, below threshold — likes stay locked, no refund
     expect(rewards[postAId]).toBeDefined();
     expect(rewards[postAId].likeCount).toBe(3);
-    expect(rewards[postAId].authorReward).toBe(0); // floor(3/5) = 0
+    expect(rewards[postAId].authorReward).toBe(0n); // floor(3/5) = 0
     for (const liker of likersA) {
       expect(rewards[postAId].likerRefunds[Buffer.from(liker.userId).toString('hex')]).toBeUndefined(); // not unlocked
     }
@@ -683,7 +689,7 @@ describe('block-creator', () => {
     // Post B: 7 likes, below threshold — likes stay locked, no refund
     expect(rewards[postBId]).toBeDefined();
     expect(rewards[postBId].likeCount).toBe(7);
-    expect(rewards[postBId].authorReward).toBe(1); // floor(7/5) = 1
+    expect(rewards[postBId].authorReward).toBe(1n); // floor(7/5) = 1
     for (const liker of likersB) {
       expect(rewards[postBId].likerRefunds[Buffer.from(liker.userId).toString('hex')]).toBeUndefined(); // not unlocked
     }
@@ -692,10 +698,10 @@ describe('block-creator', () => {
     expect(rewards[postCId]).toBeDefined();
     expect(rewards[postCId].likeCount).toBe(12);
     expect(rewards[postCId].authorReward).toBe(
-      Math.min(Math.floor(12 / LIKE_THRESHOLD), LIKE_MAX_AUTHOR_REWARD),
+      expectedAuthorReward(12),
     ); // floor(12/5)=2, capped at 10
     for (const liker of likersC) {
-      expect(rewards[postCId].likerRefunds[Buffer.from(liker.userId).toString('hex')]).toBe(0);
+      expect(rewards[postCId].likerRefunds[Buffer.from(liker.userId).toString('hex')]).toBe(0n);
     }
   });
 
@@ -712,7 +718,7 @@ describe('block-creator', () => {
 
     const { encodePost } = await import('@dagsocial/types');
     const utxo = await importUtxo();
-    utxo.insertBox(makeKarmaBox(100, author.publicKey, 0));
+    utxo.insertBox(makeKarmaBox(100n, author.publicKey, 0));
 
     const post = makePost(author.userId, 'free likes test');
     const postId = computePostId(post);
@@ -723,7 +729,7 @@ describe('block-creator', () => {
     const lockedLikers: TestIdentity[] = [];
     for (let i = 0; i < 12; i++) {
       const liker = makeTestIdentity();
-      utxo.insertBox(makeKarmaBox(10, liker.publicKey, 0));
+      utxo.insertBox(makeKarmaBox(10n, liker.publicKey, 0));
       const likeBox = makeLikeBox(liker.userId, postId, 0);
       utxo.insertBox(likeBox);
       lockedLikers.push(liker);
@@ -733,7 +739,7 @@ describe('block-creator', () => {
     const likesStore = await importLikes();
     for (let i = 0; i < 5; i++) {
       const freeLiker = makeTestIdentity();
-      utxo.insertBox(makeKarmaBox(10, freeLiker.publicKey, 0));
+      utxo.insertBox(makeKarmaBox(10n, freeLiker.publicKey, 0));
       likesStore.insertLike(postId, freeLiker.userId);
     }
 
@@ -761,7 +767,7 @@ describe('block-creator', () => {
     expect(rewards[postId]).toBeDefined();
     expect(rewards[postId].likeCount).toBe(17); // 12 locked + 5 free
     expect(rewards[postId].authorReward).toBe(
-      Math.min(Math.floor(17 / LIKE_THRESHOLD), LIKE_MAX_AUTHOR_REWARD),
+      expectedAuthorReward(17),
     ); // floor(17/5)=3
 
     // Only 12 locked likers should appear in refunds — free likers never do
@@ -769,7 +775,7 @@ describe('block-creator', () => {
     expect(refundKeys).toHaveLength(12);
     // Each locked liker gets full refund at 2x threshold: net 0
     for (const key of refundKeys) {
-      expect(rewards[postId].likerRefunds[key]).toBe(0);
+      expect(rewards[postId].likerRefunds[key]).toBe(0n);
     }
   });
 
@@ -786,7 +792,7 @@ describe('block-creator', () => {
 
     const { encodePost } = await import('@dagsocial/types');
     const utxo = await importUtxo();
-    utxo.insertBox(makeKarmaBox(100, author.publicKey, 0));
+    utxo.insertBox(makeKarmaBox(100n, author.publicKey, 0));
 
     const post = makePost(author.userId, 'dedup test');
     const postId = computePostId(post);
@@ -795,12 +801,12 @@ describe('block-creator', () => {
 
     // Create 2 like boxes
     const liker1 = makeTestIdentity();
-    utxo.insertBox(makeKarmaBox(10, liker1.publicKey, 0));
+    utxo.insertBox(makeKarmaBox(10n, liker1.publicKey, 0));
     const likeBox1 = makeLikeBox(liker1.userId, postId, 0);
     utxo.insertBox(likeBox1);
 
     const liker2 = makeTestIdentity();
-    utxo.insertBox(makeKarmaBox(10, liker2.publicKey, 0));
+    utxo.insertBox(makeKarmaBox(10n, liker2.publicKey, 0));
     const likeBox2 = makeLikeBox(liker2.userId, postId, 0);
     utxo.insertBox(likeBox2);
 
@@ -888,7 +894,7 @@ describe('block-creator', () => {
 
     // Set up: standalone UTXO transaction in mempool (like targeting an
     // unrelated post, so it won't be attached to any sub-block)
-    const karmaBox = makeKarmaBox(100, author.userId, 0);
+    const karmaBox = makeKarmaBox(100n, author.userId, 0);
     utxo.insertBox(karmaBox);
     const likeTx = makeLikeTx(author, karmaBox, 'some_post_id_not_matching');
     mempool.insertUtxoTx(likeTx, null, 1000);
@@ -943,13 +949,13 @@ describe('block-creator', () => {
     mempool.insertSubBlock(postId, 1000);
 
     // Create a like tx that targets THIS post (matching)
-    const karmaBox = makeKarmaBox(100, author.userId, 0);
+    const karmaBox = makeKarmaBox(100n, author.userId, 0);
     utxo.insertBox(karmaBox);
     const matchingLikeTx = makeLikeTx(author, karmaBox, postId);
     mempool.insertUtxoTx(matchingLikeTx, null, 1000);
 
     // Create another like tx targeting an unrelated post (standalone → utxoTxIds)
-    const karmaBox2 = makeKarmaBox(50, author.userId, 0);
+    const karmaBox2 = makeKarmaBox(50n, author.userId, 0);
     utxo.insertBox(karmaBox2);
     const standaloneLikeTx = makeLikeTx(author, karmaBox2, 'unrelated_post');
     mempool.insertUtxoTx(standaloneLikeTx, null, 1000);
@@ -995,7 +1001,7 @@ describe('block-creator', () => {
     mempool.insertSubBlock(postId, 1000, 'batch1');
 
     // Create a UTXO transaction with batch_id "batch1"
-    const karmaBox = makeKarmaBox(100, author.userId, 0);
+    const karmaBox = makeKarmaBox(100n, author.userId, 0);
     utxo.insertBox(karmaBox);
     const likeTx = makeLikeTx(author, karmaBox, 'unrelated_post_id');
     mempool.insertUtxoTx(likeTx, 'batch1', 1000);

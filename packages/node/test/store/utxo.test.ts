@@ -67,7 +67,7 @@ function makeKarmaBox(overrides: Partial<KarmaBox> = {}): KarmaBox {
   return {
     id: '',
     boxType: 'karma',
-    value: 100,
+    value: 100n,
     createdAtBlock: 1,
     owner: OWNER_A,
     guard: 'owner_signature',
@@ -81,7 +81,7 @@ function makeCreditBox(overrides: Partial<CreditBox> = {}): CreditBox {
   return {
     id: '',
     boxType: 'credit',
-    value: 1000,
+    value: 1000n,
     createdAtBlock: 1,
     owner: OWNER_A,
     guard: 'owner_signature',
@@ -94,7 +94,7 @@ function makeLikeBox(overrides: Partial<LikeBox> = {}): LikeBox {
   return {
     id: '',
     boxType: 'like',
-    value: 2,
+    value: 2n,
     createdAtBlock: 5,
     likerId: uid('liker123'),
     targetPostId: 'post456',
@@ -107,7 +107,7 @@ function makeInviteBox(overrides: Partial<InviteBox> = {}): InviteBox {
   return {
     id: '',
     boxType: 'invite',
-    value: 50,
+    value: 50n,
     createdAtBlock: 3,
     secretHash: bytes(32),
     inviterId: uid('alice-inviter'),
@@ -120,7 +120,7 @@ function makeBondBox(overrides: Partial<BondBox> = {}): BondBox {
   return {
     id: '',
     boxType: 'bond',
-    value: 10,
+    value: 10n,
     createdAtBlock: 3,
     inviterId: uid('alice-inviter'),
     inviteBoxId: '',
@@ -154,14 +154,14 @@ describe('utxo store', () => {
 
     initDb(':memory:');
 
-    const box = makeKarmaBox({ value: 200, proofSource: 'tx-post-abc', lastTouchBlock: 7 });
+    const box = makeKarmaBox({ value: 200n, proofSource: 'tx-post-abc', lastTouchBlock: 7 });
     box.id = computeBoxId(box);
     insertBox(box);
 
     const result = getBox(box.id!) as KarmaBox;
     expect(result).not.toBeNull();
     expect(result.boxType).toBe('karma');
-    expect(result.value).toBe(200);
+    expect(result.value).toBe(200n);
     expect(result.createdAtBlock).toBe(1);
     expect(result.owner).toEqual(OWNER_A);
     expect(result.guard).toBe('owner_signature');
@@ -176,7 +176,7 @@ describe('utxo store', () => {
 
     initDb(':memory:');
 
-    const box = makeKarmaBox({ value: 100, decayBurn: true });
+    const box = makeKarmaBox({ value: 100n, decayBurn: true });
     box.id = computeBoxId(box);
     insertBox(box);
 
@@ -192,14 +192,14 @@ describe('utxo store', () => {
 
     initDb(':memory:');
 
-    const box = makeCreditBox({ value: 5000, proofSource: 42 });
+    const box = makeCreditBox({ value: 5000n, proofSource: 42 });
     box.id = computeBoxId(box);
     insertBox(box);
 
     const result = getBox(box.id!) as CreditBox;
     expect(result).not.toBeNull();
     expect(result.boxType).toBe('credit');
-    expect(result.value).toBe(5000);
+    expect(result.value).toBe(5000n);
     expect(result.owner).toEqual(OWNER_A);
     expect(result.guard).toBe('owner_signature');
     expect(result.proofSource).toBe(42);
@@ -219,7 +219,7 @@ describe('utxo store', () => {
     const result = getBox(box.id!) as LikeBox;
     expect(result).not.toBeNull();
     expect(result.boxType).toBe('like');
-    expect(result.value).toBe(2);
+    expect(result.value).toBe(2n);
     expect(result.likerId).toEqual(uid('user-liker'));
     expect(result.targetPostId).toBe('post-target-1');
     expect(result.guard).toBe('epoch_tally');
@@ -233,14 +233,14 @@ describe('utxo store', () => {
     initDb(':memory:');
 
     const secretHash = bytes(32);
-    const box = makeInviteBox({ value: 30, secretHash, inviterId: uid('inviter-alice') });
+    const box = makeInviteBox({ value: 30n, secretHash, inviterId: uid('inviter-alice') });
     box.id = computeBoxId(box);
     insertBox(box);
 
     const result = getBox(box.id!) as InviteBox;
     expect(result).not.toBeNull();
     expect(result.boxType).toBe('invite');
-    expect(result.value).toBe(30);
+    expect(result.value).toBe(30n);
     expect(result.secretHash).toEqual(secretHash);
     expect(result.inviterId).toEqual(uid('inviter-alice'));
     expect(result.guard).toBe('hash_preimage_with_bond');
@@ -255,7 +255,7 @@ describe('utxo store', () => {
 
     const inviteePk = bytes(32);
     const box = makeBondBox({
-      value: 10,
+      value: 10n,
       inviterId: uid('inviter-bob'),
       inviteePublicKey: inviteePk,
       probationStartBlock: 100,
@@ -267,7 +267,7 @@ describe('utxo store', () => {
     const result = getBox(box.id!) as BondBox;
     expect(result).not.toBeNull();
     expect(result.boxType).toBe('bond');
-    expect(result.value).toBe(10);
+    expect(result.value).toBe(10n);
     expect(result.inviterId).toEqual(uid('inviter-bob'));
     expect(result.inviteePublicKey).toEqual(inviteePk);
     expect(result.probationStartBlock).toBe(100);
@@ -297,14 +297,14 @@ describe('utxo store', () => {
 
     initDb(':memory:');
 
-    const box = makeKarmaBox({ value: 75, owner: OWNER_A });
+    const box = makeKarmaBox({ value: 75n, owner: OWNER_A });
     box.id = computeBoxId(box);
     insertBox(box);
 
     // Should find it before consumption
     const found = getKarmaBox(OWNER_A);
     expect(found).not.toBeNull();
-    expect(found!.value).toBe(75);
+    expect(found!.value).toBe(75n);
 
     // Consume it
     consumeBox(box.id!, 10);
@@ -323,13 +323,13 @@ describe('utxo store', () => {
 
     initDb(':memory:');
 
-    const box = makeCreditBox({ value: 999, owner: OWNER_A, proofSource: 3 });
+    const box = makeCreditBox({ value: 999n, owner: OWNER_A, proofSource: 3 });
     box.id = computeBoxId(box);
     insertBox(box);
 
     const found = getCreditBox(OWNER_A);
     expect(found).not.toBeNull();
-    expect(found!.value).toBe(999);
+    expect(found!.value).toBe(999n);
     expect(found!.proofSource).toBe(3);
 
     // Owner without a credit box returns null
@@ -346,15 +346,15 @@ describe('utxo store', () => {
 
     initDb(':memory:');
 
-    const inv1 = makeInviteBox({ value: 20, inviterId: uid('alice') });
+    const inv1 = makeInviteBox({ value: 20n, inviterId: uid('alice') });
     inv1.id = computeBoxId(inv1);
     insertBox(inv1);
 
-    const inv2 = makeInviteBox({ value: 30, inviterId: uid('alice') });
+    const inv2 = makeInviteBox({ value: 30n, inviterId: uid('alice') });
     inv2.id = computeBoxId(inv2);
     insertBox(inv2);
 
-    const inv3 = makeInviteBox({ value: 40, inviterId: uid('bob') });
+    const inv3 = makeInviteBox({ value: 40n, inviterId: uid('bob') });
     inv3.id = computeBoxId(inv3);
     insertBox(inv3);
 
@@ -363,11 +363,11 @@ describe('utxo store', () => {
 
     const aliceInvites = getPendingInvites(uid('alice'));
     expect(aliceInvites).toHaveLength(1);
-    expect(aliceInvites[0].value).toBe(30);
+    expect(aliceInvites[0].value).toBe(30n);
 
     const bobInvites = getPendingInvites(uid('bob'));
     expect(bobInvites).toHaveLength(1);
-    expect(bobInvites[0].value).toBe(40);
+    expect(bobInvites[0].value).toBe(40n);
   });
 
   // --- getPendingInviteCount returns correct count --------------------------
@@ -404,26 +404,26 @@ describe('utxo store', () => {
 
     initDb(':memory:');
 
-    const bond1 = makeBondBox({ inviterId: uid('charlie'), value: 10 });
+    const bond1 = makeBondBox({ inviterId: uid('charlie'), value: 10n });
     bond1.id = computeBoxId(bond1);
     insertBox(bond1);
 
-    const bond2 = makeBondBox({ inviterId: uid('charlie'), value: 15 });
+    const bond2 = makeBondBox({ inviterId: uid('charlie'), value: 15n });
     bond2.id = computeBoxId(bond2);
     insertBox(bond2);
 
-    const bond3 = makeBondBox({ inviterId: uid('dave'), value: 20 });
+    const bond3 = makeBondBox({ inviterId: uid('dave'), value: 20n });
     bond3.id = computeBoxId(bond3);
     insertBox(bond3);
 
     const charlieBonds = getBondBoxes(uid('charlie'));
     expect(charlieBonds).toHaveLength(2);
-    expect(charlieBonds[0].value).toBe(10);
-    expect(charlieBonds[1].value).toBe(15);
+    expect(charlieBonds[0].value).toBe(10n);
+    expect(charlieBonds[1].value).toBe(15n);
 
     const daveBonds = getBondBoxes(uid('dave'));
     expect(daveBonds).toHaveLength(1);
-    expect(daveBonds[0].value).toBe(20);
+    expect(daveBonds[0].value).toBe(20n);
 
     // No bonds for unknown inviter
     const none = getBondBoxes(uid('nobody'));
@@ -497,7 +497,7 @@ describe('utxo store', () => {
 
     initDb(':memory:');
 
-    const box = makeKarmaBox({ value: 50 });
+    const box = makeKarmaBox({ value: 50n });
     box.id = computeBoxId(box);
     insertBox(box);
 
@@ -571,15 +571,15 @@ describe('utxo store', () => {
     initDb(':memory:');
 
     const owner = bytes(32);
-    const box1 = makeKarmaBox({ value: 100, owner });
+    const box1 = makeKarmaBox({ value: 100n, owner });
     box1.id = computeBoxId(box1);
     insertBox(box1);
 
-    const box2 = makeKarmaBox({ value: 200, owner });
+    const box2 = makeKarmaBox({ value: 200n, owner });
     box2.id = computeBoxId(box2);
     insertBox(box2);
 
-    const box3 = makeKarmaBox({ value: 50, owner });
+    const box3 = makeKarmaBox({ value: 50n, owner });
     box3.id = computeBoxId(box3);
     insertBox(box3);
 
@@ -589,8 +589,8 @@ describe('utxo store', () => {
     const results = getKarmaBoxes(owner);
     expect(results).toHaveLength(2);
     // Sorted value desc: 100, 50
-    expect(results[0]!.value).toBe(100);
-    expect(results[1]!.value).toBe(50);
+    expect(results[0]!.value).toBe(100n);
+    expect(results[1]!.value).toBe(50n);
   });
 
   it('getKarmaBoxes returns empty array for unknown owner', async () => {
@@ -613,17 +613,17 @@ describe('utxo store', () => {
     const alice = bytes(32).fill(0xaa);
     const bob = bytes(32).fill(0xbb);
 
-    const aliceBox = makeKarmaBox({ value: 100, owner: alice });
+    const aliceBox = makeKarmaBox({ value: 100n, owner: alice });
     aliceBox.id = computeBoxId(aliceBox);
     insertBox(aliceBox);
 
-    const bobBox = makeKarmaBox({ value: 200, owner: bob });
+    const bobBox = makeKarmaBox({ value: 200n, owner: bob });
     bobBox.id = computeBoxId(bobBox);
     insertBox(bobBox);
 
     const results = getKarmaBoxes(alice);
     expect(results).toHaveLength(1);
-    expect(results[0]!.value).toBe(100);
+    expect(results[0]!.value).toBe(100n);
   });
 
   // --- getCreditBoxes return all unspent credit boxes sorted by value desc ----
@@ -636,11 +636,11 @@ describe('utxo store', () => {
     initDb(':memory:');
 
     const owner = bytes(32);
-    const box1 = makeCreditBox({ value: 300, owner });
+    const box1 = makeCreditBox({ value: 300n, owner });
     box1.id = computeBoxId(box1);
     insertBox(box1);
 
-    const box2 = makeCreditBox({ value: 500, owner });
+    const box2 = makeCreditBox({ value: 500n, owner });
     box2.id = computeBoxId(box2);
     insertBox(box2);
 
@@ -649,7 +649,7 @@ describe('utxo store', () => {
 
     const results = getCreditBoxes(owner);
     expect(results).toHaveLength(1);
-    expect(results[0]!.value).toBe(500);
+    expect(results[0]!.value).toBe(500n);
   });
 
   it('getCreditBoxes returns empty array for unknown owner', async () => {
@@ -674,29 +674,29 @@ describe('utxo store', () => {
     const owner = bytes(32);
     const currentHeight = 100;
 
-    const box1 = makeCreditBox({ value: 300, owner, proofSource: 1 });
+    const box1 = makeCreditBox({ value: 300n, owner, proofSource: 1 });
     box1.id = computeBoxId(box1);
     insertBox(box1);
 
-    const box2 = makeCreditBox({ value: 500, owner, proofSource: 2 });
+    const box2 = makeCreditBox({ value: 500n, owner, proofSource: 2 });
     box2.lockedUntilBlock = 150;
     box2.id = computeBoxId(box2);
     insertBox(box2);
 
-    const box3 = makeCreditBox({ value: 200, owner, proofSource: 3 });
+    const box3 = makeCreditBox({ value: 200n, owner, proofSource: 3 });
     box3.lockedUntilBlock = 50;
     box3.id = computeBoxId(box3);
     insertBox(box3);
 
-    const box4 = makeCreditBox({ value: 100, owner, proofSource: 4 });
+    const box4 = makeCreditBox({ value: 100n, owner, proofSource: 4 });
     box4.id = computeBoxId(box4);
     insertBox(box4);
 
     const results = getUnlockedCreditBoxes(owner, currentHeight);
     expect(results).toHaveLength(3);
-    expect(results[0]!.value).toBe(300);
-    expect(results[1]!.value).toBe(200);
-    expect(results[2]!.value).toBe(100);
+    expect(results[0]!.value).toBe(300n);
+    expect(results[1]!.value).toBe(200n);
+    expect(results[2]!.value).toBe(100n);
   });
 
   it('getUnlockedCreditBoxes returns empty array when all boxes are locked', async () => {
@@ -707,7 +707,7 @@ describe('utxo store', () => {
     initDb(':memory:');
 
     const owner = bytes(32);
-    const box = makeCreditBox({ value: 500, owner, proofSource: 2 });
+    const box = makeCreditBox({ value: 500n, owner, proofSource: 2 });
     box.lockedUntilBlock = 200;
     box.id = computeBoxId(box);
     insertBox(box);

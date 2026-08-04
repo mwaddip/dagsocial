@@ -14,13 +14,13 @@ import { getKarmaBoxes, insertBox, consumeBox } from '../store/index.js';
  */
 export function mintKarma(
   userId: Uint8Array,
-  amount: number,
+  amount: bigint,
   blockHeight: number,
 ): string {
-  if (amount <= 0) return '';
+  if (amount <= 0n) return '';
 
   const existingBoxes = getKarmaBoxes(userId);
-  const existingTotal = existingBoxes.reduce((sum, b) => sum + b.value, 0);
+  const existingTotal = existingBoxes.reduce((sum, b) => sum + b.value, 0n);
   const newValue = existingTotal + amount;
 
   // Consume all existing boxes

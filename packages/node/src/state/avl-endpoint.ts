@@ -1,6 +1,19 @@
 import type { Express, Request, Response } from 'express';
+import type { AnyBox } from '@dagsocial/types';
 import type { AvlProverHandle } from './avl-prover.js';
 import { deserializeBoxWithId } from './serialize-box.js';
+
+/**
+ * JSON-safe view of a box: bigint amount fields (`value`, `originalValue`)
+ * become decimal strings — JSON.stringify throws on bigint.
+ */
+function jsonSafeBox(box: AnyBox): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(box)) {
+    out[key] = typeof val === 'bigint' ? val.toString() : val;
+  }
+  return out;
+}
 
 export function registerProofEndpoint(app: Express, handle: AvlProverHandle): void {
   app.get('/api/v1/proof/:boxId', (req: Request, res: Response) => {
@@ -77,7 +90,7 @@ export function registerProofEndpoint(app: Express, handle: AvlProverHandle): vo
           atHeight: blockHeight,
           stateRoot: Buffer.from(version).toString('hex'),
           proof: Buffer.from(proof).toString('base64'),
-          value: boxData,
+          value: boxData ? jsonSafeBox(boxData) : null,
         });
         return;
       }
@@ -108,7 +121,7 @@ export function registerProofEndpoint(app: Express, handle: AvlProverHandle): vo
         atHeight: blockHeight,
         stateRoot: Buffer.from(version).toString('hex'),
         proof: Buffer.from(proof).toString('base64'),
-        value: boxData,
+        value: boxData ? jsonSafeBox(boxData) : null,
       });
     } catch (err) {
       console.error('Proof endpoint error:', err);

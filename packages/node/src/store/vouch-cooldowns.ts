@@ -4,7 +4,7 @@ export function insertVouchCooldown(
   voucherId: Uint8Array,
   targetId: Uint8Array,
   releaseAtBlock: number,
-  karmaAmount: number,
+  karmaAmount: bigint,
 ): void {
   getDb()
     .prepare(
@@ -16,32 +16,34 @@ export function insertVouchCooldown(
 
 export function getVouchCooldowns(
   voucherId: Uint8Array,
-): Array<{ targetId: Uint8Array; releaseAtBlock: number; karmaAmount: number }> {
+): Array<{ targetId: Uint8Array; releaseAtBlock: number; karmaAmount: bigint }> {
   const rows = getDb()
     .prepare(
       `SELECT target_id, release_at_block, karma_amount
        FROM vouch_cooldowns WHERE voucher_id = ?`,
     )
+    .safeIntegers()
     .all(Buffer.from(voucherId)) as Array<{
-      target_id: Buffer; release_at_block: number; karma_amount: number;
+      target_id: Buffer; release_at_block: bigint; karma_amount: bigint;
     }>;
   return rows.map((r) => ({
     targetId: new Uint8Array(r.target_id),
-    releaseAtBlock: r.release_at_block,
+    releaseAtBlock: Number(r.release_at_block),
     karmaAmount: r.karma_amount,
   }));
 }
 
 export function getMaturedVouchCooldowns(
   currentHeight: number,
-): Array<{ voucherId: Uint8Array; targetId: Uint8Array; karmaAmount: number }> {
+): Array<{ voucherId: Uint8Array; targetId: Uint8Array; karmaAmount: bigint }> {
   const rows = getDb()
     .prepare(
       `SELECT voucher_id, target_id, karma_amount
        FROM vouch_cooldowns WHERE release_at_block <= ?`,
     )
+    .safeIntegers()
     .all(currentHeight) as Array<{
-      voucher_id: Buffer; target_id: Buffer; karma_amount: number;
+      voucher_id: Buffer; target_id: Buffer; karma_amount: bigint;
     }>;
   return rows.map((r) => ({
     voucherId: new Uint8Array(r.voucher_id),

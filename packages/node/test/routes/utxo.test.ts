@@ -115,7 +115,7 @@ describe('UTXO routes', () => {
     karmaUserIdHex = Buffer.from(karmaUserId).toString('hex');
     const karmaBox: KarmaBox = {
       boxType: 'karma',
-      value: 42,
+      value: 42n,
       createdAtBlock: 1,
       owner: kp1.publicKey,
       guard: 'owner_signature',
@@ -127,7 +127,7 @@ describe('UTXO routes', () => {
     // Second karma box for same user — multi-box total must sum across all boxes
     const karmaBox2: KarmaBox = {
       boxType: 'karma',
-      value: 58,
+      value: 58n,
       createdAtBlock: 2,
       owner: kp1.publicKey,
       guard: 'owner_signature',
@@ -142,7 +142,7 @@ describe('UTXO routes', () => {
     creditUserIdHex = Buffer.from(creditUserId).toString('hex');
     const creditBox: CreditBox = {
       boxType: 'credit',
-      value: 99,
+      value: 99n,
       createdAtBlock: 2,
       owner: kp2.publicKey,
       guard: 'owner_signature',
@@ -156,7 +156,7 @@ describe('UTXO routes', () => {
     inviteUserIdHex = Buffer.from(inviteUserId).toString('hex');
     const inviteBox: InviteBox = {
       boxType: 'invite',
-      value: 10,
+      value: 10n,
       createdAtBlock: 3,
       secretHash: new Uint8Array(32).fill(0xaa),
       inviterId: inviteUserId,
@@ -165,7 +165,7 @@ describe('UTXO routes', () => {
     insertBox({ ...inviteBox, id: computeBoxId(inviteBox) });
     const bondBox: BondBox = {
       boxType: 'bond',
-      value: 5,
+      value: 5n,
       createdAtBlock: 3,
       inviterId: inviteUserId,
       inviteePublicKey: new Uint8Array(32).fill(0xbb),
@@ -189,7 +189,7 @@ describe('UTXO routes', () => {
     expect(res.status).toBe(200);
     const body = res.data as Record<string, unknown>;
     expect(body.userId).toBe(karmaUserIdHex);
-    expect(body.total).toBe(42 + 58);
+    expect(body.total).toBe('100');
     expect(Array.isArray(body.boxes)).toBe(true);
     expect(body.boxes).toHaveLength(2);
     expect(typeof (body.boxes as unknown[])[0]).toBe('object');
@@ -197,7 +197,7 @@ describe('UTXO routes', () => {
     expect(typeof b0.boxId).toBe('string');
     // Vary order: ensure both box values exist (avoids assuming query order)
     const boxValues = (body.boxes as unknown[]).map((b: unknown) => (b as Record<string, unknown>).value);
-    expect(boxValues).toEqual(expect.arrayContaining([42, 58]));
+    expect(boxValues).toEqual(expect.arrayContaining(['42', '58']));
   });
 
   it('GET /credits/:userId returns credit balance (multi-box)', async () => {
@@ -205,12 +205,12 @@ describe('UTXO routes', () => {
     expect(res.status).toBe(200);
     const body = res.data as Record<string, unknown>;
     expect(body.userId).toBe(creditUserIdHex);
-    expect(body.total).toBe(99);
+    expect(body.total).toBe('99');
     expect(Array.isArray(body.boxes)).toBe(true);
     expect(body.boxes).toHaveLength(1);
     const b0 = (body.boxes as unknown[])[0] as Record<string, unknown>;
     expect(typeof b0.boxId).toBe('string');
-    expect(b0.value).toBe(99);
+    expect(b0.value).toBe('99');
   });
 
   it('GET /invites/:userId returns pending and bonds arrays', async () => {
@@ -247,7 +247,7 @@ describe('UTXO routes', () => {
       // Seed sender with 200 credits
       const box: CreditBox = {
         boxType: 'credit',
-        value: 200,
+        value: 200n,
         createdAtBlock: 10,
         owner: senderPubKey,
         guard: 'owner_signature',
@@ -328,13 +328,13 @@ describe('UTXO routes', () => {
     });
 
     it('completes a valid transfer', async () => {
-      const amount = 50;
+      const amount = 50n;
       const currentHeight = 100;
 
       // Precompute txId the same way sendCredits does
       const unlocked = [getCreditBox(senderPubKey)!];
       const selected = selectBoxes(unlocked, amount);
-      const totalSelected = selected.reduce((s, b) => s + b.value, 0);
+      const totalSelected = selected.reduce((s, b) => s + b.value, 0n);
       const change = totalSelected - amount;
 
       const outputs: CreditBox[] = [{
@@ -345,7 +345,7 @@ describe('UTXO routes', () => {
         guard: 'owner_signature',
         proofSource: -1,
       }];
-      if (change > 0) {
+      if (change > 0n) {
         outputs.push({
           boxType: 'credit',
           value: change,
@@ -377,13 +377,13 @@ describe('UTXO routes', () => {
       const res = await request('/credits/transfer', 'POST', {
         from: senderHex,
         to: receiverHex,
-        amount,
+        amount: amount.toString(),
         signature: sigBase64,
       });
       expect(res.status).toBe(200);
       const body = res.data as Record<string, unknown>;
-      expect(body.sent).toBe(amount);
-      expect(body.change).toBe(change);
+      expect(body.sent).toBe(amount.toString());
+      expect(body.change).toBe(change.toString());
       expect(typeof body.txId).toBe('string');
     });
   });
@@ -421,7 +421,7 @@ describe('UTXO routes', () => {
       });
       expect(res.status).toBe(200);
       const body = res.data as Record<string, unknown>;
-      expect(body.amount).toBe(1000);
+      expect(body.amount).toBe((1000n * 10n ** 8n).toString());
     });
 
     it('grants faucet credits to a valid recipient', async () => {
@@ -430,7 +430,7 @@ describe('UTXO routes', () => {
       });
       expect(res.status).toBe(200);
       const body = res.data as Record<string, unknown>;
-      expect(body.amount).toBe(1000);
+      expect(body.amount).toBe((1000n * 10n ** 8n).toString());
       expect(typeof body.txId).toBe('string');
     });
 

@@ -352,7 +352,8 @@ export function createApp(config: Config): express.Express {
           .prepare(
             "SELECT COALESCE(SUM(value), 0) AS s FROM utxo_boxes WHERE box_type = 'karma' AND spent_at_block IS NULL",
           )
-          .get() as { s: number };
+          .safeIntegers()
+          .get() as { s: bigint };
         return row.s;
       },
       getTotalCredits: () => {
@@ -360,7 +361,8 @@ export function createApp(config: Config): express.Express {
           .prepare(
             "SELECT COALESCE(SUM(value), 0) AS s FROM utxo_boxes WHERE box_type = 'credit' AND spent_at_block IS NULL",
           )
-          .get() as { s: number };
+          .safeIntegers()
+          .get() as { s: bigint };
         return row.s;
       },
       networkMode: config.networkMode,

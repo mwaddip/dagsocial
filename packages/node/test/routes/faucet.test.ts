@@ -32,8 +32,8 @@ function hex(u: Uint8Array): string {
  * The faucet only enqueues transactions, so this is the balance the identity is
  * on track to receive once the block lands.
  */
-function pendingFaucetKarmaFor(owner: Uint8Array): number {
-  let total = 0;
+function pendingFaucetKarmaFor(owner: Uint8Array): bigint {
+  let total = 0n;
   for (const entry of getPendingEntries(1000)) {
     if (entry.entryType !== 'utxo_tx' || !entry.utxoTxCbor) continue;
     const tx = decodeTx(entry.utxoTxCbor);
@@ -182,7 +182,7 @@ describe('faucet route', () => {
 
     // One output is 100 (user grant), the other is system balance - 100
     const values = tx.outputs.map((o) => o.value);
-    expect(values).toContain(100);
+    expect(values).toContain(100n);
 
     // The user grant box should NOT be in UTXO store yet (only in mempool)
     const box = getBox(body.txId as string);
@@ -222,7 +222,7 @@ describe('faucet route', () => {
 
     expect(statuses.filter((s) => s === 200)).toHaveLength(1);
     expect(statuses.filter((s) => s === 409)).toHaveLength(4);
-    expect(pendingFaucetKarmaFor(pk)).toBe(100);
+    expect(pendingFaucetKarmaFor(pk)).toBe(100n);
   });
 
   // -----------------------------------------------------------------------
@@ -245,7 +245,7 @@ describe('faucet route', () => {
 
     const codes = [res1.status, res2.status].sort();
     expect(codes).toEqual([200, 409]);
-    expect(pendingFaucetKarmaFor(pk)).toBe(100);
+    expect(pendingFaucetKarmaFor(pk)).toBe(100n);
   });
 
   // -----------------------------------------------------------------------
@@ -256,7 +256,7 @@ describe('faucet route', () => {
     const pk = generateKeyPair().publicKey;
     const box: KarmaBox = {
       boxType: 'karma',
-      value: 100,
+      value: 100n,
       createdAtBlock: 1,
       owner: pk,
       guard: 'owner_signature',
@@ -274,7 +274,7 @@ describe('faucet route', () => {
     const pk = generateKeyPair().publicKey;
     const box: KarmaBox = {
       boxType: 'karma',
-      value: 100,
+      value: 100n,
       createdAtBlock: 1,
       owner: pk,
       guard: 'owner_signature',

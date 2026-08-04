@@ -63,7 +63,7 @@ export interface ChallengeRecord {
 
 export interface VerifierDeps {
   getActiveChallenge: (userId: Uint8Array) => ChallengeRecord | null;
-  getKarmaBoxes: (owner: Uint8Array) => { value: number; id?: string }[];
+  getKarmaBoxes: (owner: Uint8Array) => { value: bigint; id?: string }[];
   getPost: (id: string) => unknown | null;
   /** Raw CBOR bytes for a post, used for independent hash recomputation. */
   getPostRaw?: (id: string) => Uint8Array | null;
@@ -150,7 +150,7 @@ export function verifyPost(
   if (karmaBoxes.length === 0) {
     return { valid: false, error: 'No karma box found' };
   }
-  const totalKarma = karmaBoxes.reduce((sum, b) => sum + b.value, 0);
+  const totalKarma = karmaBoxes.reduce((sum, b) => sum + b.value, 0n);
   const requiredKarma =
     post.parentRefs.length === 0 ? POST_LOCK_THREAD_COST : POST_LOCK_REPLY_COST;
   if (totalKarma < requiredKarma) {

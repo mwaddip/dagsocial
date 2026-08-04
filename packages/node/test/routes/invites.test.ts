@@ -117,7 +117,7 @@ describe('invites routes', () => {
   it('POST /invites creates invite and returns 201 with pending', async () => {
     const karma: KarmaBox = {
       boxType: 'karma',
-      value: 100,
+      value: 100n,
       createdAtBlock: 1,
       owner: inviterId,
       guard: 'owner_signature',
@@ -129,7 +129,7 @@ describe('invites routes', () => {
 
     const newKarma: KarmaBox = {
       boxType: 'karma',
-      value: 50,
+      value: 50n,
       createdAtBlock: 1,
       owner: inviterId,
       guard: 'owner_signature',
@@ -397,7 +397,7 @@ describe('invites routes', () => {
 
     const karmaIn: KarmaBox = {
       boxType: 'karma',
-      value: 200,
+      value: 200n,
       createdAtBlock: blockHeight,
       owner: inviterId,
       guard: 'owner_signature',
@@ -407,7 +407,7 @@ describe('invites routes', () => {
     const karmaInId = computeBoxId(karmaIn);
     storeInsertBox({ ...karmaIn, id: karmaInId, boxType: 'karma', guard: 'owner_signature' } as KarmaBox);
 
-    const totalValue = 200 + INVITE_KARMA_AMOUNT + INVITE_BOND_KARMA;
+    const totalValue = 200n + INVITE_KARMA_AMOUNT + INVITE_BOND_KARMA;
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: totalValue,
@@ -478,7 +478,7 @@ describe('invites routes', () => {
 
     const wrongKarma: KarmaBox = {
       boxType: 'karma',
-      value: 200,
+      value: 200n,
       createdAtBlock: blockHeight,
       owner: wrongPubKey,
       guard: 'owner_signature',
@@ -488,7 +488,7 @@ describe('invites routes', () => {
     const wrongKarmaId = computeBoxId(wrongKarma);
     storeInsertBox({ ...wrongKarma, id: wrongKarmaId, boxType: 'karma', guard: 'owner_signature' } as KarmaBox);
 
-    const totalValue = 200 + INVITE_KARMA_AMOUNT + INVITE_BOND_KARMA;
+    const totalValue = 200n + INVITE_KARMA_AMOUNT + INVITE_BOND_KARMA;
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: totalValue,
@@ -583,7 +583,7 @@ describe('invites routes', () => {
 
       expect(res.status).toBe(400);
       expect(String((res.data as Record<string, unknown>).error)).toContain(
-        'box value must be a non-negative integer',
+        'box value must be a non-negative bigint',
       );
     });
   });

@@ -111,7 +111,11 @@ function txToApi(tx: UtxoTransaction): Record<string, unknown> {
     inputs: tx.inputs,
     outputs: tx.outputs.map(o => {
       const obj: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(o)) obj[k] = v instanceof Uint8Array ? hex(v) : v;
+      for (const [k, v] of Object.entries(o)) {
+        obj[k] = v instanceof Uint8Array ? hex(v)
+          : typeof v === 'bigint' ? v.toString()
+          : v;
+      }
       return obj;
     }),
     signatures: Object.fromEntries(Object.entries(tx.signatures).map(([k, v]) => [k, hex(v as Uint8Array)])),
@@ -156,8 +160,8 @@ function signPost(content: string, author: Uint8Array, parents: string[], chal: 
  * that dropped the lock output would spend karma into nothing and is rejected
  * by the node's value-conservation check.
  */
-function postLockTx(boxes: {boxId:string,value:number}[], lockAmount:number, targetPostId:string): UtxoTransaction {
-  const t = boxes.reduce((s,b)=>s+b.value,0);
+function postLockTx(boxes: {boxId:string,value:string}[], lockAmount:bigint, targetPostId:string): UtxoTransaction {
+  const t = boxes.reduce((s,b)=>s+BigInt(b.value),0n);
   return {
     inputs: boxes.map(b=>b.boxId),
     outputs: [
@@ -168,12 +172,12 @@ function postLockTx(boxes: {boxId:string,value:number}[], lockAmount:number, tar
     protocolVersion:PROTOCOL_VERSION,
   };
 }
-function likeTx(boxes: {boxId:string,value:number}[], targetPostId: string): UtxoTransaction {
-  const t = boxes.reduce((s,b)=>s+b.value,0);
+function likeTx(boxes: {boxId:string,value:string}[], targetPostId: string): UtxoTransaction {
+  const t = boxes.reduce((s,b)=>s+BigInt(b.value),0n);
   return { inputs: boxes.map(b=>b.boxId), outputs: [{ boxType:'karma',value:t-LIKE_COST,createdAtBlock:0,owner:pubRaw,guard:'owner_signature',proofSource:targetPostId,lastTouchBlock:0 }, { boxType:'like',value:LIKE_COST,createdAtBlock:0,likerId:pubRaw,targetPostId,guard:'epoch_tally' }], signatures:{}, protocolVersion:PROTOCOL_VERSION };
 }
-function inviteTx(boxes: {boxId:string,value:number}[], secretHashHex: string): UtxoTransaction {
-  const t = boxes.reduce((s,b)=>s+b.value,0);
+function inviteTx(boxes: {boxId:string,value:string}[], secretHashHex: string): UtxoTransaction {
+  const t = boxes.reduce((s,b)=>s+BigInt(b.value),0n);
   const s = INVITE_KARMA_AMOUNT + INVITE_BOND_KARMA;
   return { inputs: boxes.map(b=>b.boxId), outputs: [{ boxType:'karma',value:t-s,createdAtBlock:0,owner:pubRaw,guard:'owner_signature',proofSource:'e2e',lastTouchBlock:0 }, { boxType:'invite',value:INVITE_KARMA_AMOUNT,createdAtBlock:0,secretHash:unhex(secretHashHex),inviterId:pubRaw,guard:'hash_preimage' }, { boxType:'bond',value:INVITE_BOND_KARMA,createdAtBlock:0,inviterId:pubRaw,inviteePublicKey:new Uint8Array(32),probationStartBlock:0,probationEndBlock:0,guard:'inviter_signature' }], signatures:{}, protocolVersion:PROTOCOL_VERSION };
 }
@@ -253,8 +257,8 @@ describe('E2E Pipeline', () => {
     console.log(`Faucet: ${f.txId.slice(0,16)}...`);
     await wait(6000);
 
-    let k = await get(`${A1}/karma/${userId}`) as { total: number; boxes: { boxId: string; value: number }[] };
-    expect(k.total).toBeGreaterThan(0);
+    let k = await get(`${A1}/karma/${userId}`) as { total: string; boxes: { boxId: string; value: string }[] };
+    expect(BigInt(k.total)).toBeGreaterThan(0n);
     console.log(`Karma: ${k.total} (${k.boxes.length} boxes)`);
 
     // 2. Post
@@ -274,7 +278,7 @@ describe('E2E Pipeline', () => {
       timestamp:ts, powNonce:nonce, signature:unhex(sig),
     } as never);
 
-    k = await get(`${A1}/karma/${userId}`) as { total: number; boxes: { boxId: string; value: number }[] };
+    k = await get(`${A1}/karma/${userId}`) as { total: string; boxes: { boxId: string; value: string }[] };
     const lockTx = postLockTx(k.boxes, POST_LOCK_THREAD_COST, targetPostId);
     signTx(lockTx);
 
@@ -285,7 +289,7 @@ describe('E2E Pipeline', () => {
     await wait(6000);
 
     // 3. Like
-    k = await get(`${A1}/karma/${userId}`) as { total: number; boxes: { boxId: string; value: number }[] };
+    k = await get(`${A1}/karma/${userId}`) as { total: string; boxes: { boxId: string; value: string }[] };
     const likeT = likeTx(k.boxes, targetPostId);
     signTx(likeT);
     const likeR = await api('POST', `${A1}/likes`, { tx: txToApi(likeT) }) as { status: string; txId: string };
@@ -294,7 +298,7 @@ describe('E2E Pipeline', () => {
     await wait(4000);
 
     // 4. Invite
-    k = await get(`${A1}/karma/${userId}`) as { total: number; boxes: { boxId: string; value: number }[] };
+    k = await get(`${A1}/karma/${userId}`) as { total: string; boxes: { boxId: string; value: string }[] };
     const secret = randomBytes(32);
     const sh = hex(blake32(secret));
     const invTx = inviteTx(k.boxes, sh);
@@ -305,7 +309,7 @@ describe('E2E Pipeline', () => {
     await wait(4000);
 
     // 5. Decay
-    const s = (await get(`${A1}/karma/${userId}`) as { total: number }).total;
+    const s = BigInt((await get(`${A1}/karma/${userId}`) as { total: string }).total);
     console.log(`Pre-decay karma: ${s}`);
     for (let i=0; i<30; i++) {
       await wait(2000);
@@ -314,13 +318,13 @@ describe('E2E Pipeline', () => {
       const h2 = (await get(`${A2}/status`) as { blockHeight: number }).blockHeight;
       console.log(`  H1=${h1} H2=${h2}`);
     }
-    const e = (await get(`${A1}/karma/${userId}`) as { total: number }).total;
+    const e = BigInt((await get(`${A1}/karma/${userId}`) as { total: string }).total);
     console.log(`Post-decay karma: ${e} (delta=${e-s})`);
     if (e < s) console.log('DECAY CONFIRMED');
 
     // Verify sync (may not converge in test timeframe — log only)
     try {
-      const n2k = await get(`${A2}/karma/${userId}`) as { total: number };
+      const n2k = await get(`${A2}/karma/${userId}`) as { total: string };
       console.log(`N2 karma: ${n2k.total} (N1=${e})`);
     } catch { console.log('N2 karma: not synced (expected — headers may lag)'); }
     try {
@@ -347,7 +351,7 @@ describe('E2E Pipeline', () => {
       timestamp:ts, powNonce:nonce, signature:unhex(sig),
     } as never);
 
-    const k = await get(`${A1}/karma/${userId}`) as { total: number; boxes: { boxId: string; value: number }[] };
+    const k = await get(`${A1}/karma/${userId}`) as { total: string; boxes: { boxId: string; value: string }[] };
     const lockTx = postLockTx(k.boxes, POST_LOCK_THREAD_COST, targetPostId);
     signTx(lockTx);
 
@@ -365,7 +369,7 @@ describe('E2E Pipeline', () => {
     await wait(6000);
 
     // Check karma before delete
-    const karmaBefore = (await get(`${A1}/karma/${userId}`) as { total: number }).total;
+    const karmaBefore = BigInt((await get(`${A1}/karma/${userId}`) as { total: string }).total);
     console.log(`Karma before delete: ${karmaBefore}`);
 
     // 2. Build PruneIntent for a root post with no replies
@@ -396,7 +400,7 @@ describe('E2E Pipeline', () => {
 
     // 4. Diagnostic: check node health
     try {
-      const status = await get(`${A1}/status`) as { blockHeight: number; totalKarma: number };
+      const status = await get(`${A1}/status`) as { blockHeight: number; totalKarma: string };
       console.log(`Node blockHeight=${status.blockHeight}, totalKarma=${status.totalKarma}`);
     } catch (e) {
       console.log(`Failed status check: ${String(e)}`);
@@ -408,7 +412,7 @@ describe('E2E Pipeline', () => {
     let karmaAfter = karmaBefore;
     for (let i = 0; i < 15; i++) {
       await wait(2000);
-      karmaAfter = (await get(`${A1}/karma/${userId}`) as { total: number }).total;
+      karmaAfter = BigInt((await get(`${A1}/karma/${userId}`) as { total: string }).total);
       console.log(`  Post-delete karma poll ${i + 1}: ${karmaAfter} (delta=${karmaAfter - karmaBefore})`);
       if (karmaAfter > karmaBefore) break;
     }
@@ -420,10 +424,10 @@ describe('E2E Pipeline', () => {
     // Decay can be up to ~5 per 6s (KARMA_DECAY_AMOUNT=5, KARMA_DECAY_INTERVAL_BLOCKS=3).
     // Over a 30s poll window that is ~25 decay max, plus the 5 locked = net -20.
     // Add buffer for stale-threshold decay and we allow down to -50.
-    expect(karmaDelta).toBeGreaterThanOrEqual(-50);
-    if (karmaDelta > 0) {
+    expect(karmaDelta).toBeGreaterThanOrEqual(-50n);
+    if (karmaDelta > 0n) {
       console.log(`KARMA RETURNED: delta=+${karmaDelta}`);
-    } else if (karmaDelta >= 0) {
+    } else if (karmaDelta >= 0n) {
       console.log(`Karma unchanged: delta=${karmaDelta}`);
     } else {
       console.log(`Karma decreased: delta=${karmaDelta} (decay + locked karma pending settlement)`);

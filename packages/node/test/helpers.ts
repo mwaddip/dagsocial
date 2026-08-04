@@ -56,6 +56,9 @@ export function txToJson(tx: UtxoTransaction): Record<string, unknown> {
       const obj: Record<string, unknown> = { ...o };
       for (const [k, v] of Object.entries(obj)) {
         if (v instanceof Uint8Array) obj[k] = Buffer.from(v).toString('hex');
+        // Box values/amounts are bigint — the JSON API carries them as
+        // decimal strings (json-to-tx coerces them back).
+        else if (typeof v === 'bigint') obj[k] = v.toString();
       }
       return obj;
     }),

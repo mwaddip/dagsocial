@@ -71,7 +71,7 @@ export function initSystemKeypair(): SystemKeypair {
 // System karma box
 // ---------------------------------------------------------------------------
 
-const SYSTEM_KARMA_INITIAL = 50_000;
+const SYSTEM_KARMA_INITIAL = 50_000n;
 
 /**
  * Ensure the system karma box exists with the initial balance.
@@ -99,7 +99,7 @@ export function ensureSystemKarmaBox(systemPubKey: Uint8Array, currentHeight: nu
 // System credit box (faucet)
 // ---------------------------------------------------------------------------
 
-const FAUCET_CREDITS_INITIAL = 100_000;
+const FAUCET_CREDITS_INITIAL = 100_000n * 10n ** 8n;  // 100k credits in base units
 
 /**
  * Ensure the system keypair has a credit box with FAUCET_CREDITS_INITIAL

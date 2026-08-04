@@ -24,7 +24,7 @@ const TEST_CFG = {
 function makeKarmaBox(overrides: Partial<KarmaBox> = {}): KarmaBox {
   return {
     boxType: 'karma',
-    value: 100,
+    value: 100n,
     createdAtBlock: 0,
     owner: OWNER,
     guard: 'owner_signature',
@@ -149,7 +149,7 @@ describe('applyKarmaDecay', () => {
     const ownerKey = Buffer.from(OWNER).toString('hex');
     const boxesMap = new Map<string, KarmaBox[]>();
     boxesMap.set(ownerKey, [
-      makeKarmaBox({ createdAtBlock: 99999, value: 100 }),
+      makeKarmaBox({ createdAtBlock: 99999, value: 100n }),
     ]);
     const { deps, consumed, inserted } = makeDeps(boxesMap);
 
@@ -166,7 +166,7 @@ describe('applyKarmaDecay', () => {
     // Box at height 1000, current 25000, threshold 20160 -> stale (age 24000 > 20160)
     // periods = floor((25000-1000)/720) = 33, burn = min(33*5=165, 100-10=90) = 90
     boxesMap.set(ownerKey, [
-      makeKarmaBox({ id: 'old-box-1', createdAtBlock: 1000, value: 100 }),
+      makeKarmaBox({ id: 'old-box-1', createdAtBlock: 1000, value: 100n }),
     ]);
     const { deps } = makeDeps(boxesMap);
 
@@ -174,7 +174,7 @@ describe('applyKarmaDecay', () => {
 
     expect(journal).toHaveLength(1);
     const entry = journal[0]!;
-    expect(entry.burnAmount).toBe(90);
+    expect(entry.burnAmount).toBe(90n);
     expect(entry.consumedBoxIds).toEqual(['old-box-1']);
     expect(entry.newBoxId).toBeTruthy();
   });
@@ -185,21 +185,21 @@ describe('applyKarmaDecay', () => {
     // Box with 12 karma, current 25000 -> stale, 33 owed periods
     // burn = min(33*5=165, 12-10=2) = 2
     boxesMap.set(ownerKey, [
-      makeKarmaBox({ id: 'old-box-1', createdAtBlock: 1000, value: 12 }),
+      makeKarmaBox({ id: 'old-box-1', createdAtBlock: 1000, value: 12n }),
     ]);
     const { deps } = makeDeps(boxesMap);
 
     const journal = applyKarmaDecay(deps, 25000, TEST_CFG);
 
     expect(journal).toHaveLength(1);
-    expect(journal[0]!.burnAmount).toBe(2);
+    expect(journal[0]!.burnAmount).toBe(2n);
   });
 
   it('does nothing when already at or below minimum', () => {
     const ownerKey = Buffer.from(OWNER).toString('hex');
     const boxesMap = new Map<string, KarmaBox[]>();
     boxesMap.set(ownerKey, [
-      makeKarmaBox({ id: 'old-box-1', createdAtBlock: 1000, value: 8 }),
+      makeKarmaBox({ id: 'old-box-1', createdAtBlock: 1000, value: 8n }),
     ]);
     const { deps, consumed, inserted } = makeDeps(boxesMap);
 
@@ -214,8 +214,8 @@ describe('applyKarmaDecay', () => {
     const ownerKey = Buffer.from(OWNER).toString('hex');
     const boxesMap = new Map<string, KarmaBox[]>();
     boxesMap.set(ownerKey, [
-      makeKarmaBox({ id: 'box-a', createdAtBlock: 1000, value: 50 }),
-      makeKarmaBox({ id: 'box-b', createdAtBlock: 1000, value: 60 }),
+      makeKarmaBox({ id: 'box-a', createdAtBlock: 1000, value: 50n }),
+      makeKarmaBox({ id: 'box-b', createdAtBlock: 1000, value: 60n }),
     ]);
     const { deps, consumed } = makeDeps(boxesMap);
 
@@ -230,7 +230,7 @@ describe('applyKarmaDecay', () => {
     const ownerKey = Buffer.from(OWNER).toString('hex');
     const boxesMap = new Map<string, KarmaBox[]>();
     boxesMap.set(ownerKey, [
-      makeKarmaBox({ id: 'old-box', createdAtBlock: 1000, value: 100 }),
+      makeKarmaBox({ id: 'old-box', createdAtBlock: 1000, value: 100n }),
     ]);
     const { deps, inserted } = makeDeps(boxesMap);
 

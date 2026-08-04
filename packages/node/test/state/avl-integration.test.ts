@@ -18,7 +18,7 @@ function makeIdGenerator() {
   return (): string => (counter++).toString(16).padStart(64, '0');
 }
 
-function makeKarmaBox(id: string, value: number, block: number, seed: number): AnyBox {
+function makeKarmaBox(id: string, value: bigint, block: number, seed: number): AnyBox {
   const owner = new Uint8Array(32);
   owner[0] = seed & 0xff;
   return {
@@ -33,7 +33,7 @@ function makeKarmaBox(id: string, value: number, block: number, seed: number): A
   };
 }
 
-function makeCreditBox(id: string, value: number, block: number, seed: number): AnyBox {
+function makeCreditBox(id: string, value: bigint, block: number, seed: number): AnyBox {
   const owner = new Uint8Array(32);
   owner[0] = seed & 0xff;
   return {
@@ -79,7 +79,7 @@ describe('AVL integration — full pipeline', () => {
 
     // -- Block 1: create 5 karma boxes -----------------------------------------
     const created1: AnyBox[] = Array.from({ length: 5 }, (_, i) =>
-      makeKarmaBox(nextId(), 100 + i, 1, i),
+      makeKarmaBox(nextId(), BigInt(100 + i), 1, i),
     );
     for (const b of created1) allBoxes.set(b.id, b);
     const d1 = applyBlockMutations(handle.prover, [], created1);
@@ -103,7 +103,7 @@ describe('AVL integration — full pipeline', () => {
     allBoxes.delete(created1[0]!.id);
 
     const created2: AnyBox[] = Array.from({ length: 3 }, (_, i) =>
-      makeCreditBox(nextId(), 50 + i, 2, i + 5),
+      makeCreditBox(nextId(), BigInt(50 + i), 2, i + 5),
     );
     for (const b of created2) allBoxes.set(b.id, b);
 
@@ -129,7 +129,7 @@ describe('AVL integration — full pipeline', () => {
 
     for (let block = 3; block <= 10; block++) {
       const created: AnyBox[] = Array.from({ length: 2 }, (_, i) =>
-        makeKarmaBox(nextId(), 10 + i, block, block * 10 + i),
+        makeKarmaBox(nextId(), BigInt(10 + i), block, block * 10 + i),
       );
 
       const consumed: string[] = [];

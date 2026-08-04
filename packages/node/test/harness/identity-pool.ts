@@ -79,7 +79,7 @@ export function createIdentityPool(roles: string[]): IdentityPool {
           for (let poll = 0; poll < 20; poll++) {
             try {
               const k = await client.getKarma(id.userId);
-              if (k.total > 0) {
+              if (BigInt(k.total) > 0n) {
                 id.funded = true;
                 console.log(`  Faucet: ${id.role} (${id.userId.slice(0, 12)}...) — ${k.total} karma (confirmed in ${poll * 500}ms)`);
                 confirmed = true;

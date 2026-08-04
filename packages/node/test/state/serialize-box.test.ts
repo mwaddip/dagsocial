@@ -14,7 +14,7 @@ describe('serializeBox', () => {
     const box = {
       id: 'ab'.repeat(32),
       boxType: 'karma' as const,
-      value: 100,
+      value: 100n,
       createdAtBlock: 5,
       owner: new Uint8Array(32).fill(0xaa),
       guard: 'owner_signature' as const,
@@ -30,7 +30,7 @@ describe('serializeBox', () => {
     const box = {
       id: 'cd'.repeat(32),
       boxType: 'credit' as const,
-      value: 50,
+      value: 50n,
       createdAtBlock: 10,
       owner: new Uint8Array(32).fill(0xbb),
       guard: 'owner_signature' as const,
@@ -44,7 +44,7 @@ describe('serializeBox', () => {
     const box = {
       id: 'ef'.repeat(32),
       boxType: 'like' as const,
-      value: 2,
+      value: 2n,
       createdAtBlock: 3,
       likerId: new Uint8Array(32).fill(0x11),
       targetPostId: 'post-1',
@@ -57,7 +57,7 @@ describe('serializeBox', () => {
     const box = {
       id: 'gh'.repeat(32),
       boxType: 'invite' as const,
-      value: 10,
+      value: 10n,
       createdAtBlock: 7,
       secretHash: new Uint8Array(32).fill(0x22),
       inviterId: new Uint8Array(32).fill(0x33),
@@ -70,7 +70,7 @@ describe('serializeBox', () => {
     const box = {
       id: 'ij'.repeat(32),
       boxType: 'bond' as const,
-      value: 5,
+      value: 5n,
       createdAtBlock: 7,
       inviterId: new Uint8Array(32).fill(0x33),
       inviteBoxId: 'gh'.repeat(32),
@@ -86,8 +86,8 @@ describe('serializeBox', () => {
     const box = {
       id: 'kl'.repeat(32),
       boxType: 'post_lock' as const,
-      value: 5,
-      originalValue: 5,
+      value: 5n,
+      originalValue: 5n,
       createdAtBlock: 4,
       owner: new Uint8Array(32).fill(0x44),
       targetPostId: 'post-2',
@@ -100,7 +100,7 @@ describe('serializeBox', () => {
     const box = {
       id: 'mn'.repeat(32),
       boxType: 'karma' as const,
-      value: 42,
+      value: 42n,
       createdAtBlock: 1,
       owner: new Uint8Array(32).fill(0x55),
       guard: 'owner_signature' as const,
@@ -116,7 +116,7 @@ describe('serializeBox', () => {
     const box = {
       id: 'op'.repeat(32),
       boxType: 'karma' as const,
-      value: 1,
+      value: 1n,
       createdAtBlock: 0,
       owner: new Uint8Array(32),
       guard: 'owner_signature' as const,
@@ -132,7 +132,7 @@ describe('serializeBox', () => {
     const box = {
       id: 'qr'.repeat(32),
       boxType: 'karma' as const,
-      value: 1,
+      value: 1n,
       createdAtBlock: 0,
       owner: new Uint8Array(32),
       guard: 'owner_signature' as const,

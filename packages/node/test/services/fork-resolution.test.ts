@@ -207,7 +207,7 @@ function makeLikeBox(
 ): LikeBox {
   const box: LikeBox = {
     boxType: 'like',
-    value: 2,
+    value: 2n,
     createdAtBlock,
     likerId,
     targetPostId,
@@ -219,7 +219,7 @@ function makeLikeBox(
 }
 
 function makeKarmaBox(
-  value: number,
+  value: bigint,
   owner: Uint8Array,
   createdAtBlock: number,
 ): KarmaBox {
@@ -768,7 +768,7 @@ describe('revertBlock', () => {
     mempool.insertSubBlock(postId, 1000);
 
     // Insert a standalone UTXO tx
-    const karmaBox = makeKarmaBox(100, author.userId, 0);
+    const karmaBox = makeKarmaBox(100n, author.userId, 0);
     utxo.insertBox(karmaBox);
     const likeTx = makeLikeTx(author, karmaBox, 'unrelated');
     mempool.insertUtxoTx(likeTx, null, 1000);
@@ -809,7 +809,7 @@ describe('revertBlock', () => {
 
     // Create identity with a karma box at block 0 (ancient)
     const identity = makeTestIdentity();
-    const oldBox = makeKarmaBox(100, identity.userId, 0);
+    const oldBox = makeKarmaBox(100n, identity.userId, 0);
     utxo.insertBox(oldBox);
     const oldBoxId = oldBox.id!;
 
@@ -871,7 +871,7 @@ describe('revertBlock', () => {
     const restoredBox = utxo.getKarmaBox(identity.userId);
     expect(restoredBox).not.toBeNull();
     expect(restoredBox!.boxType).toBe('karma');
-    expect(restoredBox!.value).toBe(100);
+    expect(restoredBox!.value).toBe(100n);
     expect(restoredBox!.id).toBe(oldBoxId);
 
     expect(utxo.getBox(newBoxId)).toBeNull();
