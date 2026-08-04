@@ -548,6 +548,8 @@ Architecture document for the full model. Key properties:
 14. Build coinbase outputs (credit emission with Ergo-style decay,
     treasury split if configured)
 15. Adjust difficulty at epoch boundaries (credit epochs, not like epochs)
+15b. Compute `stateRoot` — the **post-block** digest (see "Post-block
+    stateRoot" below). Never the creator's current (pre-block) digest.
 16. Build block template (powNonce=0, empty signature)
 17. **Internal mode:** mine PoW, sign the header hash (`blockHash(header)`), finalize
 18. **External mode:** store template for `GET /mining/template`,
@@ -582,6 +584,42 @@ Architecture document for the full model. Key properties:
 In external mode, the block creator builds a template with `powNonce=0` and
 stores it. External miners poll the template endpoint, solve PoW, and submit
 via `POST /mining/submit`. The node verifies PoW, signs, and finalizes.
+
+### Post-block stateRoot (H-6)
+
+`header.stateRoot` commits to the UTXO state **after** this block is applied
+(ARCHITECTURE → AVL+ State Root). PoW covers the header, so the producer must
+know that digest **before** mining — it cannot be filled in afterwards.
+
+**It is obtained by running this block's own body through the same code the
+apply path runs**, never by a second implementation of the state transition:
+
+1. Snapshot the prover digest.
+2. In a SQLite transaction that is always rolled back, run the block's
+   **mutation phase** (see "Apply funnel: validation and mutation phases")
+   at the block's height, then derive the prover feed from the resulting
+   journal and compute the digest exactly as apply does.
+3. Roll the transaction back and restore the prover to the snapshot
+   (`prover.rollback`) — SQLite rollback does not reach the prover's
+   in-memory state.
+4. Use the computed digest as `header.stateRoot`, then mine.
+
+The speculative run passes **no `DagService`** (its canonical-branch updates
+are in-memory and would survive the rollback; they touch no UTXO box, so the
+digest is unaffected), and performs no block storage, no `clearTemplate`, no
+journal persistence, and no prover checkpoint.
+
+A producer with no prover initialized writes `EMPTY_STATE_ROOT`. Production
+nodes always initialize one at startup, so this is a test-only path — but a
+node running with `VERIFY_STATE_ROOT` enabled will reject such a block, which
+is correct.
+
+**External mining.** The template's `stateRoot` is computed at template-build
+time and the block is submitted later. This stays sound because any competing
+block that applies at the same height calls `clearTemplate()`, so a template
+whose pre-state has moved can no longer be submitted. `submitMinedBlock`
+therefore depends on template invalidation for **state-root** correctness, not
+merely for height correctness.
 
 ### Coinbase emission (Ergo-style linear decay)
 
@@ -880,8 +918,15 @@ the UTXO set using AVL+ trees.
 - **avl-prover:** Generates inclusion/exclusion proofs for any boxId
 - **avl-endpoint:** `GET /api/v1/proof/:boxId?atHeight=N` — serves proofs to
   light clients
-- **Config:** `VERIFY_STATE_ROOT` (validate on apply) and `MAX_PROOF_HISTORY`
-  (prune old proof versions)
+- **Config:** `VERIFY_STATE_ROOT` (validate on apply, **default on** — set
+  `VERIFY_STATE_ROOT=false` to disable) and `MAX_PROOF_HISTORY` (prune old
+  proof versions)
+- **Verification:** apply computes the post-mutation digest and rejects the
+  block unless it equals `header.stateRoot`. Both sides are post-block (H-6),
+  both feeds are canonically ordered (M-12), and the mutation set is
+  journal-derived (P1) — so a mismatch means genuine state divergence, not a
+  representation difference. A rejected block leaves the prover restored by
+  the funnel's single rollback point
 - **Journal-fed:** the per-block mutation set is derived from
   `BlockJournal.mutations` — intra-block insert+remove pairs for the same
   boxId net out; inserted box bytes come from the journal's `box` payload,
@@ -1136,6 +1181,8 @@ All config via environment variables with defaults:
 | `LISTEN_ADDRS` | `/ip4/0.0.0.0/tcp/0` | libp2p listen addresses |
 | `MAX_PEERS` | `50` | Max connected libp2p peers |
 | `PUBLIC_URL` | `/` | Base path where the demo UI is served (e.g. `/testnet/`) |
+| `VERIFY_STATE_ROOT` | `true` | Verify `header.stateRoot` at block apply (Spec B P3). Set `false` to disable |
+| `MAX_PROOF_HISTORY` | `1440` | AVL versions retained for proof serving |
 
 ---
 
@@ -1194,6 +1241,23 @@ apply handler directly — reached consensus code with fields of arbitrary type.
 Enforcing it in the funnel makes the guarantee path-independent, and is the
 same relocation already applied to the PoW target (M-2), coinbase maturity
 (M-3), and the validator signature (H-1).
+
+**Apply funnel: validation and mutation phases.** `applyBlockBody` is split so
+the state transition can be run without the header being final — that is what
+lets the block creator compute a post-block `stateRoot` through this same code
+instead of a parallel implementation (H-6). The split is structural, not a
+mode flag: there is no "skip the checks" parameter on the apply path.
+
+| Phase | Contents | Runs in speculative computation? |
+|-------|----------|----------------------------------|
+| **Validation** | chain-link, protocol version, PoW target + PoW, validator signature, Merkle roots, coinbase value + maturity, epoch-tally agreement, block storage, `clearTemplate` | No — the header does not exist yet |
+| **Mutation** | coinbase mint, sub-block confirmation, DAG scores, topology, prune verification + settlement, epoch tally application, embedded UTXO txs, decay, vouch cooldowns | Yes — verbatim, at an explicitly passed height |
+| **Commit** | AVL feed + `stateRoot` verification + checkpoint, journal persistence | No — the speculative run reads the digest and rolls back |
+
+The mutation phase takes its height as an argument rather than reading
+`header.height`, and rejects a block for body-level reasons (prune
+verification, embedded-tx re-validation) on both paths identically. Any check
+that depends on the finalized header belongs in the validation phase.
 
 **The funnel is total.** `applyOrderingBlock` MUST NOT propagate an exception
 for any input. A block that causes an unexpected throw is a block the node

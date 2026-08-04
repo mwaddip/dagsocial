@@ -276,13 +276,21 @@ boxes either fully commits or fully fails. The ledger enforces:
 
 The UTXO set is indexed by an AVL+ authenticated dictionary. Every ordering
 block header carries a `stateRoot` — the root hash of the AVL+ tree over all
-unspent boxes at that height. This enables light clients to verify box
-existence or absence without storing the full UTXO set.
+unspent boxes **after this block has been applied**. This enables light clients
+to verify box existence or absence without storing the full UTXO set.
+
+- **Post-state, not parent-state (H-6).** `stateRoot` commits to the state the
+  block *produces*, following Ergo. The block therefore commits to its own
+  effect, and the tip's state is provable as soon as the tip exists. The cost
+  is that a producer must know its block's outcome before mining it — see
+  `NODE_INTERFACE.md` → "Ordering Block Creator Contract" for how that is
+  obtained without a second implementation of the state transition.
 
 - **Module:** `packages/node/src/state/` (avl-storage, avl-prover, avl-endpoint)
 - **Proof endpoint:** `GET /api/v1/proof/:boxId?atHeight=N` — returns an
   inclusion or exclusion proof for a box at a given block height
-- **Config flags:** `VERIFY_STATE_ROOT` (validate stateRoot at block apply) and
+- **Config flags:** `VERIFY_STATE_ROOT` (validate stateRoot at block apply,
+  **default on** since Spec B P3) and
   `MAX_PROOF_HISTORY` (prune old proof versions)
 - **Deterministic:** Every node computing the AVL+ over the same UTXO set at
   the same height produces the identical stateRoot. Box `value` serializes as a
