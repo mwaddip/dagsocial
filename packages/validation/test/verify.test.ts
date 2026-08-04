@@ -19,7 +19,7 @@ import {
 } from '../src/verify.js';
 import { isDisallowedContentCodepoint, PINNED_UNICODE_VERSION } from '../src/content-charset.js';
 import { generateKeyPair, computePostId, signingHash, EMPTY_STATE_ROOT } from '@dagsocial/types';
-import type { Post, SubBlock, SubBlockEntry, PruneEntry, BlockHeader, OrderingBlock, UtxoTransaction } from '@dagsocial/types';
+import type { Post, SubBlock, SubBlockEntry, PruneEntry, BlockHeader, OrderingBlock, UtxoTransaction, CoinbaseOutput } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
 // verifyPoW
@@ -478,7 +478,7 @@ describe('verifyTxStructure', () => {
   it('accepts a valid transaction', () => {
     const tx: UtxoTransaction = {
       inputs: ['input1'],
-      outputs: [{ boxType: 'karma', value: 5, createdAtBlock: 1, owner: new Uint8Array(32), guard: 'owner_signature', proofSource: 'abc', lastTouchBlock: 1 }],
+      outputs: [{ boxType: 'karma', value: 5n, createdAtBlock: 1, owner: new Uint8Array(32), guard: 'owner_signature', proofSource: 'abc', lastTouchBlock: 1 }],
       signatures: {},
       protocolVersion: 1,
     };
@@ -488,7 +488,7 @@ describe('verifyTxStructure', () => {
   it('rejects transaction with no inputs', () => {
     const tx: UtxoTransaction = {
       inputs: [],
-      outputs: [{ boxType: 'karma', value: 5, createdAtBlock: 1, owner: new Uint8Array(32), guard: 'owner_signature', proofSource: 'abc', lastTouchBlock: 1 }],
+      outputs: [{ boxType: 'karma', value: 5n, createdAtBlock: 1, owner: new Uint8Array(32), guard: 'owner_signature', proofSource: 'abc', lastTouchBlock: 1 }],
       signatures: {},
       protocolVersion: 1,
     };
@@ -508,7 +508,7 @@ describe('verifyTxStructure', () => {
   it('rejects transaction with duplicate inputs', () => {
     const tx: UtxoTransaction = {
       inputs: ['input1', 'input1'],
-      outputs: [{ boxType: 'karma', value: 5, createdAtBlock: 1, owner: new Uint8Array(32), guard: 'owner_signature', proofSource: 'abc', lastTouchBlock: 1 }],
+      outputs: [{ boxType: 'karma', value: 5n, createdAtBlock: 1, owner: new Uint8Array(32), guard: 'owner_signature', proofSource: 'abc', lastTouchBlock: 1 }],
       signatures: {},
       protocolVersion: 1,
     };
@@ -518,7 +518,7 @@ describe('verifyTxStructure', () => {
   it('rejects transaction missing protocolVersion', () => {
     const tx = {
       inputs: ['input1'],
-      outputs: [{ boxType: 'karma', value: 5 }],
+      outputs: [{ boxType: 'karma', value: 5n }],
       signatures: {},
     } as unknown as UtxoTransaction;
     expect(verifyTxStructure(tx).valid).toBe(false);
@@ -666,6 +666,35 @@ describe('verifyOrderingBlockStructure', () => {
       },
     } as unknown as OrderingBlock;
     expect(verifyOrderingBlockStructure(block).valid).toBe(false);
+  });
+
+  it('accepts coinbase outputs with non-negative bigint values', () => {
+    const block = makeValidBlock();
+    block.utxoTxTree.coinbaseOutputs = [
+      { owner: new Uint8Array(32).fill(2), value: 5n, lockedUntilBlock: 1, isTreasury: false },
+      { owner: new Uint8Array(32).fill(3), value: 0n, lockedUntilBlock: 1, isTreasury: true },
+    ];
+    expect(verifyOrderingBlockStructure(block)).toEqual({ valid: true });
+  });
+
+  it('rejects a coinbase output with a number value (bigint required)', () => {
+    const block = makeValidBlock();
+    block.utxoTxTree.coinbaseOutputs = [
+      { owner: new Uint8Array(32).fill(2), value: 5, lockedUntilBlock: 1, isTreasury: false } as unknown as CoinbaseOutput,
+    ];
+    const result = verifyOrderingBlockStructure(block);
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain('invalid value');
+  });
+
+  it('rejects a coinbase output with a negative bigint value', () => {
+    const block = makeValidBlock();
+    block.utxoTxTree.coinbaseOutputs = [
+      { owner: new Uint8Array(32).fill(2), value: -1n, lockedUntilBlock: 1, isTreasury: false },
+    ];
+    const result = verifyOrderingBlockStructure(block);
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain('invalid value');
   });
 
   // -------------------------------------------------------------------------

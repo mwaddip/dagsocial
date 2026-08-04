@@ -448,7 +448,7 @@ export function verifyOrderingBlockStructure(
     if (!out.owner || out.owner.length !== 32) {
       return { valid: false, error: 'Coinbase output missing or invalid owner' };
     }
-    if (typeof out.value !== 'number' || out.value < 0) {
+    if (typeof out.value !== 'bigint' || out.value < 0n) {
       return { valid: false, error: 'Coinbase output invalid value' };
     }
     if (typeof out.lockedUntilBlock !== 'number' || out.lockedUntilBlock < h.height) {
