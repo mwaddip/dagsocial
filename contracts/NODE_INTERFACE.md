@@ -674,8 +674,6 @@ Fresh schema — no Phase 1 migration.
 | `insertLike(targetPostId, likerId)` | `(PostId, UserId) => string` — free like, returns likeId |
 | `hasLiked(targetPostId, likerId)` | `(PostId, UserId) => boolean` — checks both dag_likes and utxo_boxes |
 | `getLikeCount(postId)` | `(PostId) => { locked: number, free: number }` |
-| `getFreeLike(targetPostId, likerId)` | `(PostId, UserId) => FreeLike \| null` |
-| `deleteFreeLike(likeId)` | `(string) => void` |
 | `getUnprocessedFreeLikes()` | `() => FreeLike[]` |
 | `markFreeLikesProcessed(likeIds)` | `(string[]) => void` — records processed ids while a block journal is open |
 | `markFreeLikesUnprocessed(likeIds)` | `(string[]) => void` — fork-rollback inverse (never records) |
@@ -844,9 +842,16 @@ block rejection).
 | `deleteBlockJournal(height)` | `(number) => void` |
 | `purgeOldJournals(belowHeight)` | `(number) => void` |
 
-**Rollback (`revertBlock`).** Replays `mutations` in reverse order — `insert`
-→ `deleteBox(boxId)`, `remove` → `unconsumeBox(boxId)` — then the side-record
-inverses, then `rollbackBlockTopology`, block + journal deletion.
+**Rollback (`revertBlock`).** Refuses to run while a block journal is open.
+Replays `mutations` in reverse order — `insert` → `deleteBox(boxId)`,
+`remove` → `unconsumeBox(boxId)` — then the side-record inverses, then
+`rollbackBlockTopology`, block + journal deletion, **and the height's AVL
+version rows** (`SqliteAvlStorage.deleteVersionAtHeight`). The version rows
+are per-block derived state exactly like the block and journal rows: left
+behind, `versionAtOrBeforeHeight` resolves rolled-back state (proof endpoint
+included), and re-applying a block at the height — a reorg back to a
+previously-reverted chain — re-inserts the same content-addressed version
+and trips its PRIMARY KEY, permanently rejecting the block.
 Apply-then-revert MUST restore the exact pre-block UTXO set and AVL digest
 for every mutation class: coinbase (including pre-existing credit boxes
 merged in), epoch mints (including pre-existing karma merged in), like-tally,
