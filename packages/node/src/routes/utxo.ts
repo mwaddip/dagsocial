@@ -73,15 +73,16 @@ export function createRouter(deps: UtxoDeps): Router {
       return;
     }
 
-    const total = karmaBoxes.reduce((sum, b) => sum + b.value, 0);
+    // Box values are bigint; JSON carries them as decimal strings.
+    const total = karmaBoxes.reduce((sum, b) => sum + b.value, 0n);
     const boxes = karmaBoxes.map(b => ({
       boxId: b.id!,
-      value: b.value,
+      value: b.value.toString(),
     }));
 
     res.json({
       userId: req.params['userId'],
-      total,
+      total: total.toString(),
       boxes,
     });
   });
@@ -97,26 +98,42 @@ export function createRouter(deps: UtxoDeps): Router {
       return;
     }
 
-    const total = creditBoxes.reduce((sum, b) => sum + b.value, 0);
+    const total = creditBoxes.reduce((sum, b) => sum + b.value, 0n);
     const boxes = creditBoxes.map(b => ({
       boxId: b.id!,
-      value: b.value,
+      value: b.value.toString(),
       ...(b.lockedUntilBlock !== undefined ? { lockedUntilBlock: b.lockedUntilBlock } : {}),
     }));
 
     res.json({
       userId: req.params['userId'],
-      total,
+      total: total.toString(),
       boxes,
     });
   });
+
+  // Coerce an amount arriving in JSON (decimal string or safe-integer number)
+  // to bigint. Returns null for anything not cleanly convertible or < 1.
+  function parseAmount(raw: unknown): bigint | null {
+    let amount: bigint;
+    if (typeof raw === 'bigint') {
+      amount = raw;
+    } else if (typeof raw === 'number' && Number.isSafeInteger(raw)) {
+      amount = BigInt(raw);
+    } else if (typeof raw === 'string' && /^[0-9]+$/.test(raw)) {
+      amount = BigInt(raw);
+    } else {
+      return null;
+    }
+    return amount >= 1n ? amount : null;
+  }
 
   // POST /credits/transfer — transfer credits to another identity
   router.post('/credits/transfer', (req, res) => {
     const body = req.body as {
       from?: string;
       to?: string;
-      amount?: number;
+      amount?: number | string;
       signature?: string;
       expectedHeight?: number;
     };
@@ -129,7 +146,8 @@ export function createRouter(deps: UtxoDeps): Router {
       res.status(400).json({ error: 'to must be a 64-character hex string' });
       return;
     }
-    if (!body.amount || typeof body.amount !== 'number' || body.amount < 1) {
+    const amount = parseAmount(body.amount);
+    if (amount === null) {
       res.status(400).json({ error: 'amount must be a positive integer' });
       return;
     }
@@ -163,8 +181,12 @@ export function createRouter(deps: UtxoDeps): Router {
     const currentHeight = deps.getCurrentHeight();
 
     try {
-      const result = sendCredits(fromBytes, toBytes, body.amount, sigBytes, currentHeight, expectedHeight);
-      res.json(result);
+      const result = sendCredits(fromBytes, toBytes, amount, sigBytes, currentHeight, expectedHeight);
+      res.json({
+        ...result,
+        sent: result.sent.toString(),
+        change: result.change.toString(),
+      });
     } catch (err: unknown) {
       // 401 for a bad signature now rides on the typed error's statusCode; the
       // 'Insufficient' branch matched no thrown message and was already
@@ -202,7 +224,7 @@ export function createRouter(deps: UtxoDeps): Router {
       return;
     }
 
-    const FAUCET_AMOUNT = 1000;
+    const FAUCET_AMOUNT = 1000n * 10n ** 8n;  // 1000 credits in base units
     const engineDeps = deps.getUtxoEngineDeps();
 
     // The eligibility check, the mempool insert and the grant record share one
@@ -233,7 +255,7 @@ export function createRouter(deps: UtxoDeps): Router {
 
         const unlocked = getUnlockedCreditBoxes(sysKeypair.publicKey, currentHeight);
         const selected = selectBoxes(unlocked, FAUCET_AMOUNT);
-        const totalSelected = selected.reduce((s, b) => s + b.value, 0);
+        const totalSelected = selected.reduce((s, b) => s + b.value, 0n);
         const change = totalSelected - FAUCET_AMOUNT;
 
         const outputs: CreditBox[] = [{
@@ -244,7 +266,7 @@ export function createRouter(deps: UtxoDeps): Router {
           guard: 'owner_signature',
           proofSource: -1,
         }];
-        if (change > 0) {
+        if (change > 0n) {
           outputs.push({
             boxType: 'credit',
             value: change,
@@ -311,7 +333,7 @@ export function createRouter(deps: UtxoDeps): Router {
       }
     } catch { /* net not available */ }
 
-    res.json({ txId: outcome.txId, amount: FAUCET_AMOUNT });
+    res.json({ txId: outcome.txId, amount: FAUCET_AMOUNT.toString() });
   });
 
   // GET /invites/:userId — get pending invites and bonds for a user
@@ -325,7 +347,7 @@ export function createRouter(deps: UtxoDeps): Router {
     res.json({
       pending: pending.map((inv) => ({
         id: inv.id,
-        value: inv.value,
+        value: inv.value.toString(),
         createdAtBlock: inv.createdAtBlock,
         secretHash: Buffer.from(inv.secretHash).toString('hex'),
         inviterId: Buffer.from(inv.inviterId).toString('hex'),
@@ -333,7 +355,7 @@ export function createRouter(deps: UtxoDeps): Router {
       })),
       bonds: bonds.map((b) => ({
         id: b.id,
-        value: b.value,
+        value: b.value.toString(),
         createdAtBlock: b.createdAtBlock,
         inviterId: Buffer.from(b.inviterId).toString('hex'),
         inviteePublicKey:

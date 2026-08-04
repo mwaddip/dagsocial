@@ -56,14 +56,24 @@ export function jsonToTx(raw: Record<string, unknown>): UtxoTransaction {
 }
 
 /**
- * Convert hex-encoded Uint8Array fields inside a single box object, and
- * reject a `value` the ledger cannot account for.
+ * Amount fields that are bigint at runtime but arrive as decimal strings (or
+ * safe-integer numbers) over the JSON HTTP API: `value` on every box type,
+ * `originalValue` on PostLockBox. Coerced before validation — leaving one as
+ * a number would change its CBOR encoding and so the computed box id.
+ */
+const VALUE_BOX_FIELDS = new Set(['value', 'originalValue']);
+
+/**
+ * Convert hex-encoded Uint8Array fields inside a single box object, coerce
+ * amount fields to bigint, and reject a `value` the ledger cannot account for.
  */
 function convertBox(box: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, val] of Object.entries(box)) {
     if (BINARY_BOX_FIELDS.has(key) && typeof val === 'string') {
       out[key] = hexToBytes(val);
+    } else if (VALUE_BOX_FIELDS.has(key)) {
+      out[key] = coerceBoxValue(val, key);
     } else {
       out[key] = val;
     }
@@ -73,16 +83,38 @@ function convertBox(box: Record<string, unknown>): Record<string, unknown> {
 }
 
 /**
- * A box `value` must be a non-negative integer that JS can sum exactly —
- * negative, fractional, `NaN`, `Infinity`, and above-2^53 values all break
- * conservation arithmetic. Rejecting here gives the client a clear 400;
- * `validateTx` enforces the same rule for txs arriving over gossip or inside
- * a block.
+ * Coerce an incoming JSON amount (decimal string or safe-integer number) to
+ * bigint, rejecting anything not cleanly convertible, then enforce the value
+ * bound. This is the HTTP→consensus edge for box values.
  */
-function assertValidBoxValue(value: unknown): void {
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+function coerceBoxValue(raw: unknown, field: string): bigint {
+  let value: bigint;
+  if (typeof raw === 'bigint') {
+    value = raw;
+  } else if (typeof raw === 'number' && Number.isSafeInteger(raw)) {
+    value = BigInt(raw);
+  } else if (typeof raw === 'string' && /^[0-9]+$/.test(raw)) {
+    value = BigInt(raw);
+  } else {
     throw new ClientError(
-      `box value must be a non-negative integer, got ${String(value)}`,
+      `box ${field} must be a non-negative integer (decimal string or number), got ${String(raw)}`,
+    );
+  }
+  assertValidBoxValue(value, field);
+  return value;
+}
+
+/**
+ * A box `value` must be a non-negative bigint below 2^64 — negative values
+ * break conservation arithmetic, and at/above 2^64 the CBOR encoding leaves
+ * the uniform uint64 form. Rejecting here gives the client a clear 400;
+ * `validateTx` (`checkOutputValues`) enforces the same tight bound for txs
+ * arriving over gossip or inside a block.
+ */
+function assertValidBoxValue(value: unknown, field = 'value'): void {
+  if (typeof value !== 'bigint' || value < 0n || value >= (1n << 64n)) {
+    throw new ClientError(
+      `box ${field} must be a non-negative bigint < 2^64, got ${String(value)}`,
     );
   }
 }

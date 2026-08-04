@@ -116,7 +116,7 @@ function makeOrderingBlock(): OrderingBlock {
 function makeKarmaBox(): KarmaBox {
   return {
     boxType: 'karma',
-    value: 100,
+    value: 100n,
     createdAtBlock: 1,
     owner: new Uint8Array(32).fill(0xaa),
     guard: 'owner_signature',

@@ -25,9 +25,9 @@ const ROLES = [
   'liker-1', 'liker-2', 'liker-3',
 ];
 
-async function tryGetKarma(client: ApiClient, userId: string, label: string): Promise<number> {
+async function tryGetKarma(client: ApiClient, userId: string, label: string): Promise<string> {
   try { const k = await client.getKarma(userId); return k.total; }
-  catch { console.log(`  ${label}: karma not synced (sub-block data)`); return 0; }
+  catch { console.log(`  ${label}: karma not synced (sub-block data)`); return '0'; }
 }
 
 describe('E2E Harness', () => {
@@ -71,7 +71,7 @@ describe('E2E Harness', () => {
             const k = await s.clients[0].getKarma(id.userId);
             // Faucet grants exactly 100 karma. With STALE_THRESHOLD=500, no
             // decay occurs during the serial funding sequence.
-            expect(k.total).toBeGreaterThanOrEqual(100);
+            expect(BigInt(k.total)).toBeGreaterThanOrEqual(100n);
           }
         },
       },
@@ -195,7 +195,7 @@ describe('E2E Harness', () => {
           const aliceK = await s.clients[0].getKarma(s.pool.get('alice').userId);
           console.log(`  alice karma: ${aliceK.total}`);
           // 100 initial - 5 lock = 95. No decay with STALE_THRESHOLD=500.
-          expect(aliceK.total).toBeGreaterThanOrEqual(90);
+          expect(BigInt(aliceK.total)).toBeGreaterThanOrEqual(90n);
         },
       },
 
@@ -260,9 +260,9 @@ describe('E2E Harness', () => {
           // With STALE_THRESHOLD=500, decay has not fired. All identities
           // should retain near their initial karma minus post lock.
           // Grace/heidi: 100 - 5 (lock) = 95, Alice: 100 - 5 (lock) = 95.
-          expect(graceK.total).toBeGreaterThanOrEqual(90);
-          expect(heidiK.total).toBeGreaterThanOrEqual(90);
-          expect(aliceK.total).toBeGreaterThanOrEqual(90);
+          expect(BigInt(graceK.total)).toBeGreaterThanOrEqual(90n);
+          expect(BigInt(heidiK.total)).toBeGreaterThanOrEqual(90n);
+          expect(BigInt(aliceK.total)).toBeGreaterThanOrEqual(90n);
         },
       },
 

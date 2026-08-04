@@ -65,7 +65,7 @@ function buildPowInput(post: Post): Buffer {
 interface MockStore {
   identities: Map<string, { userId: Uint8Array; publicKey: Uint8Array; createdAt: number }>;
   challenges: Map<string, { challenge: Uint8Array; expiresAtBlock: number; userId: Uint8Array }>;
-  karmaBoxes: Map<string, { value: number }[]>; // keyed by hex(owner publicKey), now an array
+  karmaBoxes: Map<string, { value: bigint }[]>; // keyed by hex(owner publicKey), now an array
   posts: Map<string, unknown>;
 }
 
@@ -410,7 +410,7 @@ describe('verifyPost', () => {
         expiresAtBlock: 100,
       });
       // Karma box value = 0, below POST_LOCK_THREAD_COST (5)
-      store.karmaBoxes.set(Buffer.from(pubKeyRaw).toString('hex'), [{ value: 0 }]);
+      store.karmaBoxes.set(Buffer.from(pubKeyRaw).toString('hex'), [{ value: 0n }]);
 
       let post = makePost();
       const powInput = buildPowInput(post);
@@ -471,8 +471,8 @@ describe('verifyPost', () => {
     store.challenges.set(userId, { userId, challenge: challengeBytes, expiresAtBlock: 100 });
     // Two karma boxes: 3 + 2 = 5, enough for thread post
     store.karmaBoxes.set(Buffer.from(pubKeyRaw).toString('hex'), [
-      { value: 3 },
-      { value: 2 },
+      { value: 3n },
+      { value: 2n },
     ]);
     const deps = createMockDeps(store);
     let post = makePost();
@@ -493,8 +493,8 @@ describe('verifyPost', () => {
     store.challenges.set(userId, { userId, challenge: challengeBytes, expiresAtBlock: 100 });
     // Two boxes with 2 + 2 = 4, but thread post costs 5
     store.karmaBoxes.set(Buffer.from(pubKeyRaw).toString('hex'), [
-      { value: 2 },
-      { value: 2 },
+      { value: 2n },
+      { value: 2n },
     ]);
     const deps = createMockDeps(store);
     let post = makePost();

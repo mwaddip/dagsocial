@@ -185,7 +185,7 @@ describe('likes routes', () => {
 
     karmaBox = {
       boxType: 'karma',
-      value: 100,
+      value: 100n,
       createdAtBlock: 1,
       owner: likerKp.publicKey,
       guard: 'owner_signature',
@@ -225,7 +225,7 @@ describe('likes routes', () => {
 
     const freeKarmaBox: KarmaBox = {
       boxType: 'karma',
-      value: 100,
+      value: 100n,
       createdAtBlock: 1,
       owner: freeLikerKp.publicKey,
       guard: 'owner_signature',

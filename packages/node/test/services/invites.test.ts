@@ -39,7 +39,7 @@ import { rawPublicKey, signTransaction } from '../helpers.js';
 /** Create and insert a karma box, returning it with its computed id. */
 function createKarmaBox(
   owner: Uint8Array,
-  value: number,
+  value: bigint,
   createdAtBlock: number,
   proofSource = 'test',
 ): KarmaBox {
@@ -60,7 +60,7 @@ function createKarmaBox(
 
 /** Create and insert an invite box into UTXO. */
 function insertInviteBox(
-  value: number,
+  value: bigint,
   createdAtBlock: number,
   secretHash: Uint8Array,
   inviterId: Uint8Array,
@@ -81,7 +81,7 @@ function insertInviteBox(
 
 /** Create and insert a bond box into UTXO. */
 function insertBondBox(
-  value: number,
+  value: bigint,
   createdAtBlock: number,
   inviterId: Uint8Array,
   inviteBoxId: string,
@@ -166,11 +166,11 @@ describe('invites service', () => {
   // 1. createInvite returns pending and inserts into mempool
   // -----------------------------------------------------------------------
   it('createInvite returns pending and inserts into mempool', () => {
-    const karma = createKarmaBox(inviterPubKey, 100, 1);
+    const karma = createKarmaBox(inviterPubKey, 100n, 1);
 
     const newKarma: KarmaBox = {
       boxType: 'karma',
-      value: 50,
+      value: 50n,
       createdAtBlock: 1,
       owner: inviterPubKey,
       guard: 'owner_signature',
@@ -230,7 +230,7 @@ describe('invites service', () => {
     // Karma is unchanged (pending in mempool)
     const inviterKarma = getKarmaBox(inviterPubKey);
     expect(inviterKarma).not.toBeNull();
-    expect(inviterKarma!.value).toBe(100); // unchanged — pending
+    expect(inviterKarma!.value).toBe(100n); // unchanged — pending
 
     // Verify mempool has the entry
     const entries = getPendingEntries(100);
@@ -246,7 +246,7 @@ describe('invites service', () => {
   // 2. claimInvite returns pending and inserts into mempool
   // -----------------------------------------------------------------------
   it('commit + reveal full lifecycle', () => {
-    const karma = createKarmaBox(inviterPubKey, 100, 1);
+    const karma = createKarmaBox(inviterPubKey, 100n, 1);
 
     const secret = new Uint8Array(32).fill(0x42);
     const secretHash = createHash('blake2b512').update(Buffer.from(secret)).digest().subarray(0, 32);
@@ -545,7 +545,7 @@ describe('invites service', () => {
   // Cancel succeeds on committed BondBox
   // -----------------------------------------------------------------------
   it('Cancel succeeds on committed BondBox', () => {
-    const karmaIn = createKarmaBox(inviterPubKey, 100, 1);
+    const karmaIn = createKarmaBox(inviterPubKey, 100n, 1);
 
     const secret = new Uint8Array(32).fill(0xaa);
     const secretHash = createHash('blake2b512').update(Buffer.from(secret)).digest().subarray(0, 32);
@@ -567,7 +567,7 @@ describe('invites service', () => {
       bondBox.id,
     );
 
-    const totalValue = 100 + INVITE_KARMA_AMOUNT + INVITE_BOND_KARMA;
+    const totalValue = 100n + INVITE_KARMA_AMOUNT + INVITE_BOND_KARMA;
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: totalValue,
@@ -595,7 +595,7 @@ describe('invites service', () => {
   // 3. cancelInvite returns pending and inserts into mempool
   // -----------------------------------------------------------------------
   it('cancelInvite returns pending and inserts into mempool', () => {
-    const karmaIn = createKarmaBox(inviterPubKey, 100, 1);
+    const karmaIn = createKarmaBox(inviterPubKey, 100n, 1);
 
     const secret = new Uint8Array(32).fill(0xaa);
     const secretHash = createHash('blake2b512').update(Buffer.from(secret)).digest().subarray(0, 32);
@@ -605,7 +605,7 @@ describe('invites service', () => {
     const bondBox = insertBondBox(INVITE_BOND_KARMA, 1, inviterId, inviteBox.id!);
 
     // Build cancel tx: karma + invite + bond -> karma (all value returned)
-    const totalValue = 100 + INVITE_KARMA_AMOUNT + INVITE_BOND_KARMA;
+    const totalValue = 100n + INVITE_KARMA_AMOUNT + INVITE_BOND_KARMA;
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: totalValue,
@@ -661,16 +661,16 @@ describe('invites service', () => {
   // 4. Create fails at MAX_PENDING_INVITES (UTXO + mempool)
   // -----------------------------------------------------------------------
   it('Create fails at MAX_PENDING_INVITES', () => {
-    const totalNeeded = (INVITE_KARMA_AMOUNT + INVITE_BOND_KARMA) * MAX_PENDING_INVITES;
-    createKarmaBox(inviterPubKey, totalNeeded + 100, 1);
+    const totalNeeded = (INVITE_KARMA_AMOUNT + INVITE_BOND_KARMA) * BigInt(MAX_PENDING_INVITES);
+    createKarmaBox(inviterPubKey, totalNeeded + 100n, 1);
 
     for (let i = 0; i < MAX_PENDING_INVITES; i++) {
       // Build a fresh tx for each invite
-      const karma = createKarmaBox(inviterPubKey, 100, i + 1);
+      const karma = createKarmaBox(inviterPubKey, 100n, i + 1);
 
       const newKarma: KarmaBox = {
         boxType: 'karma',
-        value: 50,
+        value: 50n,
         createdAtBlock: i + 1,
         owner: inviterPubKey,
         guard: 'owner_signature',
@@ -716,10 +716,10 @@ describe('invites service', () => {
     }
 
     // One more should fail
-    const karma = createKarmaBox(inviterPubKey, 100, 99, 'overflow-test');
+    const karma = createKarmaBox(inviterPubKey, 100n, 99, 'overflow-test');
     const newKarma: KarmaBox = {
       boxType: 'karma',
-      value: 50,
+      value: 50n,
       createdAtBlock: 99,
       owner: inviterPubKey,
       guard: 'owner_signature',
@@ -777,10 +777,10 @@ describe('invites service', () => {
       privKey: KeyObject,
       seed: number,
     ): UtxoTransaction {
-      const karma = createKarmaBox(owner, 100, seed, `seed-${ownerHex}-${seed}`);
+      const karma = createKarmaBox(owner, 100n, seed, `seed-${ownerHex}-${seed}`);
       const newKarma: KarmaBox = {
         boxType: 'karma',
-        value: 50,
+        value: 50n,
         createdAtBlock: seed,
         owner,
         guard: 'owner_signature',
@@ -865,11 +865,11 @@ describe('invites service', () => {
   // 5. Create accepts karma below invite cost (decay is periodic)
   // -----------------------------------------------------------------------
   it('Create rejects karma below invite cost (audit C-1)', () => {
-    const karma = createKarmaBox(inviterPubKey, 10, 1);
+    const karma = createKarmaBox(inviterPubKey, 10n, 1);
 
     const newKarma: KarmaBox = {
       boxType: 'karma',
-      value: 0,
+      value: 0n,
       createdAtBlock: 1,
       owner: inviterPubKey,
       guard: 'owner_signature',
@@ -982,7 +982,7 @@ describe('invites service', () => {
   // 7. Claim fails if publicKey already account
   // -----------------------------------------------------------------------
   it('Claim fails if publicKey already account', () => {
-    createKarmaBox(inviteePubKey, 50, 1); // invitee already has karma
+    createKarmaBox(inviteePubKey, 50n, 1); // invitee already has karma
 
     const secret = new Uint8Array(32).fill(0x42);
     const secretHash = createHash('blake2b512').update(Buffer.from(secret)).digest().subarray(0, 32);
@@ -1046,7 +1046,7 @@ describe('invites service', () => {
   // 8. Cancel fails if already claimed (confirmed — spent in UTXO)
   // -----------------------------------------------------------------------
   it('Cancel fails if already claimed', () => {
-    const karmaIn = createKarmaBox(inviterPubKey, 100, 1);
+    const karmaIn = createKarmaBox(inviterPubKey, 100n, 1);
 
     const secret = new Uint8Array(32).fill(0xaa);
     const secretHash = createHash('blake2b512').update(Buffer.from(secret)).digest().subarray(0, 32);
@@ -1057,7 +1057,7 @@ describe('invites service', () => {
     db.prepare('UPDATE utxo_boxes SET spent_at_block = ? WHERE id = ?').run(3, inviteBox.id);
 
     // Build a cancel tx
-    const totalValue = 100 + INVITE_KARMA_AMOUNT + INVITE_BOND_KARMA;
+    const totalValue = 100n + INVITE_KARMA_AMOUNT + INVITE_BOND_KARMA;
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: totalValue,
@@ -1084,14 +1084,14 @@ describe('invites service', () => {
   // 9. Cancel fails with wrong signature
   // -----------------------------------------------------------------------
   it('Cancel fails with wrong signature', () => {
-    const karmaIn = createKarmaBox(inviterPubKey, 100, 1);
+    const karmaIn = createKarmaBox(inviterPubKey, 100n, 1);
 
     const secret = new Uint8Array(32).fill(0xaa);
     const secretHash = createHash('blake2b512').update(Buffer.from(secret)).digest().subarray(0, 32);
     const inviteBox = insertInviteBox(INVITE_KARMA_AMOUNT, 1, secretHash, inviterId);
     const bondBox = insertBondBox(INVITE_BOND_KARMA, 1, inviterId, inviteBox.id!);
 
-    const totalValue = 100 + INVITE_KARMA_AMOUNT + INVITE_BOND_KARMA;
+    const totalValue = 100n + INVITE_KARMA_AMOUNT + INVITE_BOND_KARMA;
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: totalValue,

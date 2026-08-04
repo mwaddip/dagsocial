@@ -28,14 +28,14 @@ import { ClientError } from './client-error.js';
  */
 export function mintCredits(
   owner: Uint8Array,
-  amount: number,
+  amount: bigint,
   blockHeight: number,
   lockedUntilBlock?: number,
 ): string {
-  if (amount <= 0) return '';
+  if (amount <= 0n) return '';
 
   const existingBoxes = getCreditBoxes(owner);
-  const existingTotal = existingBoxes.reduce((sum, b) => sum + b.value, 0);
+  const existingTotal = existingBoxes.reduce((sum, b) => sum + b.value, 0n);
   const newValue = existingTotal + amount;
 
   for (const box of existingBoxes) {
@@ -75,8 +75,8 @@ export function mintCredits(
 
 export interface CreditTransferResult {
   txId: string;
-  sent: number;
-  change: number;
+  sent: bigint;
+  change: bigint;
   boxesConsumed: number;
 }
 
@@ -90,19 +90,19 @@ export interface CreditTransferResult {
 export function sendCredits(
   from: Uint8Array,
   to: Uint8Array,
-  amount: number,
+  amount: bigint,
   signature: Uint8Array,
   currentHeight: number,
   expectedHeight?: number,
 ): CreditTransferResult {
-  if (amount <= 0) {
+  if (amount <= 0n) {
     throw new ClientError('amount must be positive');
   }
 
   // 1. Select unlocked boxes
   const unlocked = getUnlockedCreditBoxes(from, currentHeight);
   const selected = selectBoxes(unlocked, amount);
-  const totalSelected = selected.reduce((sum, b) => sum + b.value, 0);
+  const totalSelected = selected.reduce((sum, b) => sum + b.value, 0n);
   const change = totalSelected - amount;
 
   // 2. Build outputs — use expectedHeight for createdAtBlock so the txId
@@ -121,7 +121,7 @@ export function sendCredits(
   };
   outputs.push(recipientBox);
 
-  if (change > 0) {
+  if (change > 0n) {
     const changeBox: CreditBox = {
       boxType: 'credit',
       value: change,

@@ -26,15 +26,15 @@ export function settlePruneUtxo(
   blockHeight: number,
   journal: BlockJournal,
 ): void {
-  const authorRefunds = new Map<string, number>();
-  const likerRefunds = new Map<string, number>();
+  const authorRefunds = new Map<string, bigint>();
+  const likerRefunds = new Map<string, bigint>();
 
   for (const postId of postIds) {
     // Consume PostLockBox (author's locked karma)
     const lockBox = getPostLockBox(postId);
-    if (lockBox && lockBox.value > 0) {
+    if (lockBox && lockBox.value > 0n) {
       const key = Buffer.from(lockBox.owner).toString('hex');
-      authorRefunds.set(key, (authorRefunds.get(key) ?? 0) + lockBox.value);
+      authorRefunds.set(key, (authorRefunds.get(key) ?? 0n) + lockBox.value);
       consumeBox(lockBox.id!, blockHeight);
       journal.consumedBoxIds.push(lockBox.id!);
     }
@@ -42,9 +42,9 @@ export function settlePruneUtxo(
     // Consume unspent LikeBoxes (likers' locked karma)
     const likeBoxes = getUnspentLikeBoxes(postId);
     for (const likeBox of likeBoxes) {
-      if (likeBox.value > 0) {
+      if (likeBox.value > 0n) {
         const key = Buffer.from(likeBox.likerId).toString('hex');
-        likerRefunds.set(key, (likerRefunds.get(key) ?? 0) + likeBox.value);
+        likerRefunds.set(key, (likerRefunds.get(key) ?? 0n) + likeBox.value);
         consumeBox(likeBox.id!, blockHeight);
         journal.consumedBoxIds.push(likeBox.id!);
       }

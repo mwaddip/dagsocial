@@ -35,7 +35,7 @@ export type BoxGuard = 'owner_signature' | 'epoch_tally' | 'hash_preimage' | 'in
 export interface BoxBase {
   id?: BoxId;           // Computed via computeBoxId; optional during construction
   boxType: 'karma' | 'credit' | 'like' | 'invite' | 'bond' | 'post_lock' | 'vouch';
-  value: number;
+  value: bigint;        // integer base units, uniform across box types; value < 2^64 keeps the CBOR uint64 form
   createdAtBlock: number;
 }
 
@@ -64,7 +64,7 @@ export interface CreditBox extends BoxBase {
 
 export interface LikeBox extends BoxBase {
   boxType: 'like';
-  value: 2;                   // LIKE_COST — always 2
+  value: 2n;                  // LIKE_COST — always 2n
   likerId: UserId;
   targetPostId: PostId;
   guard: 'epoch_tally';       // Locked until epoch tally
@@ -74,7 +74,7 @@ export interface LikeBox extends BoxBase {
 
 export interface InviteBox extends BoxBase {
   boxType: 'invite';
-  value: number;                    // N karma transferred
+  value: bigint;                    // N karma transferred
   secretHash: Uint8Array;           // 32 bytes — H(s) = blake2b512(s).subarray(0,32)
   inviterId: UserId;
   guard: 'hash_preimage_with_bond'; // Unlocked by preimage + committed BondBox
@@ -84,7 +84,7 @@ export interface InviteBox extends BoxBase {
 
 export interface BondBox extends BoxBase {
   boxType: 'bond';
-  value: number;                    // D karma deposited
+  value: bigint;                    // D karma deposited
   inviterId: UserId;               // Owner — the inviter
   inviteBoxId: BoxId;              // Which InviteBox this pairs with (for commit secret lookup)
   inviteePublicKey: Uint8Array;    // 32 raw bytes — set during commit
@@ -97,8 +97,8 @@ export interface BondBox extends BoxBase {
 
 export interface PostLockBox extends BoxBase {
   boxType: 'post_lock';
-  value: number;              // Current locked karma (decreases each epoch as likes accumulate)
-  originalValue: number;      // Initial lock amount (POST_LOCK_THREAD_COST or POST_LOCK_REPLY_COST)
+  value: bigint;              // Current locked karma (decreases each epoch as likes accumulate)
+  originalValue: bigint;      // Initial lock amount (POST_LOCK_THREAD_COST or POST_LOCK_REPLY_COST)
   owner: Uint8Array;          // 32 raw bytes — post author's Ed25519 public key
   targetPostId: PostId;       // The post this lock secures
   guard: 'epoch_tally';       // Only consumable by epoch processing
@@ -108,7 +108,7 @@ export interface PostLockBox extends BoxBase {
 
 export interface VouchBox extends BoxBase {
   boxType: 'vouch';
-  value: 1;                          // always 1 karma
+  value: 1n;                         // always 1 karma
   voucherId: UserId;                 // who staked the karma
   targetId: UserId;                  // who is being vouched for
   guard: 'owner_signature';          // voucher controls spend
@@ -170,13 +170,13 @@ export function computeTxId(tx: UtxoTransaction): TxId {
  * combined value covers `requiredAmount`. Assumes boxes are pre-sorted by
  * value descending. Throws if the total value of all boxes is insufficient.
  */
-export function selectBoxes<T extends { value: number }>(
+export function selectBoxes<T extends { value: bigint }>(
   boxes: T[],
-  requiredAmount: number,
+  requiredAmount: bigint,
 ): T[] {
-  if (requiredAmount <= 0) return [];
+  if (requiredAmount <= 0n) return [];
 
-  let accumulated = 0;
+  let accumulated = 0n;
   const selected: T[] = [];
   for (const box of boxes) {
     accumulated += box.value;

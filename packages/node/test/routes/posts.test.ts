@@ -196,7 +196,7 @@ describe('posts routes', () => {
     // Setup: karma box
     const karmaBox: KarmaBox = {
       boxType: 'karma',
-      value: 100,
+      value: 100n,
       createdAtBlock: 1,
       owner: userId,
       guard: 'owner_signature',
@@ -216,7 +216,7 @@ describe('posts routes', () => {
     // Build karma-lock tx
     const newKarma: KarmaBox = {
       boxType: 'karma',
-      value: 100 - POST_LOCK_THREAD_COST,
+      value: 100n - POST_LOCK_THREAD_COST,
       createdAtBlock: 5,
       owner: userId,
       guard: 'owner_signature',

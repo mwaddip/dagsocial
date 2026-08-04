@@ -13,7 +13,7 @@ import type { VerifierDeps } from '../../src/services/verifier.js';
 interface MockStore {
   identities: Map<string, { userId: Uint8Array; publicKey: Uint8Array; createdAt: number }>;
   challenges: Map<string, { challenge: Uint8Array; expiresAtBlock: number; userId: Uint8Array }>;
-  karmaBoxes: Map<string, { value: number }[]>;
+  karmaBoxes: Map<string, { value: bigint }[]>;
   posts: Map<string, unknown>;
 }
 
@@ -114,7 +114,7 @@ describe('verifier', () => {
       challenge: challengeBytes,
       expiresAtBlock: 100,
     });
-    store.karmaBoxes.set(Buffer.from(pubKeyRaw).toString('hex'), [{ value: 1 }]);
+    store.karmaBoxes.set(Buffer.from(pubKeyRaw).toString('hex'), [{ value: 1n }]);
 
     let post = makePost({ powNonce: 1 });
     // Sign correctly, then zero the signature — crypto.verify will fail on

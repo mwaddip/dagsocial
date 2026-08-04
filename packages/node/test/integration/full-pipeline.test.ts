@@ -177,7 +177,7 @@ function makePost(authorId: Uint8Array, content = 'test post'): Post {
   };
 }
 
-function makeKarmaBox(value: number, owner: Uint8Array, createdAtBlock: number): KarmaBox {
+function makeKarmaBox(value: bigint, owner: Uint8Array, createdAtBlock: number): KarmaBox {
   const box: KarmaBox = {
     boxType: 'karma',
     value,
@@ -266,7 +266,7 @@ describe('full-pipeline', () => {
 
 
     const utxo = await importUtxo();
-    const karmaBox = makeKarmaBox(100, liker.userId, 0);
+    const karmaBox = makeKarmaBox(100n, liker.userId, 0);
     utxo.insertBox(karmaBox);
 
     const post = makePost(author.userId, 'full-pipeline like test');
@@ -354,7 +354,7 @@ describe('full-pipeline', () => {
 
 
     const utxo = await importUtxo();
-    const karmaBox = makeKarmaBox(100, liker.userId, 0);
+    const karmaBox = makeKarmaBox(100n, liker.userId, 0);
     utxo.insertBox(karmaBox);
 
     const post = makePost(author.userId, 'multi-op test');
@@ -445,11 +445,11 @@ describe('full-pipeline', () => {
 
 
     const utxo = await importUtxo();
-    const karmaBox = makeKarmaBox(100, inviter.userId, 0);
+    const karmaBox = makeKarmaBox(100n, inviter.userId, 0);
     utxo.insertBox(karmaBox);
 
     // Build invite tx with 3 outputs: karma change + invite + bond
-    const changeVal = 100 - INVITE_KARMA_AMOUNT - INVITE_BOND_KARMA;
+    const changeVal = 100n - INVITE_KARMA_AMOUNT - INVITE_BOND_KARMA;
     const inviteTx: UtxoTransaction = {
       inputs: [karmaBox.id!],
       outputs: [

@@ -101,7 +101,9 @@ export function txToApi(tx: UtxoTransaction): Record<string, unknown> {
     outputs: tx.outputs.map(o => {
       const obj: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(o)) {
-        obj[k] = v instanceof Uint8Array ? hex(v) : v;
+        obj[k] = v instanceof Uint8Array ? hex(v)
+          : typeof v === 'bigint' ? v.toString()
+          : v;
       }
       return obj;
     }),
@@ -126,12 +128,13 @@ export function txToApi(tx: UtxoTransaction): Record<string, unknown> {
  * paths (decay, bond burn), never inside a user tx.
  */
 export function postLockTx(
-  boxes: { boxId: string; value: number }[],
-  lockAmount: number,
+  boxes: { boxId: string; value: string }[],
+  lockAmount: bigint,
   targetPostId: string,
   author: Uint8Array,
 ): UtxoTransaction {
-  const t = boxes.reduce((s, b) => s + b.value, 0);
+  // API box values arrive as decimal strings (bigint on the wire).
+  const t = boxes.reduce((s, b) => s + BigInt(b.value), 0n);
   return {
     inputs: boxes.map(b => b.boxId),
     outputs: [
@@ -150,11 +153,11 @@ export function postLockTx(
 }
 
 export function likeTx(
-  boxes: { boxId: string; value: number }[],
+  boxes: { boxId: string; value: string }[],
   targetPostId: string,
   liker: Uint8Array,
 ): UtxoTransaction {
-  const t = boxes.reduce((s, b) => s + b.value, 0);
+  const t = boxes.reduce((s, b) => s + BigInt(b.value), 0n);
   return {
     inputs: boxes.map(b => b.boxId),
     outputs: [

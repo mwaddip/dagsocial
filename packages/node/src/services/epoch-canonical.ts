@@ -35,6 +35,12 @@ import type { EpochTally, LikeReward } from '@dagsocial/types';
 function canonicalValue(value: unknown): string {
   if (value === null || value === undefined) return 'null';
 
+  // Box values and reward amounts are bigint (Spec B P0). `JSON.stringify`
+  // throws on bigint, and this string forms the 'epoch' Merkle leaf and the
+  // block-acceptance compare — consensus. Canonical decimal, deterministic;
+  // textually identical to what the same magnitude produced as a number.
+  if (typeof value === 'bigint') return value.toString();
+
   // Buffer extends Uint8Array, so this covers both representations.
   if (value instanceof Uint8Array) {
     return JSON.stringify(Buffer.from(value).toString('hex'));

@@ -233,7 +233,10 @@ has a 64-char `postId`, a `parentRefs` array of ≤ 8 64-char strings, and a
 `validatorSignature` is 64 bytes, `height` ≥ 1, `protocolVersion` is a number,
 `hash` present and non-empty, `powNonce` is a non-negative number,
 `powTargetBits` ≥ `ORDERING_BLOCK_POW_TARGET_FLOOR` (4), `coinbaseOutputs` is
-an array with each output having a 32-byte `owner` and non-negative `value`
+an array with each output having a 32-byte `owner` and a non-negative `bigint`
+`value` (P0; box/coinbase values are `bigint` — this is the loose structural
+pre-filter, the authoritative `< 2⁶⁴` bound lives in node's apply-time
+`checkOutputValues`, matching the existing loose-structural / tight-apply split)
 and `lockedUntilBlock` ≥ `block.height`.
 
 Also checks **`pruneEntries`**: an array, each entry an object with a 64-char

@@ -32,14 +32,14 @@ export interface Config {
   miningMode: 'internal' | 'external';
   miningSecret: string;          // bearer token for mining API, required non-empty in external mode
   orderingBlockPowTargetBits: number;
-  creditInitialReward: number;
+  creditInitialReward: bigint;   // credit base units (10⁻⁸ credit)
   creditTreasuryPct: number;
   treasuryPubKey: string;  // hex-encoded 32-byte key, empty = no treasury
   // Karma decay
   karmaStaleThresholdBlocks: number;
   karmaDecayIntervalBlocks: number;
-  karmaDecayAmount: number;
-  karmaMinimum: number;
+  karmaDecayAmount: bigint;
+  karmaMinimum: bigint;
   // AVL state root
   verifyStateRoot: boolean;
   maxProofHistory: number;
@@ -94,9 +94,8 @@ export function loadConfig(): Readonly<Config> {
       process.env['ORDERING_BLOCK_POW_TARGET_BITS'] ?? String(ORDERING_BLOCK_POW_TARGET_BITS),
       10,
     ),
-    creditInitialReward: parseInt(
+    creditInitialReward: BigInt(
       process.env['CREDIT_INITIAL_REWARD'] ?? String(CREDIT_INITIAL_REWARD),
-      10,
     ),
     creditTreasuryPct: parseInt(
       process.env['CREDIT_TREASURY_PCT'] ?? String(CREDIT_TREASURY_PCT),
@@ -112,13 +111,11 @@ export function loadConfig(): Readonly<Config> {
       process.env['KARMA_DECAY_INTERVAL_BLOCKS'] ?? String(KARMA_DECAY_INTERVAL_BLOCKS),
       10,
     ),
-    karmaDecayAmount: parseInt(
+    karmaDecayAmount: BigInt(
       process.env['KARMA_DECAY_AMOUNT'] ?? String(KARMA_DECAY_AMOUNT),
-      10,
     ),
-    karmaMinimum: parseInt(
+    karmaMinimum: BigInt(
       process.env['KARMA_MINIMUM'] ?? String(KARMA_MINIMUM),
-      10,
     ),
     // AVL state root
     verifyStateRoot: process.env['VERIFY_STATE_ROOT'] === 'true',

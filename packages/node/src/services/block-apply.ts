@@ -240,7 +240,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
 
   // 5. Verify coinbase reward matches emission schedule
   const expectedReward = computeBlockReward(block.header.height);
-  const totalCoinbase = block.utxoTxTree.coinbaseOutputs.reduce((sum, o) => sum + o.value, 0);
+  const totalCoinbase = block.utxoTxTree.coinbaseOutputs.reduce((sum, o) => sum + o.value, 0n);
   if (totalCoinbase !== expectedReward) {
     console.warn(
       `Rejected block height=${block.header.height}: coinbase value ${totalCoinbase} != expected ${expectedReward}`,
@@ -536,7 +536,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
       if (!reward) continue;
 
       // Author reward
-      if (reward.authorReward > 0) {
+      if (reward.authorReward > 0n) {
         const post = getPost(postId);
         if (post && 'author' in post) {
           const existingKarma = getKarmaBoxes(post.author);
@@ -552,7 +552,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
       // Liker refunds (locked likes that met threshold)
       for (const likerId of Object.keys(reward.likerRefunds)) {
         const refund = reward.likerRefunds[likerId];
-        if (refund !== undefined && refund !== 0) {
+        if (refund !== undefined && refund !== 0n) {
           const likerBytes = new Uint8Array(Buffer.from(likerId, "hex"));
           const existingKarma = getKarmaBoxes(likerBytes);
           for (const kb of existingKarma) {
@@ -565,7 +565,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
       }
 
       // Post lock karma unlocked
-      if (reward.postLockKarmaUnlocked && reward.postLockKarmaUnlocked > 0) {
+      if (reward.postLockKarmaUnlocked && reward.postLockKarmaUnlocked > 0n) {
         const post = getPost(postId);
         if (post && 'author' in post) {
           const existingKarma = getKarmaBoxes(post.author);

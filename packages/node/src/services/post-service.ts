@@ -55,7 +55,7 @@ export interface PostServiceDeps {
   getActiveChallenge: (
     userId: Uint8Array,
   ) => { challenge: Uint8Array; expiresAtBlock: number; userId: Uint8Array } | null;
-  getKarmaBoxes: (owner: Uint8Array) => { value: number; id?: string }[];
+  getKarmaBoxes: (owner: Uint8Array) => { value: bigint; id?: string }[];
   getPost: (id: string) => unknown | null;
 
   // Raw byte access for independent hash recomputation

@@ -227,7 +227,7 @@ function makeLikeBox(
 ): LikeBox {
   const box: LikeBox = {
     boxType: 'like',
-    value: 2,
+    value: 2n,
     createdAtBlock,
     likerId,
     targetPostId,
@@ -239,7 +239,7 @@ function makeLikeBox(
 }
 
 function makeKarmaBox(
-  value: number,
+  value: bigint,
   owner: Uint8Array,
   createdAtBlock: number,
 ): KarmaBox {
@@ -520,7 +520,7 @@ describe('block-apply journal recording', () => {
     const utxo = await importUtxo();
 
     // Give author karma
-    utxo.insertBox(makeKarmaBox(100, author.publicKey, 0));
+    utxo.insertBox(makeKarmaBox(100n, author.publicKey, 0));
 
     // Create a post
     const post = makePost(author.userId, 'like journal test');
@@ -530,7 +530,7 @@ describe('block-apply journal recording', () => {
 
     // Create a standalone like box (not attached to sub-block)
     const liker = makeTestIdentity();
-    utxo.insertBox(makeKarmaBox(10, liker.publicKey, 0));
+    utxo.insertBox(makeKarmaBox(10n, liker.publicKey, 0));
     const likeBox = makeLikeBox(liker.userId, postId, 0);
     utxo.insertBox(likeBox);
 
@@ -565,7 +565,7 @@ describe('block-apply journal recording', () => {
     const utxo = await importUtxo();
 
     // Give author some initial karma
-    utxo.insertBox(makeKarmaBox(100, author.publicKey, 0));
+    utxo.insertBox(makeKarmaBox(100n, author.publicKey, 0));
 
     // Create target post
     const post = makePost(author.userId, 'epoch journal test');
@@ -576,7 +576,7 @@ describe('block-apply journal recording', () => {
     // Create 6 locked likes (enough for 1 author reward: floor(6/5)=1)
     for (let i = 0; i < 6; i++) {
       const liker = makeTestIdentity();
-      utxo.insertBox(makeKarmaBox(10, liker.publicKey, 0));
+      utxo.insertBox(makeKarmaBox(10n, liker.publicKey, 0));
       const likeBox = makeLikeBox(liker.userId, postId, 0);
       utxo.insertBox(likeBox);
     }
@@ -613,7 +613,7 @@ describe('block-apply journal recording', () => {
       (m) => Buffer.from(m.userId).equals(Buffer.from(author.userId)),
     );
     expect(authorMints.length).toBeGreaterThan(0);
-    expect(authorMints.reduce((sum, m) => sum + m.amount, 0)).toBeGreaterThan(0);
+    expect(authorMints.reduce((sum, m) => sum + m.amount, 0n)).toBeGreaterThan(0n);
   });
 
   // -----------------------------------------------------------------------
@@ -641,7 +641,7 @@ describe('block-apply journal recording', () => {
     mempool.insertSubBlock(postId, 1000);
 
     // Insert a standalone UTXO transaction in mempool
-    const karmaBox = makeKarmaBox(100, author.userId, 0);
+    const karmaBox = makeKarmaBox(100n, author.userId, 0);
     utxo.insertBox(karmaBox);
     const likeTx = makeLikeTx(author, karmaBox, 'unrelated_post_id');
     mempool.insertUtxoTx(likeTx, null, 1000);
@@ -849,7 +849,7 @@ describe('block-apply journal recording', () => {
         // a non-numeric `lockedUntilBlock` is now a structure rejection, which
         // would reject this block before it reached the coinbase check.
         {
-          value: 0,
+          value: 0n,
           owner: new Uint8Array(32),
           lockedUntilBlock: 1 + CREDIT_MINER_REWARD_DELAY,
         },
@@ -915,7 +915,7 @@ describe('block-apply journal recording', () => {
 
     // Create an identity with a karma box at block 0 (ancient)
     const identity = makeTestIdentity();
-    const oldBox = makeKarmaBox(100, identity.userId, 0);
+    const oldBox = makeKarmaBox(100n, identity.userId, 0);
     utxo.insertBox(oldBox);
 
     // Import decay module directly — applyOrderingBlock delegates to it,
@@ -950,10 +950,9 @@ describe('block-apply journal recording', () => {
 
     // owedPeriods = floor((staleHeight - 0) / 720) = 28
     // maxBurn = min(28 * 5, 100 - 10) = min(140, 90) = 90
-    const expectedBurn = Math.min(
-      Math.floor(staleHeight / 720) * KARMA_DECAY_AMOUNT,
-      100 - 10,
-    );
+    const owed = BigInt(Math.floor(staleHeight / 720)) * KARMA_DECAY_AMOUNT;
+    const maxBurn = 100n - 10n;
+    const expectedBurn = owed < maxBurn ? owed : maxBurn;
 
     expect(entries.length).toBe(1);
     expect(entries[0]!.owner).toEqual(identity.userId);
@@ -970,7 +969,7 @@ describe('block-apply journal recording', () => {
 
     // New decay-burn box exists with reduced value
     expect(karmaBox!.boxType).toBe('karma');
-    expect(karmaBox!.value).toBe(100 - expectedBurn);
+    expect(karmaBox!.value).toBe(100n - expectedBurn);
   });
 });
 
@@ -1016,7 +1015,7 @@ describe('block-apply embedded tx re-validation', () => {
     const mempool = await importMempoolFresh();
 
     const victim = makeTestIdentity();
-    const victimBox = makeKarmaBox(100, victim.userId, 0);
+    const victimBox = makeKarmaBox(100n, victim.userId, 0);
     utxo.insertBox(victimBox);
 
     // Well-formed, conserving, spending a box that really exists. The only
@@ -1038,7 +1037,7 @@ describe('block-apply embedded tx re-validation', () => {
 
     const survivor = utxo.getBox(victimBox.id!) as KarmaBox | null;
     expect(survivor).not.toBeNull();
-    expect(survivor!.value).toBe(100);
+    expect(survivor!.value).toBe(100n);
   });
 
   it('rejects the whole block when an embedded tx mints value', async () => {
@@ -1049,7 +1048,7 @@ describe('block-apply embedded tx re-validation', () => {
     const mempool = await importMempoolFresh();
 
     const attacker = makeTestIdentity();
-    const attackerBox = makeKarmaBox(100, attacker.userId, 0);
+    const attackerBox = makeKarmaBox(100n, attacker.userId, 0);
     utxo.insertBox(attackerBox);
 
     // Correctly signed by the owner and a legal karma → karma + like shape,
@@ -1060,7 +1059,7 @@ describe('block-apply embedded tx re-validation', () => {
       outputs: [
         {
           boxType: 'karma',
-          value: 100,
+          value: 100n,
           createdAtBlock: 0,
           owner: attacker.userId,
           guard: 'owner_signature',
@@ -1098,7 +1097,7 @@ describe('block-apply embedded tx re-validation', () => {
     // The attacker's balance is exactly what it was — no 102 anywhere.
     const survivor = utxo.getBox(attackerBox.id!) as KarmaBox | null;
     expect(survivor).not.toBeNull();
-    expect(survivor!.value).toBe(100);
+    expect(survivor!.value).toBe(100n);
   });
 
   it('applies a block whose embedded txs are all valid', async () => {
@@ -1111,8 +1110,8 @@ describe('block-apply embedded tx re-validation', () => {
 
     const alice = makeTestIdentity();
     const bob = makeTestIdentity();
-    const aliceBox = makeKarmaBox(100, alice.userId, 0);
-    const bobBox = makeKarmaBox(40, bob.userId, 0);
+    const aliceBox = makeKarmaBox(100n, alice.userId, 0);
+    const bobBox = makeKarmaBox(40n, bob.userId, 0);
     utxo.insertBox(aliceBox);
     utxo.insertBox(bobBox);
 
@@ -1134,10 +1133,10 @@ describe('block-apply embedded tx re-validation', () => {
     expect(utxo.getBox(aliceBox.id!)).toBeNull();
     expect(utxo.getBox(bobBox.id!)).toBeNull();
     expect((utxo.getBox(changeBoxOf(aliceTx).id!) as KarmaBox).value).toBe(
-      100 - LIKE_COST,
+      100n - LIKE_COST,
     );
     expect((utxo.getBox(changeBoxOf(bobTx).id!) as KarmaBox).value).toBe(
-      40 - LIKE_COST,
+      40n - LIKE_COST,
     );
   });
 
@@ -1150,7 +1149,7 @@ describe('block-apply embedded tx re-validation', () => {
     const { computeTxId } = await import('@dagsocial/types');
 
     const liker = makeTestIdentity();
-    const startBox = makeKarmaBox(100, liker.userId, 0);
+    const startBox = makeKarmaBox(100n, liker.userId, 0);
     utxo.insertBox(startBox);
 
     const txA = makeLikeTx(liker, startBox, 'post_a');
@@ -1179,7 +1178,7 @@ describe('block-apply embedded tx re-validation', () => {
     expect(utxo.getBox(changeBoxOf(txA).id!)).toBeNull();
     const finalBox = utxo.getBox(changeBoxOf(txB).id!) as KarmaBox | null;
     expect(finalBox).not.toBeNull();
-    expect(finalBox!.value).toBe(100 - 2 * LIKE_COST);
+    expect(finalBox!.value).toBe(100n - 2n * LIKE_COST);
   });
 });
 
@@ -1212,7 +1211,7 @@ describe('block-apply epoch tally ordering', () => {
     const rewards: Record<string, LikeReward> = {};
     for (const postId of Object.keys(tally.rewards).reverse()) {
       const reward = tally.rewards[postId]!;
-      const likerRefunds: Record<string, number> = {};
+      const likerRefunds: Record<string, bigint> = {};
       for (const likerId of Object.keys(reward.likerRefunds).reverse()) {
         likerRefunds[likerId] = reward.likerRefunds[likerId]!;
       }
@@ -1282,8 +1281,11 @@ describe('block-apply epoch tally ordering', () => {
 
     // Vacuity guard: under the insertion-order `JSON.stringify` this check used
     // to use, these two tallies are different strings — so the acceptance below
-    // is not passing for want of a difference between them.
-    expect(JSON.stringify(peerTally.rewards)).not.toBe(JSON.stringify(localTally.rewards));
+    // is not passing for want of a difference between them. (Bigint-safe
+    // replacer: reward amounts don't survive a plain JSON.stringify.)
+    const naiveJson = (v: unknown): string =>
+      JSON.stringify(v, (_k, x) => (typeof x === 'bigint' ? x.toString() : x));
+    expect(naiveJson(peerTally.rewards)).not.toBe(naiveJson(localTally.rewards));
 
     const subBlockTree = { subBlockRefs: [], subBlockEntries: [], pruneEntries: [] };
     const miner = makeTestIdentity();

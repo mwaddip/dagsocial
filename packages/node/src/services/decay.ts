@@ -78,8 +78,8 @@ export function applyKarmaDecay(
   cfg: {
     staleThresholdBlocks: number;
     decayIntervalBlocks: number;
-    decayAmount: number;
-    karmaMinimum: number;
+    decayAmount: bigint;
+    karmaMinimum: bigint;
   },
 ): DecayJournalEntry[] {
   const journal: DecayJournalEntry[] = [];
@@ -96,10 +96,12 @@ export function applyKarmaDecay(
     const periods = owedPeriods(boxes, currentHeight, cfg.decayIntervalBlocks);
     if (periods <= 0) continue;
 
-    const totalKarma = boxes.reduce((sum, b) => sum + b.value, 0);
-    const maxBurn = Math.max(0, totalKarma - cfg.karmaMinimum);
-    const burnAmount = Math.min(periods * cfg.decayAmount, maxBurn);
-    if (burnAmount <= 0) continue;
+    const totalKarma = boxes.reduce((sum, b) => sum + b.value, 0n);
+    const overMinimum = totalKarma - cfg.karmaMinimum;
+    const maxBurn = overMinimum > 0n ? overMinimum : 0n;
+    const owed = BigInt(periods) * cfg.decayAmount;
+    const burnAmount = owed < maxBurn ? owed : maxBurn;
+    if (burnAmount <= 0n) continue;
 
     const newValue = totalKarma - burnAmount;
 

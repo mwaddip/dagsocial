@@ -299,12 +299,27 @@ const encoder = new TextEncoder();
 // ===========================================================================
 
 const PROTOCOL_VERSION = 1;
-const LIKE_COST = 2;
-const POST_LOCK_THREAD_COST = 5;
-const POST_LOCK_REPLY_COST = 3;
-const INVITE_KARMA_AMOUNT = 25;
-const INVITE_BOND_KARMA = 25;
+// Amount constants are bigint (box values are bigint — Spec B P0); block
+// counts stay plain numbers. Mirrors @dagsocial/types constants.ts.
+const LIKE_COST = 2n;
+const POST_LOCK_THREAD_COST = 5n;
+const POST_LOCK_REPLY_COST = 3n;
+const INVITE_KARMA_AMOUNT = 25n;
+const INVITE_BOND_KARMA = 25n;
 const INVITE_PROBATION_BLOCKS = 1000;
+/** Credits are 8-decimal: 10⁸ base units (10⁻⁸ credit) per displayed credit. */
+const CREDIT_SCALE = 100000000n;
+
+/** JSON.stringify replacer: bigint → decimal string (JSON cannot carry bigint). */
+function jsonBigint(_k, v) { return typeof v === 'bigint' ? v.toString() : v; }
+
+/** Render credit base units as whole credits, trimming trailing zero decimals. */
+function formatCredits(baseUnits) {
+  const whole = baseUnits / CREDIT_SCALE;
+  const frac = baseUnits % CREDIT_SCALE;
+  if (frac === 0n) return whole.toString();
+  return whole.toString() + '.' + frac.toString().padStart(8, '0').replace(/0+$/, '');
+}
 
 // ===========================================================================
 // State
@@ -450,19 +465,45 @@ function cborEncodeBytes(buf) {
   throw new Error('Bytes too long for CBOR: ' + len);
 }
 
+/**
+ * Minimal-int form for `number` fields, matching cbor-x 1.6.4 exactly
+ * (measured): integers whose argument (n, or -1-n when negative) fits u32
+ * use the shortest form — 0–23 inline, then 0x18+u8 / 0x19+u16 / 0x1a+u32,
+ * mirrored at 0x20/0x38/0x39/0x3a for negatives; integer arguments beyond
+ * u32 encode as float64 (0xfb + IEEE 754 BE, exact for safe integers) —
+ * cbor-x never emits 0x1b uint64 for a JS number, only for a bigint.
+ * `createdAtBlock` crosses 65536, so the old u16 cap threw exactly where
+ * consensus needs the u32 form (audit L-5). Non-integers throw: no valid
+ * box carries one, and float64-encoding a fractional height would hide a bug.
+ */
 function cborEncodeInt(n) {
-  if (n >= 0) {
-    if (n <= 23) return new Uint8Array([n]);
-    if (n <= 255) return new Uint8Array([0x18, n]);
-    if (n <= 65535) return new Uint8Array([0x19, (n >> 8) & 0xFF, n & 0xFF]);
-    throw new Error('Number too large for CBOR: ' + n);
-  } else {
-    const val = -1 - n;
-    if (val <= 23) return new Uint8Array([0x20 | val]);
-    if (val <= 255) return new Uint8Array([0x38, val]);
-    if (val <= 65535) return new Uint8Array([0x39, (val >> 8) & 0xFF, val & 0xFF]);
-    throw new Error('Number too small for CBOR: ' + n);
-  }
+  if (!Number.isSafeInteger(n)) throw new Error('Non-integer CBOR number: ' + n);
+  const major = n >= 0 ? 0x00 : 0x20;
+  const val = n >= 0 ? n : -1 - n;
+  if (val <= 23) return new Uint8Array([major | val]);
+  if (val <= 0xFF) return new Uint8Array([major | 0x18, val]);
+  if (val <= 0xFFFF) return new Uint8Array([major | 0x19, (val >>> 8) & 0xFF, val & 0xFF]);
+  if (val <= 0xFFFFFFFF) return new Uint8Array([
+    major | 0x1A, (val >>> 24) & 0xFF, (val >>> 16) & 0xFF, (val >>> 8) & 0xFF, val & 0xFF,
+  ]);
+  const out = new Uint8Array(9);
+  out[0] = 0xFB;
+  new DataView(out.buffer).setFloat64(1, n, false);
+  return out;
+}
+
+/**
+ * Box `value` is a bigint and always encodes as CBOR uint64 — 0x1b + 8 bytes
+ * big-endian — even for small values (2n → 1b0000000000000002): cbor-x does
+ * not minimize bigints, and the golden vectors freeze that form (Spec B P0).
+ * Values are non-negative < 2⁶⁴ by protocol invariant; anything else throws.
+ */
+function cborEncodeBigInt(v) {
+  if (v < 0n || v >= 1n << 64n) throw new Error('bigint out of uint64 range: ' + v);
+  const out = new Uint8Array(9);
+  out[0] = 0x1B;
+  for (let i = 8; i >= 1; i--) { out[i] = Number(v & 0xffn); v >>= 8n; }
+  return out;
 }
 
 function cborEncodeUndefined() { return new Uint8Array([0xf7]); }
@@ -476,6 +517,7 @@ function cborEncodeMap(obj) {
     const v = obj[k];
     if (typeof v === 'string')            parts.push(cborEncodeString(v));
     else if (typeof v === 'number')       parts.push(cborEncodeInt(v));
+    else if (typeof v === 'bigint')       parts.push(cborEncodeBigInt(v));
     else if (typeof v === 'boolean')      parts.push(new Uint8Array([v ? 0xf5 : 0xf4]));
     else if (v === undefined || v === null) parts.push(cborEncodeUndefined());
     else if (v instanceof Uint8Array)     parts.push(cborEncodeBytes(v));
@@ -491,6 +533,7 @@ function cborEncodeMap(obj) {
 function cborEncode(value) {
   if (typeof value === 'string')              return cborEncodeString(value);
   if (typeof value === 'number')              return cborEncodeInt(value);
+  if (typeof value === 'bigint')              return cborEncodeBigInt(value);
   if (typeof value === 'boolean')             return new Uint8Array([value ? 0xf5 : 0xf4]);
   if (value === undefined || value === null)  return cborEncodeUndefined();
   if (value instanceof Uint8Array)            return cborEncodeBytes(value);
@@ -617,8 +660,8 @@ async function signPost(content, authorBytes, parentRefs, challengeBytes, protoc
 
 /**
  * Fetch all karma boxes for the active identity.
- * Returns { total, boxes: [{ boxId, value }] } plus backward-compat
- * .balance (= total) and .boxId (= boxes[0].boxId if any).
+ * Returns { total, boxes: [{ boxId, value }] } with total/value as bigint
+ * (the API serializes them as decimal strings — JSON cannot carry a bigint).
  */
 async function fetchKarmaBox() {
   if (!userId) return null;
@@ -626,9 +669,8 @@ async function fetchKarmaBox() {
     const res = await fetch(API + '/karma/' + encodeURIComponent(userId));
     if (!res.ok) return null;
     const data = await res.json(); // { userId, total, boxes: [{ boxId, value }] }
-    // Backward-compat: add .balance and .boxId for older callers
-    data.balance = data.total;
-    data.boxId = data.boxes.length > 0 ? data.boxes[0].boxId : null;
+    data.total = BigInt(data.total);
+    for (const b of data.boxes) b.value = BigInt(b.value);
     return data;
   } catch {
     return null;
@@ -641,8 +683,8 @@ async function fetchKarmaBox() {
  * Throws if total is insufficient.
  */
 function selectBoxes(boxes, requiredAmount) {
-  if (requiredAmount <= 0) return [];
-  let accumulated = 0;
+  if (requiredAmount <= 0n) return [];
+  let accumulated = 0n;
   const selected = [];
   for (const box of boxes) {
     accumulated += box.value;
@@ -660,7 +702,10 @@ async function fetchCreditBoxes() {
   try {
     const res = await fetch(API + '/credits/' + encodeURIComponent(userId));
     if (!res.ok) return null;
-    return await res.json(); // { userId, total, boxes: [{ boxId, value, lockedUntilBlock? }] }
+    const data = await res.json(); // { userId, total, boxes: [{ boxId, value, lockedUntilBlock? }] }
+    data.total = BigInt(data.total);
+    for (const b of data.boxes) b.value = BigInt(b.value);
+    return data;
   } catch {
     return null;
   }
@@ -672,7 +717,10 @@ async function fetchInviteState() {
   try {
     const res = await fetch(API + '/invites/' + encodeURIComponent(userId));
     if (!res.ok) return { pending: [], bonds: [] };
-    return await res.json(); // { pending: InviteBox[], bonds: BondBox[] }
+    const data = await res.json(); // { pending: InviteBox[], bonds: BondBox[] }
+    for (const b of data.pending) b.value = BigInt(b.value);
+    for (const b of data.bonds) b.value = BigInt(b.value);
+    return data;
   } catch {
     return { pending: [], bonds: [] };
   }
@@ -686,7 +734,7 @@ async function fetchInviteState() {
 function buildKarmaLockTx(karmaBox, lockAmount, targetPostId, pubKeyHex) {
   const now = currentBlockHeight;
   const selected = selectBoxes(karmaBox.boxes, lockAmount);
-  const selectedTotal = selected.reduce((sum, b) => sum + b.value, 0);
+  const selectedTotal = selected.reduce((sum, b) => sum + b.value, 0n);
   const newKarmaValue = selectedTotal - lockAmount;
 
   const karmaOutput = {
@@ -721,7 +769,7 @@ function buildKarmaLockTx(karmaBox, lockAmount, targetPostId, pubKeyHex) {
 function buildLikeTx(karmaBox, targetPostId, pubKeyHex) {
   const now = currentBlockHeight;
   const selected = selectBoxes(karmaBox.boxes, LIKE_COST);
-  const selectedTotal = selected.reduce((sum, b) => sum + b.value, 0);
+  const selectedTotal = selected.reduce((sum, b) => sum + b.value, 0n);
   const newKarmaValue = selectedTotal - LIKE_COST;
 
   const karmaOutput = {
@@ -785,7 +833,7 @@ function buildCreateInviteTx(karmaBox, pubKeyHex, secretHashHex) {
   const now = currentBlockHeight;
   const totalDeducted = INVITE_KARMA_AMOUNT + INVITE_BOND_KARMA;
   const selected = selectBoxes(karmaBox.boxes, totalDeducted);
-  const selectedTotal = selected.reduce((sum, b) => sum + b.value, 0);
+  const selectedTotal = selected.reduce((sum, b) => sum + b.value, 0n);
   const newKarmaValue = selectedTotal - totalDeducted;
 
   const karmaOutput = {
@@ -1243,7 +1291,7 @@ document.getElementById('postBtn').addEventListener('click', async () => {
         timestamp,
         signature,
         karmaLockTx,
-      }),
+      }, jsonBigint),
     });
     if (!postRes.ok) {
       const err = await postRes.json();
@@ -1404,7 +1452,7 @@ async function doLike(targetPostId) {
 
     const res = await fetch(API + '/likes', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tx }),
+      body: JSON.stringify({ tx }, jsonBigint),
     });
     const data = await res.json();
     if (!res.ok) {
@@ -1470,7 +1518,7 @@ async function doUnlike(targetPostId) {
 
       const res = await fetch(API + '/likes/remove', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tx }),
+        body: JSON.stringify({ tx }, jsonBigint),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -1490,7 +1538,7 @@ async function doUnlike(targetPostId) {
 
       const res = await fetch(API + '/likes/remove', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tx }),
+        body: JSON.stringify({ tx }, jsonBigint),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -1865,8 +1913,9 @@ async function loadIdentityStatus() {
     const res = await fetch(API + '/karma/' + encodeURIComponent(userId));
     if (res.ok) {
       const data = await res.json();
-      karmaEl.textContent = data.total;
-      karmaEl.style.color = data.total > 0 ? 'var(--p)' : 'var(--p-lo)';
+      const total = BigInt(data.total);
+      karmaEl.textContent = total.toString();
+      karmaEl.style.color = total > 0n ? 'var(--p)' : 'var(--p-lo)';
     } else {
       karmaEl.textContent = '0';
       karmaEl.style.color = 'var(--p-lo)';
@@ -1880,8 +1929,9 @@ async function loadIdentityStatus() {
     const res = await fetch(API + '/credits/' + encodeURIComponent(userId));
     if (res.ok) {
       const data = await res.json();
-      creditsEl.textContent = data.total;
-      creditsEl.style.color = data.total > 0 ? 'var(--p)' : 'var(--p-lo)';
+      const total = BigInt(data.total);
+      creditsEl.textContent = formatCredits(total);
+      creditsEl.style.color = total > 0n ? 'var(--p)' : 'var(--p-lo)';
     } else {
       creditsEl.textContent = '0';
       creditsEl.style.color = 'var(--p-lo)';
@@ -1906,7 +1956,7 @@ async function loadStatus() {
       <div><span>Block height:</span> <strong>${s.blockHeight}</strong></div>
       <div><span>Posts (confirmed / pending):</span> <strong>${s.postCount} / ${s.pendingPosts}</strong></div>
       <div><span>Identities:</span> <strong>${s.identityCount}</strong></div>
-      <div><span>Total karma:</span> <strong>${s.totalKarma}</strong> &nbsp; <span>Total credits:</span> <strong>${s.totalCredits}</strong></div>
+      <div><span>Total karma:</span> <strong>${s.totalKarma}</strong> &nbsp; <span>Total credits:</span> <strong>${formatCredits(BigInt(s.totalCredits))}</strong></div>
     `;
 
     // Show/hide admin section based on network mode
@@ -1924,7 +1974,9 @@ async function loadStatus() {
 document.getElementById('faucetBtn').addEventListener('click', async () => {
   const btn = document.getElementById('faucetBtn');
   const result = document.getElementById('faucetResult');
-  const amount = parseInt(document.getElementById('faucetAmount').value) || 100;
+  let amount;
+  try { amount = BigInt(document.getElementById('faucetAmount').value.trim() || '100'); }
+  catch { amount = 100n; }
 
   btn.disabled = true;
   result.innerHTML = '<span class="result-msg">Requesting...</span>';
@@ -1933,7 +1985,7 @@ document.getElementById('faucetBtn').addEventListener('click', async () => {
     const res = await fetch(API + '/faucet', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId, amount }),
+      body: JSON.stringify({ userId, amount }, jsonBigint),
     });
     const data = await res.json();
     if (res.ok) {
@@ -1969,7 +2021,7 @@ document.getElementById('creditFaucetBtn').addEventListener('click', async () =>
     });
     const data = await res.json();
     if (res.ok) {
-      result.innerHTML = `<span class="result-msg ok">Granted ${data.amount} credits. TxId: ${(data.txId || '').slice(0, 16)}...</span>`;
+      result.innerHTML = `<span class="result-msg ok">Granted ${formatCredits(BigInt(data.amount))} credits. TxId: ${(data.txId || '').slice(0, 16)}...</span>`;
       loadIdentityStatus();
       loadStatus();
     } else {
@@ -1992,7 +2044,7 @@ function buildCreditTransferTx(creditBoxes, recipientHex, amount) {
     !b.lockedUntilBlock || b.lockedUntilBlock <= currentBlockHeight
   );
   const selected = selectBoxes(unlocked, amount);
-  const selectedTotal = selected.reduce((sum, b) => sum + b.value, 0);
+  const selectedTotal = selected.reduce((sum, b) => sum + b.value, 0n);
   const change = selectedTotal - amount;
 
   const outputs = [{
@@ -2003,7 +2055,7 @@ function buildCreditTransferTx(creditBoxes, recipientHex, amount) {
     guard: 'owner_signature',
     proofSource: -1,
   }];
-  if (change > 0) {
+  if (change > 0n) {
     outputs.push({
       boxType: 'credit',
       value: change,
@@ -2026,13 +2078,16 @@ document.getElementById('creditTransferBtn').addEventListener('click', async () 
   const btn = document.getElementById('creditTransferBtn');
   const result = document.getElementById('creditTransferResult');
   const recipient = document.getElementById('creditTransferRecipient').value.trim();
-  const amount = parseInt(document.getElementById('creditTransferAmount').value) || 0;
+  // Input is whole credits; the ledger counts 10⁻⁸-credit base units.
+  let amount;
+  try { amount = BigInt(document.getElementById('creditTransferAmount').value.trim() || '0') * CREDIT_SCALE; }
+  catch { amount = 0n; }
 
   if (!recipient || recipient.length !== 64) {
     result.innerHTML = '<span class="result-msg err">Recipient must be a 64-character hex user ID</span>';
     return;
   }
-  if (amount < 1) {
+  if (amount < 1n) {
     result.innerHTML = '<span class="result-msg err">Amount must be at least 1</span>';
     return;
   }
@@ -2043,7 +2098,7 @@ document.getElementById('creditTransferBtn').addEventListener('click', async () 
   try {
     const creditBoxes = await fetchCreditBoxes();
     if (!creditBoxes || creditBoxes.total < amount) {
-      result.innerHTML = `<span class="result-msg err">Insufficient credits: have ${creditBoxes?.total || 0}, need ${amount}</span>`;
+      result.innerHTML = `<span class="result-msg err">Insufficient credits: have ${formatCredits(creditBoxes?.total ?? 0n)}, need ${formatCredits(amount)}</span>`;
       btn.disabled = false;
       return;
     }
@@ -2066,12 +2121,13 @@ document.getElementById('creditTransferBtn').addEventListener('click', async () 
         amount,
         signature: sigBase64,
         expectedHeight: currentBlockHeight,
-      }),
+      }, jsonBigint),
     });
 
     const data = await res.json();
     if (res.ok) {
-      result.innerHTML = `<span class="result-msg ok">Sent ${data.sent} credits${data.change > 0 ? ' (change: ' + data.change + ')' : ''}. TxId: ${(data.txId || '').slice(0, 16)}...</span>`;
+      const change = BigInt(data.change);
+      result.innerHTML = `<span class="result-msg ok">Sent ${formatCredits(BigInt(data.sent))} credits${change > 0n ? ' (change: ' + formatCredits(change) + ')' : ''}. TxId: ${(data.txId || '').slice(0, 16)}...</span>`;
       loadIdentityStatus();
       loadStatus();
     } else {
@@ -2124,7 +2180,7 @@ document.getElementById('createInviteBtn').addEventListener('click', async () =>
     const res = await fetch(API + '/invites', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tx }),
+      body: JSON.stringify({ tx }, jsonBigint),
     });
     const data = await res.json();
     if (res.ok) {
@@ -2190,7 +2246,7 @@ document.getElementById('redeemInviteBtn').addEventListener('click', async () =>
     const commitRes = await fetch(API + '/invites/commit', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tx: commitTx }),
+      body: JSON.stringify({ tx: commitTx }, jsonBigint),
     });
     const commitData = await commitRes.json();
     if (!commitRes.ok) {
@@ -2229,7 +2285,7 @@ document.getElementById('redeemInviteBtn').addEventListener('click', async () =>
         const revealRes = await fetch(API + '/invites/claim', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tx: revealTx }),
+          body: JSON.stringify({ tx: revealTx }, jsonBigint),
         });
         const revealData = await revealRes.json();
         if (revealRes.ok) {
@@ -2298,7 +2354,7 @@ document.getElementById('cancelInviteBtn').addEventListener('click', async () =>
     const tx = buildCancelInviteTx(
       karmaBox,
       { id: invBox.id, value: invBox.value },
-      { id: bondBox?.id || '00'.repeat(32), value: bondBox?.value || 0 },
+      { id: bondBox?.id || '00'.repeat(32), value: bondBox?.value ?? 0n },
       pubKeyHex,
     );
     const { signature } = await signTxId(tx);
@@ -2307,7 +2363,7 @@ document.getElementById('cancelInviteBtn').addEventListener('click', async () =>
     const res = await fetch(API + '/invites/cancel', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tx }),
+      body: JSON.stringify({ tx }, jsonBigint),
     });
     const data = await res.json();
     if (res.ok) {

@@ -112,9 +112,11 @@ export function computeUtxoTxRoot(tree: UtxoTxTree): string {
     ...tree.likeBoxIds.map((id) =>
       leafHash('likebox', hexToBuf(id))),
     ...tree.coinbaseOutputs.map((o) =>
+      // `value` is bigint — JSON.stringify throws on it, and this preimage is
+      // consensus (utxoTxRoot leaf). Canonical decimal string, deterministic.
       leafHash('coinbase', Buffer.from(JSON.stringify({
         owner: Array.from(o.owner),
-        value: o.value,
+        value: o.value.toString(),
         lockedUntilBlock: o.lockedUntilBlock,
         isTreasury: o.isTreasury,
       })))),
@@ -262,16 +264,16 @@ export function submitMinedBlock(powNonce: number, submittedHeight: number): str
 /**
  * Compute the block reward at a given height using Ergo-style linear decay.
  */
-export function computeBlockReward(height: number): number {
-  if (height <= 0) return 0;
+export function computeBlockReward(height: number): bigint {
+  if (height <= 0) return 0n;
   if (height <= CREDIT_FIXED_RATE_BLOCKS) {
     return CREDIT_INITIAL_REWARD;
   }
   const epochs = Math.floor(
     (height - CREDIT_FIXED_RATE_BLOCKS - 1) / CREDIT_EPOCH_BLOCKS,
   ) + 1;
-  const reward = CREDIT_INITIAL_REWARD - epochs * CREDIT_REWARD_REDUCTION;
-  return Math.max(reward, CREDIT_TAIL_REWARD);
+  const reward = CREDIT_INITIAL_REWARD - BigInt(epochs) * CREDIT_REWARD_REDUCTION;
+  return reward > CREDIT_TAIL_REWARD ? reward : CREDIT_TAIL_REWARD;
 }
 
 // ---------------------------------------------------------------------------
@@ -622,11 +624,11 @@ function buildCoinbaseOutputs(height: number): CoinbaseOutput[] {
   const outputs: CoinbaseOutput[] = [];
 
   const treasuryPct = config.creditTreasuryPct;
-  let treasuryAmount = 0;
+  let treasuryAmount = 0n;
   let minerAmount = reward;
 
   if (treasuryPct > 0 && config.treasuryPubKey.length === 64) {
-    treasuryAmount = Math.floor((reward * treasuryPct) / 100);
+    treasuryAmount = (reward * BigInt(treasuryPct)) / 100n;
     minerAmount = reward - treasuryAmount;
   }
 
@@ -641,7 +643,7 @@ function buildCoinbaseOutputs(height: number): CoinbaseOutput[] {
   });
 
   // Treasury output (if configured)
-  if (treasuryAmount > 0) {
+  if (treasuryAmount > 0n) {
     const treasuryKey = new Uint8Array(Buffer.from(config.treasuryPubKey, 'hex'));
     outputs.push({
       owner: treasuryKey,
@@ -695,23 +697,23 @@ export function computeEpochTally(blockHeight: number): EpochTally {
   for (const [targetPostId, { locked, free }] of groups) {
     const totalLikeCount = locked.length + free.length;
 
-    const authorReward = Math.min(
-      Math.floor(totalLikeCount / LIKE_THRESHOLD),
-      LIKE_MAX_AUTHOR_REWARD,
-    );
+    // Count math in number, then BigInt the step count before the bigint min.
+    const rewardSteps = BigInt(Math.floor(totalLikeCount / LIKE_THRESHOLD));
+    const authorReward =
+      rewardSteps < LIKE_MAX_AUTHOR_REWARD ? rewardSteps : LIKE_MAX_AUTHOR_REWARD;
 
-    const likerRefunds: Record<string, number> = {};
+    const likerRefunds: Record<string, bigint> = {};
     const thresholdMet = totalLikeCount >= 2 * LIKE_THRESHOLD;
 
     for (const lb of locked) {
       if (thresholdMet) {
         if (lb.id) allLockedBoxIds.push(lb.id);
         // mintKarma is handled by applyOrderingBlock from epochTallyResults
-        likerRefunds[Buffer.from(lb.likerId).toString('hex')] = 0;
+        likerRefunds[Buffer.from(lb.likerId).toString('hex')] = 0n;
       }
     }
 
-    if (authorReward > 0) {
+    if (authorReward > 0n) {
       // mintKarma is handled by applyOrderingBlock from epochTallyResults
     }
 
@@ -742,16 +744,19 @@ export function computeEpochTally(blockHeight: number): EpochTally {
 
     const totalLikes = getPostTotalLikes(plb.targetPostId);
     const alreadyUnlocked = plb.originalValue - plb.value;
-    const shouldUnlock = Math.floor(totalLikes / POST_LOCK_UNLOCK_PER_LIKES);
-    const toUnlock = Math.min(plb.value, shouldUnlock - alreadyUnlocked);
+    // Like counts are number; the unlock step count converts to bigint before
+    // mixing with box values.
+    const shouldUnlock = BigInt(Math.floor(totalLikes / POST_LOCK_UNLOCK_PER_LIKES));
+    const unlockable = shouldUnlock - alreadyUnlocked;
+    const toUnlock = plb.value < unlockable ? plb.value : unlockable;
 
-    if (toUnlock <= 0) continue;
+    if (toUnlock <= 0n) continue;
 
     const remainingLocked = plb.value - toUnlock;
 
     consumedPostLockBoxIds.push(plb.id);
 
-    if (remainingLocked > 0) {
+    if (remainingLocked > 0n) {
       const newPlb: PostLockBox = {
         boxType: 'post_lock',
         value: remainingLocked,
@@ -771,12 +776,12 @@ export function computeEpochTally(blockHeight: number): EpochTally {
       rewards[plb.targetPostId] = {
         targetPostId: plb.targetPostId,
         likeCount: 0,
-        authorReward: 0,
+        authorReward: 0n,
         likerRefunds: {},
       };
     }
     rewards[plb.targetPostId]!.postLockKarmaUnlocked =
-      (rewards[plb.targetPostId]!.postLockKarmaUnlocked ?? 0) + toUnlock;
+      (rewards[plb.targetPostId]!.postLockKarmaUnlocked ?? 0n) + toUnlock;
   }
 
   return {

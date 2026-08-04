@@ -8,12 +8,12 @@ import {
 import type { VouchBox } from '../src/index.js';
 
 describe('VouchBox', () => {
-  it('VOUCH_KARMA_AMOUNT is 1', () => {
-    expect(VOUCH_KARMA_AMOUNT).toBe(1);
+  it('VOUCH_KARMA_AMOUNT is 1n', () => {
+    expect(VOUCH_KARMA_AMOUNT).toBe(1n);
   });
 
-  it('VOUCH_MIN_BALANCE is 11', () => {
-    expect(VOUCH_MIN_BALANCE).toBe(11);
+  it('VOUCH_MIN_BALANCE is 11n', () => {
+    expect(VOUCH_MIN_BALANCE).toBe(11n);
   });
 
   it('VOUCH_COOLDOWN_BLOCKS is 60', () => {
@@ -25,7 +25,7 @@ describe('VouchBox', () => {
     const targetId = new Uint8Array(32).fill(2);
     const box: Omit<VouchBox, 'id'> = {
       boxType: 'vouch',
-      value: 1,
+      value: 1n,
       createdAtBlock: 100,
       voucherId,
       targetId,
@@ -43,11 +43,11 @@ describe('VouchBox', () => {
     const target1 = new Uint8Array(32).fill(2);
     const target2 = new Uint8Array(32).fill(3);
     const id1 = computeBoxId({
-      boxType: 'vouch', value: 1, createdAtBlock: 100,
+      boxType: 'vouch', value: 1n, createdAtBlock: 100,
       voucherId, targetId: target1, guard: 'owner_signature',
     });
     const id2 = computeBoxId({
-      boxType: 'vouch', value: 1, createdAtBlock: 100,
+      boxType: 'vouch', value: 1n, createdAtBlock: 100,
       voucherId, targetId: target2, guard: 'owner_signature',
     });
     expect(id1).not.toBe(id2);

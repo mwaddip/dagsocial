@@ -33,7 +33,7 @@ import { rawPublicKey, signTransaction } from '../helpers.js';
 /** Create and insert a karma box, returning it with its computed id. */
 function createKarmaBox(
   owner: Uint8Array,
-  value: number,
+  value: bigint,
   createdAtBlock: number,
 ): KarmaBox {
   const box: Omit<KarmaBox, 'id'> & { id?: string } = {
@@ -141,7 +141,7 @@ describe('vouch service', () => {
     const ownerHex = Buffer.from(owner).toString('hex');
     const newKarma: KarmaBox = {
       boxType: 'karma',
-      value: 99,
+      value: 99n,
       createdAtBlock: atBlock,
       owner,
       guard: 'owner_signature',
@@ -401,7 +401,7 @@ describe('vouch service', () => {
 
       const newKarma: KarmaBox = {
         boxType: 'karma',
-        value: 99,
+        value: 99n,
         createdAtBlock: 5,
         owner: voucherPubKey,
         guard: 'owner_signature',
@@ -456,7 +456,7 @@ describe('vouch service', () => {
 
       const newKarma: KarmaBox = {
         boxType: 'karma',
-        value: 99,
+        value: 99n,
         createdAtBlock: 5,
         owner: voucherPubKey,
         guard: 'owner_signature',
@@ -491,7 +491,7 @@ describe('vouch service', () => {
       // Karma should be unchanged (pending in mempool, not applied)
       const karmaBox = getKarmaBox(voucherPubKey);
       expect(karmaBox).not.toBeNull();
-      expect(karmaBox!.value).toBe(100);
+      expect(karmaBox!.value).toBe(100n);
     });
   });
 

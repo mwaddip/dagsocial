@@ -207,6 +207,6 @@ describe('vouch cooldowns', () => {
 
     // Karma should accumulate
     karmaBox = getKarmaBox(voucherId);
-    expect(karmaBox!.value).toBe(VOUCH_KARMA_AMOUNT * 2);
+    expect(karmaBox!.value).toBe(VOUCH_KARMA_AMOUNT * 2n);
   });
 });

@@ -183,8 +183,8 @@ describe('blocks routes', () => {
     expect(typeof body.blockHeight).toBe('number');
     expect(typeof body.postCount).toBe('number');
     expect(typeof body.pendingPosts).toBe('number');
-    expect(typeof body.totalKarma).toBe('number');
-    expect(typeof body.totalCredits).toBe('number');
+    expect(typeof body.totalKarma).toBe('string');
+    expect(typeof body.totalCredits).toBe('string');
     expect(body.networkMode).toBe('testnet');
   });
 });

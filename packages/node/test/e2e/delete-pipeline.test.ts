@@ -106,7 +106,11 @@ function txToApi(tx: UtxoTransaction): Record<string, unknown> {
     inputs: tx.inputs,
     outputs: tx.outputs.map(o => {
       const obj: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(o)) obj[k] = v instanceof Uint8Array ? hex(v) : v;
+      for (const [k, v] of Object.entries(o)) {
+        obj[k] = v instanceof Uint8Array ? hex(v)
+          : typeof v === 'bigint' ? v.toString()
+          : v;
+      }
       return obj;
     }),
     signatures: Object.fromEntries(Object.entries(tx.signatures).map(([k, v]) => [k, hex(v as Uint8Array)])),
@@ -142,8 +146,8 @@ function signPost(content: string, author: Uint8Array, parents: string[], chal: 
 }
 
 /** Create a PostLockBox tx — produces boxType:'post_lock' for karma locking */
-function postLockTx(boxes: {boxId:string,value:number}[], lockAmount: number, targetPostId: string): UtxoTransaction {
-  const t = boxes.reduce((s,b)=>s+b.value,0);
+function postLockTx(boxes: {boxId:string,value:string}[], lockAmount: bigint, targetPostId: string): UtxoTransaction {
+  const t = boxes.reduce((s,b)=>s+BigInt(b.value),0n);
   return {
     inputs: boxes.map(b=>b.boxId),
     outputs: [
@@ -212,8 +216,8 @@ describe('Delete Pipeline', () => {
     expect(f.status).toBe('pending');
     await wait(6000);
 
-    let k = await get(`${A1}/karma/${userId}`) as { total: number; boxes: { boxId: string; value: number }[] };
-    expect(k.total).toBeGreaterThan(0);
+    let k = await get(`${A1}/karma/${userId}`) as { total: string; boxes: { boxId: string; value: string }[] };
+    expect(BigInt(k.total)).toBeGreaterThan(0n);
     console.log(`Karma after faucet: ${k.total}`);
 
     // 2. Create post with PostLockBox
@@ -233,7 +237,7 @@ describe('Delete Pipeline', () => {
     const postId = computePostId(postForId as any);
     console.log(`PostId: ${postId.slice(0,16)}...`);
 
-    k = await get(`${A1}/karma/${userId}`) as { total: number; boxes: { boxId: string; value: number }[] };
+    k = await get(`${A1}/karma/${userId}`) as { total: string; boxes: { boxId: string; value: string }[] };
     const lockTx = postLockTx(k.boxes, POST_LOCK_THREAD_COST, postId);
     signTx(lockTx);
 
@@ -250,7 +254,7 @@ describe('Delete Pipeline', () => {
     await wait(8000);
 
     // 3. Delete the post via PruneIntent
-    const karmaBefore = (await get(`${A1}/karma/${userId}`) as { total: number }).total;
+    const karmaBefore = BigInt((await get(`${A1}/karma/${userId}`) as { total: string }).total);
     console.log(`Karma before delete: ${karmaBefore}`);
 
     // Build PruneIntent for a root post with no replies
@@ -283,9 +287,9 @@ describe('Delete Pipeline', () => {
     let settled = false;
     for (let i = 0; i < 15; i++) {
       await wait(2000);
-      karmaAfter = (await get(`${A1}/karma/${userId}`) as { total: number }).total;
+      karmaAfter = BigInt((await get(`${A1}/karma/${userId}`) as { total: string }).total);
       const delta = karmaAfter - karmaBefore;
-      console.log(`  Poll ${i + 1}: ${karmaAfter} (delta: ${delta > 0 ? '+' : ''}${delta})`);
+      console.log(`  Poll ${i + 1}: ${karmaAfter} (delta: ${delta > 0n ? '+' : ''}${delta})`);
       if (karmaAfter > karmaBefore) {
         console.log('KARMA RETURNED');
         settled = true;
@@ -299,10 +303,10 @@ describe('Delete Pipeline', () => {
     console.log(`N1 stump logs (${stumpLogs.length}):`);
     stumpLogs.slice(-10).forEach(l => console.log(`  ${l.slice(0,200)}`));
 
-    expect(karmaAfter).toBeGreaterThan(0);
+    expect(karmaAfter).toBeGreaterThan(0n);
     // If settlement was observed, karma should be >= pre-delete (minus decay)
     if (settled) {
-      expect(karmaAfter).toBeGreaterThanOrEqual(karmaBefore - 30);
+      expect(karmaAfter).toBeGreaterThanOrEqual(karmaBefore - 30n);
     }
   }, 300000);
 });

@@ -49,7 +49,7 @@ describe('avl-prover', () => {
     const initialDigest = prover.digest()!;
 
     // Create a box
-    const box = makeKarmaBox('aa'.repeat(32), 100, 1);
+    const box = makeKarmaBox('aa'.repeat(32), 100n, 1);
     const consumed: string[] = [];
     const created = [box];
 
@@ -61,8 +61,8 @@ describe('avl-prover', () => {
   it('consume + create produces different digest than create alone', () => {
     const { prover } = createAvlProver(db);
 
-    const box1 = makeKarmaBox('aa'.repeat(32), 100, 1);
-    const box2 = makeKarmaBox('bb'.repeat(32), 50, 2);
+    const box1 = makeKarmaBox('aa'.repeat(32), 100n, 1);
+    const box2 = makeKarmaBox('bb'.repeat(32), 50n, 2);
 
     // Create box1
     const d1 = applyBlockMutations(prover, [], [box1]);
@@ -77,7 +77,7 @@ describe('avl-prover', () => {
     const { prover: p1 } = createAvlProver(db);
     const { prover: p2 } = createAvlProver(db);
 
-    const box = makeKarmaBox('cc'.repeat(32), 42, 1);
+    const box = makeKarmaBox('cc'.repeat(32), 42n, 1);
     const d1 = applyBlockMutations(p1, [], [box]);
     const d2 = applyBlockMutations(p2, [], [box]);
 
@@ -112,15 +112,15 @@ describe('block-apply integration', () => {
     const { prover: handle } = createAvlProver(db);
 
     // Simulate block application: create two boxes, consume one
-    const box1 = makeKarmaBox('11'.repeat(32), 100, 1);
-    const box2 = makeKarmaBox('22'.repeat(32), 50, 1);
+    const box1 = makeKarmaBox('11'.repeat(32), 100n, 1);
+    const box2 = makeKarmaBox('22'.repeat(32), 50n, 1);
 
     applyBlockMutations(handle, [], [box1, box2]);
     checkpointProver({ prover: handle, storage: new SqliteAvlStorage(db, AVL_CONFIG) }, 1);
     const digestAfterCreate = handle.digest()!;
 
     // Consume box1, create box3
-    const box3 = makeKarmaBox('33'.repeat(32), 25, 2);
+    const box3 = makeKarmaBox('33'.repeat(32), 25n, 2);
     applyBlockMutations(handle, ['11'.repeat(32)], [box3]);
     checkpointProver({ prover: handle, storage: new SqliteAvlStorage(db, AVL_CONFIG) }, 2);
     const digestAfterConsume = handle.digest()!;
@@ -131,7 +131,7 @@ describe('block-apply integration', () => {
   it('prover state survives checkpoint and can be queried', () => {
     const { prover: handle } = createAvlProver(db);
 
-    const box1 = makeKarmaBox('aa'.repeat(32), 100, 1);
+    const box1 = makeKarmaBox('aa'.repeat(32), 100n, 1);
     applyBlockMutations(handle, [], [box1]);
     checkpointProver({ prover: handle, storage: new SqliteAvlStorage(db, AVL_CONFIG) }, 1);
 
@@ -142,7 +142,7 @@ describe('block-apply integration', () => {
   });
 });
 
-function makeKarmaBox(id: string, value: number, height: number) {
+function makeKarmaBox(id: string, value: bigint, height: number) {
   return {
     id,
     boxType: 'karma' as const,

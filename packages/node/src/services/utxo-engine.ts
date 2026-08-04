@@ -373,22 +373,23 @@ function checkTransitions(
 
 /**
  * Reject output values that cannot take part soundly in conservation
- * arithmetic: non-numeric, negative, fractional, or outside the range where
- * JS integer addition stays exact.
+ * arithmetic: non-bigint, negative, or at/above 2^64 (the bound that keeps
+ * every value in the uniform CBOR uint64 encoding).
  *
  * Outputs are attacker-controlled, so this is a security boundary rather than
  * input hygiene: a negative value lets a transaction balance its sums while
  * minting into a sibling box — `K(10) → K(15) + Like(-5)` sums to 10 == 10.
  * `json-to-tx.ts` applies the same rule at the HTTP edge so clients get a
  * clear error; this check covers every other entry point (gossip, blocks).
+ * This is the tight apply-side twin of validation's loose coinbase pre-filter.
  */
 function checkOutputValues(outputs: AnyBox[]): UtxoResult {
   for (const box of outputs) {
     const value = box.value as unknown;
-    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    if (typeof value !== 'bigint' || value < 0n || value >= (1n << 64n)) {
       return {
         valid: false,
-        error: `Invalid box value: expected a non-negative integer, got ${String(value)}`,
+        error: `Invalid box value: expected a non-negative bigint < 2^64, got ${String(value)}`,
       };
     }
   }
@@ -426,8 +427,8 @@ function checkValueConservation(
     return { valid: true };
   }
 
-  const totalInputValue = inputBoxes.reduce((sum, b) => sum + b.value, 0);
-  const totalOutputValue = outputs.reduce((sum, b) => sum + b.value, 0);
+  const totalInputValue = inputBoxes.reduce((sum, b) => sum + b.value, 0n);
+  const totalOutputValue = outputs.reduce((sum, b) => sum + b.value, 0n);
 
   if (totalInputValue !== totalOutputValue) {
     return {

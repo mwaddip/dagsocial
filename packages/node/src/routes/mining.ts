@@ -98,7 +98,7 @@ export function createRouter(deps: MiningDeps): Router {
       utxoTxIds: tpl.utxoTxTree.utxoTxIds,
       coinbaseOutputs: tpl.utxoTxTree.coinbaseOutputs.map((o) => ({
         owner: Buffer.from(o.owner).toString('hex'),
-        value: o.value,
+        value: o.value.toString(),
         lockedUntilBlock: o.lockedUntilBlock,
         isTreasury: o.isTreasury,
       })),

@@ -170,7 +170,7 @@ All box types share a common envelope:
 interface BoxBase {
   id?: BoxId           // Computed via computeBoxId; optional during construction
   boxType: "karma" | "credit" | "like" | "invite" | "bond" | "post_lock" | "vouch"
-  value: number
+  value: bigint                // integer base units — uniform bigint (see "Value denomination")
   createdAtBlock: number
 }
 ```
@@ -178,6 +178,26 @@ interface BoxBase {
 Box identity is deterministic: `computeBoxId` encodes the box (minus its `id`
 field) as canonical CBOR, hashes with blake2b512, and takes the first 32 bytes
 as a hex string.
+
+#### Value denomination (P0 — Spec B, 8-decimal BigInt)
+
+`value` is a **`bigint`** on every box type — **uniform**, one serialization
+path (karma/like/vouch hold small bigints; credits are integer base units of
+10⁻⁸ credit). Float math is non-deterministic across platforms, and credit sums
+exceed `Number.MAX_SAFE_INTEGER` (2⁵³) once scaled ×10⁸ — both break consensus.
+See `docs/specs/2026-08-01-node-consensus-determinism.md` P0.
+
+- **`value < 2⁶⁴` (enforced invariant).** cbor-x encodes a bigint `< 2⁶⁴` as a
+  CBOR uint64 (`0x1b` + 8 bytes big-endian); at/above 2⁶⁴ it escalates to a
+  tag-2 bignum — a different layout. The `< 2⁶⁴` bound keeps every value in the
+  uniform `0x1b` form. Comfortably above any planned supply.
+- **Box ids and the AVL `stateRoot` change** vs. the old `number` encoding
+  (measured: number `5` → `05`; bigint `5n` → `1b0000000000000005`). Hard,
+  unversioned format break ⇒ **fresh chain / DB reset, coordinated all-node
+  cutover.** No in-place migration.
+- The demo-UI CBOR encoder MUST emit the identical `0x1b`+uint64 form for
+  `value` and minimal-int for the remaining `number` fields — this folds in the
+  L-5 `cborEncodeInt` cap fix (`createdAtBlock` crosses 65536).
 
 ### KarmaBox
 
@@ -217,7 +237,7 @@ coinbase) cannot be spent until `lockedUntilBlock` passes.
 ```
 LikeBox extends BoxBase {
   boxType: "like"
-  value: 2                     // LIKE_COST — always 2
+  value: 2n                    // LIKE_COST — always 2n (bigint)
   likerId: UserId
   targetPostId: PostId
   guard: "epoch_tally"         // Locked until epoch tally. Consumed by ordering block processor.
@@ -229,7 +249,7 @@ LikeBox extends BoxBase {
 ```
 InviteBox extends BoxBase {
   boxType: "invite"
-  value: number                       // N karma transferred
+  value: bigint                       // N karma transferred
   secretHash: Uint8Array(32)          // H(s) — blake2b512(s).subarray(0,32)
   inviterId: UserId
   guard: "hash_preimage_with_bond"    // H(s_preimage) == secretHash ∧ committed BondBox present
@@ -245,7 +265,7 @@ BondBox committed to their pubkey.
 ```
 BondBox extends BoxBase {
   boxType: "bond"
-  value: number                       // D karma deposited
+  value: bigint                       // D karma deposited
   inviterId: UserId                   // Owner — the inviter
   inviteBoxId: BoxId                  // Which InviteBox this pairs with
   inviteePublicKey: Uint8Array        // empty = unclaimed, 32 bytes = committed
@@ -260,8 +280,8 @@ BondBox extends BoxBase {
 ```
 PostLockBox extends BoxBase {
   boxType: "post_lock"
-  value: number                // Current locked karma (decreases each epoch as likes accumulate)
-  originalValue: number        // Initial lock amount (POST_LOCK_THREAD_COST or POST_LOCK_REPLY_COST)
+  value: bigint                // Current locked karma (decreases each epoch as likes accumulate)
+  originalValue: bigint        // Initial lock amount (POST_LOCK_THREAD_COST or POST_LOCK_REPLY_COST)
   owner: Uint8Array            // 32 raw bytes — post author's Ed25519 public key
   targetPostId: PostId         // The post this lock secures
   guard: "epoch_tally"         // Only consumed by epoch processing (unlock schedule)
@@ -277,7 +297,7 @@ Post lock karma is gradually unlocked at epoch boundaries: every
 ```
 VouchBox extends BoxBase {
   boxType: "vouch"
-  value: 1                     // VOUCH_KARMA_AMOUNT — always 1
+  value: 1n                    // VOUCH_KARMA_AMOUNT — always 1n (bigint)
   voucherId: UserId            // 32 raw bytes — who staked the karma
   targetId: UserId             // 32 raw bytes — who is being vouched for
   guard: "owner_signature"     // Only the voucher may spend (unvouch)
@@ -449,7 +469,7 @@ authorship (audit H-3) checkable deterministically without DAG content.
 ```
 CoinbaseOutput {
   owner: UserId              // 32-byte recipient public key
-  value: number              // Credits minted
+  value: bigint              // Credits minted (integer base units)
   lockedUntilBlock: number   // Height at which credits become spendable
   isTreasury: boolean        // Treasury or miner output
 }
@@ -468,10 +488,10 @@ EpochTally {
 
 LikeReward {
   targetPostId: PostId
-  likeCount: number
-  authorReward: number
-  likerRefunds: Record<string, number>  // likerId → net karma refund
-  postLockKarmaUnlocked?: number         // Karma released from post lock this epoch
+  likeCount: number                      // a count — stays number
+  authorReward: bigint                   // karma amount (bigint; feeds mintKarma)
+  likerRefunds: Record<string, bigint>   // likerId → net karma refund (bigint)
+  postLockKarmaUnlocked?: bigint          // Karma released from post lock this epoch (bigint)
 }
 ```
 
@@ -515,6 +535,24 @@ keys are hex-encoded on wire (HTTP JSON); raw bytes in CBOR.
 ---
 
 ## Protocol Constants (`constants.ts`)
+
+### Denomination (P0 — Spec B)
+
+Constants split by kind: **amount** constants are `bigint`; **count / block /
+threshold / percentage / bits** constants stay `number`.
+- **Credit amounts → `bigint`, rescaled ×10⁸** (base units of 10⁻⁸ credit):
+  `CREDIT_INITIAL_REWARD`, `CREDIT_REWARD_REDUCTION`, `CREDIT_TAIL_REWARD`,
+  `GENESIS_CREDITS_PER_MEMBER`, and the node/UI faucet credit amounts.
+- **Karma amounts → `bigint` literals, NOT rescaled** (karma is indivisible):
+  `KARMA_POSTING_MINIMUM`, `KARMA_DECAY_AMOUNT`, `KARMA_MINIMUM`,
+  `POST_LOCK_THREAD_COST`, `POST_LOCK_REPLY_COST`, `LIKE_COST`,
+  `LIKE_MAX_AUTHOR_REWARD`, `INVITE_MIN_KARMA`, `INVITE_BOND_KARMA`,
+  `INVITE_KARMA_THRESHOLD`, `VOUCH_KARMA_AMOUNT`, `VOUCH_MIN_BALANCE`,
+  `GENESIS_KARMA_PER_MEMBER`.
+- **Stay `number`:** all `*_BLOCKS`, `*_TARGET_BITS`/`*_FLOOR`, `LIKE_THRESHOLD`,
+  `LIKE_FREE_THRESHOLD`, `POST_LOCK_UNLOCK_PER_LIKES`, `EPOCH_BLOCKS`, `MAX_*`,
+  `CREDIT_MINER_REWARD_DELAY` (a block count, NOT an amount), `CREDIT_TREASURY_PCT`
+  (percentage). The exhaustive per-constant classification rides in the dispatch prompt.
 
 ### Version
 
@@ -689,6 +727,9 @@ export const ORDERING_BLOCK_POW_TARGET_FLOOR = 4;        // Sanity floor
 - `protocolVersion` field present on all wire types
 - Secret keys never in any exported type or serialized output
 - Box identity is deterministic: `blake2b512(canonicalCbor(box)).subarray(0,32)`
+- Box `value` is `bigint` integer base units (uniform across box types), `< 2⁶⁴`
+  so it CBOR-encodes as a uint64 (`0x1b`); no float math anywhere in consensus
+  value arithmetic
 - Post identity includes PoW nonce; signing hash excludes it
 - Sub-block identity IS post identity (they are the same object)
 - `UserId` IS the 32-byte Ed25519 public key — no hashing, no separate account concept

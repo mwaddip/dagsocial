@@ -176,12 +176,16 @@ Both are stored as **boxes** — UTXO entries guarded by cryptographic scripts.
 Boxes are consumed and created in transactions; the set of unspent boxes IS
 the current state.
 
+Box `value` is a uniform **`bigint`** — credits are 8-decimal integer base units
+(10⁻⁸ credit), karma small bigints. No float arithmetic in consensus value math;
+`value < 2⁶⁴`. See `TYPES_INTERFACE.md` "Value denomination" and Spec B P0.
+
 #### Karma boxes
 
 ```
 KarmaBox {
   id: BoxId
-  value: number                // Karma balance
+  value: bigint                // Karma balance (bigint base units — see value denomination)
   owner: PublicKey             // Ed25519 public key (32 bytes)
   createdAtBlock: number       // Block height when box was created
   guard: "owner_signature"     // Only the owner can spend
@@ -225,7 +229,7 @@ time:
 ```
 CreditBox {
   id: BoxId
-  value: number                // Credit balance
+  value: bigint                // Credit balance (integer base units of 10⁻⁸ credit)
   owner: PublicKey
   guard: "owner_signature"
   proofSource: BlockId         // Which ordering block minted these credits
@@ -242,7 +246,7 @@ with each ordering block — the reward amount is a protocol parameter.
 ```
 VouchBox {
   id: BoxId
-  value: 1                    // VOUCH_KARMA_AMOUNT — always 1
+  value: 1n                   // VOUCH_KARMA_AMOUNT — always 1n (bigint)
   voucherId: UserId           // Who staked the karma
   targetId: UserId            // Who is being vouched for
   createdAtBlock: number      // Block height when vouch was cast
@@ -281,7 +285,9 @@ existence or absence without storing the full UTXO set.
 - **Config flags:** `VERIFY_STATE_ROOT` (validate stateRoot at block apply) and
   `MAX_PROOF_HISTORY` (prune old proof versions)
 - **Deterministic:** Every node computing the AVL+ over the same UTXO set at
-  the same height produces the identical stateRoot
+  the same height produces the identical stateRoot. Box `value` serializes as a
+  `bigint` (CBOR uint64), so the AVL leaf bytes — hence the stateRoot — are
+  stable across implementations (the demo UI mirrors the encoding)
 
 ### 3. Stumps (Binding Layer)
 
@@ -793,6 +799,9 @@ forever. A node rejects objects with an unsupported protocol version.
 - Total karma supply = genesis + like rewards (minted) - decay burns - invite bond burns
 - Total credit supply = genesis + ordering block rewards - future sinks
 - Every UTXO transaction conserves value except mint and burn
+- Box `value` and all value/amount arithmetic are `bigint` integer base units
+  (`value < 2⁶⁴`); **no float math in any consensus value path** — floats are
+  non-deterministic across platforms and credit sums exceed 2⁵³ (Spec B P0)
 - A box can only be consumed if its guard script evaluates to true
 - Karma decay applied periodically at block application time (not at spend time)
 

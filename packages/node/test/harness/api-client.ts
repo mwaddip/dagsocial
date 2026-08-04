@@ -21,14 +21,14 @@ export interface IdentityKey {
 }
 
 export interface KarmaResponse {
-  total: number;
-  boxes: { boxId: string; value: number }[];
+  total: string;
+  boxes: { boxId: string; value: string }[];
 }
 
 export interface StatusResponse {
   currentHeight?: number;
   blockHeight?: number;
-  totalKarma?: number;
+  totalKarma?: string;
 }
 
 export interface PostResponse {

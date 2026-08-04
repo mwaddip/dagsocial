@@ -14,17 +14,21 @@ import type {
 // Row shape
 // ---------------------------------------------------------------------------
 
+// Row shape as returned by statements with .safeIntegers() — every INTEGER
+// column arrives as bigint. `value` must stay bigint (loses precision above
+// 2^53 otherwise); block-height columns are converted back to number in
+// rowToBox.
 interface UtxoRow {
   id: string;
   box_type: string;
-  value: number;
-  created_at_block: number;
-  spent_at_block: number | null;
+  value: bigint;
+  created_at_block: bigint;
+  spent_at_block: bigint | null;
   owner: Buffer | null;
   guard: string;
   proof_source: string | null;
   extra_data: string | null;
-  last_touch_block: number | null;
+  last_touch_block: bigint | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -61,7 +65,7 @@ interface BondExtra {
 }
 
 interface PostLockExtra {
-  originalValue: number;
+  originalValue: string;   // bigint as decimal string (JSON cannot carry bigint)
   owner: number[];
   targetPostId: string;
 }
@@ -94,7 +98,6 @@ function pubkeyToHex(pk: Uint8Array): string {
  */
 function rowToBox(row: UtxoRow): AnyBox {
   const extra = row.extra_data ? JSON.parse(row.extra_data) : {};
-  const spentAtBlock = row.spent_at_block; // carried but not on the box type
 
   switch (row.box_type) {
     case 'karma': {
@@ -103,7 +106,7 @@ function rowToBox(row: UtxoRow): AnyBox {
         id: row.id,
         boxType: 'karma',
         value: row.value,
-        createdAtBlock: row.created_at_block,
+        createdAtBlock: Number(row.created_at_block),
         owner: new Uint8Array(row.owner!),
         guard: 'owner_signature',
         proofSource: e.proofSource,
@@ -121,7 +124,7 @@ function rowToBox(row: UtxoRow): AnyBox {
         id: row.id,
         boxType: 'credit',
         value: row.value,
-        createdAtBlock: row.created_at_block,
+        createdAtBlock: Number(row.created_at_block),
         owner: new Uint8Array(row.owner!),
         guard: 'owner_signature',
         proofSource: e.proofSource,
@@ -137,8 +140,8 @@ function rowToBox(row: UtxoRow): AnyBox {
       return {
         id: row.id,
         boxType: 'like',
-        value: 2,
-        createdAtBlock: row.created_at_block,
+        value: 2n,
+        createdAtBlock: Number(row.created_at_block),
         likerId: hexToPubkey(e.likerId),
         targetPostId: e.targetPostId,
         guard: 'epoch_tally',
@@ -151,7 +154,7 @@ function rowToBox(row: UtxoRow): AnyBox {
         id: row.id,
         boxType: 'invite',
         value: row.value,
-        createdAtBlock: row.created_at_block,
+        createdAtBlock: Number(row.created_at_block),
         secretHash: new Uint8Array(e.secretHash),
         inviterId: hexToPubkey(e.inviterId),
         guard: 'hash_preimage_with_bond',
@@ -164,7 +167,7 @@ function rowToBox(row: UtxoRow): AnyBox {
         id: row.id,
         boxType: 'bond',
         value: row.value,
-        createdAtBlock: row.created_at_block,
+        createdAtBlock: Number(row.created_at_block),
         inviterId: hexToPubkey(e.inviterId),
         inviteBoxId: e.inviteBoxId ?? '',
         inviteePublicKey: e.inviteePublicKey
@@ -182,8 +185,8 @@ function rowToBox(row: UtxoRow): AnyBox {
         id: row.id,
         boxType: 'post_lock',
         value: row.value,
-        createdAtBlock: row.created_at_block,
-        originalValue: e.originalValue,
+        createdAtBlock: Number(row.created_at_block),
+        originalValue: BigInt(e.originalValue),
         owner: new Uint8Array(e.owner),
         targetPostId: e.targetPostId,
         guard: 'epoch_tally',
@@ -195,8 +198,8 @@ function rowToBox(row: UtxoRow): AnyBox {
       return {
         id: row.id,
         boxType: 'vouch',
-        value: 1,
-        createdAtBlock: row.created_at_block,
+        value: 1n,
+        createdAtBlock: Number(row.created_at_block),
         voucherId: hexToPubkey(e.voucherId),
         targetId: hexToPubkey(e.targetId),
         guard: 'owner_signature',
@@ -220,6 +223,7 @@ export function getBox(boxId: string): AnyBox | null {
   const db = getDb();
   const row = db
     .prepare('SELECT * FROM utxo_boxes WHERE id = ? AND spent_at_block IS NULL')
+    .safeIntegers()
     .get(boxId) as UtxoRow | undefined;
   return row ? rowToBox(row) : null;
 }
@@ -235,6 +239,7 @@ export function getKarmaBox(owner: Uint8Array): KarmaBox | null {
        WHERE owner = ? AND box_type = 'karma' AND spent_at_block IS NULL
        LIMIT 1`,
     )
+    .safeIntegers()
     .get(Buffer.from(owner)) as UtxoRow | undefined;
   return row ? (rowToBox(row) as KarmaBox) : null;
 }
@@ -251,6 +256,7 @@ export function getKarmaBoxes(owner: Uint8Array): KarmaBox[] {
        WHERE owner = ? AND box_type = 'karma' AND spent_at_block IS NULL
        ORDER BY value DESC`,
     )
+    .safeIntegers()
     .all(Buffer.from(owner)) as UtxoRow[];
   return rows.map(rowToBox) as KarmaBox[];
 }
@@ -287,6 +293,7 @@ export function getCreditBox(owner: Uint8Array): CreditBox | null {
        WHERE owner = ? AND box_type = 'credit' AND spent_at_block IS NULL
        LIMIT 1`,
     )
+    .safeIntegers()
     .get(Buffer.from(owner)) as UtxoRow | undefined;
   return row ? (rowToBox(row) as CreditBox) : null;
 }
@@ -303,6 +310,7 @@ export function getCreditBoxes(owner: Uint8Array): CreditBox[] {
        WHERE owner = ? AND box_type = 'credit' AND spent_at_block IS NULL
        ORDER BY value DESC`,
     )
+    .safeIntegers()
     .all(Buffer.from(owner)) as UtxoRow[];
   return rows.map(rowToBox) as CreditBox[];
 }
@@ -325,6 +333,7 @@ export function getUnlockedCreditBoxes(
               OR json_extract(extra_data, '$.lockedUntilBlock') <= ?)
        ORDER BY value DESC`,
     )
+    .safeIntegers()
     .all(Buffer.from(owner), blockHeight) as UtxoRow[];
   return rows.map(rowToBox) as CreditBox[];
 }
@@ -341,6 +350,7 @@ export function getPendingInvites(inviterId: Uint8Array): InviteBox[] {
          AND spent_at_block IS NULL
          AND json_extract(extra_data, '$.inviterId') = ?`,
     )
+    .safeIntegers()
     .all(pubkeyToHex(inviterId)) as UtxoRow[];
   return rows.map((r) => rowToBox(r) as InviteBox);
 }
@@ -372,6 +382,7 @@ export function getBondBoxes(inviterId: Uint8Array): BondBox[] {
        WHERE box_type = 'bond'
          AND json_extract(extra_data, '$.inviterId') = ?`,
     )
+    .safeIntegers()
     .all(pubkeyToHex(inviterId)) as UtxoRow[];
   return rows.map((r) => rowToBox(r) as BondBox);
 }
@@ -406,6 +417,7 @@ export function getUnspentLikeBoxes(targetPostId: string): LikeBox[] {
          AND json_extract(extra_data, '$.targetPostId') = ?
          AND spent_at_block IS NULL`,
     )
+    .safeIntegers()
     .all(targetPostId) as UtxoRow[];
   return rows.map(rowToBox) as LikeBox[];
 }
@@ -421,6 +433,7 @@ export function getLockedLikeBoxes(targetPostId: string): LikeBox[] {
        WHERE box_type = 'like'
          AND json_extract(extra_data, '$.targetPostId') = ?`,
     )
+    .safeIntegers()
     .all(targetPostId) as UtxoRow[];
   return rows.map((r) => rowToBox(r) as LikeBox);
 }
@@ -441,6 +454,7 @@ export function getUnprocessedLockedLikeBoxes(): LikeBox[] {
        WHERE box_type = 'like' AND spent_at_block IS NULL
        ORDER BY id`,
     )
+    .safeIntegers()
     .all() as UtxoRow[];
   return rows.map((r) => rowToBox(r) as LikeBox);
 }
@@ -458,6 +472,7 @@ export function getUnspentPostLockBoxes(): PostLockBox[] {
        WHERE box_type = 'post_lock' AND spent_at_block IS NULL
        ORDER BY id`,
     )
+    .safeIntegers()
     .all() as UtxoRow[];
   return rows.map((r) => rowToBox(r) as PostLockBox);
 }
@@ -474,6 +489,7 @@ export function getPostLockBox(targetPostId: string): PostLockBox | null {
          AND json_extract(extra_data, '$.targetPostId') = ?
          AND spent_at_block IS NULL`,
     )
+    .safeIntegers()
     .get(targetPostId) as UtxoRow | undefined;
   if (!row) return null;
   return rowToBox(row) as PostLockBox;
@@ -580,7 +596,7 @@ export function insertBox(box: AnyBox): void {
       const p = box as PostLockBox;
       owner = Buffer.from(p.owner);
       extraData = {
-        originalValue: p.originalValue,
+        originalValue: p.originalValue.toString(),
         owner: Array.from(p.owner),
         targetPostId: p.targetPostId,
       } satisfies PostLockExtra;
@@ -653,6 +669,7 @@ export function getUnspentBoxes(): AnyBox[] {
        WHERE spent_at_block IS NULL
        ORDER BY created_at_block ASC`,
     )
+    .safeIntegers()
     .all() as UtxoRow[];
   return rows.map(rowToBox);
 }
