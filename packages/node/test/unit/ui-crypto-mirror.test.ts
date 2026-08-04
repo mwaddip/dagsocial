@@ -21,8 +21,10 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { computePostId, signingHash, postPowPreimage } from '@dagsocial/types';
-import type { Post } from '@dagsocial/types';
+import {
+  computePostId, signingHash, postPowPreimage, computeBoxId, computeTxId,
+} from '@dagsocial/types';
+import type { Post, KarmaBox, CreditBox, UtxoTransaction } from '@dagsocial/types';
 
 const INDEX_HTML = fileURLToPath(new URL('../../public/index.html', import.meta.url));
 
@@ -53,6 +55,44 @@ const GOLDEN_SIGNING_HASH =
   '24157bd74276c86556b41ce0402f8ef9ba4850fc086519c838eb77300ce681d0';
 const GOLDEN_POST_ID =
   '0150b9bf676c88c715f0b1fbdf142f8bd0ccf7bb8769e2059488d6c300b6b08f';
+
+// ---------------------------------------------------------------------------
+// Golden box vectors — must stay identical to packages/types/test/utxo.test.ts
+// (Spec B P0: bigint `value` → CBOR uint64, number fields → minimal-int)
+// ---------------------------------------------------------------------------
+
+const GOLDEN_KARMA_BOX: KarmaBox = {
+  boxType: 'karma',
+  value: 100n,
+  createdAtBlock: 70000,          // > 65536 — locks the wide-int encoding path (L-5)
+  owner: GOLDEN_AUTHOR,
+  guard: 'owner_signature',
+  proofSource: 'genesis',
+  lastTouchBlock: 70000,
+};
+
+const GOLDEN_CREDIT_BOX: CreditBox = {
+  boxType: 'credit',
+  value: 123456789n * 10n ** 8n,  // 12_345_678_900_000_000 > 2^53 — the range P0 exists for
+  createdAtBlock: 70000,
+  owner: GOLDEN_AUTHOR,
+  guard: 'owner_signature',
+  proofSource: 42,
+};
+
+const GOLDEN_UTXO_TX: UtxoTransaction = {
+  inputs: ['1111111111111111111111111111111111111111111111111111111111111111'],
+  outputs: [GOLDEN_KARMA_BOX, GOLDEN_CREDIT_BOX],
+  signatures: {},
+  protocolVersion: 1,
+};
+
+const GOLDEN_KARMA_BOX_ID =
+  '83c95fbb82c1ba033280286ea0fd5a4dd09776c6c68e1426dfdae1668947c9d1';
+const GOLDEN_CREDIT_BOX_ID =
+  'b256df0c3fca8bd2e7567d11ca66e4e1e4cd41b0ab148ec5956907047b596905';
+const GOLDEN_UTXO_TX_ID =
+  '0156333db37f658f278aef3ba2c9d2ce3c2f126cf7fb98b7a835dde4ee92ac7c';
 
 // ---------------------------------------------------------------------------
 // Extract the UI's crypto declarations from index.html
@@ -123,6 +163,11 @@ interface UiCrypto {
   computePostId: (post: Record<string, unknown>) => string;
   encodeLE64: (n: number) => Uint8Array;
   encodeU32LE: (n: number) => Uint8Array;
+  cborEncode: (value: unknown) => Uint8Array;
+  cborEncodeInt: (n: number) => Uint8Array;
+  cborEncodeBigInt: (v: bigint) => Uint8Array;
+  computeBoxId: (box: Record<string, unknown>) => string;
+  computeTxId: (tx: Record<string, unknown>) => string;
 }
 
 /**
@@ -152,7 +197,19 @@ function loadUiCrypto(): UiCrypto {
     extractDeclaration(html, 'function postFieldBytes('),
     extractDeclaration(html, 'function buildPowInput('),
     extractDeclaration(html, 'function computePostId('),
-    'return { postFieldBytes, buildPowInput, computePostId, encodeLE64, encodeU32LE };',
+    // The box/tx encoding mirror (Spec B P0): the UI's CBOR encoder and the
+    // box/tx id functions built on it.
+    extractDeclaration(html, 'function cborEncodeString('),
+    extractDeclaration(html, 'function cborEncodeBytes('),
+    extractDeclaration(html, 'function cborEncodeInt('),
+    extractDeclaration(html, 'function cborEncodeBigInt('),
+    extractDeclaration(html, 'function cborEncodeUndefined('),
+    extractDeclaration(html, 'function cborEncodeMap('),
+    extractDeclaration(html, 'function cborEncode('),
+    extractDeclaration(html, 'function computeBoxId('),
+    extractDeclaration(html, 'function computeTxId('),
+    'return { postFieldBytes, buildPowInput, computePostId, encodeLE64, encodeU32LE,\n' +
+    '         cborEncode, cborEncodeInt, cborEncodeBigInt, computeBoxId, computeTxId };',
   ].join('\n\n');
 
   return new Function('blake2b', source)(blake2bShim) as UiCrypto;
@@ -245,5 +302,87 @@ describe('demo UI ↔ @dagsocial/types encoding mirror (M-1)', () => {
       expect(hexOf(ui.encodeLE64(bad))).toBe('ffffffffffffffff');
       expect(hexOf(ui.encodeU32LE(bad))).toBe('ffffffff');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+/**
+ * Box-value mirror (Spec B P0): the UI's hand-rolled CBOR encoder must emit
+ * bigint `value` as CBOR uint64 (0x1b + 8-byte BE) and `number` fields as
+ * minimal-int, byte-identical to cbor-x in `@dagsocial/types` — otherwise
+ * every client-built box id (and every signed txId) diverges from the node.
+ */
+describe('demo UI ↔ @dagsocial/types box-value encoding mirror (Spec B P0)', () => {
+  const hexOf = (b: Uint8Array): string => Buffer.from(b).toString('hex');
+
+  it('the UI reproduces the frozen golden karma boxId', () => {
+    expect(ui.computeBoxId(GOLDEN_KARMA_BOX as unknown as Record<string, unknown>))
+      .toBe(GOLDEN_KARMA_BOX_ID);
+  });
+
+  it('the UI reproduces the frozen golden credit boxId (value > 2^53)', () => {
+    expect(ui.computeBoxId(GOLDEN_CREDIT_BOX as unknown as Record<string, unknown>))
+      .toBe(GOLDEN_CREDIT_BOX_ID);
+  });
+
+  it('types reproduces the same frozen golden box vectors', () => {
+    // Pins both live implementations to the constants, not just to each other.
+    expect(computeBoxId(GOLDEN_KARMA_BOX)).toBe(GOLDEN_KARMA_BOX_ID);
+    expect(computeBoxId(GOLDEN_CREDIT_BOX)).toBe(GOLDEN_CREDIT_BOX_ID);
+  });
+
+  it('the UI accepts hex-string binary fields identically (the tx-builder form)', () => {
+    // The UI's tx builders pass `owner` as a hex string straight from state.
+    const hexBox = { ...GOLDEN_KARMA_BOX, owner: Buffer.from(GOLDEN_AUTHOR).toString('hex') };
+    expect(ui.computeBoxId(hexBox as unknown as Record<string, unknown>))
+      .toBe(GOLDEN_KARMA_BOX_ID);
+  });
+
+  it('the UI reproduces the frozen golden txId (what signTxId signs)', () => {
+    expect(ui.computeTxId(GOLDEN_UTXO_TX as unknown as Record<string, unknown>))
+      .toBe(GOLDEN_UTXO_TX_ID);
+    expect(computeTxId(GOLDEN_UTXO_TX)).toBe(GOLDEN_UTXO_TX_ID);
+  });
+
+  it('bigint value serializes as 0x1b uint64; number fields stay minimal-int', () => {
+    const karmaHex = hexOf(ui.cborEncode(GOLDEN_KARMA_BOX));
+    const creditHex = hexOf(ui.cborEncode(GOLDEN_CREDIT_BOX));
+    // value 100n → 1b + u64BE(100); value 12345678900000000n → 1b + u64BE
+    expect(karmaHex).toContain('1b0000000000000064');
+    expect(creditHex).toContain('1b002bdc545d587500');
+    // createdAtBlock 70000 stays minimal-int (uint32 form 1a00011170, not 1b…)
+    expect(karmaHex).toContain('1a00011170');
+    expect(karmaHex).not.toContain('1b0000000000011170');
+  });
+
+  it('cborEncodeInt matches cbor-x across the full number range (L-5)', () => {
+    // Byte forms measured against cbor-x 1.6.4 with the computeBoxId encoder
+    // config. Note the float64 (0xfb) forms past ±2^32: cbor-x never emits
+    // 0x1b uint64 for a JS number — that form is exclusively the bigint path.
+    const cases: Array<[number, string]> = [
+      [0, '00'], [23, '17'], [24, '1818'], [255, '18ff'],
+      [256, '190100'], [65535, '19ffff'],
+      [65536, '1a00010000'], [70000, '1a00011170'], [4294967295, '1affffffff'],
+      [4294967296, 'fb41f0000000000000'],
+      [Number.MAX_SAFE_INTEGER, 'fb433fffffffffffff'],
+      [-1, '20'], [-24, '37'], [-25, '3818'], [-70000, '3a0001116f'],
+      [-4294967296, '3affffffff'],
+      [-4294967297, 'fbc1f0000000100000'],
+      [-Number.MAX_SAFE_INTEGER, 'fbc33fffffffffffff'],
+    ];
+    for (const [n, hex] of cases) expect(hexOf(ui.cborEncodeInt(n)), `n=${n}`).toBe(hex);
+    // Non-integers are a UI bug, not an encodable value.
+    expect(() => ui.cborEncodeInt(1.5)).toThrow();
+    expect(() => ui.cborEncodeInt(NaN)).toThrow();
+  });
+
+  it('cborEncodeBigInt always emits the 8-byte uint64 form, and only that', () => {
+    expect(hexOf(ui.cborEncodeBigInt(0n))).toBe('1b0000000000000000');
+    expect(hexOf(ui.cborEncodeBigInt(2n))).toBe('1b0000000000000002');
+    expect(hexOf(ui.cborEncodeBigInt(100n))).toBe('1b0000000000000064');
+    expect(hexOf(ui.cborEncodeBigInt(2n ** 64n - 1n))).toBe('1bffffffffffffffff');
+    expect(() => ui.cborEncodeBigInt(2n ** 64n)).toThrow();
+    expect(() => ui.cborEncodeBigInt(-1n)).toThrow();
   });
 });

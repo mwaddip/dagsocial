@@ -54,6 +54,12 @@ value path. Node-side obligations:
   `number` and loses precision above 2⁵³.
 - **DB reset.** Box ids and the AVL `stateRoot` changed in the types phase — fresh
   chain / coordinated cutover, no in-place migration.
+- **Demo UI (`public/index.html`).** Its hand-rolled CBOR encoder emits `value` as
+  `0x1b`+uint64 and the remaining `number` fields as minimal-int (folding in the L-5
+  `cborEncodeInt` cap fix — `createdAtBlock` crosses 65536), **byte-identical to
+  `@dagsocial/types`** so client-built box ids match the node; it parses API
+  `value`/`total` with `BigInt()`. A box-value mirror test (extending the M-1 post
+  mirror) pins the byte-identity.
 
 ---
 
