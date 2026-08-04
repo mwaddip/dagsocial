@@ -713,7 +713,7 @@ Fresh schema — no Phase 1 migration.
 |----------|-----------|
 | `insertVouchCooldown(voucherId, targetId, releaseAtBlock, karmaAmount)` | `(UserId, UserId, number, bigint) => void` — `INSERT OR REPLACE`; while a block journal is open, records the insertion side-record, capturing any row it replaces |
 | `getMaturedVouchCooldowns(currentHeight)` | `(number) => Cooldown[]` |
-| `deleteVouchCooldown(voucherId, targetId)` | `(UserId, UserId) => void` — while a block journal is open, captures the row before deleting and records the deletion side-record (H-7 inverse); unrecorded when called from fork rollback (no journal open) |
+| `deleteVouchCooldown(voucherId, targetId)` | `(UserId, UserId) => void` — while a block journal is open, captures the row before deleting and records the deletion side-record (H-7 inverse); deleting a nonexistent row records nothing (the inverse of a no-op is a no-op); unrecorded when called from fork rollback (no journal open) |
 
 ### Block Topology
 
@@ -837,7 +837,7 @@ block rejection).
 | Function | Signature |
 |----------|-----------|
 | `beginBlockJournal(height)` | `(number) => void` — throws if a journal is already open |
-| `finishBlockJournal()` | `() => BlockJournal` — returns and closes the open journal |
+| `finishBlockJournal()` | `() => BlockJournal` — returns and closes the open journal; throws if none is open |
 | `abortBlockJournal()` | `() => void` — discards the open journal (no-op when none) |
 | `insertBlockJournal(journal)` | `(BlockJournal) => void` |
 | `getBlockJournal(height)` | `(number) => BlockJournal \| null` |
