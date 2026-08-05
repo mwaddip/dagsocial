@@ -53,9 +53,7 @@ import { canonicalEpochTallyJson } from './epoch-canonical.js';
 import { expectedTarget } from './difficulty.js';
 import { getNet } from './net-instance.js';
 import { revalidateTxInContext, applyTx } from './utxo-engine.js';
-import { applyOrderingBlock } from './block-apply.js';
-import { tryGetAvlProver } from '../state/avl-prover.js';
-import { getDb } from '../store/db.js';
+import { applyOrderingBlock, computePostBlockStateRoot } from './block-apply.js';
 import {
   getPendingEntries,
   purgeExpired,
@@ -510,40 +508,46 @@ export function createOrderingBlock(): OrderingBlock | null {
   const subBlockRoot = computeSubBlockRoot(subBlockTree);
   const utxoTxRoot = computeUtxoTxRoot(utxoTxTree);
 
-  // 19. Compute current AVL state root
-  let stateRoot = EMPTY_STATE_ROOT; // fallback if prover not initialized
-  const handle = tryGetAvlProver();
-  if (handle) {
-    const digest = handle.prover.digest();
-    if (digest) {
-      stateRoot = Buffer.from(digest).toString('hex');
-    }
-  }
-
-  // 20. Build header template (powNonce=0)
+  // 19. Build header template (powNonce=0). `stateRoot` is a placeholder here
+  // and is replaced in 19b — the speculative run needs a whole candidate block,
+  // and the mutation phase reads neither the nonce nor the signature.
   const headerTemplate: BlockHeader = {
     protocolVersion: PROTOCOL_VERSION,
     height: newHeight,
     prevBlockHash,
     subBlockRoot,
     utxoTxRoot,
-    stateRoot,
+    stateRoot: EMPTY_STATE_ROOT,
     validatorId,
     powNonce: 0,
     powTargetBits,
     createdAt: Date.now(),
   };
+  const candidate: OrderingBlock = {
+    header: headerTemplate,
+    subBlockTree,
+    utxoTxTree,
+    validatorSignature: new Uint8Array(64),
+  };
+
+  // 19b. Compute the POST-block state root (H-6) — the digest this block's own
+  // body produces, obtained by running that body through the apply path's
+  // mutation phase and rolling everything back. Never the current (pre-block)
+  // digest: apply compares against the post-mutation digest, so a pre-block
+  // root can never verify. PoW covers the header, so this must be known before
+  // mining. A node with no prover falls back to EMPTY_STATE_ROOT — test-only,
+  // since production initializes one at startup, and a peer running with
+  // VERIFY_STATE_ROOT on rejects such a block, which is correct.
+  headerTemplate.stateRoot =
+    computePostBlockStateRoot(candidate, newHeight) ?? EMPTY_STATE_ROOT;
 
   // 21. Internal vs external mining
   if (config.miningMode === 'external') {
-    // Store the full block template (header + bodies) for external miners
-    const template: OrderingBlock = {
-      header: headerTemplate,
-      subBlockTree,
-      utxoTxTree,
-      validatorSignature: new Uint8Array(64),
-    };
-    currentTemplate = template;
+    // Store the full block template (header + bodies) for external miners.
+    // Its stateRoot is this height's post-block digest, so the template stops
+    // being submittable once a competing block moves the pre-state — which is
+    // exactly what clearTemplate() on apply guarantees.
+    currentTemplate = candidate;
     return null; // Block not finalized yet
   }
 

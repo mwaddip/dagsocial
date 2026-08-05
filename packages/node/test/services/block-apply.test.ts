@@ -18,6 +18,7 @@ import {
   LIKE_MAX_AUTHOR_REWARD,
   KARMA_STALE_THRESHOLD_BLOCKS,
   CREDIT_MINER_REWARD_DELAY,
+  EMPTY_STATE_ROOT,
 } from '@dagsocial/types';
 import { verifyOrderingBlockPoW, blockHash } from '@dagsocial/validation';
 import type {
@@ -514,7 +515,7 @@ describe('block-apply journal recording', () => {
         prevBlockHash: '0000000000000000000000000000000000000000000000000000000000000000',
         subBlockRoot: '0000000000000000000000000000000000000000000000000000000000000000',
         utxoTxRoot: '0000000000000000000000000000000000000000000000000000000000000000',
-        stateRoot: '0000000000000000000000000000000000000000000000000000000000000000000',
+        stateRoot: EMPTY_STATE_ROOT,
         validatorId: miner.userId,
         powNonce: 0,
         powTargetBits: expectedTarget(1),
@@ -562,7 +563,7 @@ describe('block-apply journal recording', () => {
         prevBlockHash: '0000000000000000000000000000000000000000000000000000000000000000',
         subBlockRoot: '0000000000000000000000000000000000000000000000000000000000000000',
         utxoTxRoot: '0000000000000000000000000000000000000000000000000000000000000000',
-        stateRoot: '0000000000000000000000000000000000000000000000000000000000000000000',
+        stateRoot: EMPTY_STATE_ROOT,
         validatorId: miner.userId,
         powNonce: 0,
         powTargetBits: 4,
@@ -606,7 +607,7 @@ describe('block-apply journal recording', () => {
         prevBlockHash: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
         subBlockRoot: '0000000000000000000000000000000000000000000000000000000000000000',
         utxoTxRoot: '0000000000000000000000000000000000000000000000000000000000000000',
-        stateRoot: '0000000000000000000000000000000000000000000000000000000000000000000',
+        stateRoot: EMPTY_STATE_ROOT,
         validatorId: miner.userId,
         powNonce: 0,
         powTargetBits: 4,

@@ -1090,9 +1090,18 @@ describe('reorg abort', () => {
 
     // Chain of 3 empty blocks (coinbase only); every box in the prover's tree
     // arrived through the apply funnel, so tree and DB agree.
+    //
+    // The competing height-2 block is built after height 1 and before the
+    // originals at 2 and 3, because a hand-built block's `stateRoot` commits to
+    // the state its body produces *from the state standing when it is built*
+    // (H-6). Post-revert that is exactly the fork state, so building it here is
+    // what makes it applicable there.
     const bc = await importBlockCreator();
     bc.startBlockCreator(testConfig);
-    for (let i = 0; i < 3; i++) bc.createOrderingBlock();
+    bc.createOrderingBlock();
+    const goodB2 = await makeApplicableBlock({ height: 2 });
+    bc.createOrderingBlock();
+    bc.createOrderingBlock();
 
     const ordering = await importOrdering();
     expect(ordering.getCurrentHeight()).toBe(3);
@@ -1105,10 +1114,10 @@ describe('reorg abort', () => {
     expect(avl).not.toBeNull();
     const preDigest = new Uint8Array(avl!.prover.digest()!);
 
-    // Competing chain: a valid block at height 2, then a block whose
+    // Competing chain: the valid height-2 block built above, then a block whose
     // prevBlockHash still names the original height-2 block — rejected by the
-    // chain-link check after the valid prefix has already been applied.
-    const goodB2 = await makeApplicableBlock({ height: 2 });
+    // chain-link check after the valid prefix has already been applied. (That
+    // check runs long before the state root, so badB3's root is irrelevant.)
     const badB3 = await makeApplicableBlock({ height: 3 });
 
     const forkResolution = await importForkResolution();

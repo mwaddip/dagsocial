@@ -8,6 +8,7 @@ import {
   PROTOCOL_VERSION,
   LIKE_COST,
   CREDIT_MINER_REWARD_DELAY,
+  EMPTY_STATE_ROOT,
 } from '@dagsocial/types';
 import { verifyOrderingBlockPoW, blockHash } from '@dagsocial/validation';
 import type {
@@ -247,16 +248,25 @@ export function makePruneEntry(
 /**
  * A hand-built block that passes every apply check: chain-linked at genesis,
  * correct Merkle roots, coinbase paying exactly the scheduled emission with the
- * scheduled maturity lock, a real PoW solution at the scheduled target, and a
- * real validator signature from the key its header names.
+ * scheduled maturity lock, the post-block AVL state root, a real PoW solution
+ * at the scheduled target, and a real validator signature from the key its
+ * header names.
  *
  * Each override deviates in exactly one respect, so what a test measures is
  * that deviation and nothing else.
+ *
+ * The state root is computed against the state *as it stands when this is
+ * called*, because that is the state the mutation phase runs on. A block built
+ * now and applied after the chain has moved carries a stale root and is
+ * rejected — build it against the state it will be applied to.
  */
 export async function makeApplicableBlock(
   opts: {
     powTargetBits?: number;
     lockedUntilBlock?: number;
+    /** Override the post-block state root — a block committing to state it
+     *  does not produce (H-6 divergence). */
+    stateRoot?: string;
     /** Sign with this key instead of the miner's — a block whose signature does
      *  not come from the key its `validatorId` names (H-1 forged authorship). */
     signWith?: KeyObject;
@@ -312,20 +322,32 @@ export async function makeApplicableBlock(
     prevBlockHash,
     subBlockRoot: computeSubBlockRoot(subBlockTree),
     utxoTxRoot: computeUtxoTxRoot(utxoTxTree),
-    stateRoot: ZERO_HASH,
+    stateRoot: EMPTY_STATE_ROOT,
     validatorId: miner.userId,
     powNonce: 0,
     powTargetBits: opts.powTargetBits ?? expectedTarget(height),
     createdAt: Date.now(),
   } as BlockHeader;
-  header.powNonce = solveHeaderPow(header);
 
-  return {
+  const block = {
     header,
     subBlockTree,
     utxoTxTree,
-    validatorSignature: signHeader(header, opts.signWith ?? miner.privateKey),
+    validatorSignature: new Uint8Array(64),
   } as unknown as OrderingBlock;
+
+  // Post-block state root (H-6), obtained the way the block creator obtains
+  // it: by running this body through the apply path's own mutation phase and
+  // rolling it back. It has to be final before the nonce and the signature,
+  // which both cover the header. Null when no prover is active — most suites —
+  // and apply skips the check there, so EMPTY_STATE_ROOT stands in.
+  const { computePostBlockStateRoot } = await import('../src/services/block-apply.js');
+  header.stateRoot =
+    opts.stateRoot ?? computePostBlockStateRoot(block, height) ?? EMPTY_STATE_ROOT;
+
+  header.powNonce = solveHeaderPow(header);
+  block.validatorSignature = signHeader(header, opts.signWith ?? miner.privateKey);
+  return block;
 }
 
 /**
