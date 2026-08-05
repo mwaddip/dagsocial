@@ -680,6 +680,54 @@ an unspendable LikeBox, not as a visible error.
 the phase C0 session, which correctly did not touch it — `public/index.html` is
 the node package's file.)*
 
+### Phase G checklist — everything the tightening phase owes
+
+Obligations have accumulated across phases B–D and are stated where they were
+found, which is right for context and wrong for not missing any. Consolidated:
+
+**Format tightening (the phase's own work)**
+
+1. `computeBoxId` switches to the provenance derivation; `TX_ID_DOMAIN` is
+   applied to `computeTxId`. Both move every id — this is the one phase where
+   that is allowed, and every id-asserting test updates together.
+2. `txId`/`index` become **required** on `BoxBase`; `UtxoTransaction.outputs`
+   becomes `BoxCandidate[]`.
+3. `createdAtBlock` and `lastTouchBlock` are deleted from the box protocol. The
+   `created_at_block` **column** stays (store-only, never a consensus input).
+4. `utxo_boxes.tx_id` / `output_index` become `NOT NULL`.
+
+**Correctness debts that only become enforceable here**
+
+5. **Canonical key ordering in both encoders** (→ "1b"). Lexicographic key sort
+   is the simplest total rule. This subsumes the `post_lock` producer-vs-
+   `rowToBox` field-order violation, which must **not** be fixed by reordering
+   that one site, and it retires the attacker-key-position hazard (→ "1c").
+6. **Attach-provenance-before-deriving-the-id** becomes testable (phase C report
+   §5.1). Today `canonicalBoxBytes` strips provenance, so both orders are
+   byte-identical and the discipline is unenforced.
+7. **The journal-height rule becomes forced** (phase D). `insertBox` must take
+   the height from the open journal, not from `box.createdAtBlock` — currently
+   indistinguishable, because every production karma producer sets
+   `createdAtBlock` to the block height anyway. Deleting the field is what
+   proves it.
+
+**Blockers — these make phase G *fail* if not done first**
+
+8. **`settlePruneUtxo` has no mint reason.** Its two `mintKarma` sites pass
+   `null`, which is harmless only while the columns are nullable. Item 4 turns
+   it into a hard failure. Needs new `MintReason` member(s) in types plus the
+   subject encoding, and the subject must carry the prune entry's identity —
+   `settlePruneUtxo` runs *per entry*, so two entries in one block can otherwise
+   collide on `(height, reason, subject)`.
+9. **`u32BE` should be exported from `@dagsocial/types`.** `mint-provenance.ts`
+   currently mirrors it, sentinel included; a silent divergence would move mint
+   txIds with nothing to catch it.
+
+Items 6 and 7 share a shape worth noting: a rule that is *correct* but
+*unenforceable* while the legacy field still exists. Neither is a defect today;
+both are why phase G is the phase that closes the design rather than merely
+tidying it.
+
 ### Discriminants are semantic, never positional
 
 A mint's identity MUST NOT derive from its position in the journal, the block,
