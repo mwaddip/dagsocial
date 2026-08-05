@@ -1008,6 +1008,26 @@ box keyspace, which is a distinct concern from how the bytes are typed.
 until then. A phase-B tree contains zero records — which is why the proof
 endpoint's obligation (AVL+ State Root → "Two entity kinds") falls to phase D.
 
+#### Populating the record (phase D)
+
+- **`lastActivityBlock`** — bumped at the **store choke point**, `insertBox`,
+  when the inserted box is a karma box with `decayBurn !== true`. That is
+  exactly today's staleness predicate ("no unspent non-decay karma box newer
+  than the threshold"), so the swap is behaviour-preserving by construction
+  rather than by re-derivation.
+- **`lastDecayBlock`** — bumped when decay fires for that owner.
+
+**The height comes from the open journal, not from the box.** `insertBox` takes
+no height, and `createdAtBlock` is the field Spec G is removing — reading it
+would reintroduce the dependency phase D exists to delete, and would break
+outright at phase G. The open journal already carries the block's height
+(`beginBlockJournal(height)`), and that *is* the settled height. A narrow
+accessor for it is the right seam; the record is only meaningful during block
+application anyway, which is exactly when a journal is open.
+
+With no journal open (bootstrap, non-block paths) `insertBox` records nothing,
+consistent with every other choke-point hook.
+
 ### Vouch Cooldowns
 
 | Function | Signature |
