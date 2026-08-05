@@ -65,6 +65,7 @@ export {
   computeMintTxId,
   computeTxId,
   canonicalBoxBytes,
+  u32BE,
   selectBoxes,
   BOX_ID_DOMAIN,
   TX_ID_DOMAIN,

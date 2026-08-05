@@ -67,10 +67,19 @@ export function canonicalBoxBytes(candidate: BoxCandidate): Uint8Array {
  * panic on untrusted input (audit M-5). The encodable domain excludes the
  * sentinel itself, so a well-formed index or height never collides with a
  * malformed one.
+ *
+ * **Exported because callers own their `subject` bytes.** Two mint reasons
+ * encode a `u32BE` subject (`coinbase`, `genesis`) and `computeMintTxId` takes
+ * those bytes opaquely, so node's `mint-provenance.ts` had to reimplement this
+ * writer, sentinel included. A silent divergence between the two would move
+ * mint txIds — and therefore box ids — with nothing to catch it, while
+ * `NODE_INTERFACE.md`'s reason/subject table mandates the encoding. One
+ * implementation is the only way to hold that. A mirror that cannot import it
+ * (the demo UI) must reproduce the sentinel too, and must not throw.
  */
 const U32_SENTINEL = 0xffffffff;
 
-function u32BE(n: number): Uint8Array {
+export function u32BE(n: number): Uint8Array {
   const encodable = typeof n === 'number' && Number.isSafeInteger(n) && n >= 0 && n < U32_SENTINEL;
   const v = encodable ? n : U32_SENTINEL;
   return new Uint8Array([(v >>> 24) & 0xff, (v >>> 16) & 0xff, (v >>> 8) & 0xff, v & 0xff]);
@@ -106,10 +115,23 @@ export function computeCandidateBoxId(candidate: BoxCandidate, txId: TxId, index
 
 /**
  * Why a box created by block application rather than by a user transaction
- * still has one — coinbase, karma mints, decay, epoch post-locks, genesis.
- * The discriminant is semantic, never positional: deriving it from journal
- * position would put ordering back into *identity*, which is the failure class
- * M-12 closed for the AVL feed.
+ * still has one — coinbase, karma mints, decay, epoch post-locks, genesis,
+ * prune settlement. The discriminant is semantic, never positional: deriving it
+ * from journal position would put ordering back into *identity*, which is the
+ * failure class M-12 closed for the AVL feed.
+ *
+ * Subject bytes are the caller's, per `NODE_INTERFACE.md`'s reason/subject
+ * table; this package never sees a postId. A member may only be added while the
+ * set stays **prefix-free** — cross-reason injectivity rests on it, since
+ * `reason ‖ subject` carries no length prefix — which is test-pinned over the
+ * whole set rather than left to inspection.
+ *
+ * The two `prune-refund-*` tags are **two, not one**: the same user can be both
+ * an author and a liker within one pruned subtree, so a single tag would give
+ * both of `settlePruneUtxo`'s mints the same `(height, reason, subject)` and
+ * collide — exactly why `author-reward` and `liker-refund` are separate at epoch
+ * tally. They describe today's prune settlement and are expected to be retired
+ * by the karma-economics track.
  */
 export type MintReason =
   | 'coinbase'
@@ -119,7 +141,9 @@ export type MintReason =
   | 'postlock-unlock'
   | 'postlock-remainder'
   | 'decay'
-  | 'genesis';
+  | 'genesis'
+  | 'prune-refund-author'
+  | 'prune-refund-liker';
 
 /**
  * Synthetic transaction id for a mint event:

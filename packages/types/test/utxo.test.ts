@@ -6,6 +6,7 @@ import {
   computeMintTxId,
   computeTxId,
   canonicalBoxBytes,
+  u32BE,
   BOX_ID_DOMAIN,
   TX_ID_DOMAIN,
   MINT_ID_DOMAIN,
@@ -269,8 +270,14 @@ describe('golden vectors (bigint value encoding)', () => {
 // Spec G — provenance-derived identity
 // ---------------------------------------------------------------------------
 
-/** Independent mirror of the src writer — the encoding under test, not a reuse of it. */
-function u32BE(n: number): Uint8Array {
+/**
+ * Independent mirror of the src writer — the encoding under test, not a reuse of
+ * it. Stays hand-written now that `u32BE` is exported: the golden vectors below
+ * are only an anchor if the bytes they feed come from somewhere other than the
+ * function under test, and it is the *in-domain* half this pins, so the mirror
+ * deliberately omits the sentinel branch.
+ */
+function u32BEMirror(n: number): Uint8Array {
   return new Uint8Array([(n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff]);
 }
 
@@ -283,6 +290,8 @@ const ALL_MINT_REASONS: MintReason[] = [
   'postlock-remainder',
   'decay',
   'genesis',
+  'prune-refund-author',
+  'prune-refund-liker',
 ];
 
 /**
@@ -324,6 +333,60 @@ describe('canonicalBoxBytes', () => {
       Buffer.from(canonicalBoxBytes(stored)),
       Buffer.from(canonicalBoxBytes(candidate)),
     )).toBe(0);
+  });
+});
+
+describe('u32BE', () => {
+  const hexOf = (b: Uint8Array) => Buffer.from(b).toString('hex');
+
+  it('writes 4 bytes big-endian', () => {
+    // Byte order is protocol-visible: a little-endian mirror derives different
+    // mint txIds and therefore different box ids.
+    expect(hexOf(u32BE(0))).toBe('00000000');
+    expect(hexOf(u32BE(1))).toBe('00000001');          // '01000000' if little-endian
+    expect(hexOf(u32BE(258))).toBe('00000102');
+    expect(hexOf(u32BE(0x12345678))).toBe('12345678'); // '78563412' if little-endian
+    expect(hexOf(u32BE(0xfffffffe))).toBe('fffffffe'); // top of the encodable domain
+  });
+
+  it('agrees with the independent in-domain mirror', () => {
+    for (const n of [0, 1, 2, 255, 256, 258, 65535, 70000, 0x12345678, 0xfffffffe]) {
+      expect(hexOf(u32BE(n)), `n=${n}`).toBe(hexOf(u32BEMirror(n)));
+    }
+  });
+
+  it('is total: out-of-domain input takes the sentinel rather than throwing', () => {
+    // M-5 no-panic contract. Light clients derive ids from attacker-supplied
+    // fields, so a throw here is a denial-of-service, not a validation error.
+    const bad: number[] = [-1, 1.5, NaN, Infinity, -Infinity, 2 ** 32, Number.MAX_SAFE_INTEGER];
+    for (const n of bad) {
+      expect(() => u32BE(n), `n=${n}`).not.toThrow();
+      expect(hexOf(u32BE(n)), `n=${n}`).toBe('ffffffff');
+    }
+    // The typeof guard, reachable only from untyped callers (JS, JSON).
+    for (const n of [undefined, null, '7', {}]) {
+      expect(hexOf(u32BE(n as unknown as number)), `n=${String(n)}`).toBe('ffffffff');
+    }
+  });
+
+  it('excludes the sentinel from the encodable domain', () => {
+    // Why a well-formed index or height can never collide with a malformed one:
+    // 0xffffffff is not itself encodable, so nothing valid produces those bytes.
+    expect(hexOf(u32BE(0xffffffff))).toBe('ffffffff');
+    expect(hexOf(u32BE(0xffffffff))).toBe(hexOf(u32BE(-1)));
+  });
+
+  it('always returns exactly 4 bytes', () => {
+    for (const n of [0, 1, 0xfffffffe, -1, NaN, 2 ** 32]) {
+      expect(u32BE(n).length, `n=${n}`).toBe(4);
+    }
+  });
+
+  it('is the writer the id derivations actually use', () => {
+    // Pins the export against a frozen vector rather than against itself: the
+    // coinbase golden was captured with the module-private writer feeding
+    // `subject`, and the same bytes come back out of the exported one.
+    expect(computeMintTxId(70000, 'coinbase', u32BE(0))).toBe(GOLDEN_MINT_COINBASE_ID);
   });
 });
 
@@ -399,7 +462,7 @@ describe('computeCandidateBoxId', () => {
 
 describe('computeMintTxId', () => {
   it('golden vector: coinbase mint is frozen', () => {
-    expect(computeMintTxId(70000, 'coinbase', u32BE(0))).toBe(GOLDEN_MINT_COINBASE_ID);
+    expect(computeMintTxId(70000, 'coinbase', u32BEMirror(0))).toBe(GOLDEN_MINT_COINBASE_ID);
   });
 
   it('golden vector: decay mint (subject = owner key) is frozen', () => {
@@ -419,6 +482,29 @@ describe('computeMintTxId', () => {
     const subject = new Uint8Array(32).fill(0x11);
     expect(computeMintTxId(70000, 'author-reward', subject))
       .not.toBe(computeMintTxId(70000, 'postlock-unlock', subject));
+  });
+
+  it('separates the two prune-refund legs for the same subject', () => {
+    // The collision the second prune reason exists to prevent: one user who both
+    // authored and liked inside a single pruned subtree gets two refund mints at
+    // the same height, from the same `settlePruneUtxo` call, with the same
+    // `(rootPostHash, owner)` subject. One reason would derive one txId twice at
+    // index 0, trip UNIQUE(tx_id, output_index) and reject a legitimate block.
+    //
+    // Subject shape is node's (NODE_INTERFACE → reason/subject table), built
+    // here only so the scenario is the real one: utf8(rootPostHash) ‖ raw(owner).
+    const subject = new Uint8Array(96);
+    subject.set(Buffer.from('c'.repeat(64), 'utf8'), 0);
+    subject.set(new Uint8Array(32).fill(0x22), 64);
+    expect(computeMintTxId(70000, 'prune-refund-author', subject))
+      .not.toBe(computeMintTxId(70000, 'prune-refund-liker', subject));
+  });
+
+  it('the two prune-refund reasons are distinct from every other reason', () => {
+    // Widening the set must not let a new tag land on an existing mint id.
+    const subject = new Uint8Array(96).fill(0x33);
+    const ids = ALL_MINT_REASONS.map((r) => computeMintTxId(70000, r, subject));
+    expect(new Set(ids).size).toBe(ALL_MINT_REASONS.length);
   });
 
   it('no reason is a prefix of another', () => {
