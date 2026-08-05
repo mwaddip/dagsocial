@@ -1,5 +1,6 @@
 import { computeBoxId } from '@dagsocial/types';
 import type { KarmaBox } from '@dagsocial/types';
+import { MINT_OUTPUT_INDEX, decayContext, mintTxIdFor } from '../mint-provenance.js';
 
 /**
  * Per-owner summary of one decay application. Node-local: block application
@@ -137,6 +138,15 @@ export function applyKarmaDecay(
       lastTouchBlock: currentHeight,
       decayBurn: true,
     };
+    // Appended after every candidate field, matching `rowToBox`'s
+    // `withProvenance` — `decayBurn` included, since it is the last field the
+    // producer sets and `rowToBox` sets it in the same position.
+    //
+    // `owner` alone is an injective subject here: `applyKarmaDecay` visits each
+    // owner at most once per call (`getKarmaOwners` returns distinct owners) and
+    // runs once per block, so `(height, 'decay', owner)` cannot repeat.
+    newBox.txId = mintTxIdFor(decayContext(owner), currentHeight);
+    newBox.index = MINT_OUTPUT_INDEX;
     const boxId = computeBoxId(newBox);
     newBox.id = boxId;
     deps.insertBox(newBox);

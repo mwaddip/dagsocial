@@ -3,6 +3,13 @@ import { computeBoxId } from '@dagsocial/types';
 import type { KarmaBox, CreditBox } from '@dagsocial/types';
 import { getDb } from './db.js';
 import { insertBox, getKarmaBox, getCreditBoxes } from './utxo.js';
+import {
+  GENESIS_FAUCET_CREDITS,
+  GENESIS_SYSTEM_KARMA,
+  MINT_OUTPUT_INDEX,
+  genesisContext,
+  mintTxIdFor,
+} from '../mint-provenance.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -81,15 +88,22 @@ export function ensureSystemKarmaBox(systemPubKey: Uint8Array, currentHeight: nu
   const existing = getKarmaBox(systemPubKey);
   if (existing) return existing;
 
+  // One height for both the recorded block and the mint txId. Derived once
+  // rather than clamped twice, so the id cannot encode a height the box does
+  // not carry.
+  const genesisHeight = currentHeight > 0 ? currentHeight : 1;
+
   const box: KarmaBox = {
     boxType: 'karma',
     value: SYSTEM_KARMA_INITIAL,
-    createdAtBlock: currentHeight > 0 ? currentHeight : 1,
+    createdAtBlock: genesisHeight,
     owner: systemPubKey,
     guard: 'owner_signature',
     proofSource: 'genesis:system',
-    lastTouchBlock: currentHeight > 0 ? currentHeight : 1,
+    lastTouchBlock: genesisHeight,
   };
+  box.txId = mintTxIdFor(genesisContext(GENESIS_SYSTEM_KARMA), genesisHeight);
+  box.index = MINT_OUTPUT_INDEX;
   box.id = computeBoxId(box);
   insertBox(box);
   return box;
@@ -113,14 +127,21 @@ export function ensureFaucetCreditBox(
   const existing = getCreditBoxes(systemPubKey);
   if (existing.length > 0) return;
 
+  const genesisHeight = currentHeight > 0 ? currentHeight : 1;
+
   const box: CreditBox = {
     boxType: 'credit',
     value: FAUCET_CREDITS_INITIAL,
-    createdAtBlock: currentHeight > 0 ? currentHeight : 1,
+    createdAtBlock: genesisHeight,
     owner: systemPubKey,
     guard: 'owner_signature',
-    proofSource: currentHeight > 0 ? currentHeight : 1,
+    proofSource: genesisHeight,
   };
+  // A `u32BE` selector separates the two genesis boxes, not the ASCII tags Spec
+  // G §3.2 sketched: those are variable-length and merely prefix-free, which
+  // the fixed-length-or-self-delimiting rule cannot check per encoding.
+  box.txId = mintTxIdFor(genesisContext(GENESIS_FAUCET_CREDITS), genesisHeight);
+  box.index = MINT_OUTPUT_INDEX;
   box.id = computeBoxId(box);
   insertBox(box);
 }

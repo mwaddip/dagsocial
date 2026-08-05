@@ -146,6 +146,7 @@ async function importUtxo() {
   return (await import('../../src/store/utxo.js')) as {
     insertBox: (box: unknown) => void;
     getKarmaBox: (owner: Uint8Array) => KarmaBox | null;
+    getCreditBoxes: (owner: Uint8Array) => AnyBox[];
     getBox: (boxId: string) => unknown;
     consumeBox: (boxId: string, consumedAtBlock: number) => void;
     getUnprocessedLockedLikeBoxes: () => LikeBox[];
@@ -1218,6 +1219,243 @@ describe('block-apply epoch tally ordering', () => {
     const blockApply = await importBlockApply();
     expect(blockApply.applyOrderingBlock(peerBlock)).toBe(true);
     expect(ordering.getCurrentHeight()).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mint provenance at the apply path (Spec G phase C1)
+//
+// These exercise the *wiring* rather than the encoders: which context each
+// `mintKarma`/`mintCredits` call site passes. A unit test on
+// `mint-provenance.ts` cannot see a call site that hands the wrong one over,
+// and both mistakes below are silent — a collision, not an error.
+// ---------------------------------------------------------------------------
+
+describe('block-apply mint provenance', () => {
+  beforeEach(async () => {
+    vi.resetModules();
+  });
+
+  afterEach(async () => {
+    try {
+      const bc = await importBlockCreator();
+      bc.stopBlockCreator();
+    } catch {
+      // Module might not have been imported
+    }
+    vi.resetModules();
+  });
+
+  it('a split coinbase mints one box per output, each with its own txId', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    const utxo = await importUtxo();
+    const blockApply = await importBlockApply();
+    const { computeBlockReward } = await import('../../src/services/block-creator.js');
+    const { computeMintTxId } = await import('@dagsocial/types');
+    const { coinbaseContext } = await import('../../src/mint-provenance.js');
+
+    // The shape any node with `creditTreasuryPct > 0` produces. Coinbase is N
+    // mint *events*, not one N-output transaction, so each output carries its
+    // own synthetic txId keyed on its index — and `UNIQUE(tx_id, output_index)`
+    // turns a shared txId into a rejected block rather than silent corruption.
+    const miner = makeTestIdentity();
+    const treasury = makeTestIdentity();
+    const reward = computeBlockReward(1);
+    const treasuryShare = reward / 10n;
+
+    const block = await makeApplicableBlock({
+      miner,
+      coinbaseSplit: [
+        { owner: miner.userId, value: reward - treasuryShare, isTreasury: false },
+        { owner: treasury.userId, value: treasuryShare, isTreasury: true },
+      ],
+    });
+    expect(blockApply.applyOrderingBlock(block)).toBe(true);
+
+    const minerBox = utxo.getCreditBoxes(miner.userId)[0];
+    const treasuryBox = utxo.getCreditBoxes(treasury.userId)[0];
+    expect(minerBox).toBeDefined();
+    expect(treasuryBox).toBeDefined();
+
+    // Position in `coinbaseOutputs` is the subject; `index` stays 0 because
+    // each event emits exactly one box.
+    expect(minerBox!.txId).toBe(computeMintTxId(1, 'coinbase', coinbaseContext(0).subject));
+    expect(treasuryBox!.txId).toBe(computeMintTxId(1, 'coinbase', coinbaseContext(1).subject));
+    expect(minerBox!.txId).not.toBe(treasuryBox!.txId);
+    expect(minerBox!.index).toBe(0);
+    expect(treasuryBox!.index).toBe(0);
+  });
+
+  it('author-reward and postlock-unlock legs fire together and do not collide', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    const posts = await importPosts();
+    const utxo = await importUtxo();
+    const journalStore = await importJournalStore();
+    const { encodePost, POST_LOCK_UNLOCK_PER_LIKES } = await import('@dagsocial/types');
+
+    // One post carrying both legs at once: enough likes to clear the author
+    // reward threshold, and a PostLockBox with karma left to unlock. This is
+    // the fixture the reason tag exists for — both mints go to the same author,
+    // for the same post, at the same height.
+    const author = makeTestIdentity();
+    const post = makePost(author.userId, 'both legs of the epoch tally');
+    const postId = computePostId(post);
+    posts.insertPost(post, encodePost(post));
+
+    const likeCount = Math.max(LIKE_THRESHOLD, POST_LOCK_UNLOCK_PER_LIKES);
+    for (let n = 0; n < likeCount; n++) {
+      utxo.insertBox(makeLikeBox(makeTestIdentity().userId, postId, 1));
+    }
+
+    const lockBox: PostLockBox = {
+      boxType: 'post_lock',
+      value: 10n,
+      originalValue: 10n,
+      createdAtBlock: 1,
+      owner: author.userId,
+      targetPostId: postId,
+      guard: 'epoch_tally',
+    };
+    lockBox.id = computeBoxId(lockBox);
+    utxo.insertBox(lockBox);
+
+    // Two ordinary blocks; with epochBlocks = 2 the third carries the tally.
+    const bc = await importBlockCreator();
+    bc.startBlockCreator(testConfig);
+    bc.createOrderingBlock();
+    bc.createOrderingBlock();
+
+    const { computeEpochTally } = await import('../../src/services/block-creator.js');
+    const height = 3;
+    const tally = computeEpochTally(height);
+    const reward = tally.rewards[postId];
+
+    // Vacuity guard: without BOTH legs populated this test proves nothing about
+    // the discriminant, because only one mint would run.
+    expect(reward).toBeDefined();
+    expect(reward!.authorReward).toBeGreaterThan(0n);
+    expect(reward!.postLockKarmaUnlocked).toBeGreaterThan(0n);
+
+    const blockApply = await importBlockApply();
+    const block = await makeApplicableBlock({ height });
+    (block.utxoTxTree as { epochTallyResults?: EpochTally }).epochTallyResults = tally;
+    // The tally is inside the Merkle root, so the header must be rebuilt over it.
+    const { computeUtxoTxRoot } = await import('../../src/services/block-creator.js');
+    block.header.utxoTxRoot = computeUtxoTxRoot(block.utxoTxTree);
+    block.header.powNonce = solveHeaderPow(block.header);
+    const validator = makeTestIdentity();
+    block.header.validatorId = validator.userId;
+    block.header.powNonce = solveHeaderPow(block.header);
+    (block as { validatorSignature: Uint8Array }).validatorSignature = signHeader(
+      block.header,
+      validator.privateKey,
+    );
+
+    expect(blockApply.applyOrderingBlock(block)).toBe(true);
+
+    // Both mints landed in the same block journal. The second merge-consumes
+    // the first, so only the journal shows both boxes.
+    const journal = journalStore.getBlockJournal(height)!;
+    const authorHex = hex(author.userId);
+    const karmaMints = journal.mutations
+      .filter((m): m is BoxMutation => m.kind === 'box' && m.op === 'insert')
+      .map((m) => m.box as AnyBox)
+      .filter(
+        (b) => b.boxType === 'karma' && hex((b as KarmaBox).owner) === authorHex,
+      );
+
+    expect(karmaMints.length).toBe(2);
+    const txIds = karmaMints.map((b) => b.txId);
+    expect(txIds[0]).toBeDefined();
+    expect(txIds[1]).toBeDefined();
+    // Same author, same post, same height — only the reason tag separates them.
+    expect(new Set(txIds).size).toBe(2);
+  });
+
+  it('a decay box consumed by a vouch settlement in the same block gets a distinct outpoint', async () => {
+    // The real same-block adjacency between decay and a karma mint. Ordering is
+    // what makes it reachable: `applyKarmaDecay` runs *before*
+    // `processVouchCooldowns` in the mutation phase, so decay creates a box and
+    // the vouch settlement immediately merge-consumes it and mints a
+    // replacement — two karma boxes for one owner, at one height.
+    //
+    // They do not collide, but only because the *reasons* differ. Equal txIds
+    // would be a `UNIQUE(tx_id, output_index)` violation and the block would be
+    // rejected outright.
+    //
+    // Thresholds are shrunk through the documented env overrides (config.ts:
+    // "overridable for testing") so a 4-block chain crosses the staleness
+    // window. No src seams involved.
+    const origThreshold = process.env['KARMA_STALE_THRESHOLD_BLOCKS'];
+    const origInterval = process.env['KARMA_DECAY_INTERVAL_BLOCKS'];
+    try {
+      process.env['KARMA_STALE_THRESHOLD_BLOCKS'] = '3';
+      process.env['KARMA_DECAY_INTERVAL_BLOCKS'] = '1';
+      vi.resetModules(); // re-evaluate config with the overrides
+
+      const db = await importDb();
+      db.initDb(':memory:');
+
+      const utxo = await importUtxo();
+      const vouchStore = await import('../../src/store/vouch-cooldowns.js');
+      const journalStore = await importJournalStore();
+      const { VOUCH_KARMA_AMOUNT } = await import('@dagsocial/types');
+      const { decayContext, vouchSettleContext } = await import(
+        '../../src/mint-provenance.js'
+      );
+      const { computeMintTxId } = await import('@dagsocial/types');
+
+      const idle = makeTestIdentity();
+      const target = makeTestIdentity();
+      utxo.insertBox(makeKarmaBox(50n, idle.userId, 0));
+      // Matures at height 4 — the same block decay first fires in.
+      vouchStore.insertVouchCooldown(idle.userId, target.userId, 4, VOUCH_KARMA_AMOUNT);
+
+      const bc = await importBlockCreator();
+      bc.startBlockCreator(testConfig);
+      bc.createOrderingBlock();
+      bc.createOrderingBlock();
+      bc.createOrderingBlock();
+
+      // Height 4 > threshold 3: decay fires, then the cooldown settles.
+      const block = bc.createOrderingBlock();
+      expect(block).not.toBeNull();
+
+      const journal = journalStore.getBlockJournal(4)!;
+      const ownerHex = hex(idle.userId);
+      const mints = journal.mutations
+        .filter((m): m is BoxMutation => m.kind === 'box' && m.op === 'insert')
+        .map((m) => m.box as AnyBox)
+        .filter((b) => b.boxType === 'karma' && hex((b as KarmaBox).owner) === ownerHex);
+
+      // Vacuity guard: both legs must actually have fired, or this proves
+      // nothing about the discriminant.
+      expect(mints.length).toBe(2);
+      const [decayed, settled] = mints;
+      expect((decayed as KarmaBox & { decayBurn?: boolean }).decayBurn).toBe(true);
+
+      expect(decayed!.txId).toBe(
+        computeMintTxId(4, 'decay', decayContext(idle.userId).subject),
+      );
+      expect(settled!.txId).toBe(
+        computeMintTxId(4, 'vouch-settle', vouchSettleContext(idle.userId, target.userId).subject),
+      );
+      expect(decayed!.txId).not.toBe(settled!.txId);
+      expect(decayed!.index).toBe(settled!.index);
+
+      // The settlement consumed the decay box it had just been handed.
+      expect(utxo.getBox(decayed!.id!)).toBeNull();
+      expect(utxo.getKarmaBox(idle.userId)!.id).toBe(settled!.id);
+    } finally {
+      if (origThreshold === undefined) delete process.env['KARMA_STALE_THRESHOLD_BLOCKS'];
+      else process.env['KARMA_STALE_THRESHOLD_BLOCKS'] = origThreshold;
+      if (origInterval === undefined) delete process.env['KARMA_DECAY_INTERVAL_BLOCKS'];
+      else process.env['KARMA_DECAY_INTERVAL_BLOCKS'] = origInterval;
+    }
   });
 });
 

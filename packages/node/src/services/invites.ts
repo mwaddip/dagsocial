@@ -1,5 +1,4 @@
 import {
-  computeBoxId,
   computeTxId,
   MAX_PENDING_INVITES,
   INVITE_KARMA_AMOUNT,
@@ -12,7 +11,7 @@ import {
   insertUtxoTx,
   countPendingInvites,
 } from '../store/index.js';
-import { validateTx } from './utxo-engine.js';
+import { materializeOutput, validateTx } from './utxo-engine.js';
 import type { UtxoEngineDeps } from './utxo-engine.js';
 import { ClientError } from './client-error.js';
 
@@ -99,14 +98,26 @@ export function createInvite(
   insertUtxoTx(tx, null, expiresAtHeight);
 
   // ---- 7. Return result ----
+  //
+  // `txId` is computed FIRST, before any provenance is attached: it hashes the
+  // output *candidates*, so attaching first would feed provenance into the very
+  // id it is derived from. `computeTxId` routes outputs through
+  // `canonicalBoxBytes` and so does not observe provenance — which makes
+  // getting this backwards silent rather than an error.
   const txId = computeTxId(tx);
 
+  // These two ids are predictions the client acts on: `routes/invites.ts`
+  // returns `inviteBox.id`, the client bakes it into `bond.inviteBoxId`, and
+  // `utxo-engine.ts` dereferences it on-chain at bond commit. They must equal
+  // what block application will store, so they are materialized exactly the way
+  // that path materializes them — `tx` here is client-supplied decoded CBOR, so
+  // the strip-before-append in `materializeOutput` is load-bearing.
   return {
     status: 'pending',
     txId,
     expiresAtHeight,
-    inviteBox: { ...inviteOut, id: inviteOut.id ?? computeBoxId(inviteOut) },
-    bondBox: { ...bondOut, id: bondOut.id ?? computeBoxId(bondOut) },
+    inviteBox: materializeOutput(inviteOut, txId, tx.outputs.indexOf(inviteOut)) as InviteBox,
+    bondBox: materializeOutput(bondOut, txId, tx.outputs.indexOf(bondOut)) as BondBox,
     tx,
   };
 }
@@ -279,8 +290,13 @@ export function claimInvite(
   insertUtxoTx(tx, null, expiresAtHeight);
 
   // ---- 6. Return result ----
+  // txId first, then provenance — see createInvite.
   const txId = computeTxId(tx);
-  const karmaBoxId = karmaOutput.id ?? computeBoxId(karmaOutput);
+  const karmaBoxId = materializeOutput(
+    karmaOutput,
+    txId,
+    tx.outputs.indexOf(karmaOutput),
+  ).id!;
 
   return {
     status: 'pending',

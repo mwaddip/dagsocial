@@ -27,6 +27,7 @@ import {
   serializePruneEntry,
   hexToBuf,
 } from '@dagsocial/types';
+import { MINT_OUTPUT_INDEX, mintTxIdFor, postlockRemainderContext } from '../mint-provenance.js';
 import {
   verifyOrderingBlockPoW,
   blockHash,
@@ -764,6 +765,16 @@ export function computeEpochTally(blockHeight: number): EpochTally {
         targetPostId: plb.targetPostId,
         guard: 'epoch_tally',
       };
+      // Appended last, matching `rowToBox`'s `withProvenance`. The candidate
+      // field order above is NOT touched: `post_lock` has a pre-existing
+      // producer-vs-`rowToBox` divergence (`originalValue`/`createdAtBlock` are
+      // swapped), which is contract 1b's to fix in phase G. Appending after it
+      // leaves that divergence exactly as it is rather than compounding it.
+      //
+      // One remainder box per post per tally, and the tally runs once per epoch
+      // block, so `(height, 'postlock-remainder', targetPostId)` cannot repeat.
+      newPlb.txId = mintTxIdFor(postlockRemainderContext(plb.targetPostId), blockHeight);
+      newPlb.index = MINT_OUTPUT_INDEX;
       newPlb.id = computeBoxId(newPlb);
       newPostLockBoxes.push(newPlb);
     }

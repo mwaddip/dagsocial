@@ -15,6 +15,7 @@ import {
   getKarmaBox,
 } from '../../src/store/index.js';
 import { mintKarma } from '../../src/services/karma.js';
+import { vouchSettleContext } from '../../src/mint-provenance.js';
 import { rawPublicKey } from '../helpers.js';
 
 // ---------------------------------------------------------------------------
@@ -163,7 +164,7 @@ describe('vouch cooldowns', () => {
 
     // 3. Process each matured cooldown: mint karma back to voucher
     for (const cooldown of matured) {
-      mintKarma(cooldown.voucherId, cooldown.karmaAmount, currentHeight);
+      mintKarma(cooldown.voucherId, cooldown.karmaAmount, currentHeight, vouchSettleContext(cooldown.voucherId, cooldown.targetId));
       deleteVouchCooldown(cooldown.voucherId, cooldown.targetId);
     }
 
@@ -189,7 +190,7 @@ describe('vouch cooldowns', () => {
     // Process the cooldown
     const matured = getMaturedVouchCooldowns(currentHeight);
     for (const cooldown of matured) {
-      mintKarma(cooldown.voucherId, cooldown.karmaAmount, currentHeight);
+      mintKarma(cooldown.voucherId, cooldown.karmaAmount, currentHeight, vouchSettleContext(cooldown.voucherId, cooldown.targetId));
       deleteVouchCooldown(cooldown.voucherId, cooldown.targetId);
     }
 
@@ -201,7 +202,7 @@ describe('vouch cooldowns', () => {
     insertVouchCooldown(voucherId, otherTargetId, currentHeight + 10, VOUCH_KARMA_AMOUNT);
     const matured2 = getMaturedVouchCooldowns(currentHeight + 10);
     for (const cooldown of matured2) {
-      mintKarma(cooldown.voucherId, cooldown.karmaAmount, currentHeight + 10);
+      mintKarma(cooldown.voucherId, cooldown.karmaAmount, currentHeight + 10, vouchSettleContext(cooldown.voucherId, cooldown.targetId));
       deleteVouchCooldown(cooldown.voucherId, cooldown.targetId);
     }
 

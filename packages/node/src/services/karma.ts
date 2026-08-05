@@ -1,6 +1,8 @@
 import { computeBoxId } from '@dagsocial/types';
 import type { KarmaBox } from '@dagsocial/types';
 import { getKarmaBoxes, insertBox, consumeBox } from '../store/index.js';
+import { MINT_OUTPUT_INDEX, mintTxIdFor } from '../mint-provenance.js';
+import type { MintContext } from '../mint-provenance.js';
 
 /**
  * Mint (or increase) karma for a given user.
@@ -11,11 +13,18 @@ import { getKarmaBoxes, insertBox, consumeBox } from '../store/index.js';
  *
  * Exported so both the local block creator (miner) and the server's
  * block-application path can use it.
+ *
+ * `ctx` says *why* — the half of the box's synthetic transaction id this
+ * function cannot know. It is required rather than optional so a new call site
+ * cannot silently produce a provenance-less box; `null` is the one explicit way
+ * to say "no reason is defined for this site yet" and currently has exactly one
+ * caller (`settlePruneUtxo` — see the note there).
  */
 export function mintKarma(
   userId: Uint8Array,
   amount: bigint,
   blockHeight: number,
+  ctx: MintContext | null,
 ): string {
   if (amount <= 0n) return '';
 
@@ -41,6 +50,18 @@ export function mintKarma(
     proofSource,
     lastTouchBlock: blockHeight,
   };
+  // Provenance is appended **after** every candidate field, matching
+  // `rowToBox`'s `withProvenance`. `serializeBox` spreads box keys in insertion
+  // order under `variableMapSize: false`, so a producer that interleaved these
+  // would serialize to different bytes than the same box read back from SQLite
+  // — a restart-triggered stateRoot fork, from nothing but key order.
+  if (ctx) {
+    newBox.txId = mintTxIdFor(ctx, blockHeight);
+    newBox.index = MINT_OUTPUT_INDEX;
+  }
+  // After the attach, not before: phase G redefines `computeBoxId` to hash
+  // `txId`/`index`. Inert until then — the legacy derivation strips them via
+  // `canonicalBoxBytes`, which is what keeps every existing box id unmoved.
   const boxId = computeBoxId(newBox);
   newBox.id = boxId;
 

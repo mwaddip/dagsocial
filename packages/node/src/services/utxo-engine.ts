@@ -681,16 +681,45 @@ export function validateTx(
   if (!transitionCheck.valid) return transitionCheck;
 
   // Compute output IDs for the caller (so applyTx doesn't re-compute)
-  const computedOutputs = tx.outputs.map((box) => ({
-    ...box,
-    id: computeBoxId(box),
-  })) as AnyBox[];
+  const txId = computeTxIdLocal(tx);
+  const computedOutputs = tx.outputs.map((box, index) =>
+    materializeOutput(box as AnyBox, txId, index),
+  );
 
   return {
     valid: true,
     computedOutputs,
-    txId: computeTxIdLocal(tx),
+    txId,
   };
+}
+
+/**
+ * Turn a transaction output candidate into the box that goes into the ledger:
+ * the creating transaction's real id, the output's position within
+ * `tx.outputs`, and the derived box id (Spec G phase C3).
+ *
+ * The `txId` is passed in rather than recomputed. `computeTxId` hashes outputs
+ * through `canonicalBoxBytes`, so it does not *observe* provenance — which
+ * means re-deriving it from a box that already carries some would be silently
+ * wrong rather than an error.
+ *
+ * Any client-supplied `id`/`txId`/`index` is **stripped before** the canonical
+ * pair is appended, not overwritten in place. cbor-x emits map keys in
+ * insertion order under `variableMapSize: false`, so overwriting would leave
+ * the keys wherever the client's CBOR happened to put them — and `rowToBox`
+ * always appends them last. The two shapes would then serialize to different
+ * bytes, so a node that restarted and re-bootstrapped its prover from SQLite
+ * would compute a different `stateRoot` than one that stayed up. Outputs are
+ * attacker-controlled CBOR, so this is reachable rather than theoretical.
+ *
+ * Exported because `block-apply.ts` materializes the outputs of block-embedded
+ * transactions on its own path. One rule for both, so the pool path and the
+ * block path cannot derive different ids for the same transaction.
+ */
+export function materializeOutput(box: AnyBox, txId: string, index: number): AnyBox {
+  const { id: _id, txId: _txId, index: _index, ...candidate } = box;
+  const withProvenance = { ...candidate, txId, index } as AnyBox;
+  return { ...withProvenance, id: computeBoxId(withProvenance) } as AnyBox;
 }
 
 /**
@@ -738,6 +767,14 @@ export function applyTx(
     for (const box of outputsWithIds) {
       // Always set createdAtBlock to the current height — the client may
       // provide stale or zero values.  The box IS created in this block.
+      //
+      // This updates an existing key in place, so it does not move
+      // `txId`/`index` off the end of the key order that `materializeOutput`
+      // put them in — which is load-bearing, since `rowToBox` appends them last
+      // and the two shapes must serialize identically. It does NOT re-derive
+      // the box id, so the stored id still commits to the client's declared
+      // height: that is M-11, and phase G closes it by deleting the field
+      // rather than by rewriting it here.
       deps.insertBox({ ...box, createdAtBlock: currentBlockHeight });
     }
   });

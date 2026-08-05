@@ -279,6 +279,10 @@ export async function makeApplicableBlock(
     /** Mine to this identity (coinbase owner + validatorId) instead of a fresh
      *  one — lets a test seed pre-existing boxes for the coinbase owner. */
     miner?: TestIdentity;
+    /** Split the coinbase across these owners instead of paying the miner
+     *  alone — the shape a node with `creditTreasuryPct > 0` produces. The
+     *  shares must sum to the scheduled emission or apply rejects the block. */
+    coinbaseSplit?: Array<{ owner: Uint8Array; value: bigint; isTreasury: boolean }>;
   } = {},
 ): Promise<OrderingBlock> {
   const { computeSubBlockRoot, computeUtxoTxRoot, computeBlockReward } = await import(
@@ -301,19 +305,16 @@ export async function makeApplicableBlock(
     subBlockEntries,
     pruneEntries: opts.pruneEntries ?? [],
   };
+  const lockedUntilBlock = opts.lockedUntilBlock ?? height + CREDIT_MINER_REWARD_DELAY;
   const utxoTxTree = {
     utxoTxIds: [],
     utxoTxs: [],
     likeBoxIds: [],
-    coinbaseOutputs: [
-      {
-        owner: miner.userId,
-        value: computeBlockReward(height),
-        lockedUntilBlock:
-          opts.lockedUntilBlock ?? height + CREDIT_MINER_REWARD_DELAY,
-        isTreasury: false,
-      },
-    ],
+    coinbaseOutputs: (
+      opts.coinbaseSplit ?? [
+        { owner: miner.userId, value: computeBlockReward(height), isTreasury: false },
+      ]
+    ).map((share) => ({ ...share, lockedUntilBlock })),
   };
 
   const header = {

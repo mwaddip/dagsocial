@@ -2,6 +2,13 @@ import { createHash, createPublicKey, verify } from 'crypto';
 import * as validation from '@dagsocial/validation';
 import { mintKarma } from './karma.js';
 import { mintCredits } from './credits.js';
+import {
+  authorRewardContext,
+  coinbaseContext,
+  likerRefundContext,
+  postlockUnlockContext,
+  vouchSettleContext,
+} from '../mint-provenance.js';
 import { applyKarmaDecay } from './decay.js';
 import {
   getMaturedVouchCooldowns,
@@ -16,7 +23,7 @@ import { computeBlockReward, computeSubBlockRoot, computeUtxoTxRoot, clearTempla
 import { expectedTarget } from './difficulty.js';
 import { canonicalRewardsJson } from './epoch-canonical.js';
 import { DagService } from './dag-service.js';
-import { applyTx, validateTx } from './utxo-engine.js';
+import { applyTx, materializeOutput, validateTx } from './utxo-engine.js';
 import { getSystemKeypair } from '../store/system.js';
 import {
   getKarmaBox,
@@ -70,7 +77,12 @@ import type { AnyBox, OrderingBlock, UtxoTransaction } from '@dagsocial/types';
 function processVouchCooldowns(currentHeight: number): void {
   const matured = getMaturedVouchCooldowns(currentHeight);
   for (const row of matured) {
-    mintKarma(row.voucherId, row.karmaAmount, currentHeight);
+    mintKarma(
+      row.voucherId,
+      row.karmaAmount,
+      currentHeight,
+      vouchSettleContext(row.voucherId, row.targetId),
+    );
     deleteVouchCooldown(row.voucherId, row.targetId);
   }
 }
@@ -526,8 +538,15 @@ function applyMutationPhase(
 
   // 7. Apply coinbase — mint credits for each output. The store choke point
   // journals both the pre-existing boxes the mint merges in and the new box.
-  for (const out of block.utxoTxTree.coinbaseOutputs) {
-    mintCredits(out.owner, out.value, height, out.lockedUntilBlock);
+  //
+  // N mint events, not one N-output transaction: each output gets its own
+  // subject and its own synthetic txId. That reflects what the code does — each
+  // `mintCredits` call merges a *different* set of pre-existing credit boxes,
+  // so the outputs share no input set and are not one transaction in any
+  // meaningful sense (NODE_INTERFACE → "`index` is always 0 for mints").
+  for (let i = 0; i < block.utxoTxTree.coinbaseOutputs.length; i++) {
+    const out = block.utxoTxTree.coinbaseOutputs[i]!;
+    mintCredits(out.owner, out.value, height, coinbaseContext(i), out.lockedUntilBlock);
   }
 
   // 7. Confirm sub-blocks — create placeholders if post doesn't exist
@@ -751,7 +770,7 @@ function applyMutationPhase(
       if (reward.authorReward > 0n) {
         const post = getPost(postId);
         if (post && 'author' in post) {
-          mintKarma(post.author, reward.authorReward, height);
+          mintKarma(post.author, reward.authorReward, height, authorRewardContext(postId));
         }
       }
 
@@ -760,15 +779,26 @@ function applyMutationPhase(
         const refund = reward.likerRefunds[likerId];
         if (refund !== undefined && refund !== 0n) {
           const likerBytes = new Uint8Array(Buffer.from(likerId, "hex"));
-          mintKarma(likerBytes, refund, height);
+          mintKarma(likerBytes, refund, height, likerRefundContext(postId, likerBytes));
         }
       }
 
-      // Post lock karma unlocked
+      // Post lock karma unlocked.
+      //
+      // This and the author reward above mint to the **same author, for the
+      // same post, at the same height**. The `reason` tag is the only thing
+      // separating them, which is why the context constructors pair reason with
+      // subject: swapping them here would produce a box-id collision, not an
+      // error.
       if (reward.postLockKarmaUnlocked && reward.postLockKarmaUnlocked > 0n) {
         const post = getPost(postId);
         if (post && 'author' in post) {
-          mintKarma(post.author, reward.postLockKarmaUnlocked, height);
+          mintKarma(
+            post.author,
+            reward.postLockKarmaUnlocked,
+            height,
+            postlockUnlockContext(postId),
+          );
         }
       }
     }
@@ -866,10 +896,12 @@ function applyMutationPhase(
       continue;
     }
 
-    const outputs = tx.outputs.map((box) => ({
-      ...box,
-      id: computeBoxId(box),
-    })) as AnyBox[];
+    // `txId` here is the block's declared id, already checked byte-for-byte
+    // against `computeTxId(tx)` above — so it is the real creating transaction,
+    // not a re-derivation. Position in `tx.outputs` is the `index`.
+    const outputs = tx.outputs.map((box, index) =>
+      materializeOutput(box as AnyBox, txId, index),
+    );
     queue.push({ txId, tx, outputs });
   }
 
