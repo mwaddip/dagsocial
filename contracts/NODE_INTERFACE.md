@@ -1098,6 +1098,18 @@ application anyway, which is exactly when a journal is open.
 With no journal open (bootstrap, non-block paths) `insertBox` records nothing,
 consistent with every other choke-point hook.
 
+**A missing record means maximally stale, never "skip this owner".** The
+fallback is `{lastActivityBlock: 0, lastDecayBlock: 0}`. Both total options are
+defensible in isolation and they fail in **opposite directions**, which is why
+the choice belongs here rather than in whoever writes the code: over-charging an
+identity by a fraction of an interval is recoverable and visible, whereas
+silently exempting one from decay forever is an unbounded economic hole and
+looks like nothing at all. Choose the recoverable failure.
+
+With genesis writing its own record (below), this path should be unreachable —
+but "should be unreachable" is exactly the condition under which a silent
+exemption would never be noticed.
+
 **Genesis is the one box created with no journal open.** `ensureSystemKarmaBox`
 runs at startup, so the system identity gets no record from the choke point. It
 must be given one explicitly at `genesisHeight`, **not** left to a
@@ -1471,13 +1483,22 @@ order, an attacker's key positions cannot survive into the value at all. Until
 then, strip-then-append is the guard, and it is the reason `materializeOutput`
 exists as a shared function rather than an inlined assignment.
 
-**2. The proof endpoint must not throw on a record.** `GET /api/v1/proof/:boxId`
-decodes whatever value the key resolves to with `deserializeBoxWithId`; a
-record-shaped value would throw. Keys are indistinguishable from outside — both
-kinds are 32 bytes of hash output — so a client *can* ask for one. **This is a
-phase D obligation, not phase B:** nothing populates records until phase D, so
-the tree provably contains none before it, and phase B has no reachable defect.
-Phase D MUST land the endpoint fix in the same unit that populates records.
+**2. The proof endpoint must not throw on a record, and must say which kind it
+served.** `GET /api/v1/proof/:boxId` decodes whatever value the key resolves to;
+a record-shaped value would throw under a box-only decoder. Keys are
+indistinguishable from outside — both kinds are 32 bytes of hash output — so a
+client *can* ask for one. Landed in phase D, alongside populating the record.
+
+The response carries **`kind: 'box' | 'record' | null`**. This is required, not
+cosmetic: the proof verifies the value bytes whichever kind they are, so without
+an explicit discriminant a light client would verify a valid proof and then read
+a record as a box with every field `undefined` — treating committed state as a
+malformed box. That is strictly worse than the throw it replaced, because it
+fails silently and *with* a valid proof. `null` distinguishes an absent key (a
+valid exclusion proof) from "present, and not a box".
+
+*(The route parameter is still named `boxId` while addressing two entity kinds.
+Renaming it is a public API change and deliberately not done here.)*
 
 **3. Disjointness must be re-argued, not inherited.** The comment in
 `avl-prover.ts` justifying the remove-group/insert-group split argues from
