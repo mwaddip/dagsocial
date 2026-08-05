@@ -1238,9 +1238,53 @@ redundancy is what lets a light client verify honesty rather than trust it.
 >
 > **Provenance keys are therefore assigned conditionally, never as explicit
 > `undefined`** — the discipline `rowToBox` already applies to `decayBurn` and
-> `lockedUntilBlock`. Box **ids** are not exposed: `canonicalBoxBytes`
-> destructures `id`/`txId`/`index` away, so it is total over both shapes. Only
-> the AVL value is.
+> `lockedUntilBlock`. Box **ids** are not exposed to *this* hazard:
+> `canonicalBoxBytes` destructures `id`/`txId`/`index` away, so it is total
+> over both shapes. Only the AVL value is.
+
+**1b. Key ORDER is consensus-visible too — and is currently violated.** Found
+by the phase B1 session, verified and extended by main. Neither encoder
+canonicalises map key order: cbor-x emits keys in JS insertion order, so
+`{value, guard, owner}` and `{owner, value, guard}` produce different bytes.
+This is **wider than 1a** — it reaches `canonicalBoxBytes`, and therefore box
+**ids**, not only the AVL value. The contract already warns that
+`canonicalBoxBytes` is not RFC 8949 canonical CBOR; key order is the other half
+of what that non-canonicality costs.
+
+The implicit convention is that `rowToBox` mirrors each producer's field order.
+It holds for karma, credit, like, invite and bond — checked, including the demo
+UI, which builds client-side box types in `rowToBox`'s order. **It does not hold
+for `post_lock`:**
+
+| Source | Order after `serializeBox` strips `id`/`boxType` |
+|--------|--------------------------------------------------|
+| `block-creator.ts` remainder box | `value, originalValue, createdAtBlock, owner, targetPostId, guard` |
+| `rowToBox` / demo UI | `value, createdAtBlock, originalValue, owner, targetPostId, guard` |
+
+Measured: identical length, different bytes (`…6d6f726967696e616c56616c7565…` vs
+`…6e637265617465644174426c6f636b…`). Two consequences:
+
+- **Latent fork.** A partial post-lock unlock inserts the remainder box in
+  producer order; `bootstrapAvlProver` later re-serialises it in `rowToBox`
+  order. Bootstrap only runs when AVL storage is empty while the UTXO set is
+  populated — which is exactly the documented "wipe the AVL SQLite store"
+  deploy step. Wiping the store *without* also wiping the chain silently
+  changes the `stateRoot`. Currently unreachable only because the deploy gate
+  mandates both.
+- **It breaks Spec G's central promise.** `stored.id === computeBoxId(stored)`
+  is supposed to become structural at phase G. Under order sensitivity it does
+  not: re-deriving an id from a `rowToBox`-reconstructed `post_lock` yields a
+  different id than the producer computed. Provenance does not fix this — only
+  a canonical field order does.
+
+> **Resolution: canonical key ordering is a phase G obligation.** Both encoders
+> must impose an order rather than inherit the caller's — lexicographic key sort
+> is the simplest total rule. Phase G is already the one phase where ids
+> legitimately move and every id-asserting test updates together, so folding it
+> in costs no extra churn; doing it earlier moves ids twice. Until then,
+> **producers and `rowToBox` MUST agree on field order**, and `post_lock` is a
+> known outstanding violation — do not "fix" it by reordering one site, which
+> treats the instance and leaves the class.
 
 **2. The proof endpoint must not throw on a record.** `GET /api/v1/proof/:boxId`
 decodes whatever value the key resolves to with `deserializeBoxWithId`; a
