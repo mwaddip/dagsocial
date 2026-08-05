@@ -216,6 +216,30 @@ reason. The discriminant is **semantic, never positional** — deriving it from 
 would make identity order-dependent, the failure class M-12 closed for the AVL feed. Full
 reason/subject table in `NODE_INTERFACE.md`.
 
+> **Injectivity is only half-guaranteed here, and the other half is `NODE_INTERFACE.md`'s.**
+> *Across* reasons it holds unconditionally, because no `MintReason` is a prefix of another
+> (verified and test-pinned). *Within* one reason it does **not** hold automatically: `subject`
+> carries no length prefix, so two different subjects could concatenate identically. Every
+> per-reason subject encoding MUST therefore be **fixed-length or self-delimiting**. This
+> package cannot enforce it — the caller owns the bytes.
+
+#### Pinned byte forms
+
+Protocol-visible: a mirror implementation (demo UI, light client) that chooses differently
+computes different ids.
+
+- **`txId` enters a preimage as the UTF-8 bytes of its 64-character hex string**, not as the 32
+  decoded bytes. Consistent with how every other id already enters a preimage here
+  (`computeTxId` hashes input `BoxId`s as text, `postFieldBytes` encodes `parentRefs` as text);
+  keeps derivation **total** on untrusted input, since a hex decode throws on a malformed
+  `txId` and light clients derive ids from attacker-supplied fields; and is strictly more
+  injective, as decoding would collapse `AB…` and `ab…` onto one id. `reason` likewise enters
+  as ASCII.
+- **`u32BE` is total, never throwing.** Input outside `[0, 2³²−1)` writes the all-ones
+  sentinel, following `post.ts`'s numeric-writer discipline for the M-5 no-panic contract. The
+  encodable domain excludes the sentinel, so a well-formed index or height never collides with
+  a malformed one. A mirror that throws instead would diverge.
+
 #### Domain tags
 
 | Constant | Preimage it separates |
@@ -237,13 +261,29 @@ Exactly one encoder defines `canonicalCbor` for identity: the `cbor-x` `Encoder`
 that actually computes ids. Node's AVL value encoder (`state/serialize-box.ts`) is a
 **separate, tagged** encoding for tree values and is not interchangeable with it.
 `serialization.ts` must not export a third — it previously did, using cbor-x's *default*
-`encode`, which is neither.
+`encode`, which is neither. `computeTxId` hashes its outputs through `canonicalBoxBytes` for
+the same reason: one strip rule, so tx and box derivation cannot drift.
+
+⚠ **`canonicalBoxBytes` is cbor-x framing, NOT RFC 8949 canonical CBOR.** It emits the fixed
+two-byte map header (`b9 00NN`), not the minimal-length form (`a7`). The name invites the wrong
+assumption — a mirror written to the CBOR canonicalisation rules computes different ids. The
+demo UI already encodes this way; full bytes are pinned as golden vectors in
+`test/utxo.test.ts`.
 
 #### Migration window (Spec G phases A–F)
 
 During implementation `txId`/`index` are **optional** and `createdAtBlock` is retained, so every
 phase lands workspace-green. Phase G tightens them to required, deletes `createdAtBlock` and
 `lastTouchBlock`, and switches the derivation. **This subsection is deleted with phase G.**
+
+Two things the Functions table below describes in their **end state** but which are
+deliberately not yet true, so the contract is not read as demanding them early:
+
+- **`computeBoxId` keeps its legacy content-hash derivation** until phase G. It is the M-11
+  derivation and cannot be honest, but switching it before node's producers set provenance
+  would break every existing consumer at once.
+- **`TX_ID_DOMAIN` is exported but not yet applied** in `computeTxId`. Applying it changes
+  every txId and node's golden vectors with it — phase G, alongside the `computeBoxId` switch.
 
 #### Value denomination (P0 — Spec B, 8-decimal BigInt)
 
