@@ -730,6 +730,34 @@ it was violated everywhere it could be, in both implementations, because a local
 nothing detects until provenance exists. **When auditing a mirror, assume the
 defect is in every site that strips, not the one that was reported.**
 
+#### The mirror test MUST cover every box type
+
+Not a representative one. The UI converts hex-string fields to bytes before
+encoding using a hardcoded `binaryFields` name list, which is a hand-maintained
+copy of "which box fields are `Uint8Array` in types" — and it **omitted
+`VouchBox`'s `voucherId` and `targetId`**. A client-built vouch box would encode
+them as CBOR *text* (`7840` + 64 ASCII) where the node writes a *byte string*
+(`5820` + 32 raw), giving a different box id. Latent only because the vouch flow
+POSTs to `/vouches` and never builds the box client-side.
+
+That gap survived because the mirror covered **karma and credit only** — five of
+seven box types were never encoded through both implementations and compared. So
+the enforceable rule is coverage, not documentation: with every box type in the
+mirror, a missing `binaryFields` entry fails mechanically instead of waiting for
+someone to notice the list is a manual copy of a type definition.
+
+⚠ **This is the second instance of the shape.** Phase C's report §4.2 records the
+same thing in a different file — a round-trip test that used only a karma box, so
+an in-range record tag at `0x03` could not collide with karma at `0x01` and the
+mutation died against the literal assertion instead of the behaviour. **A
+"representative" fixture in a test whose whole job is cross-implementation or
+cross-kind agreement is not representative of anything.** Enumerate.
+
+*(Having UI builders carry `Uint8Array` directly would remove the list entirely
+and is the cleaner end state. It is deliberately **not** done here: it is
+consensus-visible surgery across every box-building site, and it stops being
+urgent once drift is caught by test.)*
+
 ### Phase G checklist — everything the tightening phase owes
 
 Obligations have accumulated across phases B–D and are stated where they were
