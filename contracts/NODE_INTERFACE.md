@@ -514,6 +514,116 @@ Architecture document for the full model. Key properties:
   decay cycles continue burning. Normal activity boxes reset the clock.
 - **Rollback:** Journaled and reversed during fork resolution.
 
+**The clock moves to committed state (Spec G).** `isIdentityStale` and
+`owedPeriods` read box `createdAtBlock` today. Boxes stop carrying a height, so
+the clock becomes the `IdentityRecord` (Store Interface → Identity Records):
+
+```
+stale       = (height − lastActivityBlock) > staleThresholdBlocks
+owedPeriods = floor( (height − max(lastActivityBlock, lastDecayBlock)) / interval )
+```
+
+**Semantics are unchanged — this is a representation swap, and it must be
+behaviour-identical (Spec G D10).** The equivalence: today's staleness test is
+"no unspent non-decay-burn karma box newer than the threshold", and a non-decay
+karma box is created exactly when the owner is touched, so `lastActivityBlock`
+is the max over those heights and the predicate is the same. Today's
+`owedPeriods` reads the *oldest* non-decay box, falling back to the *youngest*
+box when all are decay-burn; forced consolidation means normally one karma box
+(oldest == newest == last touch), and after a decay the only box is the
+decay-burn box at exactly `lastDecayBlock` — hence the `max`. Any behavioural
+difference is a bug in this unit, not a design change; the decay *trigger*
+change (bonded posts) belongs to the karma-economics track.
+
+**Phase D owns this switch**, along with populating the record —
+`lastActivityBlock` on non-decay karma creation, `lastDecayBlock` when decay
+fires — and a golden-output equivalence harness captured from the current
+implementation *before* the change.
+
+---
+
+## Box Identity and Mint Provenance (Spec G)
+
+Every box id derives from its creating transaction
+(`TYPES_INTERFACE.md` → BoxId). Boxes created by **block application** rather
+than by a user transaction — coinbase, karma mints, decay, epoch post-locks,
+genesis — have no transaction, so each mint *event* derives a synthetic one:
+
+```
+mintTxId = blake2b512( MINT_ID_DOMAIN ‖ u32BE(height) ‖ reason ‖ subject )[0:32]
+boxId    = blake2b512( BOX_ID_DOMAIN ‖ canonicalBoxBytes(candidate) ‖ utf8(mintTxId) ‖ u32BE(index) )[0:32]
+```
+
+Box derivation is then identical to the user-transaction path — one derivation,
+not two.
+
+### The subject encoding rule
+
+> **Every per-reason `subject` encoding MUST be fixed-length or
+> self-delimiting.** `subject` carries no length prefix, so within a single
+> reason two different subjects could otherwise concatenate to identical bytes
+> and collide. *Across* reasons uniqueness holds unconditionally — no
+> `MintReason` is a prefix of another (verified and test-pinned in types) — but
+> that says nothing about within-reason collisions. `@dagsocial/types` cannot
+> enforce this: it takes `subject: Uint8Array` and the caller owns the bytes.
+> **This contract is the other half of that guarantee.**
+
+Two byte-form rules, both inherited from `TYPES_INTERFACE.md` → Pinned byte
+forms, so a mirror implementation derives the same ids:
+
+- a value typed as a **hex string** (`PostId`, `TxId`) enters as the UTF-8 bytes
+  of its hex text, never as decoded bytes;
+- a value typed as **`Uint8Array`** (`UserId`, pubkeys) enters as its raw bytes.
+
+### Reason and subject table
+
+| `reason` | Subject | Encoding | Bytes | Site |
+|----------|---------|----------|-------|------|
+| `coinbase` | coinbase output index | `u32BE(i)` | 4 | `applyMutationPhase` → `mintCredits`, per coinbase output |
+| `vouch-settle` | `(voucherId, targetId)` | raw ‖ raw | 64 | `processVouchCooldowns` → `mintKarma` |
+| `author-reward` | `targetPostId` | `utf8(hex)` | 64 | epoch tally → `mintKarma(post.author, …)` |
+| `liker-refund` | `(targetPostId, likerId)` | `utf8(hex)` ‖ raw | 96 | epoch tally → `mintKarma(liker, refund)` |
+| `postlock-unlock` | `targetPostId` | `utf8(hex)` | 64 | epoch tally → `mintKarma(post.author, postLockKarmaUnlocked)` |
+| `postlock-remainder` | `targetPostId` | `utf8(hex)` | 64 | `block-creator.ts` epoch tally, remainder `PostLockBox` |
+| `decay` | `owner` | raw | 32 | `applyKarmaDecay` |
+| `genesis` | which genesis box | `u32BE(k)`: `0` = system karma, `1` = faucet credits | 4 | `ensureSystemKarmaBox` / `ensureFaucetCreditBox` |
+
+Every encoding above is **fixed-length**, so the rule holds by construction
+rather than by inspection.
+
+⚠ **`genesis` deliberately does not use the ASCII tags `system-karma` /
+`faucet-credits`** that Spec G §3.2 sketched. Those are variable-length and
+neither self-delimiting nor fixed — they are merely *prefix-free*, which happens
+to be sufficient for this pair but is not a property the rule can check per
+encoding. A `u32BE` selector satisfies the rule outright. Adding a third genesis
+box then costs one integer, not a re-examination of prefix-freeness.
+
+`reason` is the discriminant that separates `author-reward` from
+`postlock-unlock`, which otherwise mint to the same author, for the same post,
+at the same height.
+
+### `index` is always 0 for mints
+
+Each mint event emits exactly one box, so its `index` is `0`. Multi-output
+coinbase is **N events, not one N-output transaction**: each output gets its own
+`subject` and its own synthetic txId. That reflects what the code does — each
+`mintCredits` call merges a *different* set of pre-existing boxes, so the outputs
+share no input set and are not one transaction in any meaningful sense. The
+`index` field exists so mint and transaction derivation share one code path.
+
+### Discriminants are semantic, never positional
+
+A mint's identity MUST NOT derive from its position in the journal, the block,
+or any iteration order. Position-derived identity would put ordering back into
+*identity* — strictly worse than the M-12 ordering bug P2 closed for the AVL
+feed, because there the fix was a sort at one boundary, whereas an
+order-dependent id is baked into committed state and unrecoverable.
+
+**Adding a mint reason** therefore requires three things in one unit: the ASCII
+tag added to `MintReason` in types, a fixed-length or self-delimiting subject
+encoding added to the table above, and an argument at the call site that
+`(height, reason, subject)` cannot repeat.
+
 ---
 
 ## Ordering Block Creator Contract
@@ -737,11 +847,119 @@ Fresh schema — no Phase 1 migration.
 | `getUnspentPostLockBoxes()` | `() => PostLockBox[]` |
 | `getPostLockBox(targetPostId)` | `(string) => PostLockBox \| null` |
 | `getPostTotalLikes(postId)` | `(PostId) => number` — locked + free |
-| `insertBox(box)` | `(AnyBox) => void` — records `{op:'insert', boxId, box}` while a block journal is open |
-| `consumeBox(boxId, consumedAtBlock)` | `(string, number) => void` — mark as spent; records `{op:'remove', boxId}` while a block journal is open |
+| `insertBox(box)` | `(AnyBox) => void` — writes the provenance columns; records `{kind:'box', op:'insert', boxId, box}` while a block journal is open |
+| `consumeBox(boxId, consumedAtBlock)` | `(string, number) => void` — mark as spent; records `{kind:'box', op:'remove', boxId}` while a block journal is open |
 | `unconsumeBox(boxId)` | `(string) => void` — un-mark spent (fork-rollback inverse; never records) |
 | `deleteBox(boxId)` | `(string) => void` — (fork-rollback inverse; never records) |
-| `markLikeBoxesTallied(boxIds)` | `(string[]) => void` — after epoch processing (sentinel spend `-1`); records `{op:'remove', boxId}` per box while a block journal is open |
+| `markLikeBoxesTallied(boxIds)` | `(string[]) => void` — after epoch processing (sentinel spend `-1`); records `{kind:'box', op:'remove', boxId}` per box while a block journal is open |
+
+#### Box provenance columns (Spec G phase B)
+
+`utxo_boxes` carries each box's creating-transaction provenance, because
+`BoxBase` does (`TYPES_INTERFACE.md` → BoxId):
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `tx_id` | `TEXT` | Creating transaction — real, or synthetic (→ "Box Identity and Mint Provenance") |
+| `output_index` | `INTEGER` | u32 position within that transaction's outputs |
+
+`rowToBox` restores both onto every box it reconstructs; `insertBox` writes
+them. `id TEXT PRIMARY KEY` stays and **becomes sound at phase G**: two
+byte-identical boxes in one block currently collide on it (a plain `INSERT`
+throws and the totality catch rejects the whole block), which provenance-derived
+ids make structurally impossible. Do not paper over the window with
+`INSERT OR REPLACE` — that would silently drop a box.
+
+`UNIQUE(tx_id, output_index)` is required. A `(txId, index)` pair names exactly
+one box by construction, so no valid block can trip it; the constraint turns a
+derivation bug into a loud failure rather than silent state corruption.
+
+**Migration window (phases B–F):** both columns are nullable, and the unique
+index tolerates that because SQLite treats NULLs as distinct — producers do not
+set provenance until phase C. **Phase G makes them `NOT NULL`.**
+
+#### `created_at_block` is a store column, never a consensus input
+
+`createdAtBlock` left the box protocol (Spec G D3): it was the only
+apply-mutated field, and that is what made box ids dishonest (M-11). The
+**column** survives, written at apply from the *settled* height, and is
+therefore honest by construction.
+
+> ⚠ **Consensus code MUST NEVER read `created_at_block`.** It is not committed
+> in the `stateRoot`, so a node bootstrapping from an AVL snapshot cannot
+> reconstruct it. A consensus read would be an undetectable divergence surface:
+> two nodes agreeing on every committed byte could still disagree. No assertion
+> can enforce this — it is a contract and code-review rule.
+
+Legitimate readers are `getUnspentBoxes` ordering and display.
+**`getUnspentBoxes` feeding `bootstrapAvlProver` is not a counterexample:** the
+bootstrap sorts by boxId at the prover boundary (M-12), so the SQL order never
+reaches the tree. That sort is what makes this column safe to keep.
+
+Consensus reads its heights elsewhere — locks from `lockedUntilBlock`, bond
+probation from `probationStartBlock`/`probationEndBlock`, the decay clock from
+the identity record below. During the migration window `createdAtBlock` is
+still a *box field* (`TYPES_INTERFACE.md` → Migration window) and `decay.ts`
+still reads it, so the column does reach consensus transitively until phase D
+moves the clock. Closing that is exactly what phase D is for; phase G then
+deletes the field and leaves the column with no consensus reader at all.
+
+### Identity Records (Spec G phase B)
+
+The second committed entity alongside boxes: the per-identity decay clock.
+Once boxes carry no height, `decay.ts` has nothing to read from them, so the
+clock has to live in committed state (Spec G D4).
+
+```
+IdentityRecord {
+  lastActivityBlock: number   // u32 — bumped when a non-decay karma box is created for the owner
+  lastDecayBlock: number      // u32 — bumped when decay fires
+}
+```
+
+**AVL key** — `blake2b512( IDENTITY_KEY_DOMAIN ‖ identityId )[0:32]`, **never
+the raw `identityId`.** Records and boxes share one 32-byte AVL keyspace, and
+an `identityId` is 32 *attacker-chosen* bytes (a public key): used raw, someone
+could grind a keypair whose pubkey equals a live box id and collide the two
+entity kinds in the tree. Hashing under a domain tag makes that infeasible and
+is what makes the two kinds provably disjoint.
+
+**Table:** `identity_records (identity_id BLOB PRIMARY KEY, last_activity_block
+INTEGER NOT NULL, last_decay_block INTEGER NOT NULL)`. The SQL table keys on
+the raw 32 bytes; the AVL key is derived. Both are total functions of the
+identity, so the two representations cannot drift.
+
+| Function | Signature |
+|----------|-----------|
+| `getIdentityRecord(identityId)` | `(UserId) => IdentityRecord \| null` |
+| `putIdentityRecord(identityId, record)` | `(UserId, IdentityRecord) => void` — upsert; while a block journal is open, captures the row it replaces and records `{kind:'record', key, record, replaced?}` |
+| `deleteIdentityRecord(identityId)` | `(UserId) => void` — fork-rollback inverse only; never records |
+
+**Lifecycle:** created on first karma receipt, **never deleted** in normal
+operation — only by rollback. Deleting at zero balance would keep the tree
+smaller but would require revert to resurrect records with their exact prior
+values; unbounded-but-simple is the deliberate choice at this stage.
+
+**Key type is `UserId`. There is no separate identity type, and there should not
+be one.** Spec G D5 originally called for a branded `IdentityId` alias over the
+same 32 Ed25519 public-key bytes, on the reasoning that it would make future key
+rotation a one-definition change rather than a re-keying of committed state.
+That does not hold: box `owner`, `likerId`, `inviterId` and `voucherId` are the
+same pubkey and all typed `UserId`, so if rotation ever lands, box *ownership*
+has to move to the stable identity as well — otherwise karma stays owned by a
+retired key. The two types would move together, not diverge, and the seam cannot
+be exercised on the decay record alone. Branding buys safety only between things
+that are structurally identical but semantically different; these are
+semantically the same thing, so it buys nothing and costs a cast at every
+boundary. **D5 is withdrawn** (spec corrected 2026-08-05).
+
+`IDENTITY_KEY_DOMAIN` is unaffected — it separates the record's AVL key from the
+box keyspace, which is a distinct concern from how the bytes are typed.
+
+**Phase B builds this entity and does not populate it.** No producer calls
+`putIdentityRecord` until phase D, and `decay.ts` keeps reading box heights
+until then. A phase-B tree contains zero records — which is why the proof
+endpoint's obligation (AVL+ State Root → "Two entity kinds") falls to phase D.
 
 ### Vouch Cooldowns
 
@@ -832,14 +1050,25 @@ with it.)
 
 ```
 BoxMutation {
+  kind: 'box'
   op: 'insert' | 'remove'
   boxId: string                    // hex
   box?: AnyBox                     // full box — present iff op === 'insert'
 }
 
+RecordMutation {                   // Spec G phase B — identity records
+  kind: 'record'
+  key: string                      // hex — H(IDENTITY_KEY_DOMAIN ‖ identityId), the AVL key
+  identityId: UserId               // the raw 32 bytes, so rollback can address the SQL row
+  record: IdentityRecord           // the value written
+  replaced?: IdentityRecord        // prior value — absent iff the key did not exist
+}
+
+JournalMutation = BoxMutation | RecordMutation
+
 BlockJournal {
   blockHeight: number
-  mutations: BoxMutation[]         // ordered, application order — box rollback + AVL feed
+  mutations: JournalMutation[]     // ordered, application order — state rollback + AVL feed
   confirmedSubBlockIds: string[]   // inverse: unconfirmPost; also mempool re-insertion
   appliedUtxoTxs: Array<{ txId: string, txCbor: Uint8Array }>   // mempool re-insertion only
   processedFreeLikeIds: string[]   // inverse: markFreeLikesUnprocessed
@@ -854,21 +1083,39 @@ BlockJournal {
 }
 ```
 
+**One log, not parallel arrays (Spec G phase B).** `mutations` is a
+discriminated union over **every committed entity**, not a box-only log with
+sibling arrays. That is deliberate and load-bearing: a committed entity that
+never reaches the prover feed is silently absent from the `stateRoot`, and
+**no test can catch that** — the producer and the verifier omit it identically,
+so they agree on a digest over incomplete state. Making the feed derivation
+switch on `kind` turns "a new entity kind was added and nobody updated the
+prover feed" into a TypeScript exhaustiveness error. That compile-time check is
+the enforcement mechanism; do not replace it with a parallel
+`recordMutations: RecordMutation[]` array, which reinstates exactly the
+drift-by-omission shape P1 removed.
+
+The typed side-records below (`confirmedSubBlockIds`, `vouchCooldown*`, …) stay
+separate arrays because they are **not** in the `stateRoot` — they are node-local
+bookkeeping with an exact inverse. `kind: 'record'` is the first entry that is
+both journaled *and* committed, and that is the whole distinction.
+
 **Recording (choke point).** `beginBlockJournal(height)` opens the journal at
 the top of block application. While open, the store mutation primitives record
-automatically: `insertBox` appends `{op:'insert', boxId, box}`; `consumeBox`
-and `markLikeBoxesTallied` append `{op:'remove', boxId}`;
-`markFreeLikesProcessed`, `insertVouchCooldown`, and `deleteVouchCooldown`
-append their side-records, capturing the affected row(s) before writing.
-Services and call sites MUST NOT maintain parallel mutation bookkeeping —
-record-once at the choke point is the drift fix (C-5, H-5, H-7, and the
-merge-consume value-loss: the boxes `mintKarma`/`mintCredits` consume
+automatically: `insertBox` appends `{kind:'box', op:'insert', boxId, box}`;
+`consumeBox` and `markLikeBoxesTallied` append `{kind:'box', op:'remove',
+boxId}`; `putIdentityRecord` appends `{kind:'record', …}`, capturing the row it
+replaces; `markFreeLikesProcessed`, `insertVouchCooldown`, and
+`deleteVouchCooldown` append their side-records, capturing the affected row(s)
+before writing. Services and call sites MUST NOT maintain parallel mutation
+bookkeeping — record-once at the choke point is the drift fix (C-5, H-5, H-7,
+and the merge-consume value-loss: the boxes `mintKarma`/`mintCredits` consume
 internally are now journaled by construction). With no journal open, every
 primitive behaves as before and records nothing (bootstrap and non-block
 paths). The rollback inverses — `deleteBox`, `unconsumeBox`,
-`markFreeLikesUnprocessed` — never record. `beginBlockJournal` while a
-journal is open throws (the apply funnel's totality catch turns that into a
-block rejection).
+`deleteIdentityRecord`, `markFreeLikesUnprocessed` — never record.
+`beginBlockJournal` while a journal is open throws (the apply funnel's totality
+catch turns that into a block rejection).
 
 | Function | Signature |
 |----------|-----------|
@@ -881,8 +1128,10 @@ block rejection).
 | `purgeOldJournals(belowHeight)` | `(number) => void` |
 
 **Rollback (`revertBlock`).** Refuses to run while a block journal is open.
-Replays `mutations` in reverse order — `insert` → `deleteBox(boxId)`,
-`remove` → `unconsumeBox(boxId)` — then the side-record inverses, then
+Replays `mutations` in reverse order — `box`/`insert` → `deleteBox(boxId)`,
+`box`/`remove` → `unconsumeBox(boxId)`, `record` → `putIdentityRecord` with
+`replaced` when present, otherwise `deleteIdentityRecord` — then the
+side-record inverses, then
 `rollbackBlockTopology`, block + journal deletion, **and the height's AVL
 version rows** (`SqliteAvlStorage.deleteVersionAtHeight`). The version rows
 are per-block derived state exactly like the block and journal rows: left
@@ -894,8 +1143,14 @@ Apply-then-revert MUST restore the exact pre-block UTXO set and AVL digest
 for every mutation class: coinbase (including pre-existing credit boxes
 merged in), epoch mints (including pre-existing karma merged in), like-tally,
 post-lock swap, decay, vouch-cooldown mint (escrow row restored), prune
-settlement, and user txs. Reorg re-insertion reads `appliedUtxoTxs` (txCbor)
-and `confirmedSubBlockIds` as before.
+settlement, user txs, and **identity records**. Reorg re-insertion reads
+`appliedUtxoTxs` (txCbor) and `confirmedSubBlockIds` as before.
+
+Reverse order is what makes a record written **more than once in one block**
+revert correctly (activity bump then decay, at the same height): each inverse
+undoes one write, and the last one replayed is the *first* write's `replaced` —
+the true pre-block value. Do not "optimise" this into a per-key single restore
+that keeps the last `replaced`; that restores an intra-block intermediate.
 
 **Breaking:** this shape replaces the former dual representation
 (`consumedBoxIds`/`createdBoxIds` alongside typed arrays). Fresh DB required
@@ -911,11 +1166,12 @@ and `confirmedSubBlockIds` as before.
 ### AVL+ State Root
 
 The `packages/node/src/state/` module provides an authenticated dictionary over
-the UTXO set using AVL+ trees.
+**committed state** using AVL+ trees — the UTXO set, and from Spec G phase B
+also identity records (see "Two entity kinds" below).
 
-- **avl-storage:** Persistent AVL+ tree over UTXO boxes, stateRoot computed at
-  each block application and included in block headers
-- **avl-prover:** Generates inclusion/exclusion proofs for any boxId
+- **avl-storage:** Persistent AVL+ tree, stateRoot computed at each block
+  application and included in block headers
+- **avl-prover:** Generates inclusion/exclusion proofs for any key
 - **avl-endpoint:** `GET /api/v1/proof/:boxId?atHeight=N` — serves proofs to
   light clients
 - **Config:** `VERIFY_STATE_ROOT` (validate on apply, **default on** — set
@@ -931,14 +1187,14 @@ the UTXO set using AVL+ trees.
   `BlockJournal.mutations` — intra-block insert+remove pairs for the same
   boxId net out; inserted box bytes come from the journal's `box` payload,
   never a store re-fetch (`getBox` returns null for created-then-consumed
-  boxes and silently dropped them)
+  boxes and silently dropped them). The derivation switches on `kind` and
+  **must be exhaustive** — see "One log, not parallel arrays" above
 - **Canonically ordered (M-12):** `applyBlockMutations` sorts internally —
-  all removes then all inserts, each lexicographically by hex boxId — so
-  every caller inherits the canonical order; callers MUST NOT rely on their
-  input order reaching the prover. `bootstrapAvlProver` sorts the unspent
-  set by boxId the same way. Same box set in any input order → same digest;
-  a net-set remove and insert can never share a boxId (ids embed
-  `createdAtBlock`, and same-id pairs were netted out)
+  all removes, then all inserts, then all record puts, each lexicographically
+  by hex key — so every caller inherits the canonical order; callers MUST NOT
+  rely on their input order reaching the prover. `bootstrapAvlProver` sorts
+  the unspent set by boxId the same way. Same mutation set in any input order
+  → same digest
 - **Rejection-safe:** the apply funnel snapshots the prover digest before any
   mutation and rolls the prover back on **every** rejection path — explicit
   rejection, stateRoot mismatch, and the totality catch (closes the open
@@ -948,6 +1204,57 @@ the UTXO set using AVL+ trees.
   rolls the DB (including AVL storage rows) back wholesale, and the reorg's
   catch restores the in-memory prover to the pre-reorg digest — the per-block
   funnel restore only covers the failing block, not the applied prefix
+
+#### Two entity kinds (Spec G phase B)
+
+The tree holds **boxes** (key = `boxId`) and **identity records**
+(key = `H(IDENTITY_KEY_DOMAIN ‖ identityId)`; see Store Interface → Identity
+Records). Three things follow, and all three are consensus-critical.
+
+**1. The value bytes must be self-describing.** `state/serialize-box.ts`
+already prefixes a one-byte discriminator (box-type tags `0x01`–`0x07`); the
+identity record takes a tag **outside that range** — `0x80`, high bit set, so
+"box" and "not a box" is a single bit test and the box-type space stays open.
+`deserializeBox` MUST reject a non-box tag rather than mis-decode it, and a
+kind-dispatching decoder is what any value-reading caller uses.
+
+**2. The proof endpoint must not throw on a record.** `GET /api/v1/proof/:boxId`
+decodes whatever value the key resolves to with `deserializeBoxWithId`; a
+record-shaped value would throw. Keys are indistinguishable from outside — both
+kinds are 32 bytes of hash output — so a client *can* ask for one. **This is a
+phase D obligation, not phase B:** nothing populates records until phase D, so
+the tree provably contains none before it, and phase B has no reachable defect.
+Phase D MUST land the endpoint fix in the same unit that populates records.
+
+**3. Disjointness must be re-argued, not inherited.** The comment in
+`avl-prover.ts` justifying the remove-group/insert-group split argues from
+"box ids commit to `createdAtBlock`" — a premise Spec G **deletes**. Rewrite it.
+The property survives and strengthens:
+
+- *Removes vs inserts.* A key in the remove group was in the tree before this
+  block; a key in the insert group is created by it. Under provenance-derived
+  ids a box id is a function of `(candidate, txId, index)`, so two boxes share
+  an id only if they share all three — i.e. the same transaction applied at two
+  heights. A real tx cannot be: its inputs are consumed on first application.
+  **That step depends on every user tx having at least one input**, which the
+  UTXO engine enforces by rejecting empty-input txs; a zero-input user tx would
+  be replayable and would break this argument, so that rejection is load-bearing
+  for identity, not just for value. A synthetic mint tx cannot be either:
+  `mintTxId` commits to the height. Intra-block insert+remove pairs for one id
+  were already netted out upstream. So the two groups are disjoint, and the
+  split can never reorder ops on a single key. This is *stronger* than the old
+  argument, which only ruled out same-block recurrence.
+- *Boxes vs records.* Disjoint by domain separation, not by luck — box ids and
+  record keys are hashes under different domain tags. This is why the record
+  key is hashed rather than the raw 32-byte pubkey, which an attacker chooses.
+
+**Record ops use `InsertOrUpdate`.** A record put is a create on first write and
+an update afterwards, and the feed does not know which — `InsertOrUpdate`
+collapses that distinction so the prover feed needs no existence lookup. Two
+puts to the same key in one block collapse to the **last** value (last write
+wins, identical final tree); the journal keeps both entries because rollback
+needs the first one's `replaced`. Netting is per-kind: boxes cancel
+insert+remove pairs, records keep the last write — do not share one code path.
 
 ### dag_meta Table
 
@@ -1375,7 +1682,13 @@ content sweep for placeholder and missing-stump resolution.
   block application. Zero direct `consumeBox`/`insertBox` calls in HTTP routes.
 - Mutating routes return `{ status: "pending", txId, expiresAtHeight }` —
   state is not applied until the enclosing ordering block is finalized.
-- Every box mutation during block application is recorded exactly once, at
-  the store choke point, in the block journal; rollback replays inverses in
-  reverse order; the AVL feed derives from the same journal (record-once,
-  Spec B P1).
+- Every mutation of a **committed entity** during block application — boxes and
+  identity records alike — is recorded exactly once, at the store choke point,
+  in the block journal; rollback replays inverses in reverse order; the AVL
+  feed derives from the same journal (record-once, Spec B P1; Spec G phase B).
+- **Consensus code never reads the `created_at_block` column.** It is not in
+  the `stateRoot`, so a node bootstrapping from an AVL snapshot cannot
+  reconstruct it. Unenforceable by test — contract and review only.
+- A box id is a total function of the stored box: `stored.id ===
+  computeBoxId(stored)` for every box in the UTXO set (Spec G; holds from
+  phase G, when the derivation switches).
