@@ -531,17 +531,31 @@ exactly when *no* box satisfies that — i.e. when
 identity's first decay by one block, which is a behaviour change D10 forbids.
 Found by the phase D session against the code.
 
-**Semantics are unchanged — this is a representation swap, and it must be
-behaviour-identical (Spec G D10).** The equivalence: today's staleness test is
-"no unspent non-decay-burn karma box newer than the threshold", and a non-decay
-karma box is created exactly when the owner is touched, so `lastActivityBlock`
-is the max over those heights and the predicate is the same. Today's
-`owedPeriods` reads the *oldest* non-decay box, falling back to the *youngest*
-box when all are decay-burn; forced consolidation means normally one karma box
-(oldest == newest == last touch), and after a decay the only box is the
-decay-burn box at exactly `lastDecayBlock` — hence the `max`. Any behavioural
-difference is a bug in this unit, not a design change; the decay *trigger*
-change (bonded posts) belongs to the karma-economics track.
+**Staleness is unchanged.** Today's test is "no unspent non-decay-burn karma box
+newer than the threshold", and a non-decay karma box is created exactly when the
+owner is touched, so `lastActivityBlock` is the max over those heights and the
+predicate is the same.
+
+**`owedPeriods` changes, deliberately — one accepted exception to D10.** The old
+code measures from the **oldest** non-decay box (falling back to the youngest
+when all are decay-burn). The record measures from the **most recent** activity.
+
+Spec G §3.4 claimed these were equivalent, on the premise that forced
+consolidation means one karma box per owner so oldest == newest. **That premise
+is false:** `faucet-service.ts` creates karma boxes directly, bypassing
+`mintKarma`'s consolidation, so two unspent non-decay karma boxes at different
+heights is reachable — and the two formulas then disagree. Measured on the phase
+D fixture: a burn of 45 under the old rule, 30 under the new.
+
+The new behaviour is the intended one — "time since you were last active" is
+what a decay clock means, and measuring from the oldest surviving box is an
+artifact of reading box ages rather than a clock. **User-accepted 2026-08-05**,
+taken deliberately pre-network rather than discovered later. Pinned by
+`test/fixtures/decay-divergence.json`.
+
+Everything else in this unit stays behaviour-identical; any *other* difference is
+a bug, not a design change. The decay *trigger* change (bonded posts) belongs to
+the karma-economics track.
 
 **Phase D owns this switch**, along with populating the record —
 `lastActivityBlock` on non-decay karma creation, `lastDecayBlock` when decay
