@@ -611,6 +611,33 @@ coinbase is **N events, not one N-output transaction**: each output gets its own
 share no input set and are not one transaction in any meaningful sense. The
 `index` field exists so mint and transaction derivation share one code path.
 
+### Which producers attach provenance, and which deliberately do not
+
+A box gets provenance **where it is stored**, not where it is first constructed.
+
+- **Mint sites** derive a synthetic txId from their `MintContext` and use
+  `index` 0.
+- **The apply path** materialises transaction outputs through the single
+  `materializeOutput(box, txId, index)` rule — both the mempool path
+  (`validateTx`) and the block-embedded path go through it, so there is one
+  materialisation rule rather than two chances to place the keys differently.
+- **Transaction builders that insert boxes** (`invites.ts`, `credits.ts`)
+  materialise through the same helper, because their predicted ids are acted on
+  by clients.
+- **Builders that only hand a transaction to the mempool** — `faucet-service.ts`
+  and `routes/utxo.ts` — attach **nothing**. They insert no box and return no
+  predicted id; their outputs' `id` fields are vestigial, and phase G turns
+  `UtxoTransaction.outputs` into `BoxCandidate[]`, which carries *less*. Their
+  boxes get provenance when block application materialises them. Attaching there
+  would ride the wire for no consumer, have to be undone at phase G, and widen
+  the attacker-controlled-key surface (1c) to paths that currently have none.
+
+`u32BE` is **module-private in `@dagsocial/types`**, so `mint-provenance.ts`
+mirrors it, sentinel behaviour included. A silent divergence would move mint
+txIds with nothing to catch it, and this contract's own subject table mandates
+the encoding — **types should export it** (phase G, with the other types work).
+The demo UI mirror must reproduce the sentinel too, and must not throw.
+
 ### The demo UI mirror carries the same strip defect (phase E)
 
 `public/index.html`'s client-side `computeBoxId` does `const { id, ...rest } = box`
@@ -853,9 +880,9 @@ Fresh schema — no Phase 1 migration.
 | `getBox(boxId)` | `(string) => AnyBox \| null` |
 | `getUnspentBoxes()` | `() => AnyBox[]` — all unspent boxes (for AVL bootstrapping) |
 | `getKarmaBox(owner)` | `(Uint8Array) => KarmaBox \| null` — single box (backward compat) |
-| `getKarmaBoxes(owner)` | `(Uint8Array) => { boxId, value }[]` — multi-box listing |
+| `getKarmaBoxes(owner)` | `(Uint8Array) => KarmaBox[]` — multi-box listing (full boxes, keyed on `id` — the contract previously said `{ boxId, value }[]`, which was never the implementation) |
 | `getCreditBox(owner)` | `(Uint8Array) => CreditBox \| null` — single box |
-| `getCreditBoxes(owner)` | `(Uint8Array) => { boxId, value, lockedUntilBlock? }[]` — multi-box |
+| `getCreditBoxes(owner)` | `(Uint8Array) => CreditBox[]` — multi-box, `ORDER BY value DESC` (the contract previously said `{ boxId, value, lockedUntilBlock? }[]`, which was never the implementation) |
 | `getUnlockedCreditBoxes(owner, blockHeight)` | `(Uint8Array, number) => CreditBox[]` |
 | `getPendingInvites(inviterId)` | `(UserId) => InviteBox[]` — unclaimed, unexpired |
 | `getPendingInviteCount(inviterId)` | `(UserId) => number` |
@@ -1308,6 +1335,32 @@ Measured: identical length, different bytes (`…6d6f726967696e616c56616c7565…
 > **producers and `rowToBox` MUST agree on field order**, and `post_lock` is a
 > known outstanding violation — do not "fix" it by reordering one site, which
 > treats the instance and leaves the class.
+
+**1c. Key order is attacker-controlled on transaction outputs.** Found by the
+phase C3 session, and it is 1b's hazard weaponised rather than accidental.
+
+A transaction's outputs arrive as **client-supplied CBOR**, and `computeTxId`
+hashes them through `canonicalBoxBytes`, which strips `id`/`txId`/`index`. A
+client may therefore plant `txId` and `index` keys *at arbitrary positions* in
+an output's map **without changing the txId it signs** — the signature does not
+constrain what the signature does not cover.
+
+If the node then materialised that output by assigning provenance **in place**,
+the keys would keep the attacker's chosen positions, while `rowToBox` appends
+them last. Different key order, different AVL value bytes, and therefore a
+**restart-triggered `stateRoot` fork that an attacker chooses when to trigger**,
+for the cost of reordering two keys in a transaction they were sending anyway.
+
+> **Every box materialised from decoded CBOR MUST have provenance stripped and
+> re-appended, never overwritten in place.** `materializeOutput` is the single
+> materialisation rule for transaction outputs and both the UTXO engine and the
+> apply path go through it — two rules would be two chances to get the position
+> wrong.
+
+Phase G's canonical key ordering subsumes this: once the encoder imposes an
+order, an attacker's key positions cannot survive into the value at all. Until
+then, strip-then-append is the guard, and it is the reason `materializeOutput`
+exists as a shared function rather than an inlined assignment.
 
 **2. The proof endpoint must not throw on a record.** `GET /api/v1/proof/:boxId`
 decodes whatever value the key resolves to with `deserializeBoxWithId`; a
