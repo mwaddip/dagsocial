@@ -609,6 +609,43 @@ forms, so a mirror implementation derives the same ids:
 | `postlock-remainder` | `targetPostId` | `utf8(hex)` | 64 | `block-creator.ts` epoch tally, remainder `PostLockBox` |
 | `decay` | `owner` | raw | 32 | `applyKarmaDecay` |
 | `genesis` | which genesis box | `u32BE(k)`: `0` = system karma, `1` = faucet credits | 4 | `ensureSystemKarmaBox` / `ensureFaucetCreditBox` |
+| `prune-refund-author` | `(rootPostHash, owner)` | `utf8(hex)` ‖ raw | 96 | `settlePruneUtxo`, author leg |
+| `prune-refund-liker` | `(rootPostHash, likerId)` | `utf8(hex)` ‖ raw | 96 | `settlePruneUtxo`, liker leg |
+
+⚠ **The two `prune-refund-*` reasons are not yet in `MintReason`** — both
+`settlePruneUtxo` call sites pass `null`. Adding them is a `@dagsocial/types`
+change and therefore **phase G's first piece of work**, before item 4 of the
+checklist makes the provenance columns `NOT NULL` and turns the `null` into a
+hard failure.
+
+Three things about them that are decided, not open:
+
+- **Two reasons, not one.** The same user can be both an author *and* a liker
+  within one pruned subtree — they replied in a thread they also liked. One
+  reason would give both mints an identical `(height, reason, subject)` and
+  collide. This mirrors `author-reward` vs `liker-refund`, which exist for
+  exactly this reason at epoch tally.
+- **`rootPostHash` is load-bearing, not decoration.** `settlePruneUtxo` runs
+  **per prune entry**, so a block carrying two entries calls it twice at one
+  height. Without the entry's identity in the subject, an author with refunds in
+  both subtrees derives the same `mintTxId` twice at `index` 0, trips
+  `UNIQUE(tx_id, output_index)`, and a **legitimate block is rejected**.
+  (`subtreeMerkleRoot` — raw 32, giving a 64-byte subject — would serve equally
+  and commits to the exact post set; `rootPostHash` was chosen because the mint
+  id then traces to a post that can be looked up.)
+- **Prefix-freeness still holds** across the widened set: neither is a prefix of
+  the other (they diverge at `a`/`l`), and no existing tag is a prefix of either.
+  Phase A test-pinned that property over the whole set, so it re-checks
+  automatically rather than on trust.
+
+**These reasons describe today's prune settlement and are expected to be
+retired.** The karma-economics track changes both legs — the author's bond is
+burned rather than refunded, and likes become unrecoverable so the liker leg
+disappears entirely, leaving only non-author bond returns. Spec G ships against
+the code as it stands (user decision, 2026-08-06) rather than blocking on that
+work, because Spec G deliberately does not touch karma semantics — the same
+boundary that kept phase D a clean representation swap — and retiring a
+`MintReason` pre-network costs nothing.
 
 Every encoding above is **fixed-length**, so the rule holds by construction
 rather than by inspection.
@@ -713,15 +750,18 @@ found, which is right for context and wrong for not missing any. Consolidated:
 
 **Blockers — these make phase G *fail* if not done first**
 
-8. **`settlePruneUtxo` has no mint reason.** Its two `mintKarma` sites pass
-   `null`, which is harmless only while the columns are nullable. Item 4 turns
-   it into a hard failure. Needs new `MintReason` member(s) in types plus the
-   subject encoding, and the subject must carry the prune entry's identity —
-   `settlePruneUtxo` runs *per entry*, so two entries in one block can otherwise
-   collide on `(height, reason, subject)`.
+8. **`settlePruneUtxo` has no mint reason — do this FIRST.** Its two `mintKarma`
+   sites pass `null`, which is harmless only while the columns are nullable, and
+   item 4 turns it into a hard failure. Add `prune-refund-author` and
+   `prune-refund-liker` to `MintReason` in types, their subject encoders in
+   `mint-provenance.ts`, and a `rootPostHash` parameter to `settlePruneUtxo`.
+   Fully specified in "Box Identity and Mint Provenance" → reason table — the
+   encodings, the two-reasons-not-one argument and the per-entry collision are
+   decided, not open.
 9. **`u32BE` should be exported from `@dagsocial/types`.** `mint-provenance.ts`
    currently mirrors it, sentinel included; a silent divergence would move mint
-   txIds with nothing to catch it.
+   txIds with nothing to catch it. Nothing is wrong today — this is hardening,
+   and it is the one item here that needs no decision.
 
 Items 6 and 7 share a shape worth noting: a rule that is *correct* but
 *unenforceable* while the legacy field still exists. Neither is a defect today;
