@@ -1,6 +1,6 @@
 import { encode, decode } from 'cbor-x';
 import type { Post } from './post.js';
-import type { AnyBox, UtxoTransaction } from './utxo.js';
+import type { UtxoTransaction } from './utxo.js';
 import type { Stump } from './stump.js';
 import type {
   SubBlock,
@@ -25,12 +25,13 @@ function fromBuffer<T>(bytes: Uint8Array): T {
 // ---------------------------------------------------------------------------
 // Box
 // ---------------------------------------------------------------------------
-
-export function serializeBox(box: AnyBox): Uint8Array {
-  // Exclude `id` for canonical encoding (id is derived from the rest)
-  const { id, ...rest } = box;
-  return toBuffer(rest);
-}
+//
+// `serializeBox` lived here and was deleted by Spec G phase 0. It had no `src`
+// caller and, worse, it was built on cbor-x's *default* `encode` — neither of
+// the two encoders that matter. Box identity comes from `canonicalBoxBytes` in
+// `utxo.ts`; AVL tree values come from node's tagged `state/serialize-box.ts`.
+// The two test files that asserted box byte form against it were re-pointed at
+// `canonicalBoxBytes`, which is what actually computes ids.
 
 // ---------------------------------------------------------------------------
 // Post

@@ -59,11 +59,24 @@ export { signingHash, computePostId, verifyPostId, getPostDiscriminator, buildPr
 export type { Post, PostId } from './post.js';
 
 // UTXO
-export { computeBoxId, computeTxId, selectBoxes } from './utxo.js';
+export {
+  computeBoxId,
+  computeCandidateBoxId,
+  computeMintTxId,
+  computeTxId,
+  canonicalBoxBytes,
+  selectBoxes,
+  BOX_ID_DOMAIN,
+  TX_ID_DOMAIN,
+  MINT_ID_DOMAIN,
+  IDENTITY_KEY_DOMAIN,
+} from './utxo.js';
 export type {
   BoxId,
+  BoxCandidate,
   BoxBase,
   BoxGuard,
+  MintReason,
   KarmaBox,
   CreditBox,
   LikeBox,
@@ -96,7 +109,6 @@ export type {
 
 // Serialization
 export {
-  serializeBox,
   serializeTx,
   encodePost,
   decodePost,

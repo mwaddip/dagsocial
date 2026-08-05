@@ -3,23 +3,161 @@ import { Encoder } from 'cbor-x';
 const hashEncoder = new Encoder({ tagUint8Array: false, useRecords: false, mapsAsObjects: true });
 import type { UserId } from './identity.js';
 import type { PostId } from './post.js';
-import { PROTOCOL_VERSION } from './constants.js';
 
 // ---------------------------------------------------------------------------
 // Box identity
 // ---------------------------------------------------------------------------
 
 export type BoxId = string;
+export type TxId = string;
+
+const encoder = new TextEncoder();
 
 /**
- * Deterministic box ID from canonical CBOR encoding of the box (excluding the
- * `id` field itself). Same box bytes = same ID.
+ * Domain separators (Spec G).
+ *
+ * Box ids, transaction ids and identity-record keys all live in one 32-byte
+ * keyspace, and the AVL tree holds more than one entity kind, so the
+ * separation has to be in the preimage rather than in the caller's head.
+ * `computePostId` already works this way via its module-local `POST_ID_DOMAIN`;
+ * these are exported because node and the demo UI must mirror them byte for
+ * byte.
  */
+export const BOX_ID_DOMAIN = encoder.encode('dagsocial/box-id/1');
+export const TX_ID_DOMAIN = encoder.encode('dagsocial/tx-id/1');
+export const MINT_ID_DOMAIN = encoder.encode('dagsocial/mint-tx-id/1');
+export const IDENTITY_KEY_DOMAIN = encoder.encode('dagsocial/identity-key/1');
+
 /** cbor-x returns Buffer; cast to Uint8Array for hash.update compatibility. */
 function encodeForHash(data: unknown): Uint8Array {
   return hashEncoder.encode(data) as unknown as Uint8Array;
 }
 
+/**
+ * The single canonical identity encoding for a box.
+ *
+ * This is the encoder that actually computes ids — exported so tests and mirror
+ * implementations (demo UI, light client) assert against it instead of a
+ * lookalike. Two other box encoders exist and neither is interchangeable with
+ * it: node's `state/serialize-box.ts` is a tagged encoding for AVL *values*,
+ * and `serialization.ts` used to export a third built on cbor-x's default
+ * `encode` (deleted in Spec G phase 0 — its output differs from this one by the
+ * two-byte `d840` typed-array tag on every `Uint8Array` field).
+ *
+ * Provenance fields are stripped, so this is total over both a `BoxCandidate`
+ * and a stored box: `canonicalBoxBytes(box)` recovers the candidate bytes the
+ * creator hashed.
+ *
+ * Mirror implementations must reproduce cbor-x's exact framing, notably the
+ * fixed two-byte map header (`b9 <count>`), not minimal-length canonical CBOR.
+ */
+export function canonicalBoxBytes(candidate: BoxCandidate): Uint8Array {
+  // Strip id/provenance at runtime — TS `Omit<>` does not enforce it, and the
+  // same call must work on a stored box.
+  const { id: _id, txId: _txId, index: _index, ...rest } = candidate as BoxBase;
+  return encodeForHash(rest);
+}
+
+/**
+ * Write `n` as 4 bytes big-endian.
+ *
+ * Deliberately *total*, in the shape `post.ts` uses for its little-endian
+ * writers: a value outside the encodable domain writes the all-ones sentinel
+ * rather than throwing, so a malformed box can never turn id derivation into a
+ * panic on untrusted input (audit M-5). The encodable domain excludes the
+ * sentinel itself, so a well-formed index or height never collides with a
+ * malformed one.
+ */
+const U32_SENTINEL = 0xffffffff;
+
+function u32BE(n: number): Uint8Array {
+  const encodable = typeof n === 'number' && Number.isSafeInteger(n) && n >= 0 && n < U32_SENTINEL;
+  const v = encodable ? n : U32_SENTINEL;
+  return new Uint8Array([(v >>> 24) & 0xff, (v >>> 16) & 0xff, (v >>> 8) & 0xff, v & 0xff]);
+}
+
+/**
+ * Box id from creating-transaction provenance (Spec G):
+ *
+ *   blake2b512( BOX_ID_DOMAIN ‖ canonicalBoxBytes(candidate)
+ *               ‖ utf8(txId) ‖ u32BE(index) )[0:32]
+ *
+ * `txId` is hashed as the **UTF-8 bytes of its 64-char hex string**, not as the
+ * 32 decoded bytes. That matches how every other id already enters a preimage
+ * here (`computeTxId` hashes input `BoxId`s as text; `postFieldBytes` encodes
+ * `parentRefs` postIds as text), keeps the function total on untrusted input —
+ * a hex decode would throw on a malformed `txId` field — and is strictly more
+ * injective, since decoding would map `AB…`/`ab…` onto one id.
+ *
+ * Honest, predictable and collision-free at once: the derivation binds content
+ * *and* the position that content was created at, so it is knowable at signing
+ * time and cannot be invalidated by anything block application does.
+ */
+export function computeCandidateBoxId(candidate: BoxCandidate, txId: TxId, index: number): BoxId {
+  return createHash('blake2b512')
+    .update(BOX_ID_DOMAIN)
+    .update(canonicalBoxBytes(candidate))
+    .update(encoder.encode(txId))
+    .update(u32BE(index))
+    .digest()
+    .subarray(0, 32)
+    .toString('hex');
+}
+
+/**
+ * Why a box created by block application rather than by a user transaction
+ * still has one — coinbase, karma mints, decay, epoch post-locks, genesis.
+ * The discriminant is semantic, never positional: deriving it from journal
+ * position would put ordering back into *identity*, which is the failure class
+ * M-12 closed for the AVL feed.
+ */
+export type MintReason =
+  | 'coinbase'
+  | 'vouch-settle'
+  | 'author-reward'
+  | 'liker-refund'
+  | 'postlock-unlock'
+  | 'postlock-remainder'
+  | 'decay'
+  | 'genesis';
+
+/**
+ * Synthetic transaction id for a mint event:
+ *
+ *   blake2b512( MINT_ID_DOMAIN ‖ u32BE(height) ‖ utf8(reason) ‖ subject )[0:32]
+ *
+ * Feeding this to `computeCandidateBoxId` gives mints and user transactions one
+ * derivation path rather than two id schemes.
+ *
+ * `subject` bytes are the **caller's** to encode — this package does not know
+ * what a postId or a voucher pair is; the per-reason encoding table belongs to
+ * `NODE_INTERFACE.md`. Note that `subject` is neither length-prefixed nor
+ * required to be fixed-width here, so uniqueness within one reason rests on
+ * that table keeping each reason's encoding fixed-length or self-delimiting.
+ * Across reasons it holds unconditionally: no `MintReason` is a prefix of
+ * another.
+ */
+export function computeMintTxId(height: number, reason: MintReason, subject: Uint8Array): TxId {
+  return createHash('blake2b512')
+    .update(MINT_ID_DOMAIN)
+    .update(u32BE(height))
+    .update(encoder.encode(reason))
+    .update(subject)
+    .digest()
+    .subarray(0, 32)
+    .toString('hex');
+}
+
+/**
+ * Legacy content-hash box id: `blake2b512(canonicalCbor(box minus id))[0:32]`.
+ *
+ * Unchanged during the Spec G migration window (phases A–F) so every existing
+ * producer, consumer and golden vector keeps passing while node and the demo UI
+ * move over. Phase G redefines it as
+ * `computeCandidateBoxId(candidate, box.txId, box.index)` and deletes this
+ * derivation — which is what closes M-11, since this one hashes the
+ * apply-mutated `createdAtBlock` and so cannot match the box that gets stored.
+ */
 export function computeBoxId(box: Omit<BoxBase, 'id'>): BoxId {
   // Strip `id` at runtime if present (TS Omit<> doesn't enforce at runtime)
   const { id: _, ...rest } = box as BoxBase;
@@ -32,11 +170,30 @@ export function computeBoxId(box: Omit<BoxBase, 'id'>): BoxId {
 
 export type BoxGuard = 'owner_signature' | 'epoch_tally' | 'hash_preimage' | 'inviter_signature' | 'bond_dual' | 'hash_preimage_with_bond';
 
-export interface BoxBase {
-  id?: BoxId;           // Computed via computeBoxId; optional during construction
+/**
+ * The creator-chosen fields — what a client builds and what `computeTxId`
+ * hashes. No `id`, no provenance.
+ */
+export interface BoxCandidate {
   boxType: 'karma' | 'credit' | 'like' | 'invite' | 'bond' | 'post_lock' | 'vouch';
   value: bigint;        // integer base units, uniform across box types; value < 2^64 keeps the CBOR uint64 form
   createdAtBlock: number;
+}
+
+/**
+ * A box as it exists in the ledger, the store and the AVL value: a candidate
+ * plus the provenance that gives it identity.
+ *
+ * `txId`/`index` are **optional** and `createdAtBlock` is **retained** for the
+ * Spec G migration window (phases A–F), so each phase lands workspace-green
+ * while node's producers move over. Phase G makes them required, drops
+ * `createdAtBlock` and `lastTouchBlock`, and switches the derivation — at which
+ * point "has an id but no provenance", the M-11 state, becomes unrepresentable.
+ */
+export interface BoxBase extends BoxCandidate {
+  id?: BoxId;           // Computed via computeBoxId; optional during construction
+  txId?: TxId;          // Creating transaction — real or synthetic (see computeMintTxId)
+  index?: number;       // u32, position within that transaction's outputs
 }
 
 // --- Karma ---
@@ -124,8 +281,6 @@ export type AnyBox = KarmaBox | CreditBox | LikeBox | InviteBox | BondBox | Post
 // UTXO transaction
 // ---------------------------------------------------------------------------
 
-export type TxId = string;
-
 export interface UtxoTransaction {
   inputs: BoxId[];
   outputs: AnyBox[];
@@ -135,9 +290,15 @@ export interface UtxoTransaction {
 }
 
 /**
- * Deterministic transaction ID. Hashes inputs, serialized outputs (excluding
- * per-output `id`), preimages (sorted by boxId) when present, and
- * protocolVersion.
+ * Deterministic transaction ID. Hashes inputs, outputs as candidate bytes,
+ * preimages (sorted by boxId) when present, and protocolVersion.
+ *
+ * Outputs go through `canonicalBoxBytes`, so identity has exactly **one** strip
+ * rule rather than two that must be kept in agreement. This matters from phase C
+ * on: once producers materialize outputs with `txId`/`index` set, a local
+ * `{ id, ...rest }` strip would hash provenance into the very txId that
+ * provenance is derived from — circular, and it would make a transaction's id
+ * depend on ids that cannot exist until that id is known.
  */
 export function computeTxId(tx: UtxoTransaction): TxId {
   const h = createHash('blake2b512');
@@ -145,9 +306,7 @@ export function computeTxId(tx: UtxoTransaction): TxId {
     h.update(input);
   }
   for (const output of tx.outputs) {
-    // Exclude id from output hashing (it's computed from the output itself)
-    const { id, ...rest } = output;
-    h.update(encodeForHash(rest));
+    h.update(canonicalBoxBytes(output));
   }
   // Include preimages in tx identity for hash_preimage guard validation
   if (tx.preimages) {

@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest';
-import { decode as cborDecode } from 'cbor-x';
 import {
   encodePost,
   decodePost,
@@ -17,7 +16,6 @@ import {
   decodeOrderingBlock,
   encodeTx,
   decodeTx,
-  serializeBox,
   serializeTx,
 } from '../src/serialization.js';
 import type { Post } from '../src/post.js';
@@ -353,21 +351,7 @@ describe('CBOR serialization', () => {
     });
   });
 
-  describe('Box serialization', () => {
-    it('serializeBox excludes id', () => {
-      const box = { ...makeKarmaBox(), id: 'should-be-excluded' };
-      const bytes = serializeBox(box);
-      // Round-trip through decode to check id is really gone
-      const decoded = cborDecode(Buffer.from(bytes));
-      expect(decoded.id).toBeUndefined();
-      expect(decoded.boxType).toBe('karma');
-    });
-
-    it('serializeBox is deterministic', () => {
-      const box = makeKarmaBox();
-      const a = serializeBox(box);
-      const b = serializeBox(box);
-      expect(Buffer.compare(a, b)).toBe(0);
-    });
-  });
+  // Box serialization moved to test/utxo.test.ts by Spec G phase 0: `serializeBox`
+  // was deleted here, and its two cases ("excludes id", "is deterministic") now
+  // run against `canonicalBoxBytes` — the encoder that actually computes ids.
 });
