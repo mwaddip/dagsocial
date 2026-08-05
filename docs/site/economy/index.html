@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Economy — Notis Docs</title>
+<meta name="description" content="How Notis's two currencies — karma (reputation) and credits (money) — work, and the game theory behind their Sybil-resistance.">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Notis Docs">
+<meta property="og:title" content="The Notis Economy">
+<meta property="og:description" content="Two currencies, one rule. How reputation and money work on Notis — and why every part makes cheating a losing trade.">
+<meta property="og:url" content="https://docs.notis.fun/economy/">
+<meta name="twitter:card" content="summary">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#020D07; --surface:#06160E; --surface-2:#0A1E13; --border:#143C28; --side:#04120B;
+    --hi:#EAFFF4; --text:#C8E9D8; --muted:#6FB894;
+    --k:#2CFF87; --c:#E8B84B;
+    --k-soft:rgba(44,255,135,.10); --c-soft:rgba(232,184,75,.10);
+    --glow:0 0 24px rgba(44,255,135,.28);
+    --mono:"JetBrains Mono",ui-monospace,"Cascadia Code","SF Mono",Menlo,Consolas,monospace;
+    --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --side-w:250px;
+  }
+  @media (prefers-color-scheme: light){
+    :root:not([data-theme="dark"]){
+      --bg:#EDF3EE; --surface:#F5F9F6; --surface-2:#E4EFE8; --border:#CBDDD0; --side:#E7F0EA;
+      --hi:#0B2C1B; --text:#22402F; --muted:#557460;
+      --k:#0B8A46; --c:#8A5E12; --k-soft:rgba(11,138,70,.08); --c-soft:rgba(138,94,18,.09); --glow:none;
+    }
+  }
+  :root[data-theme="light"]{
+    --bg:#EDF3EE; --surface:#F5F9F6; --surface-2:#E4EFE8; --border:#CBDDD0; --side:#E7F0EA;
+    --hi:#0B2C1B; --text:#22402F; --muted:#557460;
+    --k:#0B8A46; --c:#8A5E12; --k-soft:rgba(11,138,70,.08); --c-soft:rgba(138,94,18,.09); --glow:none;
+  }
+  :root[data-theme="dark"]{
+    --bg:#020D07; --surface:#06160E; --surface-2:#0A1E13; --border:#143C28; --side:#04120B;
+    --hi:#EAFFF4; --text:#C8E9D8; --muted:#6FB894;
+    --k:#2CFF87; --c:#E8B84B; --k-soft:rgba(44,255,135,.10); --c-soft:rgba(232,184,75,.10);
+    --glow:0 0 24px rgba(44,255,135,.28);
+  }
+
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{margin:0; background:var(--bg); color:var(--text); font-family:var(--sans);
+    font-size:17px; line-height:1.68; letter-spacing:.005em;
+    -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility}
+  .mono{font-family:var(--mono)}
+
+  /* ---------- sidebar ---------- */
+  .sidebar{position:fixed; top:0; left:0; width:var(--side-w); height:100vh; overflow-y:auto;
+    background:var(--side); border-right:1px solid var(--border); padding:26px 18px 40px; z-index:900;
+    transition:transform .22s ease}
+  .side-brand{display:flex; align-items:center; gap:9px; font-family:var(--mono); font-weight:700;
+    font-size:14px; letter-spacing:.14em; color:var(--hi); text-decoration:none; padding:2px 8px 22px}
+  .side-brand .dot{color:var(--k)} .side-brand i{color:var(--muted); font-style:normal; font-weight:400}
+  .nav{display:flex; flex-direction:column; gap:2px}
+  .nav-cat{font-family:var(--mono); font-size:11px; letter-spacing:.2em; text-transform:uppercase;
+    color:var(--muted); padding:16px 8px 6px}
+  .nav-item{display:block; text-decoration:none; color:var(--text); font-size:14.5px;
+    padding:7px 10px 7px 13px; border-radius:6px; border-left:2px solid transparent; transition:.12s}
+  .nav-item:hover{background:var(--surface); color:var(--hi)}
+  .nav-item.active{color:var(--k); border-left-color:var(--k); background:var(--k-soft); font-weight:600}
+  .nav-soon{color:var(--muted); font-size:13px; padding:7px 10px; opacity:.6; font-style:italic}
+
+  /* ---------- content ---------- */
+  .content{margin-left:var(--side-w); padding:0 32px 100px; min-width:0}
+  .wrap{max-width:760px; margin:0 auto}
+
+  header.page{padding:70px 0 8px; border-bottom:1px solid var(--border); margin-bottom:8px}
+  .crumb{font-family:var(--mono); font-size:12px; letter-spacing:.16em; text-transform:uppercase;
+    color:var(--muted); margin-bottom:20px}
+  .crumb b{color:var(--k)}
+  h1{font-family:var(--mono); font-size:clamp(29px,5.4vw,44px); line-height:1.1; margin:0 0 18px;
+    color:var(--hi); font-weight:700; letter-spacing:-.01em; text-wrap:balance; text-shadow:var(--glow)}
+  .lede{font-size:clamp(17px,2.2vw,20px); color:var(--text); margin:0 0 20px; max-width:60ch}
+  .lede strong{color:var(--hi); font-weight:600}
+
+  section{padding:40px 0; border-bottom:1px solid var(--border)}
+  section:last-of-type{border-bottom:0}
+  h2{font-family:var(--mono); font-size:22px; color:var(--hi); margin:0 0 20px; font-weight:700; letter-spacing:-.005em}
+  h2::before{content:"// "; color:var(--k)}
+  section.credits h2::before{color:var(--c)}
+  h3{font-family:var(--mono); font-size:16px; color:var(--hi); margin:30px 0 8px; font-weight:600; letter-spacing:.01em}
+  section.karma h3{border-left:2px solid var(--k); padding-left:12px}
+  section.credits h3{border-left:2px solid var(--c); padding-left:12px}
+  p{margin:0 0 16px} strong{color:var(--hi); font-weight:600} em{color:var(--muted); font-style:italic}
+  .accent-k{color:var(--k); font-weight:600} .accent-c{color:var(--c); font-weight:600}
+  code{font-family:var(--mono); font-size:.9em; background:var(--surface-2); border:1px solid var(--border);
+    border-radius:4px; padding:.06em .38em; color:var(--hi)}
+
+  .glance{display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:8px}
+  @media (max-width:560px){.glance{grid-template-columns:1fr}}
+  .card{background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:20px 20px 8px; position:relative; overflow:hidden}
+  .card::before{content:""; position:absolute; left:0; top:0; bottom:0; width:3px}
+  .card.k::before{background:var(--k)} .card.c::before{background:var(--c)}
+  .card .tag{font-family:var(--mono); font-size:11.5px; letter-spacing:.2em; text-transform:uppercase; margin-bottom:2px}
+  .card.k .tag{color:var(--k)} .card.c .tag{color:var(--c)}
+  .card h4{margin:0 0 12px; font-size:20px; color:var(--hi); font-family:var(--mono); font-weight:700}
+  .card ul{list-style:none; margin:0; padding:0}
+  .card li{font-size:14.5px; padding:7px 0; border-top:1px dashed var(--border); color:var(--text)}
+  .card li:first-child{border-top:0} .card li b{color:var(--hi); font-weight:600}
+
+  .why{background:var(--k-soft); border:1px solid var(--border); border-left:3px solid var(--k); border-radius:8px; padding:16px 18px; margin:18px 0}
+  section.credits .why{background:var(--c-soft); border-left-color:var(--c)}
+  .why .label{font-family:var(--mono); font-size:11.5px; letter-spacing:.18em; text-transform:uppercase; color:var(--muted); margin-bottom:6px}
+  .why p:last-child{margin-bottom:0}
+  .kicker{background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:26px 24px}
+  .kicker p:last-child{margin-bottom:0}
+  footer{padding:36px 0 0; color:var(--muted); font-size:13.5px}
+  footer a{color:var(--k); text-decoration:none; border-bottom:1px solid var(--border)}
+
+  /* ---------- controls ---------- */
+  .theme-toggle{position:fixed; top:16px; right:16px; z-index:950; width:40px; height:40px; border-radius:9px;
+    cursor:pointer; display:flex; align-items:center; justify-content:center; font-size:18px; line-height:1;
+    background:var(--surface); color:var(--k); border:1px solid var(--border); transition:transform .12s ease}
+  .theme-toggle:hover{transform:translateY(-1px)}
+  .theme-toggle:focus-visible, .nav-btn:focus-visible{outline:2px solid var(--k); outline-offset:2px}
+  .nav-btn{display:none; position:fixed; top:16px; left:16px; z-index:950; width:40px; height:40px; border-radius:9px;
+    cursor:pointer; background:var(--surface); color:var(--k); border:1px solid var(--border); font-size:17px; line-height:1}
+  .backdrop{display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:880}
+  .backdrop.show{display:block}
+
+  @media (max-width:900px){
+    .sidebar{transform:translateX(-100%)}
+    .sidebar.open{transform:translateX(0)}
+    .content{margin-left:0; padding:0 20px 90px}
+    .nav-btn{display:flex; align-items:center; justify-content:center}
+    header.page{padding-top:76px}
+  }
+  @media (prefers-reduced-motion: reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+
+<button class="nav-btn" id="navBtn" aria-label="Toggle navigation">☰</button>
+<button class="theme-toggle" id="themeToggle" title="Toggle light / dark" aria-label="Toggle theme">☀</button>
+<div class="backdrop" id="backdrop"></div>
+
+<aside class="sidebar" id="sidebar">
+  <a class="side-brand" href="/"><span class="dot">◈</span> NOTIS <i>//</i> docs</a>
+  <!--#include virtual="/assets/_nav.html" -->
+</aside>
+
+<main class="content">
+  <div class="wrap">
+    <header class="page">
+      <div class="crumb"><b>Notis</b> / Economy</div>
+      <h1>Two currencies, one rule.</h1>
+      <p class="lede">Notis runs on <strong>karma</strong>&nbsp;— reputation you earn by contributing — and <strong>credits</strong>&nbsp;— money that's mined, spent, and traded. Here's how each works, and the game theory that makes cheating cost more than it's worth.</p>
+    </header>
+
+    <section>
+      <h2>The firewall</h2>
+      <p>The single most important rule in the whole system: <strong>karma and credits never convert into each other.</strong> You can't buy karma with money, and you can't cash karma out for money — in either direction, the door is welded shut.</p>
+      <p>That firewall is what keeps reputation <em>meaning</em> something. If karma were purchasable, it would just be money wearing a costume, and the wealthiest — not the most valued — would look the most reputable. Sealing the two apart lets money be money and reputation be reputation, each doing its job honestly.</p>
+      <div class="glance">
+        <div class="card k">
+          <div class="tag">Karma</div><h4>Reputation</h4>
+          <ul>
+            <li><b>Earned</b> socially, by being liked</li>
+            <li><b>Indivisible</b> — whole numbers only</li>
+            <li><b>Non-transferable</b> — you can't send it</li>
+            <li><b>Decays</b> if you go inactive</li>
+          </ul>
+        </div>
+        <div class="card c">
+          <div class="tag">Credits</div><h4>Money</h4>
+          <ul>
+            <li><b>Mined</b> via proof-of-work</li>
+            <li><b>8 decimals</b> — divisible like most coins</li>
+            <li><b>Transferable</b> &amp; tradeable</li>
+            <li><b>Pays fees</b> and secures the chain</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="karma">
+      <h2>Karma — the reputation economy</h2>
+      <h3>What it's for</h3>
+      <p>Karma is a legible, on-chain record of who the community values. The protocol doesn't try to judge quality itself — its job is to record endorsements <em>honestly</em> and keep the patterns visible, so people and apps can interpret them. The node keeps the books; the community reads them.</p>
+
+      <h3>Where karma comes from — invitations with skin in the game</h3>
+      <p>New karma is created in exactly one place: <span class="accent-k">invitations</span>. When you invite someone, you <strong>lock a bond of your own karma</strong>, and the newcomer <strong>instantly receives a starter grant</strong>. Your bond only flows back to you as that newcomer earns genuine likes — and it's forfeited if they turn out to be a ghost.</p>
+      <div class="why">
+        <div class="label">Why it's built this way</div>
+        <p>Picture farming karma by inviting your own fake accounts. You mint a grant to a sock puppet — but to claw your bond back, you have to make that puppet <em>genuinely liked</em>, which means spending real karma to like it, or eating the forfeit. The numbers are set so a self-invite always nets zero or less: the bond you'd lose (or the karma you'd burn faking engagement) is designed to exceed the grant you minted.</p>
+        <p>Inviting <em>real</em> people who genuinely get liked, meanwhile, is nearly free — those likes would have happened anyway. Honest growth costs nothing; faking it always costs more than it makes. That asymmetry is the entire defense.</p>
+      </div>
+
+      <h3>Likes — endorsements that have to cost something</h3>
+      <p>A like isn't free. The liker spends a little karma; the author is paid most of it back, and a small sliver is burned. Why make liking cost anything at all? Because a <strong>free like is just noise</strong> — it carries no information. A like that cost the giver something is a real signal that they valued what they saw.</p>
+      <p>And because a fraction burns on every like, a ring of accounts liking each other's posts slowly <strong>bleeds</strong> karma instead of printing it. Genuine appreciation moves value toward good contributors; manufactured appreciation just drains the manufacturer. (It's all whole numbers — an author collects <code>x−1</code> karma for every <code>x</code> likes, with one burned. No fractions anywhere, by design.)</p>
+
+      <h3>Vouches — endorsing people, not posts</h3>
+      <p>A like says "I valued this post." A <strong>vouch</strong> says "I stand behind this <em>person</em>." It's the one karma mechanic you can take back: you stake 1 karma on someone, and — unlike everything else on the ledger — that karma isn't spent or burned. It's held in escrow, still yours.</p>
+      <p>To withdraw, you <strong>unvouch</strong>, and your karma is released back to you after a <strong>cooldown</strong>. That delay is the anti-spam: you can't flip a vouch on and off to manufacture a signal, because pulling it out locks your stake for the cooldown before it returns. So a vouch is a cheap, <em>reversible</em> way to put a little of your reputation on the line for someone — without the permanence of a like.</p>
+
+      <h3>Decay — reputation you have to keep earning</h3>
+      <p>Karma isn't a trophy you win once. If an identity goes quiet, its karma <span class="accent-k">decays</span>; stay genuinely active and it doesn't. The hard part is stopping people from faking "active" on the cheap — so keeping your karma alive is tied to <strong>posting</strong>, and posting is itself bonded: a post locks a bond that only returns as it earns likes.</p>
+      <div class="why">
+        <div class="label">The paradox that does the work</div>
+        <p>The only <em>cheap</em> way to keep your karma alive is to post things people actually like — that is, to genuinely contribute. Wash-posting junk just to reset the clock locks up bonds you can't recover, which costs more than simply letting the decay happen. You cannot fake activity without doing the real thing. (An unliked post's bond is burned after a grace period of about a week.)</p>
+      </div>
+
+      <h3>Sybil resistance, in one idea</h3>
+      <p>You can't make a network like this truly un-gameable — given enough patience and accounts, anything can be Sybil-attacked. So the goal isn't perfection; it's to make gaming <strong>slow, visible, and more expensive than it's worth</strong>. Every path that creates karma is gated by a real cost that a faker pays and an honest contributor doesn't. And because every endorsement lives on-chain, unnatural accumulation leaves patterns that apps and indexers can flag. The protocol stays a neutral record-keeper — judgment stays with the community.</p>
+    </section>
+
+    <section class="credits">
+      <h2>Credits — the money &amp; security economy</h2>
+      <h3>What it's for</h3>
+      <p>Credits are the utility layer: the money that pays for scarce network resources — storage, priority — and, above all, <strong>rewards the miners who secure the chain</strong>. The public square runs on karma; credits run the machinery underneath it.</p>
+
+      <h3>Where credits come from</h3>
+      <p>Credits are <span class="accent-c">mined</span> through proof-of-work and issued as block rewards on a schedule that <strong>tapers toward a fixed cap</strong> — issuance slows over time instead of inflating forever.</p>
+
+      <h3>Paying for security — forever</h3>
+      <p>A chain secured by mining has to keep paying its miners, or it gets cheap to attack. Once new issuance tapers off, miners keep earning from two <strong>perpetual</strong> sources: transaction fees, and <strong>storage rent</strong>.</p>
+      <div class="why">
+        <div class="label">Storage rent</div>
+        <p>A small charge on coins that sit completely untouched for years (about four) — it gently recycles genuinely lost or dormant coins back to miners. The effect is a <em>permanent security budget without permanent inflation</em>: nothing new is printed, long-lost coins simply return to circulation to keep the lights on. Coins you actually use never pay it.</p>
+      </div>
+
+      <h3>A fair launch — no premine</h3>
+      <p>Notis starts from <strong>zero supply</strong>. Nobody is handed a pile of coins at genesis. Instead, early supporters — holders of the Notis token on Solana that funded development — can link their wallet before launch and receive a <strong>share of the ongoing mining rewards</strong>, proportional to what they held, for as long as they keep it staked.</p>
+      <p>It's a share of the <em>flow</em>, not a stock: it can't be dumped on day one, it isn't diluted by inflation, and supporters can exit whenever they choose. A <strong>floor</strong> guarantees miners always keep a healthy share of every block, so the chain stays secure no matter how many supporters take part. Supporters receive <span class="accent-c">credits only — never karma</span>: money buys economic upside, never reputation.</p>
+
+      <h3>The fine print</h3>
+      <p>A modest slice of rewards and fees accrues to a reserve that is <strong>locked under the current protocol</strong> and set aside for future use. And credits carry <strong>eight decimal places</strong> — like most cryptocurrencies — handled as exact integers under the hood, with apps placing the decimal for display.</p>
+    </section>
+
+    <section>
+      <h2>The through-line</h2>
+      <div class="kicker">
+        <p>If one idea ties it all together, it's this: <strong>value should be expensive to fake and cheap to earn honestly.</strong></p>
+        <p>Minting karma costs a bond that only real engagement returns. Endorsing costs something, so endorsements mean something. Staying reputable costs genuine contribution. Securing the chain is paid for in perpetuity, so attacking it never pays off. And money and reputation sit in separate sealed compartments, so neither can corrupt the other.</p>
+        <p>Notis doesn't try to make cheating <em>impossible</em> — it makes cheating a <strong>losing trade</strong>.</p>
+      </div>
+    </section>
+
+    <footer>
+      <p class="mono">NOTIS // decentralized social network · dual-ledger · proof-of-work</p>
+      <p>Design in progress — numbers shown are illustrative and will be tuned on a live testnet. · <a href="https://notis.fun">notis.fun</a></p>
+    </footer>
+  </div>
+</main>
+
+<script>
+(function(){
+  var root=document.documentElement, btn=document.getElementById("themeToggle");
+  function eff(){ var t=root.getAttribute("data-theme"); if(t==="dark"||t==="light") return t;
+    return (window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark"; }
+  function apply(t){ root.setAttribute("data-theme",t); if(btn) btn.textContent=(t==="dark"?"☀":"☾");
+    try{ localStorage.setItem("notis-theme",t); }catch(e){} }
+  var saved=null; try{ saved=localStorage.getItem("notis-theme"); }catch(e){}
+  apply(saved||eff());
+  if(btn) btn.addEventListener("click",function(){ apply(eff()==="dark"?"light":"dark"); });
+
+  var sb=document.getElementById("sidebar"), nb=document.getElementById("navBtn"), bd=document.getElementById("backdrop");
+  function setNav(open){ sb.classList.toggle("open",open); bd.classList.toggle("show",open); }
+  if(nb) nb.addEventListener("click",function(){ setNav(!sb.classList.contains("open")); });
+  if(bd) bd.addEventListener("click",function(){ setNav(false); });
+})();
+</script>
+</body>
+</html>
