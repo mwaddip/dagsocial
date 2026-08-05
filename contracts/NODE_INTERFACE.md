@@ -717,6 +717,19 @@ an unspendable LikeBox, not as a visible error.
 the phase C0 session, which correctly did not touch it — `public/index.html` is
 the node package's file.)*
 
+⚠ **The UI had the id-only strip in TWO places, not one — `computeTxId` as well
+as `computeBoxId`.** This contract named only the latter. Found and fixed in
+phase E1 by extracting a single `canonicalBoxBytes()` helper in the UI and
+routing both through it, mirroring how types is structured.
+
+That makes **four** instances of the same defect: `computeTxId` in types (phase
+A), `computeBoxId` in types (phase C0), and both UI sites (phase E1). The rule
+was always "exactly one strip rule, so tx and box derivation cannot drift", and
+it was violated everywhere it could be, in both implementations, because a local
+`const { id, ...rest } = box` is the obvious thing to write and is wrong in a way
+nothing detects until provenance exists. **When auditing a mirror, assume the
+defect is in every site that strips, not the one that was reported.**
+
 ### Phase G checklist — everything the tightening phase owes
 
 Obligations have accumulated across phases B–D and are stated where they were
