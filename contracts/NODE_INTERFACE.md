@@ -1194,7 +1194,10 @@ also identity records (see "Two entity kinds" below).
   by hex key — so every caller inherits the canonical order; callers MUST NOT
   rely on their input order reaching the prover. `bootstrapAvlProver` sorts
   the unspent set by boxId the same way. Same mutation set in any input order
-  → same digest
+  → same digest. ⚠ **That equivalence is unconditional for boxes but holds for
+  records only across *distinct* keys** — see "Where record collapsing happens"
+  below. Repeated writes to one record key are order-dependent, and sorting
+  cannot recover which was last
 - **Rejection-safe:** the apply funnel snapshots the prover digest before any
   mutation and rolls the prover back on **every** rejection path — explicit
   rejection, stateRoot mismatch, and the totality catch (closes the open
@@ -1323,6 +1326,30 @@ puts to the same key in one block collapse to the **last** value (last write
 wins, identical final tree); the journal keeps both entries because rollback
 needs the first one's `replaced`. Netting is per-kind: boxes cancel
 insert+remove pairs, records keep the last write — do not share one code path.
+
+**Where record collapsing happens, and why it is not arbitrary.** The collapse
+belongs to **`proverFeedFromJournal`**, not to `applyBlockMutations`. Box
+mutations commute: cancel the insert+remove pairs in any order and the surviving
+set is the same, which is why `applyBlockMutations` can own box canonicalisation
+by sorting. **Record puts do not commute** — two writes to one key differ in
+*which came last*, and that is carried by journal application order alone. Once
+`applyBlockMutations` sorts by hex key, that information is gone; a sort cannot
+recover it, and any behaviour that appeared to work would be relying on sort
+stability. So the collapse must happen while journal order is still
+authoritative, and `applyBlockMutations` receives **at most one entry per record
+key**. The natural reading — "`applyBlockMutations` owns canonical ordering,
+therefore it owns this too" — is wrong, and wrong in a way that produces a
+silently order-dependent digest. *(Gap found by the phase B session; pinned
+here because the contract previously stated both rules without saying which
+function owns the collapse.)*
+
+`applyBlockMutations`' `recordPuts` parameter is **optional and defaults to
+empty**, so the many existing three-argument call sites keep working. That
+default is a convenience for tests only: **every production caller MUST pass the
+feed derivation's own `recordPuts`**, never omit it and never assemble one by
+hand. Omitting it silently drops records from the digest, and if one of the two
+callers omitted it, the producer and the verifier would disagree — the exact
+failure H-6 exists to prevent.
 
 ### dag_meta Table
 
