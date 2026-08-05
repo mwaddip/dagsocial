@@ -117,8 +117,12 @@ export function loadConfig(): Readonly<Config> {
     karmaMinimum: BigInt(
       process.env['KARMA_MINIMUM'] ?? String(KARMA_MINIMUM),
     ),
-    // AVL state root
-    verifyStateRoot: process.env['VERIFY_STATE_ROOT'] === 'true',
+    // AVL state root. On by default since Spec B P3: producer and verifier now
+    // agree by construction — the header carries the POST-block digest (H-6),
+    // both feeds are canonically ordered (M-12), and the mutation set is
+    // journal-derived (P1) — so a mismatch is genuine state divergence and
+    // must reject the block. `VERIFY_STATE_ROOT=false` disables it.
+    verifyStateRoot: process.env['VERIFY_STATE_ROOT'] !== 'false',
     maxProofHistory: parseInt(
       process.env['MAX_PROOF_HISTORY'] ?? '1440',
       10,

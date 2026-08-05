@@ -51,6 +51,7 @@ import {
   insertBlockJournal,
   purgeOldJournals,
 } from '../store/journal.js';
+import type { BlockJournal } from '../store/journal.js';
 import { tryGetAvlProver, applyBlockMutations, checkpointProver } from '../state/avl-prover.js';
 import {
   encodeTx,
@@ -156,11 +157,10 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
   const currentHeight = getCurrentHeight();
 
   // Open the record-once journal: from here on the store mutation primitives
-  // record automatically, and every rejection path below aborts it.
+  // record automatically, and every rejection path below aborts it. The
+  // lifecycle is owned here rather than by the mutation phase, so the
+  // speculative caller (`computePostBlockStateRoot`) records identically.
   beginBlockJournal(block.header.height);
-  // All refs, independent of per-post confirm outcomes — same semantics as
-  // the confirm loop in §7, which tolerates per-post failures.
-  recordConfirmedSubBlocks([...block.subBlockTree.subBlockRefs]);
 
   // 1. Chain-link check
   if (currentHeight === 0) {
@@ -310,10 +310,194 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
   // 6. Clear the local mining template (this height is taken)
   clearTemplate();
 
+  // 7–12b. Mutation phase — the block's state transition, run verbatim (at an
+  // explicitly passed height) by the block creator to obtain the post-block
+  // stateRoot before mining (H-6). It never touches the journal lifecycle, so
+  // its rejections are turned into an abort here.
+  if (!applyMutationPhase(block, block.header.height, dagService)) {
+    abortBlockJournal();
+    return false;
+  }
+
+  // 13. AVL state root update (skipped if prover not initialized)
+  //
+  // Nothing mutates boxes past §12b, so the journal is complete: close it and
+  // derive the prover feed from its mutation log.
+  const journal = finishBlockJournal();
+  const handle = tryGetAvlProver();
+  if (handle) {
+    const { consumed, created } = proverFeedFromJournal(journal);
+    const computedDigest = applyBlockMutations(handle.prover, consumed, created);
+
+    // Verify against block header (gated). The prover is restored by the
+    // funnel's single rollback point, not here.
+    if (config.verifyStateRoot) {
+      const expectedHex = Buffer.from(computedDigest).toString('hex');
+      if (block.header.stateRoot !== expectedHex) {
+        console.warn(
+          `stateRoot mismatch at height ${block.header.height}: ` +
+          `computed=${expectedHex.slice(0, 16)}... ` +
+          `header=${block.header.stateRoot.slice(0, 16)}...`,
+        );
+        abortBlockJournal();
+        return false;
+      }
+    }
+
+    // Checkpoint prover state at this height
+    checkpointProver(handle, block.header.height);
+  }
+
+  // 14. Persist journal and purge old ones
+  insertBlockJournal(journal);
+  purgeOldJournals(block.header.height - 20);
+
+  console.log(`Applied ordering block height=${block.header.height} hash=${validation.blockHash(block.header)} (${block.subBlockTree.subBlockRefs.length} sub-blocks)`);
+  return true;
+}
+
+/**
+ * The prover feed a finished journal implies — the one derivation both the
+ * apply commit (§13) and the creator's speculative run use, so producer and
+ * verifier can never disagree by construction.
+ *
+ * An insert later followed by a remove for the same boxId is a box that never
+ * existed outside this block: the pair nets out (drop both); survivors keep
+ * first-occurrence order, which `applyBlockMutations` then replaces with the
+ * canonical one (M-12). Created-box bytes come from the journal's recorded
+ * payload, never a store re-fetch: `getBox` returns null for a created-then-
+ * consumed box and used to silently drop it.
+ */
+function proverFeedFromJournal(
+  journal: BlockJournal,
+): { consumed: string[]; created: AnyBox[] } {
+  const cancelled = new Set<number>();
+  const pendingInsertIndex = new Map<string, number>();
+  for (let i = 0; i < journal.mutations.length; i++) {
+    const m = journal.mutations[i]!;
+    if (m.op === 'insert') {
+      pendingInsertIndex.set(m.boxId, i);
+    } else {
+      const insertIdx = pendingInsertIndex.get(m.boxId);
+      if (insertIdx !== undefined) {
+        cancelled.add(insertIdx);
+        cancelled.add(i);
+        pendingInsertIndex.delete(m.boxId);
+      }
+    }
+  }
+  const consumed: string[] = [];
+  const created: AnyBox[] = [];
+  for (let i = 0; i < journal.mutations.length; i++) {
+    if (cancelled.has(i)) continue;
+    const m = journal.mutations[i]!;
+    if (m.op === 'remove') consumed.push(m.boxId);
+    else created.push(m.box!);
+  }
+  return { consumed, created };
+}
+
+/**
+ * Carries the speculative run's result out through the throw that forces
+ * better-sqlite3 to roll the transaction back — the value and the rollback are
+ * the same event, so neither can happen without the other.
+ */
+class SpeculativeRollback extends Error {
+  constructor(readonly digestHex: string) {
+    super('speculative state-root run rolled back');
+  }
+}
+
+/**
+ * The post-block AVL digest a candidate block's header must commit to as
+ * `stateRoot` (H-6; NODE_INTERFACE "Post-block stateRoot"). Null when no
+ * prover is initialized — the caller then writes `EMPTY_STATE_ROOT`.
+ *
+ * PoW covers the header, so the producer has to know this digest *before*
+ * mining, and the only way to know it without a second implementation of the
+ * state transition is to run the block's own body. That happens here: the
+ * mutation phase, verbatim, at the block's height, inside a SQLite transaction
+ * that is always rolled back. No `DagService` (its canonical-branch updates
+ * are in-memory and would survive the rollback; they touch no UTXO box, so the
+ * digest is unaffected), no block storage, no `clearTemplate`, no journal
+ * persistence, no prover checkpoint.
+ *
+ * SQLite rollback does not reach the prover's in-memory tree, so the digest is
+ * snapshotted up front and restored explicitly afterwards — the same asymmetry
+ * the apply funnel handles for rejected blocks.
+ *
+ * The candidate carries a placeholder header (`powNonce` 0, empty signature):
+ * the mutation phase reads neither, and takes its height as an argument.
+ */
+export function computePostBlockStateRoot(
+  block: OrderingBlock,
+  height: number,
+): string | null {
+  const handle = tryGetAvlProver();
+  if (!handle) return null;
+  const snapshot = handle.prover.digest();
+  if (!snapshot) return null;
+
+  try {
+    return getDb().transaction((): string => {
+      beginBlockJournal(height);
+      if (!applyMutationPhase(block, height, undefined)) throw new BlockRejected();
+      const { consumed, created } = proverFeedFromJournal(finishBlockJournal());
+      // The digest rides out on the throw: nothing this run did may survive.
+      throw new SpeculativeRollback(
+        Buffer.from(applyBlockMutations(handle.prover, consumed, created)).toString('hex'),
+      );
+    })();
+  } catch (err) {
+    if (err instanceof SpeculativeRollback) return err.digestHex;
+    if (err instanceof BlockRejected) {
+      console.warn(
+        `stateRoot speculation at height ${height}: the body was rejected by its ` +
+        `own mutation phase — the block cannot be produced`,
+      );
+      return null;
+    }
+    console.error(`stateRoot speculation failed at height ${height}: ${String(err)}`);
+    return null;
+  } finally {
+    // The transaction is rolled back by the time this runs (better-sqlite3
+    // issues ROLLBACK before re-throwing). These undo what it cannot reach.
+    abortBlockJournal();
+    const current = handle.prover.digest();
+    if (!current || !Buffer.from(current).equals(Buffer.from(snapshot))) {
+      handle.prover.rollback(snapshot);
+    }
+  }
+}
+
+/**
+ * The block's state transition — everything between the header-dependent
+ * validation and the commit (NODE_INTERFACE "Apply funnel: validation and
+ * mutation phases").
+ *
+ * Height is a parameter rather than `block.header.height` because the block
+ * creator runs this phase before its header exists, to compute the post-block
+ * `stateRoot` it must commit to (H-6). The split is structural: there is no
+ * "skip the checks" mode on the apply path, and the body-level rejections here
+ * (prune verification, embedded-tx re-validation) reject on both paths
+ * identically.
+ *
+ * Journal-lifecycle-free by contract: a journal is already open when this runs
+ * and the caller finishes or aborts it, so both callers record the same way.
+ */
+function applyMutationPhase(
+  block: OrderingBlock,
+  height: number,
+  dagService?: DagService,
+): boolean {
+  // All refs, independent of per-post confirm outcomes — same semantics as
+  // the confirm loop in §7, which tolerates per-post failures.
+  recordConfirmedSubBlocks([...block.subBlockTree.subBlockRefs]);
+
   // 7. Apply coinbase — mint credits for each output. The store choke point
   // journals both the pre-existing boxes the mint merges in and the new box.
   for (const out of block.utxoTxTree.coinbaseOutputs) {
-    mintCredits(out.owner, out.value, block.header.height, out.lockedUntilBlock);
+    mintCredits(out.owner, out.value, height, out.lockedUntilBlock);
   }
 
   // 7. Confirm sub-blocks — create placeholders if post doesn't exist
@@ -338,10 +522,9 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
       const realAuthor = Buffer.from(localPost.author).toString('hex');
       if (entry.author !== realAuthor) {
         console.warn(
-          `Rejected block height=${block.header.height}: subBlockEntry author ` +
+          `Rejected block height=${height}: subBlockEntry author ` +
           `mismatch for ${subBlockId}`,
         );
-        abortBlockJournal();
         return false;
       }
       const realParents = localPost.parentRefs;
@@ -351,16 +534,15 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
         entry.parentRefs.every((ref, j) => ref === realParents[j]);
       if (!parentsMatch) {
         console.warn(
-          `Rejected block height=${block.header.height}: subBlockEntry parentRefs ` +
+          `Rejected block height=${height}: subBlockEntry parentRefs ` +
           `mismatch for ${subBlockId}`,
         );
-        abortBlockJournal();
         return false;
       }
     }
 
     try {
-      confirmPost(subBlockId, block.header.height);
+      confirmPost(subBlockId, height);
     } catch (err) {
       console.warn(`Failed to confirm sub-block ${subBlockId}: ${String(err)}`);
     }
@@ -410,7 +592,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
   // Consensus data only (verified against local content above where we hold it)
   // — this, not dag_posts.author, is the authority for prune authorization.
   for (const entry of block.subBlockTree.subBlockEntries) {
-    insertBlockTopology(entry.postId, entry.parentRefs, entry.author, block.header.height);
+    insertBlockTopology(entry.postId, entry.parentRefs, entry.author, height);
   }
 
   // 8c. Process prune entries from this block
@@ -444,10 +626,9 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
         : null;
     if (recordedAuthor === null || recordedAuthor !== claimedAuthor) {
       console.error(
-        `Block ${block.header.height}: prune authorId does not match the ` +
+        `Block ${height}: prune authorId does not match the ` +
         `recorded author of ${entry.rootPostHash}`,
       );
-      abortBlockJournal();
       return false;
     }
 
@@ -471,8 +652,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
 
     const sigBytes = Buffer.from(entry.authorSignature);
     if (!verify(null, payload, keyObject, sigBytes)) {
-      console.error(`Block ${block.header.height}: invalid prune signature for ${entry.rootPostHash}`);
-      abortBlockJournal();
+      console.error(`Block ${height}: invalid prune signature for ${entry.rootPostHash}`);
       return false;
     }
 
@@ -481,8 +661,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
     const entryIds = new Set(entry.subtreePostIds);
     if (topologyIds.size !== entryIds.size ||
         ![...topologyIds].every(id => entryIds.has(id))) {
-      console.error(`Block ${block.header.height}: prune postId set mismatch for ${entry.rootPostHash}`);
-      abortBlockJournal();
+      console.error(`Block ${height}: prune postId set mismatch for ${entry.rootPostHash}`);
       return false;
     }
 
@@ -493,17 +672,15 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
     const computedRoot = Buffer.from(buildMerkleRoot(leaves)).toString('hex');
     const entryRoot = Buffer.from(entry.subtreeMerkleRoot).toString('hex');
     if (computedRoot !== entryRoot) {
-      console.error(`Block ${block.header.height}: prune Merkle root mismatch for ${entry.rootPostHash}`);
-      abortBlockJournal();
+      console.error(`Block ${height}: prune Merkle root mismatch for ${entry.rootPostHash}`);
       return false;
     }
 
     // 5. Settle UTXO — deterministic from post IDs
     try {
-      settlePruneUtxo(entry.subtreePostIds, block.header.height);
+      settlePruneUtxo(entry.subtreePostIds, height);
     } catch (err) {
-      console.error(`Block ${block.header.height}: prune settlement failed for ${entry.rootPostHash}: ${String(err)}`);
-      abortBlockJournal();
+      console.error(`Block ${height}: prune settlement failed for ${entry.rootPostHash}: ${String(err)}`);
       return false;
     }
 
@@ -518,7 +695,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
         upvoteCount: 0, // can be derived from like boxes if needed
         trigger: entry.trigger,
         protocolVersion: PROTOCOL_VERSION,
-        compactedAtBlockHeight: block.header.height,
+        compactedAtBlockHeight: height,
       });
     } catch (err) {
       console.warn(`Failed to prune DAG subtree for ${entry.rootPostHash}: ${String(err)}`);
@@ -532,7 +709,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
 
   // 10. Apply epoch tally results
   if (block.utxoTxTree.epochTallyResults) {
-    const tally = computeEpochTally(block.header.height);
+    const tally = computeEpochTally(height);
     const rewards = tally.rewards;
 
     for (const postId of Object.keys(rewards)) {
@@ -544,7 +721,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
       if (reward.authorReward > 0n) {
         const post = getPost(postId);
         if (post && 'author' in post) {
-          mintKarma(post.author, reward.authorReward, block.header.height);
+          mintKarma(post.author, reward.authorReward, height);
         }
       }
 
@@ -553,7 +730,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
         const refund = reward.likerRefunds[likerId];
         if (refund !== undefined && refund !== 0n) {
           const likerBytes = new Uint8Array(Buffer.from(likerId, "hex"));
-          mintKarma(likerBytes, refund, block.header.height);
+          mintKarma(likerBytes, refund, height);
         }
       }
 
@@ -561,7 +738,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
       if (reward.postLockKarmaUnlocked && reward.postLockKarmaUnlocked > 0n) {
         const post = getPost(postId);
         if (post && 'author' in post) {
-          mintKarma(post.author, reward.postLockKarmaUnlocked, block.header.height);
+          mintKarma(post.author, reward.postLockKarmaUnlocked, height);
         }
       }
     }
@@ -581,7 +758,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
 
     // Consume old post lock boxes and insert replacement boxes
     for (const boxId of tally.consumedPostLockBoxIds) {
-      consumeBox(boxId, block.header.height);
+      consumeBox(boxId, height);
     }
     for (const newBox of tally.newPostLockBoxes) {
       insertBox(newBox);
@@ -685,13 +862,12 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
       // presence first is what keeps the two cases apart — the only reason
       // validateTx could still fail on liveness is a tx that lists the same
       // input twice, which is malformed, not deferrable.
-      const revalidated = validateTx(utxoDeps, item.tx, block.header.height);
+      const revalidated = validateTx(utxoDeps, item.tx, height);
       if (!revalidated.valid) {
         console.warn(
-          `Rejected block height=${block.header.height}: embedded UTXO tx ` +
+          `Rejected block height=${height}: embedded UTXO tx ` +
           `${item.txId} failed re-validation: ${revalidated.error}`,
         );
-        abortBlockJournal();
         return false;
       }
 
@@ -706,7 +882,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
             insertVouchCooldown(
               vb.voucherId,
               vb.targetId,
-              block.header.height + VOUCH_COOLDOWN_BLOCKS,
+              height + VOUCH_COOLDOWN_BLOCKS,
               VOUCH_KARMA_AMOUNT,
             );
           }
@@ -714,7 +890,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
         }
       }
 
-      applyTx(utxoDeps, item.tx, item.outputs, block.header.height);
+      applyTx(utxoDeps, item.tx, item.outputs, height);
       applied++;
 
       // Remove from local mempool if present
@@ -734,7 +910,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
       // No progress — remaining txs have inputs that truly don't exist.
       for (const item of remaining) {
         console.warn(
-          `UTXO tx ${item.txId} in block ${block.header.height}: ` +
+          `UTXO tx ${item.txId} in block ${height}: ` +
           `input liveness check failed after ${pass + 1} passes, skipping`,
         );
       }
@@ -746,7 +922,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
 
   if (queue.length > 0) {
     console.warn(
-      `Block ${block.header.height}: ${queue.length} UTXO tx(s) could not be applied ` +
+      `Block ${height}: ${queue.length} UTXO tx(s) could not be applied ` +
       `after ${MAX_PASSES} passes`,
     );
   }
@@ -770,7 +946,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
   // Its box mutations flow through the deps' store consumeBox/insertBox and
   // are journaled at the choke point; the per-owner return value is unused
   // here (the decay service keeps it for its own tests).
-  applyKarmaDecay(decayDeps, block.header.height, {
+  applyKarmaDecay(decayDeps, height, {
     staleThresholdBlocks: config.karmaStaleThresholdBlocks,
     decayIntervalBlocks: config.karmaDecayIntervalBlocks,
     decayAmount: config.karmaDecayAmount,
@@ -778,69 +954,7 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
   });
 
   // 12b. Process vouch cooldowns
-  processVouchCooldowns(block.header.height);
+  processVouchCooldowns(height);
 
-  // 13. AVL state root update (skipped if prover not initialized)
-  //
-  // Nothing mutates boxes past §12b, so the journal is complete: close it and
-  // derive the prover feed from its mutation log. An insert later followed by
-  // a remove for the same boxId is a box that never existed outside this
-  // block — the pair nets out (drop both); survivors keep first-occurrence
-  // order. Created-box bytes come from the journal's recorded payload, never
-  // a store re-fetch: getBox returns null for a created-then-consumed box and
-  // used to silently drop it. (Canonical boxId ordering is Spec B P2.)
-  const journal = finishBlockJournal();
-  const handle = tryGetAvlProver();
-  if (handle) {
-    const cancelled = new Set<number>();
-    const pendingInsertIndex = new Map<string, number>();
-    for (let i = 0; i < journal.mutations.length; i++) {
-      const m = journal.mutations[i]!;
-      if (m.op === 'insert') {
-        pendingInsertIndex.set(m.boxId, i);
-      } else {
-        const insertIdx = pendingInsertIndex.get(m.boxId);
-        if (insertIdx !== undefined) {
-          cancelled.add(insertIdx);
-          cancelled.add(i);
-          pendingInsertIndex.delete(m.boxId);
-        }
-      }
-    }
-    const consumed: string[] = [];
-    const created: AnyBox[] = [];
-    for (let i = 0; i < journal.mutations.length; i++) {
-      if (cancelled.has(i)) continue;
-      const m = journal.mutations[i]!;
-      if (m.op === 'remove') consumed.push(m.boxId);
-      else created.push(m.box!);
-    }
-
-    const computedDigest = applyBlockMutations(handle.prover, consumed, created);
-
-    // Verify against block header (gated). The prover is restored by the
-    // funnel's single rollback point, not here.
-    if (config.verifyStateRoot) {
-      const expectedHex = Buffer.from(computedDigest).toString('hex');
-      if (block.header.stateRoot !== expectedHex) {
-        console.warn(
-          `stateRoot mismatch at height ${block.header.height}: ` +
-          `computed=${expectedHex.slice(0, 16)}... ` +
-          `header=${block.header.stateRoot.slice(0, 16)}...`,
-        );
-        abortBlockJournal();
-        return false;
-      }
-    }
-
-    // Checkpoint prover state at this height
-    checkpointProver(handle, block.header.height);
-  }
-
-  // 14. Persist journal and purge old ones
-  insertBlockJournal(journal);
-  purgeOldJournals(block.header.height - 20);
-
-  console.log(`Applied ordering block height=${block.header.height} hash=${validation.blockHash(block.header)} (${block.subBlockTree.subBlockRefs.length} sub-blocks)`);
   return true;
 }

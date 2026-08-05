@@ -63,10 +63,18 @@ box in the UTXO set. Implementation uses `@ergots/avltree` with
 `avl_tree_nodes` keyed by `(version, label)`.
 
 At block application, consumed boxes are removed from the prover by key and
-created boxes are inserted. The resulting digest is compared against
-`header.stateRoot` (gated by `VERIFY_STATE_ROOT`, default false during
-development). After verification, `checkpointProver` writes a version and
-prunes versions older than `MAX_PROOF_HISTORY` blocks (default 1440).
+created boxes are inserted — canonically ordered (all removes, then all
+inserts, each by hex box id), from the block journal's mutation log. The
+resulting digest is compared against `header.stateRoot`, which commits to the
+UTXO state **after** this block is applied. Verification is gated by
+`VERIFY_STATE_ROOT`, **on by default**; a mismatch rejects the block. After
+verification, `checkpointProver` writes a version and prunes versions older
+than `MAX_PROOF_HISTORY` blocks (default 1440).
+
+Because the header commits to the post-block digest and PoW covers the header,
+a producer computes that digest before mining by running its own block's body
+through the apply path's mutation phase in a rolled-back transaction — the same
+code the verifier runs, never a second implementation.
 
 During fork resolution, the prover is rolled back to
 `versionAtOrBeforeHeight(forkHeight)`, undoing every mutation from reverted
@@ -145,7 +153,7 @@ hash rate can reorg the chain (standard Nakamoto consensus).
 (posts, likes, invites, prunes, block headers), PoW solutions (post and block),
 Merkle roots (subBlockRoot, utxoTxRoot), UTXO transitions (conservation,
 guards, legal transitions), prune settlements (signature, topology, Merkle,
-UTXO settlement), state root (when `VERIFY_STATE_ROOT` is enabled), and
+UTXO settlement), state root (on by default — see `VERIFY_STATE_ROOT`), and
 coinbase rewards (emission schedule).
 
 **Miner constraints:**
@@ -166,6 +174,6 @@ of block inclusion.
 
 | Flag | Default | Effect |
 |------|---------|--------|
-| `VERIFY_STATE_ROOT` | `false` | Gate stateRoot verification; mismatch rejects block when true. Computed regardless. |
+| `VERIFY_STATE_ROOT` | `true` | Gate stateRoot verification; mismatch rejects the block. Computed regardless. Set `false` to disable. |
 | `MAX_PROOF_HISTORY` | `1440` | AVL+ versions retained; older versions pruned. |
 | `AVL_KEY_LENGTH` | `32` | Box ID byte length in AVL tree (matches blake2b-512/32). |

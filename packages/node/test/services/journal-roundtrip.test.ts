@@ -109,6 +109,7 @@ async function importBlockCreator() {
 async function importBlockApply() {
   return (await import('../../src/services/block-apply.js')) as unknown as {
     applyOrderingBlock: (block: OrderingBlock) => boolean;
+    computePostBlockStateRoot: (block: OrderingBlock, height: number) => string | null;
   };
 }
 
@@ -193,6 +194,15 @@ function dumpState(db: Database) {
   };
 }
 
+/** Persisted journal rows — the speculative state-root run must add none. */
+function journalHeights(db: Database): number[] {
+  return (
+    db.prepare('SELECT block_height FROM block_journal ORDER BY block_height').all() as Array<{
+      block_height: number;
+    }>
+  ).map((r) => r.block_height);
+}
+
 /**
  * Activate the AVL prover singleton on the test DB and (when boxes were
  * seeded) bootstrap them into the tree — the production startup wiring from
@@ -232,7 +242,9 @@ function takeSnapshot(
 
 /**
  * The shared tail of every class test: revert the class block through the
- * real reorg path and check all three P1 acceptance properties.
+ * real reorg path and check all three P1 acceptance properties, plus the
+ * P3/H-6 property that rides on the same restored pre-state — the digest the
+ * producer computes speculatively equals the one the real apply produces.
  */
 async function assertRoundTrip(
   db: DbModule,
@@ -257,9 +269,31 @@ async function assertRoundTrip(
   // 2. Digest identity — the active prover is back at the pre-block digest.
   expect(Buffer.from(digestOf(handle)).equals(Buffer.from(pre.digest))).toBe(true);
 
+  // 2b. Speculation identity (P3/H-6) — on this restored pre-state, the digest
+  //     the producer computes *without applying anything* is the digest step 3
+  //     below actually lands on. That is what makes `header.stateRoot`
+  //     checkable: producer and verifier run one implementation of the state
+  //     transition, not two.
+  const blockApply = await importBlockApply();
+  const journalsBefore = journalHeights(db.getDb());
+  const speculative = blockApply.computePostBlockStateRoot(
+    classBlock,
+    classBlock.header.height,
+  );
+  expect(speculative).toBe(Buffer.from(postDigest).toString('hex'));
+  // …and it is what the producer committed to before mining, so a verifier
+  // running VERIFY_STATE_ROOT accepts exactly the blocks a producer builds.
+  expect(classBlock.header.stateRoot).toBe(speculative);
+
+  // 2c. …and it left no trace: its transaction rolled back, the prover was
+  //     restored by hand (SQLite rollback cannot reach it), and it persisted
+  //     no journal row.
+  expect(dumpState(db.getDb())).toEqual(pre.state);
+  expect(Buffer.from(digestOf(handle)).equals(Buffer.from(pre.digest))).toBe(true);
+  expect(journalHeights(db.getDb())).toEqual(journalsBefore);
+
   // 3. Re-apply identity — the same block applies again onto the restored
   //    state and lands on the same post-block digest.
-  const blockApply = await importBlockApply();
   expect(blockApply.applyOrderingBlock(classBlock)).toBe(true);
   expect(Buffer.from(digestOf(handle)).equals(Buffer.from(postDigest))).toBe(true);
 }
