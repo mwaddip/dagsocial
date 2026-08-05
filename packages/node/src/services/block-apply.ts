@@ -53,6 +53,7 @@ import {
 } from '../store/journal.js';
 import type { BlockJournal } from '../store/journal.js';
 import { tryGetAvlProver, applyBlockMutations, checkpointProver } from '../state/avl-prover.js';
+import type { RecordPut } from '../state/avl-prover.js';
 import {
   encodeTx,
   decodeTx,
@@ -326,8 +327,8 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
   const journal = finishBlockJournal();
   const handle = tryGetAvlProver();
   if (handle) {
-    const { consumed, created } = proverFeedFromJournal(journal);
-    const computedDigest = applyBlockMutations(handle.prover, consumed, created);
+    const { consumed, created, recordPuts } = proverFeedFromJournal(journal);
+    const computedDigest = applyBlockMutations(handle.prover, consumed, created, recordPuts);
 
     // Verify against block header (gated). The prover is restored by the
     // funnel's single rollback point, not here.
@@ -370,11 +371,14 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
  */
 function proverFeedFromJournal(
   journal: BlockJournal,
-): { consumed: string[]; created: AnyBox[] } {
+): { consumed: string[]; created: AnyBox[]; recordPuts: RecordPut[] } {
+  // Netting is per-kind and the two rules do NOT share a code path: boxes
+  // cancel insert+remove pairs; records collapse to the last write per key.
   const cancelled = new Set<number>();
   const pendingInsertIndex = new Map<string, number>();
   for (let i = 0; i < journal.mutations.length; i++) {
     const m = journal.mutations[i]!;
+    if (m.kind !== 'box') continue;
     if (m.op === 'insert') {
       pendingInsertIndex.set(m.boxId, i);
     } else {
@@ -388,13 +392,37 @@ function proverFeedFromJournal(
   }
   const consumed: string[] = [];
   const created: AnyBox[] = [];
+  // Insertion-ordered by key, so the last write to a key wins while the map
+  // itself stays deterministic. Collapsing must happen here, where journal
+  // application order is still authoritative: record puts are not commutative,
+  // so `applyBlockMutations`' sort-by-key could not recover which write is
+  // last. The journal keeps both entries regardless — rollback needs the
+  // first's `replaced`.
+  const recordByKey = new Map<string, RecordPut>();
   for (let i = 0; i < journal.mutations.length; i++) {
     if (cancelled.has(i)) continue;
     const m = journal.mutations[i]!;
-    if (m.op === 'remove') consumed.push(m.boxId);
-    else created.push(m.box!);
+    switch (m.kind) {
+      case 'box':
+        if (m.op === 'remove') consumed.push(m.boxId);
+        else created.push(m.box!);
+        break;
+      case 'record':
+        recordByKey.set(m.key, { key: m.key, record: m.record });
+        break;
+      default: {
+        // Compile-time exhaustiveness, deliberately not a runtime throw: a new
+        // committed entity kind that nobody feeds to the prover is silently
+        // absent from the stateRoot, and no test can catch that — producer and
+        // verifier omit it identically and agree on a digest over incomplete
+        // state. This assignment is the only enforcement that invariant has.
+        const _exhaustive: never = m;
+        void _exhaustive;
+        break;
+      }
+    }
   }
-  return { consumed, created };
+  return { consumed, created, recordPuts: [...recordByKey.values()] };
 }
 
 /**
@@ -442,10 +470,12 @@ export function computePostBlockStateRoot(
     return getDb().transaction((): string => {
       beginBlockJournal(height);
       if (!applyMutationPhase(block, height, undefined)) throw new BlockRejected();
-      const { consumed, created } = proverFeedFromJournal(finishBlockJournal());
+      const { consumed, created, recordPuts } = proverFeedFromJournal(finishBlockJournal());
       // The digest rides out on the throw: nothing this run did may survive.
       throw new SpeculativeRollback(
-        Buffer.from(applyBlockMutations(handle.prover, consumed, created)).toString('hex'),
+        Buffer.from(
+          applyBlockMutations(handle.prover, consumed, created, recordPuts),
+        ).toString('hex'),
       );
     })();
   } catch (err) {

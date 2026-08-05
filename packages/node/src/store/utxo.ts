@@ -24,12 +24,12 @@ interface UtxoRow {
   box_type: string;
   value: bigint;
   created_at_block: bigint;
-  spent_at_block: bigint | null;
   owner: Buffer | null;
-  guard: string;
-  proof_source: string | null;
   extra_data: string | null;
-  last_touch_block: bigint | null;
+  // Creating-transaction provenance (Spec G phase B). Nullable through the
+  // migration window — no producer sets them until phase C.
+  tx_id: string | null;
+  output_index: bigint | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -91,11 +91,48 @@ function pubkeyToHex(pk: Uint8Array): string {
 }
 
 /**
+ * Attach creating-transaction provenance to a reconstructed box.
+ *
+ * ⚠ **Consensus-critical: assign conditionally, never as explicit `undefined`.**
+ * `state/serialize-box.ts` strips only `id` and `boxType`, so `txId`/`index`
+ * reach the AVL *value* — and cbor-x distinguishes an absent key from a
+ * present-but-`undefined` one. A key set to `undefined` encodes as `f7` *and*
+ * increments the fixed two-byte map header (measured: `{value, guard}` →
+ * `b90002…`; the same object plus `txId: undefined, index: undefined` →
+ * `b90004…f7…f7`). So a box reconstructed here with explicit `undefined`
+ * provenance serializes to different bytes than the same box built by a
+ * producer without those keys, and a node that **restarts** and re-bootstraps
+ * its prover from `getUnspentBoxes` would compute a different `stateRoot` than
+ * one that stayed up — a restart-triggered consensus fork, from nothing but an
+ * object shape.
+ *
+ * `??` collapses both `null` (column present, unset) and `undefined` (column
+ * not selected) before the guard, so neither can leak through as a key.
+ *
+ * This is the discipline `rowToBox` already applies to `decayBurn` and
+ * `lockedUntilBlock`. Box **ids** are not exposed — `canonicalBoxBytes`
+ * destructures provenance away and is total over both shapes — only the AVL
+ * value is. See NODE_INTERFACE, AVL+ State Root → "Two entity kinds" → 1a.
+ *
+ * Provenance is appended **after** every candidate field, so phase C producers
+ * must build boxes the same way or the two shapes will disagree on key order,
+ * which `variableMapSize: false` also makes byte-visible.
+ */
+function withProvenance<T extends AnyBox>(box: T, row: UtxoRow): T {
+  const txId = row.tx_id ?? undefined;
+  const index = row.output_index ?? undefined;
+  if (txId !== undefined) box.txId = txId;
+  if (index !== undefined) box.index = Number(index);
+  return box;
+}
+
+/**
  * Reconstruct a typed box from a utxo_boxes row.
  *
- * Common columns (id, box_type, value, created_at_block, owner, guard,
- * proof_source, last_touch_block) are read directly.  Box-type-specific fields
- * are parsed from the extra_data JSON column.
+ * Columns id, box_type, value, created_at_block and owner are read directly;
+ * `guard` is a per-boxType constant reconstructed from the discriminant.
+ * Everything else — including proofSource and lastTouchBlock, whose columns
+ * exist for SQL predicates only — is parsed from the extra_data JSON column.
  */
 function rowToBox(row: UtxoRow): AnyBox {
   const extra = row.extra_data ? JSON.parse(row.extra_data) : {};
@@ -116,7 +153,7 @@ function rowToBox(row: UtxoRow): AnyBox {
       if (e.decayBurn !== undefined) {
         kb.decayBurn = e.decayBurn;
       }
-      return kb satisfies KarmaBox as KarmaBox;
+      return withProvenance(kb satisfies KarmaBox as KarmaBox, row);
     }
 
     case 'credit': {
@@ -133,12 +170,12 @@ function rowToBox(row: UtxoRow): AnyBox {
       if (e.lockedUntilBlock !== undefined) {
         cb.lockedUntilBlock = e.lockedUntilBlock;
       }
-      return cb satisfies CreditBox as CreditBox;
+      return withProvenance(cb satisfies CreditBox as CreditBox, row);
     }
 
     case 'like': {
       const e = extra as LikeExtra;
-      return {
+      return withProvenance({
         id: row.id,
         boxType: 'like',
         value: 2n,
@@ -146,12 +183,12 @@ function rowToBox(row: UtxoRow): AnyBox {
         likerId: hexToPubkey(e.likerId),
         targetPostId: e.targetPostId,
         guard: 'epoch_tally',
-      } satisfies LikeBox as LikeBox;
+      } satisfies LikeBox as LikeBox, row);
     }
 
     case 'invite': {
       const e = extra as InviteExtra;
-      return {
+      return withProvenance({
         id: row.id,
         boxType: 'invite',
         value: row.value,
@@ -159,12 +196,12 @@ function rowToBox(row: UtxoRow): AnyBox {
         secretHash: new Uint8Array(e.secretHash),
         inviterId: hexToPubkey(e.inviterId),
         guard: 'hash_preimage_with_bond',
-      } satisfies InviteBox as InviteBox;
+      } satisfies InviteBox as InviteBox, row);
     }
 
     case 'bond': {
       const e = extra as BondExtra;
-      return {
+      return withProvenance({
         id: row.id,
         boxType: 'bond',
         value: row.value,
@@ -177,12 +214,12 @@ function rowToBox(row: UtxoRow): AnyBox {
         probationStartBlock: e.probationStartBlock ?? 0,
         probationEndBlock: e.probationEndBlock ?? 0,
         guard: 'bond_dual',
-      } satisfies BondBox as BondBox;
+      } satisfies BondBox as BondBox, row);
     }
 
     case 'post_lock': {
       const e = extra as PostLockExtra;
-      return {
+      return withProvenance({
         id: row.id,
         boxType: 'post_lock',
         value: row.value,
@@ -191,12 +228,12 @@ function rowToBox(row: UtxoRow): AnyBox {
         owner: new Uint8Array(e.owner),
         targetPostId: e.targetPostId,
         guard: 'epoch_tally',
-      } satisfies PostLockBox as PostLockBox;
+      } satisfies PostLockBox as PostLockBox, row);
     }
 
     case 'vouch': {
       const e = extra as VouchExtra;
-      return {
+      return withProvenance({
         id: row.id,
         boxType: 'vouch',
         value: 1n,
@@ -204,7 +241,7 @@ function rowToBox(row: UtxoRow): AnyBox {
         voucherId: hexToPubkey(e.voucherId),
         targetId: hexToPubkey(e.targetId),
         guard: 'owner_signature',
-      } satisfies VouchBox as VouchBox;
+      } satisfies VouchBox as VouchBox, row);
     }
 
     default:
@@ -621,11 +658,19 @@ export function insertBox(box: AnyBox): void {
       throw new Error(`Unknown box type: ${(box as AnyBox).boxType}`);
   }
 
+  // Plain INSERT, deliberately not INSERT OR REPLACE: two byte-identical boxes
+  // in one block collide on the `id` PRIMARY KEY today, which the apply
+  // funnel's totality catch turns into a block rejection. OR REPLACE would
+  // silently drop the colliding box instead — state corruption in place of a
+  // loud failure. Provenance-derived ids make the collision structurally
+  // impossible at phase G; until then the loud failure is the correct
+  // behaviour (NODE_INTERFACE → "Box provenance columns").
   db.prepare(
     `INSERT INTO utxo_boxes
        (id, box_type, value, created_at_block, spent_at_block,
-        owner, guard, proof_source, extra_data, last_touch_block)
-     VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
+        owner, guard, proof_source, extra_data, last_touch_block,
+        tx_id, output_index)
+     VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     box.id,
     box.boxType,
@@ -636,6 +681,8 @@ export function insertBox(box: AnyBox): void {
     proofSource,
     JSON.stringify(extraData),
     lastTouchBlock,
+    box.txId ?? null,
+    box.index ?? null,
   );
 
   recordBoxInsert(box);
@@ -675,8 +722,8 @@ export function getUnspentBoxes(): AnyBox[] {
   const db = getDb();
   const rows = db
     .prepare(
-      `SELECT id, box_type, value, created_at_block, spent_at_block,
-              owner, guard, proof_source, extra_data, last_touch_block
+      `SELECT id, box_type, value, created_at_block, owner, extra_data,
+              tx_id, output_index
        FROM utxo_boxes
        WHERE spent_at_block IS NULL
        ORDER BY created_at_block ASC`,

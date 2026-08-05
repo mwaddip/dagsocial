@@ -1,6 +1,9 @@
 import { getDb } from './db.js';
 import { encode, decode } from 'cbor-x';
 import type { AnyBox, UserId } from '@dagsocial/types';
+// Type-only: erased at compile time, so this does not create a runtime cycle
+// with identity-records.ts, which imports the recording hook below.
+import type { IdentityRecord } from './identity-records.js';
 
 // ---------------------------------------------------------------------------
 // Journal types (node-owned — NODE_INTERFACE "Block Journal")
@@ -8,11 +11,46 @@ import type { AnyBox, UserId } from '@dagsocial/types';
 
 /** One primitive box mutation, in application order. */
 export interface BoxMutation {
+  kind: 'box';
   op: 'insert' | 'remove';
   boxId: string;
   /** Full box — present iff op === 'insert'. */
   box?: AnyBox;
 }
+
+/** One identity-record write, in application order (Spec G phase B). */
+export interface RecordMutation {
+  kind: 'record';
+  /** hex — H(IDENTITY_KEY_DOMAIN ‖ identityId), the AVL key. */
+  key: string;
+  /** The raw 32 bytes, so rollback can address the SQL row. */
+  identityId: UserId;
+  /** The value written. */
+  record: IdentityRecord;
+  /** Prior value — absent iff the key did not exist. */
+  replaced?: IdentityRecord;
+}
+
+/**
+ * A mutation of any **committed** entity.
+ *
+ * This is one discriminated union rather than a box log with a sibling
+ * `recordMutations` array, and that is load-bearing. A committed entity that
+ * never reaches the prover feed is silently absent from the `stateRoot`, and
+ * **no test can catch it** — producer and verifier omit it identically, so they
+ * agree on a digest over incomplete state. Making the feed derivation switch on
+ * `kind` turns "a new entity kind was added and nobody updated the prover feed"
+ * into a TypeScript exhaustiveness error. That compile-time check is the only
+ * enforcement this invariant has; a parallel array would reinstate exactly the
+ * drift-by-omission shape P1 removed.
+ *
+ * The typed side-records below (`confirmedSubBlockIds`, `vouchCooldown*`, …)
+ * stay separate arrays because they are **not** in the `stateRoot` — they are
+ * node-local bookkeeping with an exact inverse. `kind: 'record'` is the first
+ * entry that is both journaled *and* committed, and that is the whole
+ * distinction.
+ */
+export type JournalMutation = BoxMutation | RecordMutation;
 
 /**
  * Single source of truth for undoing a block and feeding the AVL prover.
@@ -21,8 +59,8 @@ export interface BoxMutation {
  */
 export interface BlockJournal {
   blockHeight: number;
-  /** Ordered, application order — box rollback + AVL feed. */
-  mutations: BoxMutation[];
+  /** Ordered, application order — state rollback + AVL feed. */
+  mutations: JournalMutation[];
   /** Inverse: unconfirmPost; also mempool re-insertion. */
   confirmedSubBlockIds: string[];
   /** Mempool re-insertion only. */
@@ -54,10 +92,10 @@ export interface BlockJournal {
 // Module-level singleton: block application is synchronous single-threaded
 // better-sqlite3, so at most one journal is ever open. While open, the store
 // mutation primitives (insertBox, consumeBox, markLikeBoxesTallied,
-// markFreeLikesProcessed, insertVouchCooldown, deleteVouchCooldown) record
-// automatically — call sites never maintain parallel mutation bookkeeping.
-// The rollback inverses (deleteBox, unconsumeBox, markFreeLikesUnprocessed)
-// never record.
+// putIdentityRecord, markFreeLikesProcessed, insertVouchCooldown,
+// deleteVouchCooldown) record automatically — call sites never maintain
+// parallel mutation bookkeeping. The rollback inverses (deleteBox,
+// unconsumeBox, deleteIdentityRecord, markFreeLikesUnprocessed) never record.
 // ---------------------------------------------------------------------------
 
 let openJournal: BlockJournal | null = null;
@@ -116,13 +154,37 @@ export function recordBoxInsert(box: AnyBox): void {
   if (!box.id) {
     throw new Error('recordBoxInsert: box.id must be set while a block journal is open');
   }
-  openJournal.mutations.push({ op: 'insert', boxId: box.id, box });
+  openJournal.mutations.push({ kind: 'box', op: 'insert', boxId: box.id, box });
 }
 
 /** Record a box spend (consumeBox, markLikeBoxesTallied). */
 export function recordBoxRemove(boxId: string): void {
   if (openJournal === null) return;
-  openJournal.mutations.push({ op: 'remove', boxId });
+  openJournal.mutations.push({ kind: 'box', op: 'remove', boxId });
+}
+
+/**
+ * Record an identity-record write, capturing the row it replaced (if any) so
+ * rollback can restore what the upsert overwrote.
+ *
+ * A record written **twice in one block** (activity bump then decay, at the same
+ * height) appends two entries, and both are kept: `revertBlock` replays in
+ * reverse, so the last inverse applied is the *first* write's `replaced` — the
+ * true pre-block value. Collapsing them per key would restore an intra-block
+ * intermediate instead.
+ */
+export function recordIdentityRecordPut(
+  key: string,
+  identityId: UserId,
+  record: IdentityRecord,
+  replaced?: IdentityRecord,
+): void {
+  if (openJournal === null) return;
+  const entry: RecordMutation = { kind: 'record', key, identityId, record };
+  if (replaced !== undefined) {
+    entry.replaced = replaced;
+  }
+  openJournal.mutations.push(entry);
 }
 
 /** Record free-like ids flipped to processed. */

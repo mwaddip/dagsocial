@@ -653,7 +653,9 @@ describe('journal round-trip per mutation class (P1 acceptance)', () => {
     };
     const saved = journalStore.getBlockJournal(2)!;
     expect(
-      saved.mutations.filter((m) => m.op === 'remove').map((m) => m.boxId),
+      saved.mutations
+        .filter((m) => m.kind === 'box' && m.op === 'remove')
+        .map((m) => (m as { boxId: string }).boxId),
     ).toEqual(expect.arrayContaining([lockBox.id, likeBox.id, authorKarma.id]));
 
     await assertRoundTrip(db, handle, pre, classBlock);

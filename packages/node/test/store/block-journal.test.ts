@@ -128,10 +128,10 @@ describe('block journal (store choke-point recording)', () => {
     s.insertBox(box);
     const j = s.finishBlockJournal();
 
-    expect(j.mutations).toEqual([{ op: 'insert', boxId: 'box-k1', box }]);
+    expect(j.mutations).toEqual([{ kind: 'box', op: 'insert', boxId: 'box-k1', box }]);
   });
 
-  it('consumeBox records {op: remove, boxId} while open', async () => {
+  it('consumeBox records {kind: box, op: remove, boxId} while open', async () => {
     const s = await importAll();
     s.initDb(':memory:');
 
@@ -141,7 +141,7 @@ describe('block journal (store choke-point recording)', () => {
     s.consumeBox('box-k2', 2);
     const j = s.finishBlockJournal();
 
-    expect(j.mutations).toEqual([{ op: 'remove', boxId: 'box-k2' }]);
+    expect(j.mutations).toEqual([{ kind: 'box', op: 'remove', boxId: 'box-k2' }]);
   });
 
   it('markLikeBoxesTallied records one remove per box id and keeps the -1 sentinel', async () => {
@@ -156,8 +156,8 @@ describe('block journal (store choke-point recording)', () => {
     const j = s.finishBlockJournal();
 
     expect(j.mutations).toEqual([
-      { op: 'remove', boxId: 'like-1' },
-      { op: 'remove', boxId: 'like-2' },
+      { kind: 'box', op: 'remove', boxId: 'like-1' },
+      { kind: 'box', op: 'remove', boxId: 'like-2' },
     ]);
     for (const id of ['like-1', 'like-2']) {
       const row = s
@@ -260,11 +260,11 @@ describe('block journal (store choke-point recording)', () => {
     s.insertBox(makeKarmaBox('new-2'));
     const j = s.finishBlockJournal();
 
-    expect(j.mutations.map((m) => [m.op, m.boxId])).toEqual([
-      ['insert', 'new-1'],
-      ['remove', 'pre-existing'],
-      ['remove', 'like-z'],
-      ['insert', 'new-2'],
+    expect(j.mutations.map((m) => [m.kind, (m as { op?: string }).op, (m as { boxId?: string }).boxId])).toEqual([
+      ['box', 'insert', 'new-1'],
+      ['box', 'remove', 'pre-existing'],
+      ['box', 'remove', 'like-z'],
+      ['box', 'insert', 'new-2'],
     ]);
   });
 

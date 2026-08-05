@@ -34,7 +34,8 @@ import type {
   EpochTally,
   LikeReward,
 } from '@dagsocial/types';
-import type { BlockJournal } from '../../src/store/journal.js';
+import type { BlockJournal, BoxMutation } from '../../src/store/journal.js';
+import type { AnyBox } from '@dagsocial/types';
 import type { DecayJournalEntry } from '../../src/services/decay.js';
 import type Database from 'better-sqlite3';
 import {
@@ -179,14 +180,28 @@ async function importJournalStore() {
   };
 }
 
-/** boxIds of 'remove' mutations, in application order. */
+/** boxIds of box 'remove' mutations, in application order. */
 function removedIds(journal: BlockJournal): string[] {
-  return journal.mutations.filter((m) => m.op === 'remove').map((m) => m.boxId);
+  return journal.mutations
+    .filter((m) => m.kind === 'box' && m.op === 'remove')
+    .map((m) => (m as BoxMutation).boxId);
 }
 
-/** boxIds of 'insert' mutations, in application order. */
+/** boxIds of box 'insert' mutations, in application order. */
 function insertedIds(journal: BlockJournal): string[] {
-  return journal.mutations.filter((m) => m.op === 'insert').map((m) => m.boxId);
+  return journal.mutations
+    .filter((m) => m.kind === 'box' && m.op === 'insert')
+    .map((m) => (m as BoxMutation).boxId);
+}
+
+/** Box inserts matching a predicate over the recorded box payload. */
+function boxInserts(
+  journal: BlockJournal,
+  match: (box: AnyBox) => boolean,
+): BoxMutation[] {
+  return journal.mutations.filter(
+    (m) => m.kind === 'box' && m.op === 'insert' && match(m.box!),
+  ) as BoxMutation[];
 }
 
 async function importOrdering() {
@@ -246,9 +261,7 @@ describe('block-apply journal recording', () => {
 
     // Genesis miner has no prior credits, so each coinbase output is exactly
     // one credit insert, its box bytes carried in the journal payload
-    const creditInserts = saved!.mutations.filter(
-      (m) => m.op === 'insert' && m.box!.boxType === 'credit',
-    );
+    const creditInserts = boxInserts(saved!, (b) => b.boxType === 'credit');
     expect(creditInserts.length).toBe(block!.utxoTxTree.coinbaseOutputs.length);
     expect(saved!.mutations.length).toBe(creditInserts.length);
   });
@@ -413,11 +426,11 @@ describe('block-apply journal recording', () => {
 
     expect(removedIds(saved!)).toContain(authorStartBox.id);
 
-    const authorInserts = saved!.mutations.filter(
-      (m) =>
-        m.op === 'insert' &&
-        m.box!.boxType === 'karma' &&
-        Buffer.from((m.box as KarmaBox).owner).equals(Buffer.from(author.userId)),
+    const authorInserts = boxInserts(
+      saved!,
+      (b) =>
+        b.boxType === 'karma' &&
+        Buffer.from((b as KarmaBox).owner).equals(Buffer.from(author.userId)),
     );
     expect(authorInserts.length).toBe(1);
     // Merged value: the 100n original plus the epoch author reward
@@ -829,11 +842,11 @@ describe('block-apply journal recording', () => {
     const journal = await importJournalStore();
     const saved = journal.getBlockJournal(1)!;
     expect(removedIds(saved)).toContain(oldKarma.id);
-    const voucherInserts = saved.mutations.filter(
-      (m) =>
-        m.op === 'insert' &&
-        m.box!.boxType === 'karma' &&
-        Buffer.from((m.box as KarmaBox).owner).equals(Buffer.from(voucher.userId)),
+    const voucherInserts = boxInserts(
+      saved,
+      (b) =>
+        b.boxType === 'karma' &&
+        Buffer.from((b as KarmaBox).owner).equals(Buffer.from(voucher.userId)),
     );
     expect(voucherInserts.length).toBe(1);
     expect((voucherInserts[0]!.box as KarmaBox).value).toBe(57n);

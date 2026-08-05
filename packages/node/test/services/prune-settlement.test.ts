@@ -5,7 +5,7 @@ import type {
   LikeBox,
   KarmaBox,
 } from '@dagsocial/types';
-import type { BlockJournal } from '../../src/store/journal.js';
+import type { BlockJournal, BoxMutation } from '../../src/store/journal.js';
 import type Database from 'better-sqlite3';
 
 // ---------------------------------------------------------------------------
@@ -73,14 +73,18 @@ async function journaled(height: number, fn: () => void): Promise<BlockJournal> 
   return journal.finishBlockJournal();
 }
 
-/** boxIds of 'remove' mutations, in application order. */
+/** boxIds of box 'remove' mutations, in application order. */
 function removedIds(journal: BlockJournal): string[] {
-  return journal.mutations.filter((m) => m.op === 'remove').map((m) => m.boxId);
+  return journal.mutations
+    .filter((m) => m.kind === 'box' && m.op === 'remove')
+    .map((m) => (m as BoxMutation).boxId);
 }
 
-/** boxIds of 'insert' mutations, in application order. */
+/** boxIds of box 'insert' mutations, in application order. */
 function insertedIds(journal: BlockJournal): string[] {
-  return journal.mutations.filter((m) => m.op === 'insert').map((m) => m.boxId);
+  return journal.mutations
+    .filter((m) => m.kind === 'box' && m.op === 'insert')
+    .map((m) => (m as BoxMutation).boxId);
 }
 
 // ---------------------------------------------------------------------------
@@ -330,8 +334,8 @@ describe('settlePruneUtxo', () => {
     // Merged karma refund box created with old + refund value, its bytes in
     // the journal payload
     const mintedKarma = journal.mutations.find(
-      (m) => m.op === 'insert' && (m.box as KarmaBox).boxType === 'karma',
-    );
+      (m) => m.kind === 'box' && m.op === 'insert' && (m.box as KarmaBox).boxType === 'karma',
+    ) as BoxMutation | undefined;
     expect(mintedKarma).toBeDefined();
     expect((mintedKarma!.box as KarmaBox).value).toBe(140n);
   });

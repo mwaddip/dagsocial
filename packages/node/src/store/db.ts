@@ -49,6 +49,21 @@ const MIGRATIONS = [
   )`,
 
   // UTXO boxes
+  //
+  // created_at_block is a STORE column, never a consensus input (Spec G D3):
+  // it is not committed in the stateRoot, so a node bootstrapping from an AVL
+  // snapshot cannot reconstruct it. Legitimate readers are getUnspentBoxes
+  // ordering and display only. See NODE_INTERFACE "created_at_block is a store
+  // column, never a consensus input".
+  //
+  // tx_id/output_index are the box's creating-transaction provenance (Spec G
+  // phase B). Both nullable during the migration window (phases B–F) because no
+  // producer sets them until phase C; SQLite treats NULLs as distinct, so
+  // UNIQUE(tx_id, output_index) tolerates that. Phase G makes them NOT NULL.
+  //
+  // A (tx_id, output_index) pair names exactly one box by construction, so no
+  // valid block can trip the constraint — it turns a derivation bug into a loud
+  // failure instead of silent state corruption.
   `CREATE TABLE IF NOT EXISTS utxo_boxes (
     id TEXT PRIMARY KEY,
     box_type TEXT NOT NULL,           -- 'karma' | 'credit' | 'like' | 'invite' | 'bond' | 'post_lock'
@@ -59,7 +74,24 @@ const MIGRATIONS = [
     guard TEXT NOT NULL,
     proof_source TEXT,                -- PostId | StumpHash | InviteTxId | block height
     extra_data TEXT,                  -- JSON for box-specific fields (secretHash, likerId, targetPostId, etc.)
-    last_touch_block INTEGER          -- For karma boxes only
+    last_touch_block INTEGER,         -- For karma boxes only
+    tx_id TEXT,                       -- Creating transaction — real or synthetic mint (Spec G)
+    output_index INTEGER,             -- u32 position within that transaction's outputs
+    UNIQUE(tx_id, output_index)
+  )`,
+
+  // Identity records — the second committed entity alongside boxes (Spec G D4).
+  // Per-identity decay clock; once boxes carry no height, decay.ts has nothing
+  // to read from them, so the clock lives in committed state.
+  //
+  // Keyed on the raw 32 Ed25519 public-key bytes (UserId — Spec G D5 withdrawn,
+  // there is no separate IdentityId type). The AVL key is DERIVED as
+  // blake2b512(IDENTITY_KEY_DOMAIN ‖ identityId)[0:32], never the raw bytes —
+  // both are total functions of the identity, so the two cannot drift.
+  `CREATE TABLE IF NOT EXISTS identity_records (
+    identity_id BLOB PRIMARY KEY,
+    last_activity_block INTEGER NOT NULL,
+    last_decay_block INTEGER NOT NULL
   )`,
 
   // Free likes (beyond LIKE_FREE_THRESHOLD * LIKE_THRESHOLD)

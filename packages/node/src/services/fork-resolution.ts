@@ -21,6 +21,7 @@ import {
 import { getDb } from '../store/db.js';
 import { isBlockJournalOpen, type BlockJournal } from '../store/journal.js';
 import { deleteVouchCooldown, insertVouchCooldown } from '../store/vouch-cooldowns.js';
+import { putIdentityRecord, deleteIdentityRecord } from '../store/identity-records.js';
 import { tryGetAvlProver } from '../state/avl-prover.js';
 import { applyOrderingBlock } from './block-apply.js';
 import type { DagService } from './dag-service.js';
@@ -91,13 +92,32 @@ export function revertBlock(height: number): PruneEntry[] {
   const block = getOrderingBlock(height);
   const pruneEntries: PruneEntry[] = block?.subBlockTree.pruneEntries ?? [];
 
-  // 1. Replay the primitive mutation log in reverse: insert → deleteBox,
-  // remove → unconsumeBox. This restores the exact pre-block UTXO set for
-  // every mutation class — including the pre-existing boxes merge-consumed
-  // inside mintKarma/mintCredits, tallied like boxes, and prune settlement.
+  // 1. Replay the primitive mutation log in reverse: box/insert → deleteBox,
+  // box/remove → unconsumeBox, record → restore `replaced` or delete. This
+  // restores the exact pre-block committed state for every mutation class —
+  // including the pre-existing boxes merge-consumed inside
+  // mintKarma/mintCredits, tallied like boxes, prune settlement, and identity
+  // records.
+  //
+  // Reverse order is what makes a record written **more than once in one block**
+  // (activity bump then decay, at the same height) revert correctly: each
+  // inverse undoes one write, and the last one replayed is the *first* write's
+  // `replaced` — the true pre-block value. A per-key single restore keeping the
+  // last `replaced` would restore an intra-block intermediate instead.
+  //
+  // `putIdentityRecord` is itself a recording primitive, exactly like the
+  // `insertVouchCooldown` restore two loops below. That is safe only because
+  // this function refuses to run while a journal is open (the guard at the top);
+  // the guard is the mechanism, not a non-recording variant.
   for (let i = journal.mutations.length - 1; i >= 0; i--) {
     const m = journal.mutations[i]!;
-    if (m.op === 'insert') {
+    if (m.kind === 'record') {
+      if (m.replaced !== undefined) {
+        putIdentityRecord(m.identityId, m.replaced);
+      } else {
+        deleteIdentityRecord(m.identityId);
+      }
+    } else if (m.op === 'insert') {
       deleteBox(m.boxId);
     } else {
       unconsumeBox(m.boxId);
