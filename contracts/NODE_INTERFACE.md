@@ -519,9 +519,17 @@ Architecture document for the full model. Key properties:
 the clock becomes the `IdentityRecord` (Store Interface → Identity Records):
 
 ```
-stale       = (height − lastActivityBlock) > staleThresholdBlocks
+stale       = (height − lastActivityBlock) >= staleThresholdBlocks
 owedPeriods = floor( (height − max(lastActivityBlock, lastDecayBlock)) / interval )
 ```
+
+⚠ **The comparison is `>=`, not `>`.** This contract and Spec G §3.4 both said
+`>`, and both were wrong by one block. `isIdentityStale` treats a box as recent
+when `createdAtBlock > currentHeight − threshold`, so an identity is stale
+exactly when *no* box satisfies that — i.e. when
+`currentHeight − lastActivityBlock >= threshold`. `>` would delay every
+identity's first decay by one block, which is a behaviour change D10 forbids.
+Found by the phase D session against the code.
 
 **Semantics are unchanged — this is a representation swap, and it must be
 behaviour-identical (Spec G D10).** The equivalence: today's staleness test is
@@ -1027,6 +1035,25 @@ application anyway, which is exactly when a journal is open.
 
 With no journal open (bootstrap, non-block paths) `insertBox` records nothing,
 consistent with every other choke-point hook.
+
+**Genesis is the one box created with no journal open.** `ensureSystemKarmaBox`
+runs at startup, so the system identity gets no record from the choke point. It
+must be given one explicitly at `genesisHeight`, **not** left to a
+default-to-zero: `genesisHeight` is `1` (`currentHeight > 0 ? currentHeight : 1`),
+and a `{0, 0}` default makes the system identity go stale exactly one block
+earlier than the old code did. With `threshold = 100`, the old predicate goes
+stale at height 101 (`1 > 101 − 100` is false); `lastActivityBlock = 0` goes
+stale at 100.
+
+**`bootstrapAvlProver` MUST feed identity records, not only boxes.** It
+currently walks `getUnspentBoxes` alone. Records reach the tree through the
+journal during block application, so from phase D onward a node that restarts
+with empty AVL storage would rebuild a tree containing **no records at all** and
+compute a different `stateRoot` than one that stayed up — the same
+restart-triggered fork class as 1a and 1c, introduced by populating the record.
+Records are fed in the same canonical order as boxes (lexicographic by hex key).
+A bootstrapped tree and a live tree must agree once records exist, and that
+needs a test.
 
 ### Vouch Cooldowns
 
