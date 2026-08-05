@@ -38,6 +38,7 @@ import {
   getStump,
   peerStorage,
 } from './store/index.js';
+import { getAllIdentityRecords, identityRecordKey } from './store/identity-records.js';
 import { encodePost, cumulativeWork, MEMPOOL_EXPIRY_BLOCKS, subBlockFromPost, verifyPostId, VOUCH_COOLDOWN_BLOCKS } from '@dagsocial/types';
 import type { BlockHeader, Stump } from '@dagsocial/types';
 
@@ -117,10 +118,23 @@ const currentHeight = getCurrentHeight();
 // constructor already loads existing state via rollback.
 if (currentHeight > 0 && avlHandle.storage.version() === null) {
   const unspent = getUnspentBoxes();
-  if (unspent.length > 0) {
-    bootstrapAvlProver(avlHandle, unspent, currentHeight);
+  // The tree holds two committed entity kinds, so the rebuild feeds both
+  // (Spec G phase D). Feeding only boxes would rebuild a tree missing every
+  // identity record, and this node would then disagree on `stateRoot` with one
+  // that never restarted.
+  //
+  // Key derivation stays at its single site in the store — `identityRecordKey`
+  // — and the prover consumes the derived key rather than re-deriving it.
+  const records = getAllIdentityRecords().map((r) => ({
+    key: identityRecordKey(r.identityId),
+    record: r.record,
+  }));
+  // Either kind alone is enough to make the empty tree wrong.
+  if (unspent.length > 0 || records.length > 0) {
+    bootstrapAvlProver(avlHandle, unspent, currentHeight, records);
     console.log(
-      `AVL prover bootstrapped from ${unspent.length} unspent boxes at height ${currentHeight}`,
+      `AVL prover bootstrapped from ${unspent.length} unspent boxes and ` +
+      `${records.length} identity records at height ${currentHeight}`,
     );
   }
 }

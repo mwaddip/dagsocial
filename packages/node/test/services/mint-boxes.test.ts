@@ -218,11 +218,11 @@ describe('mint producers attach provenance (Spec G phase C1)', () => {
 
     // "Stayed up": the prover holds the producer-built objects.
     const live = createAvlProver(makeAvlDb());
-    bootstrapAvlProver(live, produced, 0);
+    bootstrapAvlProver(live, produced, 0, []);
 
     // "Restarted": the prover re-bootstraps from SQLite.
     const restarted = createAvlProver(makeAvlDb());
-    bootstrapAvlProver(restarted, getUnspentBoxes(), 0);
+    bootstrapAvlProver(restarted, getUnspentBoxes(), 0, []);
 
     const dLive = live.prover.digest();
     const dRestarted = restarted.prover.digest();
@@ -275,10 +275,15 @@ describe('direct mint producers attach provenance (Spec G phase C2)', () => {
   async function decayDeps() {
     const utxo = await import('../../src/store/utxo.js');
     const { getDb } = await import('../../src/store/db.js');
+    // Spec G phase D: the decay clock is committed state, read and written
+    // through the same injected seam as the boxes.
+    const records = await import('../../src/store/identity-records.js');
     return {
       getKarmaBoxes: utxo.getKarmaBoxes,
       consumeBox: utxo.consumeBox,
       insertBox: utxo.insertBox,
+      getIdentityRecord: records.getIdentityRecord,
+      putIdentityRecord: records.putIdentityRecord,
       getKarmaOwners: () =>
         (
           getDb()
@@ -381,9 +386,9 @@ describe('direct mint producers attach provenance (Spec G phase C2)', () => {
     );
 
     const live = createAvlProver(makeAvlDb());
-    bootstrapAvlProver(live, produced, 0);
+    bootstrapAvlProver(live, produced, 0, []);
     const restarted = createAvlProver(makeAvlDb());
-    bootstrapAvlProver(restarted, getUnspentBoxes(), 0);
+    bootstrapAvlProver(restarted, getUnspentBoxes(), 0, []);
     expect(Buffer.from(restarted.prover.digest()!).toString('hex')).toBe(
       Buffer.from(live.prover.digest()!).toString('hex'),
     );

@@ -767,6 +767,12 @@ describe('block-apply journal recording', () => {
       karmaMinimum: KARMA_MINIMUM,
     };
 
+    // Spec G phase D: the decay clock is committed state. `oldBox` was inserted
+    // with no journal open, so the identity has no record and reads as never
+    // active — which is the same clock its `createdAtBlock: 0` gave before, so
+    // the burn below is unchanged.
+    const records = await import('../../src/store/identity-records.js');
+
     const deps = {
       getKarmaBoxes: (owner: Uint8Array) => {
         const box = utxo.getKarmaBox(owner);
@@ -775,6 +781,8 @@ describe('block-apply journal recording', () => {
       consumeBox: (boxId: string, height: number) =>
         utxo.consumeBox(boxId, height),
       insertBox: (box: KarmaBox) => utxo.insertBox(box),
+      getIdentityRecord: records.getIdentityRecord,
+      putIdentityRecord: records.putIdentityRecord,
       getKarmaOwners: () => [identity.userId],
     };
 
@@ -1450,6 +1458,86 @@ describe('block-apply mint provenance', () => {
       // The settlement consumed the decay box it had just been handed.
       expect(utxo.getBox(decayed!.id!)).toBeNull();
       expect(utxo.getKarmaBox(idle.userId)!.id).toBe(settled!.id);
+    } finally {
+      if (origThreshold === undefined) delete process.env['KARMA_STALE_THRESHOLD_BLOCKS'];
+      else process.env['KARMA_STALE_THRESHOLD_BLOCKS'] = origThreshold;
+      if (origInterval === undefined) delete process.env['KARMA_DECAY_INTERVAL_BLOCKS'];
+      else process.env['KARMA_DECAY_INTERVAL_BLOCKS'] = origInterval;
+    }
+  });
+
+  it('the same-block decay-then-settle adjacency resets the clock exactly as the boxes did', async () => {
+    // Spec G phase D. The same funnel as the test above, read through the
+    // *clock* rather than the outpoints.
+    //
+    // `applyKarmaDecay` runs at block-apply.ts:1018 and `processVouchCooldowns`
+    // at :1026, so at height 4 decay writes `lastDecayBlock: 4` and the
+    // settlement's mint then writes `lastActivityBlock: 4` — both halves land
+    // on the same height, in that order.
+    //
+    // Under the old code the settlement created a *non-decay* karma box at
+    // height 4, which reset staleness for every subsequent block. The record
+    // has to reproduce that, and it does for two independent reasons worth
+    // pinning separately:
+    //
+    //   staleness    (h − 4) >= 3 only from h = 7, so blocks 5 and 6 are quiet;
+    //   owedPeriods  max(4, 4) = 4, the same clock start the single surviving
+    //                non-decay box gave — the `max` cannot pick the stale half.
+    //
+    // Had the activity bump reset `lastDecayBlock`, or had decay overwritten
+    // `lastActivityBlock`, the arithmetic would still look right at height 4
+    // and diverge later. Hence the assertions at 5 and 7.
+    const origThreshold = process.env['KARMA_STALE_THRESHOLD_BLOCKS'];
+    const origInterval = process.env['KARMA_DECAY_INTERVAL_BLOCKS'];
+    try {
+      process.env['KARMA_STALE_THRESHOLD_BLOCKS'] = '3';
+      process.env['KARMA_DECAY_INTERVAL_BLOCKS'] = '1';
+      vi.resetModules();
+
+      const db = await importDb();
+      db.initDb(':memory:');
+
+      const utxo = await importUtxo();
+      const vouchStore = await import('../../src/store/vouch-cooldowns.js');
+      const records = await import('../../src/store/identity-records.js');
+      const { VOUCH_KARMA_AMOUNT } = await import('@dagsocial/types');
+
+      const idle = makeTestIdentity();
+      const target = makeTestIdentity();
+      utxo.insertBox(makeKarmaBox(50n, idle.userId, 0));
+      vouchStore.insertVouchCooldown(idle.userId, target.userId, 4, VOUCH_KARMA_AMOUNT);
+
+      const bc = await importBlockCreator();
+      bc.startBlockCreator(testConfig);
+      for (let i = 0; i < 3; i++) bc.createOrderingBlock();
+
+      // Height 4: decay fires, then the cooldown settles for the same owner.
+      expect(bc.createOrderingBlock()).not.toBeNull();
+      expect(records.getIdentityRecord(idle.userId)).toEqual({
+        lastActivityBlock: 4,
+        lastDecayBlock: 4,
+      });
+      const afterAdjacency = utxo.getKarmaBox(idle.userId)!.value;
+
+      // Height 5: within the threshold of the height-4 activity — quiet, and
+      // the clock must not drift.
+      expect(bc.createOrderingBlock()).not.toBeNull();
+      expect(records.getIdentityRecord(idle.userId)).toEqual({
+        lastActivityBlock: 4,
+        lastDecayBlock: 4,
+      });
+      expect(utxo.getKarmaBox(idle.userId)!.value).toBe(afterAdjacency);
+
+      // Heights 6 then 7: (7 − 4) >= 3, so decay resumes at 7 and not before.
+      expect(bc.createOrderingBlock()).not.toBeNull();
+      expect(utxo.getKarmaBox(idle.userId)!.value).toBe(afterAdjacency);
+
+      expect(bc.createOrderingBlock()).not.toBeNull();
+      expect(utxo.getKarmaBox(idle.userId)!.value).toBeLessThan(afterAdjacency);
+      expect(records.getIdentityRecord(idle.userId)).toEqual({
+        lastActivityBlock: 4,
+        lastDecayBlock: 7,
+      });
     } finally {
       if (origThreshold === undefined) delete process.env['KARMA_STALE_THRESHOLD_BLOCKS'];
       else process.env['KARMA_STALE_THRESHOLD_BLOCKS'] = origThreshold;

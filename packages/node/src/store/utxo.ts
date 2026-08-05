@@ -1,5 +1,11 @@
 import { getDb } from './db.js';
-import { isBlockJournalOpen, recordBoxInsert, recordBoxRemove } from './journal.js';
+import {
+  isBlockJournalOpen,
+  openBlockJournalHeight,
+  recordBoxInsert,
+  recordBoxRemove,
+} from './journal.js';
+import { getIdentityRecord, putIdentityRecord } from './identity-records.js';
 import type {
   AnyBox,
   KarmaBox,
@@ -557,6 +563,35 @@ export function getPostTotalLikes(targetPostId: string): number {
 }
 
 /**
+ * Bump an identity's activity clock to the height of the block being applied
+ * (Spec G phase D; NODE_INTERFACE → "Populating the record").
+ *
+ * Called from `insertBox` for every karma box with `decayBurn !== true` — which
+ * is *exactly* the old staleness predicate ("no unspent non-decay karma box
+ * newer than the threshold") read from the other end. Recording it at the store
+ * choke point is what makes the clock swap behaviour-preserving by
+ * construction rather than by re-derivation at each of the eight producers.
+ *
+ * `lastDecayBlock` is carried through untouched: the two halves of the record
+ * have different writers, and an activity bump that reset the decay clock would
+ * hand the owner a free interval.
+ *
+ * With no journal open — genesis, bootstrap, any non-block path — this records
+ * nothing, consistent with every other choke-point hook. Consensus only reads
+ * the record during block application, and a height invented outside a block
+ * would not be a settled one.
+ */
+function bumpActivityClock(owner: Uint8Array): void {
+  const height = openBlockJournalHeight();
+  if (height === null) return;
+  const existing = getIdentityRecord(owner);
+  putIdentityRecord(owner, {
+    lastActivityBlock: height,
+    lastDecayBlock: existing?.lastDecayBlock ?? 0,
+  });
+}
+
+/**
  * Insert a box into the utxo_boxes table.
  *
  * Common fields are stored directly; box-type-specific fields are serialised
@@ -576,6 +611,12 @@ export function insertBox(box: AnyBox): void {
   let owner: Buffer | null = null;
   let proofSource: string | null = null;
   let lastTouchBlock: number | null = null;
+  // Set below iff this box is a non-decay karma box — the identity whose
+  // activity clock this insertion advances (Spec G phase D). Carried out of the
+  // switch rather than bumped inside it so the record is written *after* the
+  // box row and its journal entry, keeping reverse-order rollback in the order
+  // the two writes happened.
+  let activityOwner: Uint8Array | null = null;
 
   switch (box.boxType) {
     case 'karma': {
@@ -591,6 +632,10 @@ export function insertBox(box: AnyBox): void {
       owner = Buffer.from(k.owner);
       proofSource = k.proofSource;
       lastTouchBlock = k.lastTouchBlock;
+      // `!== true`, not `=== undefined`: a decay-burn box is the one karma box
+      // that must NOT reset the clock, and `decayBurn: false` is normal
+      // activity. This is the same test `isIdentityStale` applied to boxes.
+      if (k.decayBurn !== true) activityOwner = k.owner;
       break;
     }
     case 'credit': {
@@ -686,6 +731,8 @@ export function insertBox(box: AnyBox): void {
   );
 
   recordBoxInsert(box);
+
+  if (activityOwner !== null) bumpActivityClock(activityOwner);
 }
 
 /**

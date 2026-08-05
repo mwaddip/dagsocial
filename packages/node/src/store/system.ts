@@ -3,6 +3,7 @@ import { computeBoxId } from '@dagsocial/types';
 import type { KarmaBox, CreditBox } from '@dagsocial/types';
 import { getDb } from './db.js';
 import { insertBox, getKarmaBox, getCreditBoxes } from './utxo.js';
+import { putIdentityRecord } from './identity-records.js';
 import {
   GENESIS_FAUCET_CREDITS,
   GENESIS_SYSTEM_KARMA,
@@ -106,6 +107,26 @@ export function ensureSystemKarmaBox(systemPubKey: Uint8Array, currentHeight: nu
   box.index = MINT_OUTPUT_INDEX;
   box.id = computeBoxId(box);
   insertBox(box);
+
+  // Genesis is the one non-decay karma producer that runs **outside** block
+  // application, so `insertBox`'s choke point cannot bump the activity clock:
+  // there is no open journal, and therefore no settled height for it to read
+  // (Spec G phase D).
+  //
+  // Left unwritten, the system identity would hold karma with no record, and
+  // decay would fall back to "never active" — staleness one block early and one
+  // extra interval charged on the first firing, because the box says
+  // `genesisHeight` and the fallback says 0. Writing it here is the root fix:
+  // the clock and the box get the same height from the same local, so they
+  // cannot disagree.
+  //
+  // With no journal open this records nothing to roll back, which is correct —
+  // genesis is not a block. The row still reaches the `stateRoot` on any node
+  // that bootstraps its prover from the store.
+  putIdentityRecord(box.owner, {
+    lastActivityBlock: genesisHeight,
+    lastDecayBlock: 0,
+  });
   return box;
 }
 

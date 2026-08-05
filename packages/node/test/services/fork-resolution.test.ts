@@ -756,10 +756,16 @@ describe('revertBlock', () => {
       karmaMinimum: KARMA_MINIMUM,
     };
 
+    // Spec G phase D: the decay clock is committed state, injected alongside
+    // the box accessors.
+    const records = await import('../../src/store/identity-records.js');
+
     const deps = {
       getKarmaBoxes,
       consumeBox: utxo.consumeBox,
       insertBox: utxo.insertBox,
+      getIdentityRecord: records.getIdentityRecord,
+      putIdentityRecord: records.putIdentityRecord,
       getKarmaOwners: () => [identity.userId],
     };
 

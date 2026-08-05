@@ -65,7 +65,7 @@ async function activateProver() {
   const utxo = await importUtxo();
   const handle = avlMod.createAvlProver();
   const unspent = utxo.getUnspentBoxes();
-  if (unspent.length > 0) avlMod.bootstrapAvlProver(handle, unspent, 0);
+  if (unspent.length > 0) avlMod.bootstrapAvlProver(handle, unspent, 0, []);
   expect(avlMod.tryGetAvlProver()).not.toBeNull();
   return handle;
 }

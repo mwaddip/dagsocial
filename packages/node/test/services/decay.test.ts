@@ -11,7 +11,18 @@ import {
   KARMA_MINIMUM,
 } from '@dagsocial/types';
 import type { KarmaBox } from '@dagsocial/types';
-import type { DecayJournalEntry } from '../../src/services/decay.js';
+import type { IdentityRecord } from '../../src/store/identity-records.js';
+
+/**
+ * Spec G phase D — the decay clock reads the committed identity record.
+ *
+ * The predicates took `KarmaBox[]` and read `createdAtBlock`; they now take an
+ * `IdentityRecord`. The scenarios below are the same ones, restated on the
+ * clock: a box at height H that counted as activity is `lastActivityBlock: H`,
+ * and a decay-burn box at height H is `lastDecayBlock: H`. End-to-end
+ * equivalence is checked against frozen pre-swap captures in
+ * `decay-golden.test.ts`; these are the unit-level statements of the two rules.
+ */
 
 const OWNER = new Uint8Array(32).fill(0xaa);
 
@@ -21,6 +32,10 @@ const TEST_CFG = {
   decayAmount: KARMA_DECAY_AMOUNT,
   karmaMinimum: KARMA_MINIMUM,
 };
+
+function clock(lastActivityBlock: number, lastDecayBlock = 0): IdentityRecord {
+  return { lastActivityBlock, lastDecayBlock };
+}
 
 function makeKarmaBox(overrides: Partial<KarmaBox> = {}): KarmaBox {
   return {
@@ -41,36 +56,56 @@ function makeKarmaBox(overrides: Partial<KarmaBox> = {}): KarmaBox {
 // ---------------------------------------------------------------------------
 
 describe('isIdentityStale', () => {
-  it('returns false for empty box list', () => {
-    expect(isIdentityStale([], 1000, KARMA_STALE_THRESHOLD_BLOCKS)).toBe(false);
+  it('returns false for an identity with no record below the threshold height', () => {
+    expect(isIdentityStale(null, 1000, KARMA_STALE_THRESHOLD_BLOCKS)).toBe(false);
   });
 
-  it('returns false when a normal box is within threshold', () => {
-    const boxes = [makeKarmaBox({ createdAtBlock: 99000 })];
+  it('returns false when activity is within the threshold', () => {
     // threshold = 20160, current = 100000, age = 1000 < threshold
-    expect(isIdentityStale(boxes, 100000, KARMA_STALE_THRESHOLD_BLOCKS)).toBe(false);
+    expect(isIdentityStale(clock(99000), 100000, KARMA_STALE_THRESHOLD_BLOCKS)).toBe(false);
   });
 
-  it('returns true when all normal boxes are older than threshold', () => {
-    const boxes = [makeKarmaBox({ createdAtBlock: 1000 })];
+  it('returns true when activity is older than the threshold', () => {
     // threshold = 20160, current = 100000, age = 99000 > threshold
-    expect(isIdentityStale(boxes, 100000, KARMA_STALE_THRESHOLD_BLOCKS)).toBe(true);
+    expect(isIdentityStale(clock(1000), 100000, KARMA_STALE_THRESHOLD_BLOCKS)).toBe(true);
   });
 
-  it('returns true when only decayBurn boxes exist', () => {
-    const boxes = [
-      makeKarmaBox({ createdAtBlock: 99999, decayBurn: true }),
-    ];
-    // Even though box is recent, it's decayBurn — no real activity
-    expect(isIdentityStale(boxes, 100000, KARMA_STALE_THRESHOLD_BLOCKS)).toBe(true);
+  it('a recent decay does not count as activity', () => {
+    // The decay-burn box the old code excluded is `lastDecayBlock` here: recent,
+    // and still not activity. Otherwise one decay would make the identity look
+    // fresh and no second cycle could ever fire.
+    expect(
+      isIdentityStale(clock(1000, 99999), 100000, KARMA_STALE_THRESHOLD_BLOCKS),
+    ).toBe(true);
   });
 
-  it('returns false with mixed old decayBurn + recent normal box', () => {
-    const boxes = [
-      makeKarmaBox({ createdAtBlock: 1000, decayBurn: true }),  // old decay
-      makeKarmaBox({ createdAtBlock: 99999 }),                   // recent normal
-    ];
-    expect(isIdentityStale(boxes, 100000, KARMA_STALE_THRESHOLD_BLOCKS)).toBe(false);
+  it('recent activity wins over an old decay', () => {
+    expect(
+      isIdentityStale(clock(99999, 1000), 100000, KARMA_STALE_THRESHOLD_BLOCKS),
+    ).toBe(false);
+  });
+
+  it('is stale at exactly the threshold, not one block later', () => {
+    // `>=`, not `>`. The predecessor's test was `createdAtBlock > height −
+    // threshold`, so an activity height exactly `threshold` blocks back is
+    // already stale. The contract's prose said `>` and was off by one.
+    expect(isIdentityStale(clock(100), 100 + KARMA_STALE_THRESHOLD_BLOCKS,
+      KARMA_STALE_THRESHOLD_BLOCKS)).toBe(true);
+    expect(isIdentityStale(clock(100), 99 + KARMA_STALE_THRESHOLD_BLOCKS,
+      KARMA_STALE_THRESHOLD_BLOCKS)).toBe(false);
+  });
+
+  it('never stale at or below the threshold height', () => {
+    // The chain has not existed long enough. Load-bearing for a clock of 0,
+    // where the subtraction alone would report stale at exactly `threshold`.
+    expect(isIdentityStale(clock(0), KARMA_STALE_THRESHOLD_BLOCKS,
+      KARMA_STALE_THRESHOLD_BLOCKS)).toBe(false);
+    expect(isIdentityStale(clock(0), KARMA_STALE_THRESHOLD_BLOCKS + 1,
+      KARMA_STALE_THRESHOLD_BLOCKS)).toBe(true);
+  });
+
+  it('a missing record reads as never-active', () => {
+    expect(isIdentityStale(null, 100000, KARMA_STALE_THRESHOLD_BLOCKS)).toBe(true);
   });
 });
 
@@ -79,41 +114,37 @@ describe('isIdentityStale', () => {
 // ---------------------------------------------------------------------------
 
 describe('owedPeriods', () => {
-  it('returns 0 for empty box list', () => {
-    expect(owedPeriods([], 1000, KARMA_DECAY_INTERVAL_BLOCKS)).toBe(0);
+  it('returns 0 when the clock is at the current height', () => {
+    expect(owedPeriods(clock(1000), 1000, KARMA_DECAY_INTERVAL_BLOCKS)).toBe(0);
   });
 
-  it('returns correct periods for normal boxes', () => {
-    // Oldest normal box at height 1000, current 3160, interval 720
+  it('counts periods since activity', () => {
     // (3160 - 1000) / 720 = 3
-    const boxes = [makeKarmaBox({ createdAtBlock: 1000 })];
-    expect(owedPeriods(boxes, 3160, KARMA_DECAY_INTERVAL_BLOCKS)).toBe(3);
+    expect(owedPeriods(clock(1000), 3160, KARMA_DECAY_INTERVAL_BLOCKS)).toBe(3);
   });
 
-  it('uses oldest normal box when multiple exist', () => {
-    const boxes = [
-      makeKarmaBox({ createdAtBlock: 2000 }),  // newer
-      makeKarmaBox({ createdAtBlock: 1000 }),  // older — this one counts
-    ];
-    expect(owedPeriods(boxes, 3160, KARMA_DECAY_INTERVAL_BLOCKS)).toBe(3);
+  it('uses the decay height when it is later than the activity height', () => {
+    // The `max(...)` fallback: after a decay the only karma box is the
+    // decay-burn box, whose height is exactly `lastDecayBlock`.
+    // (3160 - 2000) / 720 = 1, not (3160 - 1000) / 720 = 3.
+    expect(owedPeriods(clock(1000, 2000), 3160, KARMA_DECAY_INTERVAL_BLOCKS)).toBe(1);
   });
 
-  it('uses youngest decayBurn box when all are decayBurn', () => {
-    const boxes = [
-      makeKarmaBox({ createdAtBlock: 1000, decayBurn: true }),  // older decay
-      makeKarmaBox({ createdAtBlock: 2000, decayBurn: true }),  // younger decay
-    ];
-    // Uses youngest: (3160 - 2000) / 720 = 1
-    expect(owedPeriods(boxes, 3160, KARMA_DECAY_INTERVAL_BLOCKS)).toBe(1);
+  it('uses the activity height when it is later than the decay height', () => {
+    // (3160 - 1000) / 720 = 3, not (3160 - 500) / 720 = 3 — checked with a
+    // decay far enough back that reading it would change the answer.
+    expect(owedPeriods(clock(1000, 100), 3160, KARMA_DECAY_INTERVAL_BLOCKS)).toBe(3);
+    expect(owedPeriods(clock(2500, 100), 3160, KARMA_DECAY_INTERVAL_BLOCKS)).toBe(0);
   });
 
-  it('ignores decayBurn boxes when normal boxes exist', () => {
-    const boxes = [
-      makeKarmaBox({ createdAtBlock: 500, decayBurn: true }),   // old decay — ignored
-      makeKarmaBox({ createdAtBlock: 1000 }),                    // normal — this counts
-    ];
-    // Oldest normal is 1000: (3160 - 1000) / 720 = 3
-    expect(owedPeriods(boxes, 3160, KARMA_DECAY_INTERVAL_BLOCKS)).toBe(3);
+  it('activity and decay at the same height count once', () => {
+    // The intra-block adjacency: decay fires, then a vouch settlement mints for
+    // the same owner in the same block.
+    expect(owedPeriods(clock(2000, 2000), 3160, KARMA_DECAY_INTERVAL_BLOCKS)).toBe(1);
+  });
+
+  it('a missing record counts from height 0', () => {
+    expect(owedPeriods(null, 1440, KARMA_DECAY_INTERVAL_BLOCKS)).toBe(2);
   });
 });
 
@@ -122,37 +153,49 @@ describe('owedPeriods', () => {
 // ---------------------------------------------------------------------------
 
 describe('applyKarmaDecay', () => {
-  function makeDeps(boxesMap: Map<string, KarmaBox[]>) {
+  function makeDeps(
+    boxesMap: Map<string, KarmaBox[]>,
+    recordMap = new Map<string, IdentityRecord>(),
+  ) {
     const consumed: { boxId: string; atHeight: number }[] = [];
     const inserted: KarmaBox[] = [];
+    const key = (o: Uint8Array) => Buffer.from(o).toString('hex');
     return {
       deps: {
-        getKarmaBoxes: (owner: Uint8Array) => {
-          const key = Buffer.from(owner).toString('hex');
-          return boxesMap.get(key) ?? [];
-        },
+        getKarmaBoxes: (owner: Uint8Array) => boxesMap.get(key(owner)) ?? [],
         consumeBox: (boxId: string, atHeight: number) => {
           consumed.push({ boxId, atHeight });
         },
         insertBox: (box: KarmaBox) => {
           inserted.push(box);
         },
-        getKarmaOwners: () => {
-          return Array.from(boxesMap.keys()).map(k => new Uint8Array(Buffer.from(k, 'hex')));
+        getKarmaOwners: () =>
+          Array.from(boxesMap.keys()).map((k) => new Uint8Array(Buffer.from(k, 'hex'))),
+        getIdentityRecord: (id: Uint8Array) => recordMap.get(key(id)) ?? null,
+        putIdentityRecord: (id: Uint8Array, r: IdentityRecord) => {
+          recordMap.set(key(id), r);
         },
       },
       consumed,
       inserted,
+      recordMap,
     };
   }
 
-  it('does nothing for non-stale identity', () => {
-    const ownerKey = Buffer.from(OWNER).toString('hex');
-    const boxesMap = new Map<string, KarmaBox[]>();
-    boxesMap.set(ownerKey, [
-      makeKarmaBox({ createdAtBlock: 99999, value: 100n }),
-    ]);
-    const { deps, consumed, inserted } = makeDeps(boxesMap);
+  const ownerKey = Buffer.from(OWNER).toString('hex');
+
+  function oneOwner(boxes: KarmaBox[], record?: IdentityRecord) {
+    const boxesMap = new Map<string, KarmaBox[]>([[ownerKey, boxes]]);
+    const recordMap = new Map<string, IdentityRecord>();
+    if (record) recordMap.set(ownerKey, record);
+    return makeDeps(boxesMap, recordMap);
+  }
+
+  it('does nothing for a non-stale identity', () => {
+    const { deps, consumed, inserted } = oneOwner(
+      [makeKarmaBox({ value: 100n })],
+      clock(99999),
+    );
 
     const journal = applyKarmaDecay(deps, 100000, TEST_CFG);
 
@@ -161,15 +204,13 @@ describe('applyKarmaDecay', () => {
     expect(inserted).toHaveLength(0);
   });
 
-  it('burns karma for stale identity', () => {
-    const ownerKey = Buffer.from(OWNER).toString('hex');
-    const boxesMap = new Map<string, KarmaBox[]>();
-    // Box at height 1000, current 25000, threshold 20160 -> stale (age 24000 > 20160)
+  it('burns karma for a stale identity', () => {
+    // Activity at 1000, current 25000, threshold 20160 -> stale (age 24000)
     // periods = floor((25000-1000)/720) = 33, burn = min(33*5=165, 100-10=90) = 90
-    boxesMap.set(ownerKey, [
-      makeKarmaBox({ id: 'old-box-1', createdAtBlock: 1000, value: 100n }),
-    ]);
-    const { deps } = makeDeps(boxesMap);
+    const { deps } = oneOwner(
+      [makeKarmaBox({ id: 'old-box-1', value: 100n })],
+      clock(1000),
+    );
 
     const journal = applyKarmaDecay(deps, 25000, TEST_CFG);
 
@@ -180,15 +221,9 @@ describe('applyKarmaDecay', () => {
     expect(entry.newBoxId).toBeTruthy();
   });
 
-  it('caps burn at KARMA_MINIMUM floor', () => {
-    const ownerKey = Buffer.from(OWNER).toString('hex');
-    const boxesMap = new Map<string, KarmaBox[]>();
-    // Box with 12 karma, current 25000 -> stale, 33 owed periods
+  it('caps burn at the KARMA_MINIMUM floor', () => {
     // burn = min(33*5=165, 12-10=2) = 2
-    boxesMap.set(ownerKey, [
-      makeKarmaBox({ id: 'old-box-1', createdAtBlock: 1000, value: 12n }),
-    ]);
-    const { deps } = makeDeps(boxesMap);
+    const { deps } = oneOwner([makeKarmaBox({ id: 'old-box-1', value: 12n })], clock(1000));
 
     const journal = applyKarmaDecay(deps, 25000, TEST_CFG);
 
@@ -196,13 +231,11 @@ describe('applyKarmaDecay', () => {
     expect(journal[0]!.burnAmount).toBe(2n);
   });
 
-  it('does nothing when already at or below minimum', () => {
-    const ownerKey = Buffer.from(OWNER).toString('hex');
-    const boxesMap = new Map<string, KarmaBox[]>();
-    boxesMap.set(ownerKey, [
-      makeKarmaBox({ id: 'old-box-1', createdAtBlock: 1000, value: 8n }),
-    ]);
-    const { deps, consumed, inserted } = makeDeps(boxesMap);
+  it('does nothing when already at or below the minimum', () => {
+    const { deps, consumed, inserted } = oneOwner(
+      [makeKarmaBox({ id: 'old-box-1', value: 8n })],
+      clock(1000),
+    );
 
     const journal = applyKarmaDecay(deps, 25000, TEST_CFG);
 
@@ -211,33 +244,79 @@ describe('applyKarmaDecay', () => {
     expect(inserted).toHaveLength(0);
   });
 
+  it('leaves the clock untouched when nothing burns', () => {
+    // A stale identity sitting at the floor keeps the intervals it is owed —
+    // writing `lastDecayBlock` on a zero burn would silently forgive them.
+    const { deps, recordMap } = oneOwner(
+      [makeKarmaBox({ id: 'old-box-1', value: 8n })],
+      clock(1000),
+    );
+
+    applyKarmaDecay(deps, 25000, TEST_CFG);
+
+    expect(recordMap.get(ownerKey)).toEqual(clock(1000));
+  });
+
   it('consolidates multiple boxes into one', () => {
-    const ownerKey = Buffer.from(OWNER).toString('hex');
-    const boxesMap = new Map<string, KarmaBox[]>();
-    boxesMap.set(ownerKey, [
-      makeKarmaBox({ id: 'box-a', createdAtBlock: 1000, value: 50n }),
-      makeKarmaBox({ id: 'box-b', createdAtBlock: 1000, value: 60n }),
-    ]);
-    const { deps, consumed } = makeDeps(boxesMap);
+    const { deps, consumed } = oneOwner(
+      [
+        makeKarmaBox({ id: 'box-a', value: 50n }),
+        makeKarmaBox({ id: 'box-b', value: 60n }),
+      ],
+      clock(1000),
+    );
 
     const journal = applyKarmaDecay(deps, 25000, TEST_CFG);
 
     expect(journal).toHaveLength(1);
-    expect(consumed.length).toBe(2); // both old boxes consumed
-    expect(consumed.map(c => c.boxId).sort()).toEqual(['box-a', 'box-b']);
+    expect(consumed.length).toBe(2);
+    expect(consumed.map((c) => c.boxId).sort()).toEqual(['box-a', 'box-b']);
   });
 
-  it('new box has decayBurn: true', () => {
-    const ownerKey = Buffer.from(OWNER).toString('hex');
-    const boxesMap = new Map<string, KarmaBox[]>();
-    boxesMap.set(ownerKey, [
-      makeKarmaBox({ id: 'old-box', createdAtBlock: 1000, value: 100n }),
-    ]);
-    const { deps, inserted } = makeDeps(boxesMap);
+  it('the new box has decayBurn: true', () => {
+    const { deps, inserted } = oneOwner([makeKarmaBox({ id: 'old-box', value: 100n })], clock(1000));
 
     applyKarmaDecay(deps, 25000, TEST_CFG);
 
     expect(inserted).toHaveLength(1);
     expect(inserted[0]!.decayBurn).toBe(true);
+  });
+
+  it('advances lastDecayBlock and preserves lastActivityBlock', () => {
+    const { deps, recordMap } = oneOwner([makeKarmaBox({ id: 'old-box', value: 100n })], clock(1000));
+
+    applyKarmaDecay(deps, 25000, TEST_CFG);
+
+    expect(recordMap.get(ownerKey)).toEqual(clock(1000, 25000));
+  });
+
+  it('a second cycle charges from the first decay, not from the activity', () => {
+    // Without `max(...)` this would re-bill every interval since height 1000.
+    const { deps } = oneOwner(
+      [makeKarmaBox({ id: 'decay-box', value: 100n, decayBurn: true })],
+      clock(1000, 25000),
+    );
+
+    const journal = applyKarmaDecay(deps, 25720, TEST_CFG);
+
+    expect(journal).toHaveLength(1);
+    // floor((25720 - 25000) / 720) = 1 period -> 5 karma
+    expect(journal[0]!.burnAmount).toBe(5n);
+  });
+
+  it('creates a record for an owner that had none', () => {
+    const { deps, recordMap } = oneOwner([makeKarmaBox({ id: 'old-box', value: 100n })]);
+
+    const journal = applyKarmaDecay(deps, 25000, TEST_CFG);
+
+    expect(journal).toHaveLength(1);
+    expect(recordMap.get(ownerKey)).toEqual(clock(0, 25000));
+  });
+
+  it('skips an owner with no karma boxes without touching its clock', () => {
+    const { deps, recordMap } = oneOwner([], clock(1000));
+
+    expect(applyKarmaDecay(deps, 25000, TEST_CFG)).toHaveLength(0);
+    expect(recordMap.get(ownerKey)).toEqual(clock(1000));
   });
 });

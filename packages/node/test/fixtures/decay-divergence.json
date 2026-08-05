@@ -1,0 +1,23 @@
+{
+  "capturedBefore": "Spec G phase D — captured from the pre-swap implementation, before D2/D3 edited any source file",
+  "preSwap": {
+    "two-non-decay-boxes-at-different-heights": {
+      "name": "two-non-decay-boxes-at-different-heights",
+      "decayEvents": [
+        {
+          "height": 30,
+          "owner": "alice",
+          "burnAmount": "45",
+          "consumedCount": 2,
+          "balanceAfter": "55"
+        }
+      ],
+      "finalBalances": {
+        "alice": "55"
+      },
+      "finalBoxCounts": {
+        "alice": 1
+      }
+    }
+  }
+}

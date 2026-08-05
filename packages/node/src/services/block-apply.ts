@@ -47,6 +47,8 @@ import {
   insertBlockTopology,
   getSubtreeTopology,
   getTopologyAuthor,
+  getIdentityRecord,
+  putIdentityRecord,
 } from '../store/index.js';
 import { getDb } from '../store/db.js';
 import {
@@ -994,6 +996,11 @@ function applyMutationPhase(
     getKarmaBoxes: (owner: Uint8Array) => getKarmaBoxes(owner),
     consumeBox,
     insertBox,
+    // The decay clock now lives in committed state (Spec G D4), so decay reads
+    // and writes it through the same injected seam as its box access. The store
+    // primitives journal on their own — nothing here keeps parallel bookkeeping.
+    getIdentityRecord,
+    putIdentityRecord,
     getKarmaOwners: () => {
       const db = getDb();
       const rows = db

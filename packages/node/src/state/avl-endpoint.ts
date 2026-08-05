@@ -1,7 +1,7 @@
 import type { Express, Request, Response } from 'express';
 import type { AnyBox } from '@dagsocial/types';
 import type { AvlProverHandle } from './avl-prover.js';
-import { deserializeBoxWithId } from './serialize-box.js';
+import { deserializeAvlValue } from './serialize-box.js';
 
 /**
  * JSON-safe view of a box: bigint amount fields (`value`, `originalValue`)
@@ -13,6 +13,36 @@ function jsonSafeBox(box: AnyBox): Record<string, unknown> {
     out[key] = typeof val === 'bigint' ? val.toString() : val;
   }
   return out;
+}
+
+/** What a key resolved to, in a form the JSON response can carry. */
+interface DecodedValue {
+  kind: 'box' | 'record' | null;
+  value: Record<string, unknown> | null;
+}
+
+/**
+ * Decode whatever the key resolved to (Spec G phase D).
+ *
+ * The tree holds **two** entity kinds and their keys are indistinguishable from
+ * outside — a box id and an identity-record key are both 32 bytes of hash
+ * output — so a client can, and eventually will, ask for a record key. Until
+ * phase D nothing populated records, so the tree provably contained none and
+ * decoding every value as a box could not fail; records exist now, and
+ * `deserializeBox` throws on the record tag by design. Dispatching on the tag
+ * is what turns "ask for the wrong kind of key" from a 500 into an answer.
+ *
+ * `kind` is reported alongside the value because the caller cannot infer it:
+ * they asked with an opaque 32-byte key and the proof verifies the *bytes*
+ * either way. An absent key is `kind: null` with a valid exclusion proof, which
+ * is a different statement from "present, and not a box".
+ */
+function decodeValue(id: string, bytes: Uint8Array): DecodedValue {
+  const decoded = deserializeAvlValue(bytes);
+  if (decoded.kind === 'record') {
+    return { kind: 'record', value: { ...decoded.record } };
+  }
+  return { kind: 'box', value: jsonSafeBox({ id, ...decoded.box } as AnyBox) };
 }
 
 export function registerProofEndpoint(app: Express, handle: AvlProverHandle): void {
@@ -80,17 +110,18 @@ export function registerProofEndpoint(app: Express, handle: AvlProverHandle): vo
         });
         const proof = handle.prover.prover.generateProof();
 
-        let boxData = null;
-        if (lookupResult.success && lookupResult.value) {
-          boxData = deserializeBoxWithId(boxId, lookupResult.value);
-        }
+        const decoded: DecodedValue =
+          lookupResult.success && lookupResult.value
+            ? decodeValue(boxId, lookupResult.value)
+            : { kind: null, value: null };
 
         res.json({
           boxId,
           atHeight: blockHeight,
           stateRoot: Buffer.from(version).toString('hex'),
           proof: Buffer.from(proof).toString('base64'),
-          value: boxData ? jsonSafeBox(boxData) : null,
+          kind: decoded.kind,
+          value: decoded.value,
         });
         return;
       }
@@ -110,18 +141,19 @@ export function registerProofEndpoint(app: Express, handle: AvlProverHandle): vo
       // Restore current version
       handle.prover.rollback(currentVersion);
 
-      // Deserialize box value if found
-      let boxData = null;
-      if (lookupResult.success && lookupResult.value) {
-        boxData = deserializeBoxWithId(boxId, lookupResult.value);
-      }
+      // Decode whatever the key resolved to — box or identity record
+      const decoded: DecodedValue =
+        lookupResult.success && lookupResult.value
+          ? decodeValue(boxId, lookupResult.value)
+          : { kind: null, value: null };
 
       res.json({
         boxId,
         atHeight: blockHeight,
         stateRoot: Buffer.from(version).toString('hex'),
         proof: Buffer.from(proof).toString('base64'),
-        value: boxData ? jsonSafeBox(boxData) : null,
+        kind: decoded.kind,
+        value: decoded.value,
       });
     } catch (err) {
       console.error('Proof endpoint error:', err);

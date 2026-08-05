@@ -10,12 +10,19 @@ import type { UserId } from '@dagsocial/types';
  * them, and consensus may not read an uncommitted store column, so the clock
  * lives in committed state:
  *
- *   stale       = (height − lastActivityBlock) > staleThresholdBlocks
+ *   stale       = (height − lastActivityBlock) >= staleThresholdBlocks
  *   owedPeriods = floor( (height − max(lastActivityBlock, lastDecayBlock)) / interval )
  *
- * **Phase B builds this entity and does not populate it.** No producer calls
- * `putIdentityRecord` until phase D, and `decay.ts` keeps reading box heights
- * until then — so a phase-B tree provably contains zero records.
+ * `>=`, not `>`: the box-height predicate this replaced was
+ * `createdAtBlock > height − threshold`, i.e. stale iff `height − A >= threshold`.
+ * The contract's prose said `>` and was off by one; `decay.ts` carries the full
+ * argument, and Spec G D10 requires the swap to be behaviour-identical.
+ *
+ * **Phase D populates this.** `insertBox` bumps `lastActivityBlock` from the
+ * open journal's height for every karma box with `decayBurn !== true`;
+ * `applyKarmaDecay` bumps `lastDecayBlock` when it fires; and
+ * `ensureSystemKarmaBox` writes genesis's own record, since it runs outside
+ * block application where the choke point has no height to read.
  *
  * **Key type is `UserId`** — the raw 32 Ed25519 public-key bytes. There is no
  * separate identity type: Spec G D5's branded `IdentityId` is **withdrawn**,
@@ -69,6 +76,43 @@ export function getIdentityRecord(identityId: UserId): IdentityRecord | null {
     lastActivityBlock: Number(row.last_activity_block),
     lastDecayBlock: Number(row.last_decay_block),
   };
+}
+
+/**
+ * Every identity record in the store, ordered by raw identity bytes.
+ *
+ * Exists for one caller: `bootstrapAvlProver`. A node whose AVL storage is
+ * empty while its chain DB is populated — the documented "wipe the AVL store"
+ * deploy step — rebuilds the tree from the store, and a rebuild that fed only
+ * boxes would produce a tree with **no records at all** and therefore a
+ * different `stateRoot` than a node that stayed up. That is the same
+ * restart-triggered fork class as the explicit-`undefined` provenance key and
+ * the `post_lock` field-order divergence, and it is not caught by any
+ * apply-path test, because apply never re-reads the record set.
+ *
+ * The SQL `ORDER BY` is not the canonical order — the AVL key is a *hash* of
+ * these bytes, so the prover feed sorts by that instead. This ordering only
+ * makes the read deterministic.
+ */
+export function getAllIdentityRecords(): Array<{ identityId: UserId; record: IdentityRecord }> {
+  const rows = getDb()
+    .prepare(
+      `SELECT identity_id, last_activity_block, last_decay_block
+       FROM identity_records ORDER BY identity_id`,
+    )
+    .safeIntegers()
+    .all() as Array<{
+      identity_id: Buffer;
+      last_activity_block: bigint;
+      last_decay_block: bigint;
+    }>;
+  return rows.map((row) => ({
+    identityId: new Uint8Array(row.identity_id),
+    record: {
+      lastActivityBlock: Number(row.last_activity_block),
+      lastDecayBlock: Number(row.last_decay_block),
+    },
+  }));
 }
 
 /**

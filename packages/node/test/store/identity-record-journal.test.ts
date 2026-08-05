@@ -171,7 +171,9 @@ describe('identity records in the block journal (Spec G phase B2)', () => {
     const j = finishBlockJournal();
 
     // One log, not parallel arrays: application order is preserved across kinds.
-    expect(j.mutations.map((m) => m.kind)).toEqual(['box', 'record']);
+    // The middle `record` is the activity-clock bump `insertBox` itself makes
+    // for the karma box above (Spec G phase D); the last is the explicit put.
+    expect(j.mutations.map((m) => m.kind)).toEqual(['box', 'record', 'record']);
   });
 
   it('the journal round-trips a record mutation through CBOR', async () => {

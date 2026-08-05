@@ -197,11 +197,11 @@ describe('box provenance columns (Spec G phase B)', () => {
 
     // "Stayed up": the prover was fed the producer-built objects.
     const live = createAvlProver(makeAvlDb());
-    bootstrapAvlProver(live, produced, 0);
+    bootstrapAvlProver(live, produced, 0, []);
 
     // "Restarted": the prover re-bootstraps from the store.
     const restarted = createAvlProver(makeAvlDb());
-    bootstrapAvlProver(restarted, getUnspentBoxes(), 0);
+    bootstrapAvlProver(restarted, getUnspentBoxes(), 0, []);
 
     const dLive = live.prover.digest();
     const dRestarted = restarted.prover.digest();

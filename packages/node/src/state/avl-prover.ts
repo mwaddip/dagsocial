@@ -57,14 +57,36 @@ export function createAvlProver(db?: import('better-sqlite3').Database): AvlProv
   return { prover: newProver, storage: newStorage };
 }
 
+/** One identity-record write destined for the tree, keyed by its AVL key. */
+export interface RecordPut {
+  /** hex — H(IDENTITY_KEY_DOMAIN ‖ identityId). */
+  key: string;
+  record: IdentityRecord;
+}
+
 /**
- * Bootstrap the prover from the current UTXO set.
- * Called once on first AVL-aware startup if storage is empty but UTXO set exists.
+ * Bootstrap the prover from committed state.
+ * Called once on first AVL-aware startup if storage is empty but the chain DB
+ * is populated — the documented "wipe the AVL store" deploy step.
+ *
+ * **`records` is required, and deliberately not defaulted** (Spec G phase D).
+ * The tree holds two committed entity kinds; a rebuild that fed only boxes
+ * would produce a tree missing every record and therefore a `stateRoot`
+ * different from a node that never restarted — a restart-triggered consensus
+ * fork, from nothing but a forgotten argument. `applyBlockMutations`' analogous
+ * parameter *is* defaulted, for the ~20 pre-existing three-argument call sites;
+ * this one has a single production caller, so requiring it costs nothing and
+ * makes the omission a compile error at the only place it could matter.
+ *
+ * Both feeds are sorted by hex key, matching `applyBlockMutations`' canonical
+ * order: all boxes, then all records. Boxes and records cannot collide — their
+ * keys are hashes under different domain tags.
  */
 export function bootstrapAvlProver(
   handle: AvlProverHandle,
   unspentBoxes: AnyBox[],
   currentHeight: number,
+  records: RecordPut[],
 ): void {
   // Sorted here rather than in getUnspentBoxes' SQL: the canonical order is a
   // property of the prover feed, so it lives at this boundary and every other
@@ -74,17 +96,20 @@ export function bootstrapAvlProver(
     const value = serializeBox(box);
     handle.prover.performOneOperation({ tag: 'Insert', key, value });
   }
+  // `Insert`, not `InsertOrUpdate`: the tree is empty and the store holds one
+  // row per identity, so a repeat here would mean a duplicate key and should
+  // fail loudly rather than silently keep the last one.
+  for (const put of [...records].sort((a, b) => byHexBoxId(a.key, b.key))) {
+    handle.prover.performOneOperation({
+      tag: 'Insert',
+      key: hexToBytes(put.key),
+      value: serializeIdentityRecord(put.record),
+    });
+  }
   // Checkpoint at current tip
   handle.prover.generateProofAndUpdateStorage([
     [HEIGHT_SENTINEL, encodeHeight(currentHeight)],
   ]);
-}
-
-/** One identity-record write destined for the tree, keyed by its AVL key. */
-export interface RecordPut {
-  /** hex — H(IDENTITY_KEY_DOMAIN ‖ identityId). */
-  key: string;
-  record: IdentityRecord;
 }
 
 /**

@@ -141,6 +141,28 @@ export function isBlockJournalOpen(): boolean {
   return openJournal !== null;
 }
 
+/**
+ * The height of the block currently being applied, or null when no journal is
+ * open (Spec G phase D).
+ *
+ * The identity record's activity clock is bumped at the `insertBox` choke
+ * point, and that choke point has no height of its own: `insertBox` takes no
+ * height argument, and the box field it could read — `createdAtBlock` — is the
+ * one Spec G deletes, so reading it would reintroduce exactly the dependency
+ * phase D exists to remove and would break outright at phase G.
+ *
+ * `beginBlockJournal(height)` already carries the *settled* height, and the
+ * record is only meaningful during block application, which is precisely when a
+ * journal is open. So this is the narrow seam rather than a new parameter
+ * threaded through every producer.
+ *
+ * Read-only: nothing may set the height through here, because the height is a
+ * property of the open journal and outlives no part of it.
+ */
+export function openBlockJournalHeight(): number | null {
+  return openJournal === null ? null : openJournal.blockHeight;
+}
+
 // ---------------------------------------------------------------------------
 // Recording hooks — called by the other store modules at their mutation
 // choke points. Each is a silent no-op when no journal is open (bootstrap

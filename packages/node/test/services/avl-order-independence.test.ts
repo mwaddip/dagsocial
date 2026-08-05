@@ -115,7 +115,7 @@ async function activateProver() {
   const handle = avlMod.createAvlProver();
   const unspent = utxo.getUnspentBoxes();
   expect(unspent.length).toBeGreaterThan(0);
-  avlMod.bootstrapAvlProver(handle, unspent, 0);
+  avlMod.bootstrapAvlProver(handle, unspent, 0, []);
   expect(avlMod.tryGetAvlProver()).not.toBeNull();
   return {
     handle,

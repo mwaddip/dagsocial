@@ -1,6 +1,9 @@
 import { computeBoxId } from '@dagsocial/types';
 import type { KarmaBox } from '@dagsocial/types';
 import { MINT_OUTPUT_INDEX, decayContext, mintTxIdFor } from '../mint-provenance.js';
+// Type-only: the decay service reaches the record through injected deps, never
+// through the store module directly.
+import type { IdentityRecord } from '../store/identity-records.js';
 
 /**
  * Per-owner summary of one decay application. Node-local: block application
@@ -19,53 +22,74 @@ export interface DecayJournalEntry {
 // ---------------------------------------------------------------------------
 
 /**
- * An identity is stale if it has NO unspent karma box where decayBurn !== true
- * and createdAtBlock is within the threshold window.
+ * The clock of an identity that has no record at all.
+ *
+ * Every karma producer now writes one — the journaled paths through
+ * `insertBox`'s choke point, and genesis explicitly (`ensureSystemKarmaBox`) —
+ * so an owner holding karma with no record should be unreachable. It is still a
+ * total function's job to say what happens if one appears, and "never observed
+ * active" is the honest reading: maximally stale, decaying from height 0.
+ *
+ * The alternative — skipping record-less owners — is the more dangerous
+ * failure: it exempts an identity from decay permanently, and does so silently.
+ * Over-charging by a fraction of an interval is recoverable; a karma balance
+ * that can never decay is an economic hole.
+ */
+const NEVER_ACTIVE: IdentityRecord = { lastActivityBlock: 0, lastDecayBlock: 0 };
+
+/**
+ * Is this identity stale — no normal activity within the threshold window?
+ *
+ *     stale = (height − lastActivityBlock) >= staleThresholdBlocks
+ *
+ * **`>=`, not `>`.** Spec G D10 makes this a representation swap that must be
+ * behaviour-identical, and the predicate being replaced was "no unspent
+ * non-decay karma box with `createdAtBlock > height − threshold`" — i.e. stale
+ * iff `A <= height − threshold` iff `height − A >= threshold`. The contract's
+ * prose stated `>`, which is off by one and would delay every identity's first
+ * decay by exactly one block. The code is the authority on what the ledger did;
+ * the contract has been corrected.
+ *
+ * The `currentHeight <= thresholdBlocks` guard is **not** subsumed by the new
+ * formula. It was: with `A >= 1` the subtraction cannot reach the threshold
+ * below it. But `lastActivityBlock` can be 0 for a never-active identity, and
+ * `0 − 0 >= threshold` is true at exactly `height === threshold`, where the old
+ * code returned false. The guard is what keeps that case identical.
  */
 export function isIdentityStale(
-  boxes: KarmaBox[],
+  record: IdentityRecord | null,
   currentHeight: number,
   thresholdBlocks: number,
 ): boolean {
-  if (boxes.length === 0) return false;
-  // Guard: chain hasn't existed long enough for staleness to apply.
-  // Without this, `currentHeight - thresholdBlocks` wraps negative and
-  // every non-decay-burn box falsely appears "recent".
   if (currentHeight <= thresholdBlocks) return false;
-  const hasRecentActivity = boxes.some(
-    (b) =>
-      b.decayBurn !== true &&
-      b.createdAtBlock > currentHeight - thresholdBlocks,
-  );
-  return !hasRecentActivity;
+  const clock = record ?? NEVER_ACTIVE;
+  return currentHeight - clock.lastActivityBlock >= thresholdBlocks;
 }
 
 /**
- * How many decay periods have elapsed since this identity's last activity?
- * Uses the oldest non-decay-burn box as the clock start. If all boxes are
- * decay-burn boxes, uses the youngest one.
+ * How many decay periods have elapsed since this identity's clock last moved?
+ *
+ *     owedPeriods = floor( (height − max(lastActivityBlock, lastDecayBlock)) / interval )
+ *
+ * The `max` is not decoration. After a decay fires, the owner's only karma box
+ * is the decay-burn box, and its height is exactly `lastDecayBlock`; charging
+ * from `lastActivityBlock` alone would re-bill every interval since the
+ * original activity on every subsequent cycle. This is the same fallback the
+ * box-reading version expressed as "use the youngest box when all boxes are
+ * decay-burn".
+ *
+ * No clamp at zero, matching the predecessor: `applyKarmaDecay` skips anything
+ * `<= 0`, and swallowing a negative here would hide a clock that had somehow
+ * run ahead of the chain.
  */
 export function owedPeriods(
-  boxes: KarmaBox[],
+  record: IdentityRecord | null,
   currentHeight: number,
   intervalBlocks: number,
 ): number {
-  const normalBoxes = boxes.filter((b) => b.decayBurn !== true);
-  if (normalBoxes.length === 0) {
-    if (boxes.length === 0) return 0;
-    const youngest = boxes.reduce((a, b) =>
-      b.createdAtBlock > a.createdAtBlock ? b : a,
-    );
-    return Math.floor(
-      (currentHeight - youngest.createdAtBlock) / intervalBlocks,
-    );
-  }
-  const oldest = normalBoxes.reduce((a, b) =>
-    b.createdAtBlock < a.createdAtBlock ? b : a,
-  );
-  return Math.floor(
-    (currentHeight - oldest.createdAtBlock) / intervalBlocks,
-  );
+  const clock = record ?? NEVER_ACTIVE;
+  const clockStart = Math.max(clock.lastActivityBlock, clock.lastDecayBlock);
+  return Math.floor((currentHeight - clockStart) / intervalBlocks);
 }
 
 // ---------------------------------------------------------------------------
@@ -78,6 +102,10 @@ export interface DecayDeps {
   insertBox: (box: KarmaBox) => void;
   /** Return all distinct owners with unspent karma boxes. */
   getKarmaOwners: () => Uint8Array[];
+  /** The identity's decay clock, or null if it has never held karma. */
+  getIdentityRecord: (identityId: Uint8Array) => IdentityRecord | null;
+  /** Write the clock back. Journals at the store choke point. */
+  putIdentityRecord: (identityId: Uint8Array, record: IdentityRecord) => void;
 }
 
 /**
@@ -102,11 +130,16 @@ export function applyKarmaDecay(
     const boxes = deps.getKarmaBoxes(owner);
     if (boxes.length === 0) continue;
 
-    if (!isIdentityStale(boxes, currentHeight, cfg.staleThresholdBlocks)) {
+    // The clock is read once, before anything mutates: both predicates must see
+    // the same pre-decay state, and the write-back below needs the prior
+    // `lastActivityBlock` to carry it through untouched.
+    const record = deps.getIdentityRecord(owner);
+
+    if (!isIdentityStale(record, currentHeight, cfg.staleThresholdBlocks)) {
       continue;
     }
 
-    const periods = owedPeriods(boxes, currentHeight, cfg.decayIntervalBlocks);
+    const periods = owedPeriods(record, currentHeight, cfg.decayIntervalBlocks);
     if (periods <= 0) continue;
 
     const totalKarma = boxes.reduce((sum, b) => sum + b.value, 0n);
@@ -150,6 +183,21 @@ export function applyKarmaDecay(
     const boxId = computeBoxId(newBox);
     newBox.id = boxId;
     deps.insertBox(newBox);
+
+    // Advance the decay half of the clock. Written after the box insert so the
+    // journal's reverse replay undoes the record before deleting the box that
+    // caused it, and only on a firing — `periods > 0` and `burnAmount > 0` both
+    // gate this, so a stale identity sitting at the karma floor keeps its clock
+    // where it was rather than silently forfeiting the intervals it is owed.
+    //
+    // `lastActivityBlock` is carried through unchanged: the decay-burn box the
+    // line above inserted is deliberately *not* activity, and resetting the
+    // activity half here would make an identity look freshly active every time
+    // it was charged.
+    deps.putIdentityRecord(owner, {
+      lastActivityBlock: record?.lastActivityBlock ?? 0,
+      lastDecayBlock: currentHeight,
+    });
 
     journal.push({ owner, consumedBoxIds, newBoxId: boxId, burnAmount });
   }

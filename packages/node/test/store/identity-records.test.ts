@@ -162,3 +162,88 @@ describe('identity records store (Spec G phase B)', () => {
     expect(getIdentityRecord(id)).toEqual({ lastActivityBlock: 0, lastDecayBlock: 0 });
   });
 });
+
+/**
+ * Spec G phase D — the full-set read that feeds `bootstrapAvlProver`.
+ *
+ * A node rebuilding its tree from the store has to see every record, or it
+ * computes a `stateRoot` a node that stayed up does not.
+ */
+describe('getAllIdentityRecords (Spec G phase D)', () => {
+  beforeEach(async () => { vi.resetModules(); });
+  afterEach(() => { vi.resetModules(); });
+
+  async function importAllFresh() {
+    return (await import('../../src/store/identity-records.js')) as {
+      putIdentityRecord: (id: UserId, r: IdentityRecord) => void;
+      getAllIdentityRecords: () => Array<{ identityId: UserId; record: IdentityRecord }>;
+    };
+  }
+
+  it('returns nothing on an empty store', async () => {
+    const { initDb } = await importDbFresh();
+    const { getAllIdentityRecords } = await importAllFresh();
+    initDb(':memory:');
+
+    expect(getAllIdentityRecords()).toEqual([]);
+  });
+
+  it('returns every record, with its identity bytes and clock intact', async () => {
+    const { initDb } = await importDbFresh();
+    const { putIdentityRecord, getAllIdentityRecords } = await importAllFresh();
+    initDb(':memory:');
+
+    const a = uidBytes();
+    const b = uidBytes();
+    putIdentityRecord(a, { lastActivityBlock: 3, lastDecayBlock: 1 });
+    putIdentityRecord(b, { lastActivityBlock: 9, lastDecayBlock: 0 });
+
+    const all = getAllIdentityRecords();
+    expect(all).toHaveLength(2);
+    // The identity is the key the AVL key is derived from, so it must survive
+    // as raw bytes rather than as a Buffer or a hex string.
+    for (const entry of all) {
+      expect(entry.identityId).toBeInstanceOf(Uint8Array);
+      expect(entry.identityId).toHaveLength(32);
+    }
+    const byHex = new Map(
+      all.map((e) => [Buffer.from(e.identityId).toString('hex'), e.record]),
+    );
+    expect(byHex.get(Buffer.from(a).toString('hex'))).toEqual({
+      lastActivityBlock: 3,
+      lastDecayBlock: 1,
+    });
+    expect(byHex.get(Buffer.from(b).toString('hex'))).toEqual({
+      lastActivityBlock: 9,
+      lastDecayBlock: 0,
+    });
+  });
+
+  it('reads heights back as numbers, not bigints', async () => {
+    const { initDb } = await importDbFresh();
+    const { putIdentityRecord, getAllIdentityRecords } = await importAllFresh();
+    initDb(':memory:');
+
+    // `.safeIntegers()` hands back bigints; a bigint reaching `serializeIdentityRecord`
+    // would CBOR-encode differently and move the digest.
+    putIdentityRecord(uidBytes(), { lastActivityBlock: 5, lastDecayBlock: 2 });
+
+    const [entry] = getAllIdentityRecords();
+    expect(typeof entry!.record.lastActivityBlock).toBe('number');
+    expect(typeof entry!.record.lastDecayBlock).toBe('number');
+  });
+
+  it('an upserted record appears once, at its latest value', async () => {
+    const { initDb } = await importDbFresh();
+    const { putIdentityRecord, getAllIdentityRecords } = await importAllFresh();
+    initDb(':memory:');
+
+    const id = uidBytes();
+    putIdentityRecord(id, { lastActivityBlock: 1, lastDecayBlock: 0 });
+    putIdentityRecord(id, { lastActivityBlock: 8, lastDecayBlock: 4 });
+
+    expect(getAllIdentityRecords()).toEqual([
+      { identityId: id, record: { lastActivityBlock: 8, lastDecayBlock: 4 } },
+    ]);
+  });
+});
