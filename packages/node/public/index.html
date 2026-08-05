@@ -418,6 +418,24 @@ function encodeLE64(n) {
   ]);
 }
 
+/**
+ * u32BE(n) — 4-byte big-endian. Mirror of the `u32BE` in @dagsocial/types
+ * (src/utxo.ts), which is module-private there; node's `mint-provenance.ts`
+ * mirrors the same writer.
+ *
+ * Big-endian, unlike every other numeric writer above: it feeds the Spec G box
+ * and mint id preimages, which are specified big-endian
+ * (TYPES_INTERFACE.md → Pinned byte forms). Shares `isEncodableU32` with the
+ * little-endian writer so the two byte orders cannot drift on *domain*, only on
+ * order — total, never throwing, out-of-domain values writing the all-ones
+ * sentinel. A mirror that threw here would diverge on precisely the malformed
+ * input a light client is most likely to be handed (M-5).
+ */
+function u32BE(n) {
+  const v = isEncodableU32(n) ? n : U32_SENTINEL;
+  return new Uint8Array([(v >>> 24) & 0xff, (v >>> 16) & 0xff, (v >>> 8) & 0xff, v & 0xff]);
+}
+
 /** LP(bytes) = u32LE(byteLength) ‖ bytes. */
 function lengthPrefixed(bytes) {
   return concatUint8Arrays([encodeU32LE(bytes.length), bytes]);
@@ -450,19 +468,40 @@ function postFieldBytes(content, authorBytes, parentRefs, challengeBytes, protoc
  * order Object.keys() returns them, which is insertion order.
  */
 
+/**
+ * CBOR head for a length-prefixed major type: `majorBase | additionalInfo`,
+ * then the length in the shortest form cbor-x 1.6.4 emits (measured, definite
+ * length — it never chunks): inline to 23, then 0x18+u8 / 0x19+u16 / 0x1a+u32.
+ * `majorBase` is 0x40 for byte strings and 0x60 for text.
+ *
+ * One ladder for both, so a longer field cannot be handled by one encoder and
+ * rejected by the other. The old pair capped at 255 and threw beyond — audit
+ * L-5's string/byte half. Nothing reaches it today (every box string field is a
+ * 64-char hex at most, every byte field is 32, and post content never goes
+ * through this encoder), so this is a foot-gun removed, not a live fix.
+ *
+ * There is deliberately no 0x1b+u64 rung: no browser-constructible string or
+ * Uint8Array reaches 2³² bytes, so it would be unreachable code in an encoder
+ * whose whole job is to be checkable against cbor-x. Fail-closed instead.
+ */
+function cborHead(majorBase, len) {
+  if (len <= 23) return new Uint8Array([majorBase | len]);
+  if (len <= 0xFF) return new Uint8Array([majorBase | 0x18, len]);
+  if (len <= 0xFFFF) return new Uint8Array([majorBase | 0x19, (len >>> 8) & 0xFF, len & 0xFF]);
+  if (len <= 0xFFFFFFFF) return new Uint8Array([
+    majorBase | 0x1A, (len >>> 24) & 0xFF, (len >>> 16) & 0xFF, (len >>> 8) & 0xFF, len & 0xFF,
+  ]);
+  throw new Error('CBOR length exceeds the u32 form: ' + len);
+}
+
+/** Text string. The length prefix counts UTF-8 **bytes**, not characters. */
 function cborEncodeString(str) {
   const bytes = encoder.encode(str);
-  const len = bytes.length;
-  if (len <= 23) return concatUint8Arrays([new Uint8Array([0x60 | len]), bytes]);
-  if (len <= 255) return concatUint8Arrays([new Uint8Array([0x78, len]), bytes]);
-  throw new Error('String too long for CBOR: ' + len);
+  return concatUint8Arrays([cborHead(0x60, bytes.length), bytes]);
 }
 
 function cborEncodeBytes(buf) {
-  const len = buf.length;
-  if (len <= 23) return concatUint8Arrays([new Uint8Array([0x40 | len]), buf]);
-  if (len <= 255) return concatUint8Arrays([new Uint8Array([0x58, len]), buf]);
-  throw new Error('Bytes too long for CBOR: ' + len);
+  return concatUint8Arrays([cborHead(0x40, buf.length), buf]);
 }
 
 /**
@@ -542,13 +581,57 @@ function cborEncode(value) {
 }
 
 // ===========================================================================
+// canonicalBoxBytes — the single box→bytes rule both id functions use
+// ===========================================================================
+
+/**
+ * Byte-identical mirror of `canonicalBoxBytes` in @dagsocial/types
+ * (src/utxo.ts). See contracts/TYPES_INTERFACE.md → "Canonical encoding".
+ *
+ * Strips `id` **and the provenance keys `txId`/`index`**, then CBOR-encodes what
+ * remains. The provenance strip is the fix Spec G phase C0 made in types: with
+ * an id-only strip, the first *server-returned* box the UI hashes — those carry
+ * `txId`/`index` from phase C on — would hash provenance into the id and
+ * silently disagree with the node. Both flows that predict an id (the invite
+ * flow's `bond.inviteBoxId`, the unlike path's cached LikeBox id) would surface
+ * that as a dangling reference or an unspendable box, never as an error.
+ * Inert on client-built boxes: destructuring absent keys yields the same rest.
+ *
+ * One rule with two callers, so box and tx derivation cannot drift — the same
+ * reason types routes `computeTxId`'s outputs through it. Field order is
+ * untouched: key order is consensus-visible and matches the node's producers.
+ *
+ * Also converts the hex-string form of binary fields — how the UI's tx builders
+ * carry them — to the raw bytes cbor-x sees on the node.
+ */
+function canonicalBoxBytes(box) {
+  const { id, txId, index, ...rest } = box;
+  // Every Uint8Array field across all seven box types. A field missing here is
+  // CBOR-encoded as *text* (major 3) where the node writes a *byte string*
+  // (major 2) — a silent id divergence that passes both sides' unit tests.
+  // `voucherId`/`targetId` were missing until Spec G phase E3; the mirror test
+  // now encodes all seven types in this form, so an omission fails mechanically.
+  const binaryFields = ['owner', 'likerId', 'secretHash', 'inviterId', 'inviteePublicKey',
+    'voucherId', 'targetId'];
+  const boxForCbor = {};
+  for (const [k, v] of Object.entries(rest)) {
+    if (binaryFields.includes(k) && typeof v === 'string') {
+      boxForCbor[k] = hex2buf(v);
+    } else {
+      boxForCbor[k] = v;
+    }
+  }
+  return cborEncode(boxForCbor);
+}
+
+// ===========================================================================
 // computeTxId (client-side, matches server @dagsocial/types computeTxId)
 // ===========================================================================
 
 /**
  * Deterministic transaction ID.
- * Hashes inputs (hex strings), CBOR-encoded outputs (minus `id`),
- * preimages (sorted by boxId), and protocolVersion.
+ * Hashes inputs (hex strings), canonical output bytes (id + provenance
+ * stripped), preimages (sorted by boxId), and protocolVersion.
  */
 function computeTxId(tx) {
   const parts = [];
@@ -558,20 +641,9 @@ function computeTxId(tx) {
     parts.push(encoder.encode(input));
   }
 
-  // 2. Outputs — CBOR encode each box, stripping `id` before encoding
+  // 2. Outputs — canonical candidate bytes
   for (const output of tx.outputs) {
-    const { id, ...rest } = output;
-    // Convert hex-string binary fields to Uint8Array for CBOR encoding
-    const binaryFields = ['owner', 'likerId', 'secretHash', 'inviterId', 'inviteePublicKey'];
-    const boxForCbor = {};
-    for (const [k, v] of Object.entries(rest)) {
-      if (binaryFields.includes(k) && typeof v === 'string') {
-        boxForCbor[k] = hex2buf(v);
-      } else {
-        boxForCbor[k] = v;
-      }
-    }
-    parts.push(cborEncode(boxForCbor));
+    parts.push(canonicalBoxBytes(output));
   }
 
   // 3. Preimages (sorted by boxId key, if present)
@@ -983,22 +1055,51 @@ function buildCancelInviteTx(karmaBox, inviteBox, bondBox, pubKeyHex) {
 }
 
 // ===========================================================================
-// computeBoxId (client-side, matches server computeBoxId)
+// Box identity (client-side, matches server @dagsocial/types)
 // ===========================================================================
 
+/**
+ * Legacy content-hash box id: blake2b512(canonicalBoxBytes(box))[0:32].
+ *
+ * Still the **active** derivation on both sides — node's `computeBoxId` has not
+ * moved either — so every id this UI computes today is unchanged. Spec G phase G
+ * switches both sides to `computeCandidateBoxId` in one commit; switching only
+ * here would immediately break the two flows that predict an id the node must
+ * later agree with.
+ */
 function computeBoxId(box) {
-  const { id, ...rest } = box;
-  const binaryFields = ['owner', 'likerId', 'secretHash', 'inviterId', 'inviteePublicKey'];
-  const boxForCbor = {};
-  for (const [k, v] of Object.entries(rest)) {
-    if (binaryFields.includes(k) && typeof v === 'string') {
-      boxForCbor[k] = hex2buf(v);
-    } else {
-      boxForCbor[k] = v;
-    }
-  }
-  const cborBytes = cborEncode(boxForCbor);
-  const hash = blake2b(cborBytes, null, 64).slice(0, 32);
+  const hash = blake2b(canonicalBoxBytes(box), null, 64).slice(0, 32);
+  return buf2hex(hash);
+}
+
+/** Domain tag for the Spec G box-id preimage. Mirrors @dagsocial/types. */
+const BOX_ID_DOMAIN = encoder.encode('dagsocial/box-id/1');
+
+/**
+ * Spec G box id, derived from creating-transaction provenance:
+ *
+ *   blake2b512( BOX_ID_DOMAIN ‖ canonicalBoxBytes(candidate)
+ *               ‖ utf8(txId) ‖ u32BE(index) )[0:32]
+ *
+ * **Not wired to anything yet** — it lands here so phase G can flip the client
+ * and the node in a single commit. Until then this UI must keep computing the
+ * ids the node computes.
+ *
+ * `txId` enters as the **UTF-8 bytes of its 64-char hex string**, not decoded:
+ * consistent with how every other id enters a preimage here (`computeTxId`
+ * hashes input box ids as text, `postFieldBytes` encodes parentRefs as text),
+ * total on untrusted input where a hex decode would throw, and strictly more
+ * injective — decoding would collapse `AB…` and `ab…` onto one id.
+ * See contracts/TYPES_INTERFACE.md → "Pinned byte forms".
+ */
+function computeCandidateBoxId(candidate, txId, index) {
+  const combined = concatUint8Arrays([
+    BOX_ID_DOMAIN,
+    canonicalBoxBytes(candidate),
+    encoder.encode(txId),
+    u32BE(index),
+  ]);
+  const hash = blake2b(combined, null, 64).slice(0, 32);
   return buf2hex(hash);
 }
 
