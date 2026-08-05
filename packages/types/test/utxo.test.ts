@@ -128,6 +128,30 @@ describe('boxes', () => {
       const id2 = computeBoxId(box2);
       expect(id1).not.toBe(id2);
     });
+
+    it('is unaffected by provenance set on the box', () => {
+      // Spec G phase C0. The legacy derivation stays legacy — no domain tag, no
+      // txId/index in the preimage — but it must strip through the *single*
+      // canonical rule. From phase C on, producers materialize boxes with
+      // txId/index set; a local `{ id, ...rest }` strip would hash those into
+      // the legacy id and move every box id, which no phase before G may do.
+      // The demo UI mirror and the invite flow's predicted inviteBoxId both
+      // compute ids from a box with no provenance, so they would diverge too.
+      //
+      // The fix itself is inert on today's tree — no producer sets provenance
+      // yet, so it moves no existing id, and that is what makes it safe to land
+      // before phase C. This test is what keeps it distinguishable from no fix
+      // at all: it hashes a box that *does* carry provenance.
+      for (const bare of [makeKarmaBox(), makeCreditBox(), makeLikeBox(), makeInviteBox(), makeBondBox()]) {
+        const materialized = {
+          ...bare,
+          id: 'f'.repeat(64),
+          txId: '0156333db37f658f278aef3ba2c9d2ce3c2f126cf7fb98b7a835dde4ee92ac7c',
+          index: 3,
+        };
+        expect(computeBoxId(materialized)).toBe(computeBoxId(bare));
+      }
+    });
   });
 });
 
@@ -348,8 +372,8 @@ describe('computeCandidateBoxId', () => {
   });
 
   it('differs from the legacy content-hash id', () => {
-    // computeBoxId is deliberately untouched this phase; the two derivations
-    // must not be confusable.
+    // computeBoxId's *derivation* stays legacy until phase G (phase C0 changed
+    // only what it strips); the two derivations must not be confusable.
     expect(computeCandidateBoxId(GOLDEN_KARMA_BOX, GOLDEN_TX_ID, 0)).not.toBe(computeBoxId(GOLDEN_KARMA_BOX));
   });
 

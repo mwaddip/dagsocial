@@ -149,19 +149,29 @@ export function computeMintTxId(height: number, reason: MintReason, subject: Uin
 }
 
 /**
- * Legacy content-hash box id: `blake2b512(canonicalCbor(box minus id))[0:32]`.
+ * Legacy content-hash box id: `blake2b512(canonicalBoxBytes(box))[0:32]`.
  *
- * Unchanged during the Spec G migration window (phases A–F) so every existing
+ * The *derivation* is unchanged during the Spec G migration window (phases A–F)
+ * — no domain tag, no `txId`/`index` in the preimage — so every existing
  * producer, consumer and golden vector keeps passing while node and the demo UI
  * move over. Phase G redefines it as
  * `computeCandidateBoxId(candidate, box.txId, box.index)` and deletes this
  * derivation — which is what closes M-11, since this one hashes the
  * apply-mutated `createdAtBlock` and so cannot match the box that gets stored.
+ *
+ * What *did* change (phase C0) is the strip rule: this goes through
+ * `canonicalBoxBytes` rather than a local `{ id, ...rest }`, so there is exactly
+ * one rule and `computeBoxId` and `computeCandidateBoxId` cannot drift. Same
+ * defect phase A fixed in `computeTxId`, in the one place that pass did not
+ * reach. It matters from phase C on: once producers set `txId`/`index`, a local
+ * id-only strip hashes provenance into the legacy id and **every box id moves**
+ * — which no phase before G may do, and which would break the demo UI mirror
+ * and the invite flow's predicted `inviteBoxId`, both of which compute ids from
+ * a box with no provenance. Inert on a tree where no box carries provenance:
+ * destructuring absent keys yields an identical `rest`.
  */
 export function computeBoxId(box: Omit<BoxBase, 'id'>): BoxId {
-  // Strip `id` at runtime if present (TS Omit<> doesn't enforce at runtime)
-  const { id: _, ...rest } = box as BoxBase;
-  return createHash('blake2b512').update(encodeForHash(rest)).digest().subarray(0, 32).toString('hex');
+  return createHash('blake2b512').update(canonicalBoxBytes(box)).digest().subarray(0, 32).toString('hex');
 }
 
 // ---------------------------------------------------------------------------
