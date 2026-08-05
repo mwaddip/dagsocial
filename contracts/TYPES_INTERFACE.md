@@ -283,21 +283,29 @@ deliberately not yet true, so the contract is not read as demanding them early:
   derivation and cannot be honest, but switching it before node's producers set provenance
   would break every existing consumer at once.
 
-  ⚠ **It must nonetheless strip provenance from the outset — required before phase C.** The
-  legacy implementation destructures only `id`, and does not route through `canonicalBoxBytes`.
-  So the moment a producer sets `txId`/`index` and calls it, those fields enter the hash and the
-  id moves. Measured on the phase-B tree: the same karma box hashes to
-  `79800339fb02…` bare and `7ea95a2fc67d…` with provenance, while `canonicalBoxBytes` is
-  byte-identical across both shapes. Left unfixed, phase C would change **every box id** — the
-  one thing every phase before G must not do — and would break the demo UI mirror and the
-  invite flow's predicted `inviteBoxId`, since the client computes ids without provenance.
+  ⚠ **Its strip rule was a separate defect — fixed in phase C0, before phase C.** The legacy
+  implementation destructured only `id` and did not route through `canonicalBoxBytes`, so the
+  moment a producer set `txId`/`index` and called it, those fields entered the hash and the id
+  moved. Measured against the repo's own golden vectors, pre-fix:
 
-  The fix is to strip `id`/`txId`/`index` via the single canonical rule, exactly as phase A did
-  for `computeTxId` (report §8) — the same second-strip-rule defect, in the one place that pass
-  did not reach. It is **inert on today's tree**: no box carries provenance, so destructuring
-  absent keys yields an identical `rest` and no existing id or golden vector moves. That
-  inertness is what makes it safe to land early, and it is also what makes a test for it
-  non-vacuous only once a provenance-bearing box is hashed.
+  | Golden | Bare | With `txId`/`index` set |
+  |---|---|---|
+  | `GOLDEN_KARMA_BOX_ID` | `83c95fbb82c1ba03…` | `7f8b0ba3…` |
+  | `GOLDEN_CREDIT_BOX_ID` | `b256df0c3fca8bd2…` | `32ff8e72…` |
+
+  Left unfixed, phase C would have changed **every box id** — the one thing no phase before G
+  may do — and would have broken the demo UI mirror and the invite flow's predicted
+  `inviteBoxId`, since the client computes ids from a box with no provenance.
+
+  `computeBoxId` now hashes `canonicalBoxBytes(box)`, so there is exactly one strip rule and it
+  cannot drift from `computeCandidateBoxId` — the same fix phase A applied to `computeTxId`
+  (report §8), in the one place that pass did not reach. The **derivation** is untouched: no
+  domain tag, no `txId`/`index` in the preimage, until phase G.
+
+  The change was **inert**: no box carried provenance, so destructuring absent keys yielded an
+  identical `rest`, and both goldens plus node's 747 tests were unmoved. That inertness is what
+  made it safe to land early — and it is also why a test is non-vacuous only when it hashes a
+  box that *does* carry provenance.
 - **`TX_ID_DOMAIN` is exported but not yet applied** in `computeTxId`. Applying it changes
   every txId and node's golden vectors with it — phase G, alongside the `computeBoxId` switch.
 

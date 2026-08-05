@@ -611,6 +611,26 @@ coinbase is **N events, not one N-output transaction**: each output gets its own
 share no input set and are not one transaction in any meaningful sense. The
 `index` field exists so mint and transaction derivation share one code path.
 
+### The demo UI mirror carries the same strip defect (phase E)
+
+`public/index.html`'s client-side `computeBoxId` does `const { id, ...rest } = box`
+— the **id-only strip** that phase C0 removed from `@dagsocial/types`. Both of
+its call sites hash **client-built** boxes carrying no provenance (the predicted
+`inviteBoxId`, and the cached LikeBox id for unlike), so server and client agree
+today and phase C does not change that.
+
+It is a latent trap rather than a live defect: the first time the UI hashes a
+**server-returned** box — which carries `txId`/`index` from phase C on — it
+would hash provenance into a legacy id and silently disagree with the node.
+Since both flows depend on the client *predicting* an id the node will later
+agree with, that disagreement would surface as a dangling `bond.inviteBoxId` or
+an unspendable LikeBox, not as a visible error.
+
+**Phase E obligation**, alongside teaching the mirror the domain tag,
+`utf8(txId)` and `u32BE(index)`: fix the strip rule in the same pass. *(Found by
+the phase C0 session, which correctly did not touch it — `public/index.html` is
+the node package's file.)*
+
 ### Discriminants are semantic, never positional
 
 A mint's identity MUST NOT derive from its position in the journal, the block,
