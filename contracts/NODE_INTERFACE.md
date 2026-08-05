@@ -1218,6 +1218,30 @@ identity record takes a tag **outside that range** — `0x80`, high bit set, so
 `deserializeBox` MUST reject a non-box tag rather than mis-decode it, and a
 kind-dispatching decoder is what any value-reading caller uses.
 
+**1a. The AVL value carries provenance, and an absent key is not an
+`undefined` key.** `serializeBox` strips only `id` and `boxType` — `txId` and
+`index` stay in the value, and must, because "a box id is a total function of
+the stored box" is only *checkable from a proof* if the proof's value carries
+everything the derivation consumes. The AVL key already commits to them; the
+redundancy is what lets a light client verify honesty rather than trust it.
+
+> ⚠ That makes the box object's **exact key set** consensus-critical, and
+> cbor-x distinguishes an absent key from a present-but-`undefined` one. A key
+> set to `undefined` encodes as `f7` *and* increments the fixed two-byte map
+> header — measured: `{value, guard}` → `b90002…`, the same object plus
+> `txId: undefined, index: undefined` → `b90004…f7…f7`. So a box reconstructed
+> by `rowToBox` with explicit `undefined` provenance serializes to different
+> bytes than the same box built by a producer without those keys, and a node
+> that **restarts** and re-bootstraps its prover from `getUnspentBoxes` would
+> compute a different `stateRoot` than one that stayed up. A restart-triggered
+> consensus fork, from nothing but an object shape.
+>
+> **Provenance keys are therefore assigned conditionally, never as explicit
+> `undefined`** — the discipline `rowToBox` already applies to `decayBurn` and
+> `lockedUntilBlock`. Box **ids** are not exposed: `canonicalBoxBytes`
+> destructures `id`/`txId`/`index` away, so it is total over both shapes. Only
+> the AVL value is.
+
 **2. The proof endpoint must not throw on a record.** `GET /api/v1/proof/:boxId`
 decodes whatever value the key resolves to with `deserializeBoxWithId`; a
 record-shaped value would throw. Keys are indistinguishable from outside — both
