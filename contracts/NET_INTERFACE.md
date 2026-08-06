@@ -72,10 +72,24 @@ resolved once at startup from `NETWORK_TYPE`. It is never a per-call-site defaul
 > net's internal fallbacks silently govern instead."* The observation was written down and
 > `magic` was not fixed.
 
-> ⚠ **`KNOWN_FRAME_MAGICS` is hardcoded in `net/src/node.ts` as `[MAGIC_MAINNET,
-> MAGIC_TESTNET]`.** Adding a third magic without updating that literal makes devnet frames
-> fail the magic check, fall through to the legacy unframed path, decode as malformed, and
-> **permanently ban the peer**. The canonical set must be **imported**, never re-declared.
+> ⚠ **The canonical magic set must be imported from `@dagsocial/types`, never re-declared.**
+> It was a local literal `[MAGIC_MAINNET, MAGIC_TESTNET]` in `net/src/node.ts` until P2-A
+> phase 3a.
+>
+> **The precise failure mode, because the obvious reading is wrong.** `KNOWN_FRAME_MAGICS` is
+> consulted **only for frames that fail the own-magic compare** — it distinguishes *a frame
+> from another network* from *a payload that is not a frame at all*. So a stale set does
+> **not** break same-network peering: devnet↔devnet frames share `MAGIC_DEVNET`, match on the
+> own-magic compare, and never reach the set.
+>
+> The damage is **cross-network**. A devnet peer reaching a mainnet or testnet node fails the
+> own-magic compare, is not found in the stale set, is therefore classified as not-a-frame,
+> falls through to the legacy raw-CBOR path, decodes as malformed, and is **permanently
+> banned** — where the correct outcome is a polite wrong-network close. A stale set converts
+> a routine misconfiguration into a ban.
+>
+> Note this is **latent until per-profile magics are actually supplied** (P2-A phase 3b).
+> While every node frames as mainnet, no devnet magic ever reaches the wire.
 >
 > ⚠ **Both the magics and the canonical set come from `@dagsocial/types`, not
 > `@dagsocial/wire`.** They move there in P2-A phase 5, beside `NetworkProfile` — wire's
