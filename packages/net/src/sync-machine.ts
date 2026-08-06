@@ -1,4 +1,3 @@
-import { MAGIC_MAINNET } from './frame.js';
 import type { NetConfig } from './types.js';
 import {
   MSG_HANDSHAKE,
@@ -157,7 +156,7 @@ export class SyncMachine {
     private requestSubBlocks: (peerId: string, ids: string[]) => Promise<unknown[]>,
     private onProtocolViolation: (peerId: string, reason: string) => void = () => {},
   ) {
-    this.magic = config.magic ?? MAGIC_MAINNET;
+    this.magic = config.magic;
   }
 
   // -----------------------------------------------------------------------

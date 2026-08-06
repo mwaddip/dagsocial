@@ -38,6 +38,7 @@ function stubStore(overrides: Partial<SyncStore> = {}): SyncStore {
 
 const testConfig: NetConfig = {
   magic: 0x54444147,
+  postPowTargetBits: 8,
   bootstrapPeers: [],
   listenAddrs: '',
   maxPeers: 10,
@@ -792,17 +793,14 @@ describe('SyncMachine', () => {
   });
 
   // -----------------------------------------------------------------------
-  // Default magic when config.magic is undefined
+  // Config magic is used verbatim — no fallback (P2-A phase 3b)
   // -----------------------------------------------------------------------
 
-  describe('default magic', () => {
-    it('uses MAGIC_MAINNET when config.magic is not set', () => {
-      const configNoMagic: NetConfig = { ...testConfig };
-      delete configNoMagic.magic;
-
+  describe('config magic', () => {
+    it('frames SyncInfo with exactly config.magic', () => {
       const sent: SentMessage[] = [];
       const machine = new SyncMachine(
-        configNoMagic,
+        testConfig,
         stubStore({ chainHeight: () => 0 }),
         (peerId, data) => sent.push({ peerId, data }),
         async () => [],
@@ -811,9 +809,12 @@ describe('SyncMachine', () => {
       machine.onPeerActive('peer1', 100);
       machine.flush();
 
-      // Should have sent a SyncInfo frame without throwing
-      // (if magic were undefined, encodeFrame would fail)
       expect(sent.length).toBe(1);
+      // Leading 4 bytes are the frame magic, big-endian — must be the
+      // configured testnet magic, not MAGIC_MAINNET.
+      const d = sent[0]!.data;
+      const leading = ((d[0]! << 24) | (d[1]! << 16) | (d[2]! << 8) | d[3]!) >>> 0;
+      expect(leading).toBe(0x54444147);
     });
   });
 

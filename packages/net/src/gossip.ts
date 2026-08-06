@@ -7,7 +7,6 @@ import {
   encodeOrderingBlock,
   encodeTx,
   encodeStump,
-  POST_POW_TARGET_BITS,
   postPowPreimage,
 } from '@dagsocial/types';
 import {
@@ -68,6 +67,7 @@ export function subscribeTopics(
   validators: NetValidators,
   peerMgr: PeerManager,
   handlers: GossipHandlers,
+  postPowTargetBits: number,
 ): void {
   const gs = libp2p.services.pubsub;
 
@@ -80,7 +80,7 @@ export function subscribeTopics(
     try {
       const raw = new Uint8Array(msg.data);
       const sb = decodeSubBlock(raw);
-      const vr = runStage1SubBlock(sb, validators);
+      const vr = runStage1SubBlock(sb, validators, postPowTargetBits);
       if (!vr.valid) {
         // Bogus — well-formed message with invalid content.
         // Score accumulates toward temporal ban but is NOT an instant permanent ban.
@@ -219,6 +219,7 @@ export function subscribeTopics(
 function runStage1SubBlock(
   sb: SubBlock,
   v: NetValidators,
+  postPowTargetBits: number,
 ): { valid: boolean; error?: string } {
   const struct = v.verifySubBlockStructure(sb);
   if (!struct.valid) return struct;
@@ -238,8 +239,11 @@ function runStage1SubBlock(
     return { valid: false, error: 'Unsupported protocol version' };
   }
 
+  // Target from config, never the compile-time constant — post difficulty is
+  // per-network (NET_INTERFACE §Consensus parameters net enforces); the
+  // constant would make a devnet relay reject its own network's posts.
   const powInput = postPowPreimage(post);
-  if (!v.verifyPoW(powInput, post.powNonce, POST_POW_TARGET_BITS)) {
+  if (!v.verifyPoW(powInput, post.powNonce, postPowTargetBits)) {
     return { valid: false, error: 'Proof of Work invalid' };
   }
 

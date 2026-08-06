@@ -128,7 +128,11 @@ export interface PeerRecord {
 // ---------------------------------------------------------------------------
 
 export interface NetConfig {
-  magic?: number;
+  // Both supplied by the node from its resolved network profile. Net receives
+  // these values, it never resolves them — no NetworkProfile import, no env
+  // read, no default (NET_INTERFACE §Consensus parameters net enforces).
+  magic: number;
+  postPowTargetBits: number;
   bootstrapPeers: string[];
   listenAddrs: string;
   maxPeers: number;
