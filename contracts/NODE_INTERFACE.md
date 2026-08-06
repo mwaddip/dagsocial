@@ -831,6 +831,45 @@ Items 6 and 7 share a shape worth noting: a rule that is *correct* but
 both are why phase G is the phase that closes the design rather than merely
 tidying it.
 
+### Bonds pair by output index, not by box id (G3b)
+
+`BondBox` carries **`inviteOutputIndex: number`**, not `inviteBoxId: BoxId`. At
+bond commit the node resolves the paired invite from
+`(bond.txId, inviteOutputIndex)` — the `UNIQUE(tx_id, output_index)` index
+already in the schema makes that one query and guarantees at most one match.
+
+**Why the id could not stay.** `inviteBoxId` was a **content** field, so it sat
+inside the bytes `computeTxId` hashes: the invite's id depends on the txId, which
+depends on the bond's content, which held that id. Measured in phase G3b —
+**no fixed point**, four iterations each landing somewhere new. Spec G §3.1's
+no-circularity argument covers `id`/`txId`/`index` as *provenance* and does not
+reach a content field carrying a box id; `inviteBoxId` was the only one in the
+box set. Left alone it fails as a dangling reference *one transaction later*, at
+`utxo-engine`'s commit-time `getBox`, which is the `p3a-box-id-parked` failure
+mode through a different door.
+
+> **The generalisation, which outlives this fix:** whether the id derivation
+> depends on a field is a question about **content**, not about which fields are
+> tagged as provenance. Any future box field holding another box's id reopens
+> this exactly.
+
+**Three obligations that travel with it:**
+
+1. **Validate at create, not only at commit.** Nothing checked `inviteBoxId` when
+   the bond was created, which is precisely why the failure surfaced late. Reject
+   at create when `inviteOutputIndex` does not address an `InviteBox` output of
+   **the same transaction**. The point of this design is that a bond pointing at
+   someone else's invite is *inexpressible*, not merely caught later — that must
+   be enforced, not left as an accident of the lookup.
+2. **Both preservation checks** in `checkTransitions` that compared
+   `bondOut.inviteBoxId === bondIn.inviteBoxId` become index comparisons, or they
+   silently pass on a field that no longer exists.
+3. **The demo UI stops predicting.** The invite prediction existed only to fill
+   this field; the client now names an output index. That is *stronger* than what
+   Spec G promised — prediction becomes **unnecessary** here rather than exact —
+   so the end-to-end prediction test must exercise the **unlike** path, which
+   still genuinely predicts.
+
 ### Discriminants are semantic, never positional
 
 A mint's identity MUST NOT derive from its position in the journal, the block,
