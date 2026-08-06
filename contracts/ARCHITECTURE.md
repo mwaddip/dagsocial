@@ -554,6 +554,28 @@ userId → walk DAG for active username claim
 
 ## Likes
 
+> ⚠ **SUPERSEDED IN ITS ENTIRETY (2026-08-06) — do not implement, do not reconcile
+> line by line.** These 120 lines are 100% original July text describing a **two-phase
+> locked/free** system with refunds, an epoch tally and a free tier. All of it is replaced.
+>
+> **The decided design** (`docs/site/economy`, `tmp/karmanomics.md`, design track §5.3–§5.5):
+> - **A like costs the liker 1 karma and it does not come back.** One-way. **There is no
+>   unlike**, and no free tier — no like is free.
+> - **The author receives `x−1` per `x` likes; 1 is burned.** Integer arithmetic only.
+> - **The accumulator is per author, not per post**, held as a carry (< `x`) on the
+>   committed per-identity record.
+> - **No epoch.** Accrual and settlement are **per block** — the arithmetic never needed an
+>   interval, so it was dropped (KISS, where it costs nothing in security or determinism).
+> - **`LikeBox` is eliminated.** With the karma burned at like time there is nothing to
+>   hold: a like is a **burn transaction plus a `(liker, post)` record**. Records die with
+>   the post on prune and survive withdraw; likes on pruned posts are rejected by rule.
+>
+> **What this section gets right and is worth carrying forward:** likes belong to the value
+> layer rather than the content DAG. That survives — the record is committed state, not a
+> DAG object.
+>
+> Everything below describes the retired model and is retained only so it is not rebuilt.
+
 Likes exist in the value layer, not the content DAG. The system has two phases
 depending on how many likes a post has already accumulated.
 
@@ -766,6 +788,16 @@ deflationary pressure on karma supply and makes invite decisions consequential.
 
 ## Validators
 
+> ⚠ **NOT IMPLEMENTED as described — 35 lines, 100% original 2026-07-20 text, written
+> before any of it existed.** Block production works, but the "validator" as a *distinct
+> role* with the responsibilities enumerated below is not a thing the code has: block
+> production is a node mode (`NODE_ROLE=miner`), not a separate class of participant with
+> its own lifecycle. Read this as design intent and verify every claim against
+> `MINING_INTERFACE.md` and `block-creator.ts` before relying on it.
+>
+> The one part that is real and load-bearing: the **validator signature** on ordering
+> blocks is verified on every apply path (audit H-1, confirmed).
+
 Validators secure the network via Proof of Work. They are distinct from users.
 
 ### Responsibilities
@@ -786,9 +818,22 @@ This keeps the consensus layer independent of the social and economic layers.
 
 ### Rewards
 
-Validators earn credits for each ordering block produced. The reward amount is
-a protocol parameter (`ORDERING_BLOCK_REWARD_CREDITS`). Credits are freely
+Validators earn credits for each ordering block produced. Credits are freely
 tradeable — validators may sell them to users.
+
+> ⚠ **`ORDERING_BLOCK_REWARD_CREDITS` does not exist, and "a flat protocol parameter" is
+> the wrong model.** This document states the emission twice, in two incompatible forms —
+> a flat per-block reward here, and Ergo-style linear decay with a treasury split in
+> §Implemented (v2). The second is right.
+>
+> **The reward is `computeBlockReward(height)`** — a fixed-rate period, then linear decay
+> per epoch, specified in `MINING_INTERFACE.md`. **Emission terminates** (decision
+> 2026-08-06, Ergo shape, decay to zero, no tail); the perpetual security budget comes from
+> **fees and storage rent**, which are recycled rather than minted.
+>
+> ⚠ **The code does not yet terminate** — it floors at `CREDIT_TAIL_REWARD` and mints
+> forever. Phase 2. **Every total-supply figure currently in the repo is wrong**, including
+> `MINING_INTERFACE.md`'s ~453.9M.
 
 ### Separation from users
 
@@ -800,6 +845,17 @@ separate keys if desired.
 ---
 
 ## Genesis
+
+> ⚠ **NOT IMPLEMENTED — 22 lines, 100% original 2026-07-20 text, and it ships in a state
+> that cannot run.** `GENESIS_COMMITTEE_KEYS` is `[]` with "TBD at genesis" recorded only
+> in `TYPES_INTERFACE.md`, and **nothing fails loudly if a chain starts with an empty
+> committee** — there is no startup assertion, so the two-phase model below silently has no
+> phase one. Committee dissolution (`BOOTSTRAP_PERIOD_BLOCKS`) is likewise unimplemented.
+>
+> **Genesis is where an unset consensus parameter is least recoverable** — it is baked into
+> the first block and every state root after it. Before any launch: decide the committee
+> set, decide whether an empty committee is a startup failure, and pin both. This belongs
+> with the constants-pinning session, not to be defaulted into.
 
 Bootstrap uses a **two-phase genesis committee** model:
 
@@ -893,19 +949,71 @@ Every post, stump, ordering block, sub-block, and UTXO transaction carries a
 An object with an old version is validated against that version's rules
 forever. A node rejects objects with an unsupported protocol version.
 
+> ⚠ **NOT IMPLEMENTED — the second sentence is true, the first is not.** There is **no
+> version-keyed rule table and no dispatch**. Validation is a **strict equality check
+> against `PROTOCOL_VERSION`**, so rejecting unsupported versions works, while "validated
+> against that version's rules forever" describes a mechanism that was never built.
+>
+> **The consequence is worse than a missing feature: the first version bump makes existing
+> history un-resyncable.** Under strict equality a v2 node rejects every v1 object,
+> including the chain it already has — so the migration path the versioning scheme exists
+> to provide is exactly what it cannot do. This must be built **before** the first bump,
+> not during it.
+>
+> The design stands and is published as how the protocol evolves. **This claim appears in
+> four places** — here, `CLAUDE.md` (auto-loaded into every session), `docs/site/architecture`
+> (published), and `VALIDATION_INTERFACE.md`. Only `VALIDATION_INTERFACE.md` describes what
+> the code does. **If this is built, all four change together.**
+
 ---
 
 ## Invariants
 
+> ⚠ **Every invariant below was verified individually against the code on 2026-08-06.**
+> **48 invariants: 21 true · 15 false · 4 unenforced · 5 qualified · 1 never built.**
+> A false invariant is marked in place — **none has been weakened to match the code**,
+> because the rule is what Phase 2 has to build. An unmarked invariant is verified true.
+>
+> The distribution is not random and is worth knowing before trusting any of them: of the
+> 21 true, **six are the Block Application Journal block** (written 2026-08-04, *after* its
+> implementation) and five are the bigint/value-denomination and guard/decay rules Specs B
+> and G touched. Of the 15 false, **ten are July text**, and **all ten Ergo-Adopted bullets
+> are July text** — six false, three unenforced or qualified, one true.
+>
+> Full per-invariant verdicts with sources: `prompts/audit-architecture.report.md` §3a.
+
 ### Cross-layer
 
 - Karma is non-tradeable — only moves via invites, likes, earning, decay, or burn
+  > ⚠ **VIOLATED — three independent ways. This is the most load-bearing false invariant
+  > in the document.** The `like` transition checks only that every output is a karma box,
+  > with **no owner constraint**, and the liker may consume their own LikeBox — so
+  > like-then-unlike moves karma to an arbitrary recipient. A committed invitee can spend
+  > the BondBox to their own karma box (no recipient, probation or threshold check).
+  > Unvouch re-mints a constant rather than releasing the escrowed stake.
+  > **The rule is correct and stays** — it is the premise the karma↔credit firewall rests
+  > on, asserted in four places here and on two published pages. Phase 2 makes it true.
+  > Note the first of the three closes by **feature removal**: unlike is not a feature in
+  > the current design, so that path is deleted rather than fixed.
 - Credits are freely tradeable
+  > ⚠ **VIOLATED on-chain.** `sendCredits` mutates the UTXO set **outside block
+  > application** — no block, no journal entry, no AVL feed. Credits are tradeable on one
+  > node's disk and nowhere else, so the transfer is invisible to consensus and lost on
+  > any rebuild from committed state.
 - A post's cryptographic identity (hash) survives pruning — parent refs remain valid
 - The DAG's merkle integrity is independent of content availability
 - The UTXO ledger's correctness is independent of the DAG's index state
+  > ⚠ **FALSE AS DESIGNED, not as implemented.** The epoch tally's author reward is a
+  > function of a `dag_likes` row count — a DAG index read inside a consensus mutation.
+  > **Resolved by the per-block accumulator** (design track §5.3), which reads a committed
+  > per-identity record instead. Until that lands, this invariant does not hold.
 - Stumps are the sole bridge: DAG compaction → karma issuance
 - Like boxes live in the UTXO layer — they are not DAG objects
+  > ⚠ **SUPERSEDED — `LikeBox` is being removed entirely** (design track §5.4). With the
+  > karma burned at like time there is no held value, so a like becomes a burn transaction
+  > plus a `(liker, post)` record. True of the object as it stands; the free-like tier the
+  > §Likes section describes contradicted it by minting from `dag_likes`, and that tier is
+  > also gone.
 
 ### Cryptographic
 
@@ -945,15 +1053,44 @@ forever. A node rejects objects with an unsupported protocol version.
 - Invite secrets are hash-locked, portable bearer instruments
 - An invite can be cancelled by the inviter (before claim) or claimed by the
   preimage holder
+  > ⚠ **QUALIFIED — "bearer instrument" is no longer the whole story.** §Invite System
+  > records that a commit now requires a signature from the committed key (audit H-2), so
+  > the preimage alone is not sufficient. This bullet was not updated when that landed 200
+  > lines above it.
 - Invite bonds are lost if the invitee's karma drops below the posting minimum
   during probation
-- Usernames: first-claim-wins, DAG-native, prunable by holder
+  > ⚠ **VIOLATED — and the failure is the opposite of the rule.** The bond transition
+  > checks **no recipient, no probation height and no karma threshold**, so rather than
+  > being forfeited the bond can be **taken by the invitee**. The rule is right — the
+  > design has the bond vesting back to the inviter as the invitee earns likes, forfeited
+  > if they never engage — and stays.
+- ~~Usernames: first-claim-wins, DAG-native, prunable by holder~~
+  > ⚠ **SUPERSEDED (2026-08-06).** Usernames become a **UTXO asset**: tradeable for
+  > credits, free to claim while unused, burnable by the owner. Not a claim post, so
+  > "DAG-native" and "prunable by holder" no longer apply. Deferred — see §Username claims
+  > and design track §5.9. **Profiles are unaffected and stay DAG-native as self-posts.**
 
 ### UTXO conservation
 
 - Total karma supply = genesis + like rewards (minted) - decay burns - invite bond burns
+  > ⚠ **FALSE — incomplete.** `mint-provenance.ts` carries **ten** mint reasons, including
+  > `prune-refund-author`, `prune-refund-liker`, `postlock-unlock`, vouch settlement and
+  > the faucet. This equation names three. **The mint-reason table is the authoritative
+  > enumeration; this bullet must be derived from it, not maintained beside it** — a
+  > hand-kept parallel list of mint sources is a mirror, and it has already diverged.
 - Total credit supply = genesis + ordering block rewards - future sinks
+  > ⚠ **QUALIFIED — true in shape, but "total" is currently unbounded.** The reward
+  > function has **no terminus**: it floors at `CREDIT_TAIL_REWARD` and mints 2 credits per
+  > block forever, while `MINING_INTERFACE.md` states a fixed ~453.9M total. Emission is
+  > decided to **terminate** (Ergo shape, decay to zero, no tail — design track §5.7), and
+  > every current total-supply figure in the repo is wrong until that lands.
 - Every UTXO transaction conserves value except mint and burn
+  > ⚠ **UNENFORCED — and the repo already says so.** `packages/node/CLAUDE.md` states
+  > verbatim: *"(Being enforced by the value-integrity spec — today the node does not
+  > enforce it.)"* Live instances: unvouch re-minting a constant instead of releasing the
+  > staked amount, and `sendCredits` mutating the UTXO set outside block application.
+  > **This is a prerequisite, not a parallel track** — the like-burn transition of design
+  > track §5.4 cannot be correct until burning is an enforced transition.
 - Box `value` and all value/amount arithmetic are `bigint` integer base units
   (`value < 2⁶⁴`); **no float math in any consensus value path** — floats are
   non-deterministic across platforms and credit sums exceed 2⁵³ (Spec B P0)
@@ -1002,44 +1139,131 @@ See `SUBBLOCK_INTERFACE.md` for the full contract.
 
 These invariants are adopted from production-grade Ergo Rust node practices:
 
+> ⚠ **This whole section is 100% original 2026-07-26 text and it is the worst-performing
+> block in the document: of its ten bullets, six are false, three are unenforced or
+> qualified, and one is true.**
+>
+> **Check the premise before adopting anything else from Ergo.** One analogy is already
+> recorded as not having transferred: Ergo can leave `creationHeight` client-declared
+> because nothing consensus-critical reads it, whereas here `createdAtBlock` **was** the
+> decay clock, so the field had to leave the box protocol entirely and the clock moved into
+> committed state. An invariant that is correct for Ergo and wrong here, kept because the
+> analogy sounded right, is this section's characteristic failure — and one bullet below is
+> transliterated Rust naming a hazard TypeScript does not have.
+
 ### Validation boundaries
 - **No method panics on untrusted input** — every deserialization and
   signature-verification function returns a `Result<T, Error>` equivalent.
   No `unwrap()`, no `as` casts that truncate, no OOM on adversarial input.
+  > ⚠ **FALSE on all three limbs, and the `as`-cast clause names the wrong hazard.**
+  > *Panics:* the Stage-1 pipeline has an unguarded throwing step between its documented
+  > calls. *OOM:* `cumulativeWork` allocates ~128 MB on an attacker-supplied
+  > `powTargetBits` and `readArray` pre-allocates its declared length before reading an
+  > element. *Casts:* the legacy headers path is a bare `decode()` plus cast with no shape
+  > check.
+  > **A TypeScript `as` cast does not truncate — it erases at compile time and asserts a
+  > type that was never checked.** That is a *different and larger* hazard than Rust's
+  > truncating numeric cast: it produces no runtime error at all. The clause reads as
+  > transliterated Rust and should name the real risk — unvalidated `as` on decoded input.
 - **Validate, don't trust** — independently recompute every self-reported
   claim. A post's parent hash, PoW solution, and signature MUST be verified
   by the local node before the post enters the store.
+  > ⚠ **FALSE — three paths write before verifying.** `insertPostPlaceholder` writes a
+  > confirmed row before anything verifies it; a post is written to `dag_posts` before its
+  > karma-lock transaction validates, with no rollback; and `onStump` stores unauthenticated
+  > gossip stumps — a forged one satisfies the verifier's parent-existence check for a post
+  > that never existed. **Post PoW is not verified at ordering time either**: `verifyPoW`
+  > has two call sites, both in the verifier, neither reachable from block application.
 - **Never add checks the reference lacks** — extra validation rules beyond
   the protocol spec create fork surfaces. Every rule is either
   protocol-spec or explicitly local-policy-only.
+  > ⚠ **UNENFORCED, and the premise has no referent.** There **is** no reference
+  > implementation — this node is the only one — so "the reference" names nothing.
+  > **Nothing in the repo marks any rule as protocol-spec or local-policy-only**, which is
+  > precisely the gap the parameter-class convention now fills for configuration and which
+  > remains open for validation rules. `verifyContentCharacters` is an example: an unlisted
+  > post-validity rule that is neither declared protocol nor declared local.
 
 ### Storage guarantees
 - **Single-transaction atomic writes** — every post insertion that touches
   multiple tables (posts, dag_edges, indexes, scores) MUST happen in a
   single SQLite transaction. No partial writes.
 - **Best DAG is a view, not structural** — all alternative-branch posts are
-  stored permanently. The canonical ordering is derived from cumulative
-  PoW. Switching branches is a view update — posts are never deleted.
+  stored permanently. Switching branches is a view update — posts are never deleted.
+  **Canonical ordering is `max(parentScores) + 1` — uniform weight per post, not
+  PoW-weighted.**
+  > **Corrected 2026-08-06 (decision, not drift).** This bullet previously said "derived
+  > from cumulative PoW"; the live rule weights every post at 1. That is deliberate:
+  > **post difficulty is static, so weighting by actual PoW is numerically identical to
+  > weighting by 1** and the count buys no information. A second, independent reason to
+  > prefer it: PoW-weighting would let **hashpower buy canonical prominence**, which
+  > contradicts *the node records, it doesn't rank*.
+  >
+  > ⚠ **PREMISE — re-argue this before making post difficulty dynamic.** The equivalence
+  > holds **only while post PoW difficulty is static.** If a retarget or user-chosen
+  > difficulty is introduced, uniform weight stops equalling cumulative work and this must
+  > be decided again — at which point the second reason becomes load-bearing rather than
+  > corroborating. *(Chain selection is unaffected and does use genuine cumulative PoW;
+  > these are two different mechanisms and this bullet is about the DAG.)*
 - **Sort-order determinism** — any operation feeding a Merkle tree or
   content hash MUST have a documented, identical sort order across all
   implementations.
+  > ⚠ **FALSE on "documented".** The sort orders are correct and deterministic; what does
+  > not exist is the documentation the invariant requires. Three consensus Merkle leaf
+  > preimages are specified **only in JavaScript** — `JSON.stringify` output, whose key
+  > order, string escaping, `Array.from` on byte arrays and bigint rendering a
+  > reimplementer would have to infer from V8 semantics. See the deferred item in the
+  > Phase 1 plan: these get byte specs once the like/epoch removal settles which leaves
+  > survive.
 
 ### Package boundaries
 - **No dependencies above the package's abstraction level** — the storage
   layer depends only on DB bindings and hashing. It MUST NOT import post
   content types, networking code, or UI code.
+  > ⚠ **FALSE in the positive clause; the prohibition holds.** `store/` value-imports CBOR
+  > serializers (`encodeTx`, `decodeTx`, `encodeStump`, `serializePruneEntry`) and
+  > `store/mempool.ts` imports `../config.js` — **the application layer, imported by the
+  > storage layer, and load-bearing** (it carries `MAX_MEMPOOL_ENTRIES` into the capacity
+  > check). The *prohibitions* are respected: post content types are `import type` only,
+  > and there is no networking or UI import.
 - **"Does NOT own" on every package** — each package explicitly lists what
   it is NOT responsible for. Prevents scope creep.
+  > **True — all five packages carry it.** Note it lives in `packages/*/CLAUDE.md`, not in
+  > `contracts/`, so it is a session-context convention rather than a contract one.
 
 ### Data integrity
 - **Timestamps are untrusted** — timing-sensitive logic uses DAG depth or
   local wall clock, never a remote post's self-reported timestamp.
+  > ⚠ **FALSE — and the invariant's own escape clause is the deeper problem.** Live
+  > violations: `store/posts.ts` orders feeds by `ORDER BY timestamp DESC` on the
+  > self-reported value; `getPendingPosts` does the same; `sqlite-store.ts` writes
+  > `Date.now()` into the column that is **inside `computePostId`**; the demo UI ranks its
+  > feed by `post.timestamp`.
+  > **"or local wall clock" contradicts the project's own rule that on-chain time is block
+  > height.** A *local* wall clock is precisely what makes two nodes disagree. That clause
+  > should be struck, not merely qualified — it licenses the failure mode it exists to
+  > prevent.
 - **Precondition/postcondition documentation** on every public function in
   the store and service layers.
+  > ⚠ **FALSE — 174 exported functions across `store/` and `services/`, and exactly one
+  > file in `packages/node/src` contains the word "Precondition".** Either the invariant is
+  > adopted for real or it should be dropped; as written it is aspiration in the present
+  > indicative, which is the failure mode the status markers exist to prevent.
 
 ---
 
 ## Store Architecture
+
+> ⚠ **The namespacing below does not match the schema.** 17 of 18 lines are original
+> 2026-07-20 text and predate the actual tables by weeks. **`sub_*` has no tables at all**
+> — sub-block state lives in the mempool and in `block_topology`. Ordering blocks are
+> outside the `block_*` prefix. The audit also found the store contract naming tables and
+> columns that do not exist, and `routes/status.ts` querying three (`blocks`, `posts`,
+> `identities`) that were never created.
+>
+> **`NODE_INTERFACE.md → Store Interface` is authoritative for the schema; this section is
+> a sketch of an organising principle that was not followed.** Do not derive table names
+> from it.
 
 Phase 2 uses a fresh SQLite database with namespaced tables:
 
@@ -1059,11 +1283,28 @@ fresh. Namespacing keeps the option open to split into separate stores later
 
 ## Implemented (v2)
 
+> ⚠ **This list is 88% pre-August and overstates what runs. Five entries are not
+> implemented as described** — marked inline below. "Implemented" is the strongest claim a
+> heading can make, so a wrong entry here is more misleading than the same error anywhere
+> else in the document.
+
 - Sovereign subtrees with author-controlled pruning
 - UTXO ledger: karma (non-tradeable) + credits (tradeable)
-- Like system: locked likes (karma staking) + free likes (post-50), epoch tally
+  > ⚠ **karma non-tradeable is VIOLATED three ways; credits are tradeable only on one
+  > node's disk** (`sendCredits` bypasses block application). See §Invariants → Cross-layer.
+- ~~Like system: locked likes (karma staking) + free likes (post-50), epoch tally~~
+  > ⚠ **SUPERSEDED.** Likes are one-way at 1 karma with no refund, no free tier and no
+  > epoch. The **free-like tier has no producer anywhere in the node** — correctly never
+  > built rather than a gap. See §Likes.
 - Invite system: hash-locked bearer invites, bond/probation, cancel
-- Post karma locking with gradual unlock at epoch boundaries
+  > ⚠ **PARTIAL.** A commit now requires a signature from the committed key (H-2), so
+  > "bearer" is qualified; and **bond forfeiture on probation failure is not enforced** —
+  > the invitee can take the bond.
+- ~~Post karma locking with gradual unlock at epoch boundaries~~
+  > ⚠ **PARTIAL.** The post bond (`PostLockBox`) is real and stays — it is the anti-dodge
+  > mechanism. But **"at epoch boundaries" is superseded**: vesting moves to per-block with
+  > the epoch's removal, and the `epoch_tally` guard becomes "consumable only by block
+  > application."
 - Sub-blocks + ordering blocks with PoW (user PoW + validator PoW)
 - Verifiable prune: block-level PruneEntry, Ed25519-signed, UTXO-deterministic
   settlement (consumes PostLockBoxes and LikeBoxes, mints refund karma)
