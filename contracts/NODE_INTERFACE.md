@@ -341,11 +341,30 @@ from the system keypair — not a transfer. Builds a UTXO transaction creating a
 new karma box and inserts it into the mempool. Gated behind
 `networkMode === "testnet"`.
 
-> ⚠ **NOT IMPLEMENTED — the gate becomes `networkType !== 'mainnet'`.** With three
-> networks, an equality test against `"testnet"` would leave devnet — the network whose
-> entire purpose is disposable local testing — **without a faucet**. Gate on the negative,
-> so a network added later is faucet-less by default rather than faucet-enabled by default:
-> the failure direction matters, and only one of them mints karma on mainnet.
+> ⚠ **PARTIAL — the gate is an allow-list of faucet-bearing networks.** With three networks,
+> an equality test against `"testnet"` leaves devnet — whose entire purpose is disposable
+> local testing — without a faucet. P2-A phase 4 changed all three gates to
+> `!== 'mainnet'`; **phase 4b replaces that with the allow-list**
+> (`networkType === 'testnet' || networkType === 'devnet'`).
+>
+> **Why the allow-list, corrected 2026-08-07.** An earlier version of this note argued for
+> the deny-list on the grounds that it leaves a later-added network "faucet-less by default."
+> **That is exactly backwards** — under `!== 'mainnet'`, a network added later is
+> faucet-*enabled* by default. The allow-list is the construction that fails closed: a new
+> network mints nothing until someone names it. The property being defended is *never mint
+> karma from nothing on a network where it has value*, and forgetting to update an allow-list
+> is safe while forgetting to update a deny-list is not.
+>
+> This is the third time this unit has chosen fail-closed over convenient-default, and the
+> reasoning is identical each time: `profileFor` throws rather than defaulting, `NetConfig`
+> requires `magic` rather than defaulting it, and the faucet enumerates rather than excluding.
+>
+> ⚠ **All three gates move together, always** — the provisioning gate (`index.ts`), the
+> mount gate (`server.ts`) and the handler guard (`routes/utxo.ts`). A subset is worse than
+> none: mount without provisioning gives a faucet with nothing to mint from; provision without
+> mounting leaves unreachable system state. Note the handler guard is written as the
+> **inversion** (a reject condition), so a grep for the enabling expression finds only two of
+> the three.
 
 **Idempotency (required):** a given `userId` may be funded at most once, ever. A repeat
 request is rejected (409). Enforced by a durable per-`(userId, asset)` grant ledger
