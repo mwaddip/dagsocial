@@ -91,7 +91,7 @@ async function request(
           .get() as { s: number };
         return row.s;
       },
-      networkMode: 'testnet',
+      networkType: 'testnet',
     };
 
     const app = express();
@@ -185,6 +185,6 @@ describe('blocks routes', () => {
     expect(typeof body.pendingPosts).toBe('number');
     expect(typeof body.totalKarma).toBe('string');
     expect(typeof body.totalCredits).toBe('string');
-    expect(body.networkMode).toBe('testnet');
+    expect(body.networkType).toBe('testnet');
   });
 });

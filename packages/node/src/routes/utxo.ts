@@ -194,9 +194,11 @@ export function createRouter(deps: UtxoDeps): Router {
     }
   });
 
-  // POST /credits/faucet — testnet-only credit faucet
+  // POST /credits/faucet — credit faucet, disabled on mainnet only. The
+  // reject-guard is the inversion of the `!== 'mainnet'` gate used at the
+  // /faucet mount and the system-box provisioning — the three move together.
   router.post('/credits/faucet', (req, res) => {
-    if (config.networkType !== 'testnet') {
+    if (config.networkType === 'mainnet') {
       res.status(403).json({ error: 'faucet disabled in production mode' });
       return;
     }

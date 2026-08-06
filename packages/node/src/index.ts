@@ -99,10 +99,13 @@ function validateProtocolConstants(): void {
 // 1b. Protocol constant sanity checks
 validateProtocolConstants();
 
-// 1c. Init system keypair (testnet faucet source). Must happen after DB init,
-//     before any route that might need the system box.
+// 1c. Init system keypair (faucet source on every network but mainnet). Must
+//     happen after DB init, before any route that might need the system box.
+//     The gate matches the /faucet mount and the /credits/faucet handler —
+//     the three move together (NODE_INTERFACE §Faucet): mounting without
+//     provisioning gives a faucet with nothing to mint from.
 const systemKeypair = initSystemKeypair();
-if (config.networkType === 'testnet') {
+if (config.networkType !== 'mainnet') {
   const height = getCurrentHeight();
   ensureSystemKarmaBox(systemKeypair.publicKey, height);
   ensureFaucetCreditBox(systemKeypair.publicKey, height);

@@ -271,8 +271,10 @@ export function createApp(config: Config): express.Express {
     }),
   );
 
-  // Faucet — /faucet (testnet only)
-  if (config.networkType === 'testnet') {
+  // Faucet — /faucet (every network but mainnet; NODE_INTERFACE §Faucet).
+  // Gate matches the system-box provisioning in index.ts and the
+  // /credits/faucet handler in routes/utxo.ts — the three move together.
+  if (config.networkType !== 'mainnet') {
     app.use(
       '/faucet',
       faucetRoutes({
@@ -370,9 +372,7 @@ export function createApp(config: Config): express.Express {
           .get() as { s: bigint };
         return row.s;
       },
-      // Deps field and /status response field stay `networkMode` until phase 4
-      // renames the API surface together with the demo UI.
-      networkMode: config.networkType,
+      networkType: config.networkType,
     }),
   );
 
