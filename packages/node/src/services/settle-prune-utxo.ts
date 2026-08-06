@@ -1,9 +1,14 @@
+import type { PostId } from '@dagsocial/types';
 import {
   getPostLockBox,
   getUnspentLikeBoxes,
   consumeBox,
 } from '../store/index.js';
 import { mintKarma } from './karma.js';
+import {
+  pruneRefundAuthorContext,
+  pruneRefundLikerContext,
+} from '../mint-provenance.js';
 
 /**
  * Deterministic UTXO settlement for a pruned subtree.
@@ -20,27 +25,30 @@ import { mintKarma } from './karma.js';
  *   and inserts inside mintKarma — is recorded by the store choke point
  *   while the caller's block journal is open.
  *
- * ⚠ **Both mints below pass a `null` MintContext, so the boxes they create
- * carry no provenance.** This is the one box producer Spec G phase C cannot
- * complete, and it is a contract gap rather than a deferral:
- * `NODE_INTERFACE.md`'s reason/subject table, Spec G §3.2's table and §4's
- * blast radius all omit this file, and `MintReason` in `@dagsocial/types` is a
- * closed union with no member that fits. Node may not add one.
+ * Both mints carry provenance under the two `prune-refund-*` reasons
+ * (`NODE_INTERFACE.md` → "Box Identity and Mint Provenance"). Two decisions
+ * behind that shape, both settled rather than open:
  *
- * No existing reason can be reused. Refunds are **aggregated per user across
- * the whole pruned subtree** before minting, so the subject cannot be a single
- * postId — the natural encoding is the raw 32-byte owner, which would make
- * `postlock-unlock`/`liker-refund` carry two different subject widths and break
- * the fixed-length rule those reasons exist to satisfy. Two new reasons
- * (author-side and liker-side prune refunds, subject = raw owner) is the
- * shape that fits, and adding them belongs to types + the contract.
+ * **Two reasons, not one.** The same user can be both an author and a liker
+ * inside one pruned subtree — they replied in a thread they also liked. A
+ * single reason would give that user's two mints an identical
+ * `(height, reason, subject)`. This mirrors `author-reward` vs `liker-refund`,
+ * which are two at epoch tally for exactly this reason.
  *
- * Harmless during the migration window — `txId`/`index` are optional on
- * `BoxBase` until phase G, so these boxes are in the state every box is in
- * today. Phase G makes the columns `NOT NULL`, at which point this becomes a
- * hard failure. It must be resolved before then.
+ * **The subject names the prune entry, not the post.** Refunds are aggregated
+ * per user across the whole subtree, so no single postId is available — and the
+ * bare owner is not enough either. This function runs **once per prune entry**
+ * (`block-apply.ts`, inside the loop over `pruneEntries`), so a block carrying
+ * two entries calls it twice at one height; an author with refunds in both
+ * subtrees would derive the same `mintTxId` twice at `index` 0, trip
+ * `UNIQUE(tx_id, output_index)`, and a legitimate block would be rejected.
+ * `rootPostHash` is what separates the two calls.
  */
-export function settlePruneUtxo(postIds: string[], blockHeight: number): void {
+export function settlePruneUtxo(
+  rootPostHash: PostId,
+  postIds: PostId[],
+  blockHeight: number,
+): void {
   const authorRefunds = new Map<string, bigint>();
   const likerRefunds = new Map<string, bigint>();
 
@@ -67,12 +75,12 @@ export function settlePruneUtxo(postIds: string[], blockHeight: number): void {
   // Mint refund karma for authors
   for (const [hexUserId, amount] of authorRefunds) {
     const userId = new Uint8Array(Buffer.from(hexUserId, 'hex'));
-    mintKarma(userId, amount, blockHeight, null);
+    mintKarma(userId, amount, blockHeight, pruneRefundAuthorContext(rootPostHash, userId));
   }
 
   // Mint refund karma for likers
   for (const [hexUserId, amount] of likerRefunds) {
     const userId = new Uint8Array(Buffer.from(hexUserId, 'hex'));
-    mintKarma(userId, amount, blockHeight, null);
+    mintKarma(userId, amount, blockHeight, pruneRefundLikerContext(rootPostHash, userId));
   }
 }

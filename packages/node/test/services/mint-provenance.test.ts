@@ -13,6 +13,8 @@ import {
   postlockRemainderContext,
   decayContext,
   genesisContext,
+  pruneRefundAuthorContext,
+  pruneRefundLikerContext,
   mintTxIdFor,
 } from '../../src/mint-provenance.js';
 import type { MintContext } from '../../src/mint-provenance.js';
@@ -28,6 +30,10 @@ const TARGET = pubkey(0x22);
 const LIKER = pubkey(0x33);
 const OWNER = pubkey(0x44);
 
+/** Two prune entries, i.e. two subtrees settled at one height. */
+const ROOT_A = postId('c');
+const ROOT_B = postId('d');
+
 const HEIGHT = 4242;
 
 /** Every reason, built at one height, in the contract's table order. */
@@ -41,6 +47,8 @@ function allContexts(): Array<{ ctx: MintContext; bytes: number }> {
     { ctx: postlockRemainderContext(POST_A), bytes: 64 },
     { ctx: decayContext(OWNER), bytes: 32 },
     { ctx: genesisContext(GENESIS_SYSTEM_KARMA), bytes: 4 },
+    { ctx: pruneRefundAuthorContext(ROOT_A, OWNER), bytes: 96 },
+    { ctx: pruneRefundLikerContext(ROOT_A, LIKER), bytes: 96 },
   ];
 }
 
@@ -59,10 +67,12 @@ describe('mint provenance — subject encodings', () => {
       ['postlock-remainder', 64, 64],
       ['decay', 32, 32],
       ['genesis', 4, 4],
+      ['prune-refund-author', 96, 96],
+      ['prune-refund-liker', 96, 96],
     ]);
   });
 
-  it('covers all eight MintReason values, with no reason used twice', () => {
+  it('covers all ten MintReason values, with no reason used twice', () => {
     const reasons = allContexts().map(({ ctx }) => ctx.reason);
     const expected: MintReason[] = [
       'coinbase',
@@ -73,9 +83,11 @@ describe('mint provenance — subject encodings', () => {
       'postlock-remainder',
       'decay',
       'genesis',
+      'prune-refund-author',
+      'prune-refund-liker',
     ];
     expect([...reasons].sort()).toEqual([...expected].sort());
-    expect(new Set(reasons).size).toBe(8);
+    expect(new Set(reasons).size).toBe(10);
   });
 
   it('hex-typed values enter as UTF-8 text, raw-typed values as raw bytes', () => {
@@ -90,6 +102,15 @@ describe('mint provenance — subject encodings', () => {
     expect(decayContext(OWNER).subject).toEqual(OWNER);
     expect(vouchSettleContext(VOUCHER, TARGET).subject.subarray(0, 32)).toEqual(VOUCHER);
     expect(vouchSettleContext(VOUCHER, TARGET).subject.subarray(32)).toEqual(TARGET);
+
+    // The prune legs: entry root as hex text, then the refunded key raw.
+    const pruneAuthor = pruneRefundAuthorContext(ROOT_A, OWNER);
+    expect(Buffer.from(pruneAuthor.subject.subarray(0, 64)).toString()).toBe(ROOT_A);
+    expect(pruneAuthor.subject.subarray(64)).toEqual(OWNER);
+
+    const pruneLiker = pruneRefundLikerContext(ROOT_A, LIKER);
+    expect(Buffer.from(pruneLiker.subject.subarray(0, 64)).toString()).toBe(ROOT_A);
+    expect(pruneLiker.subject.subarray(64)).toEqual(LIKER);
   });
 
   it('u32BE subjects are big-endian, and total on out-of-domain input', () => {
@@ -116,7 +137,7 @@ describe('mint provenance — subject encodings', () => {
 });
 
 describe('mint provenance — txId uniqueness', () => {
-  it('all eight reasons produce pairwise-distinct txIds at one height', () => {
+  it('all ten reasons produce pairwise-distinct txIds at one height', () => {
     const ids = allContexts().map(({ ctx }) => mintTxIdFor(ctx, HEIGHT));
     expect(new Set(ids).size).toBe(ids.length);
     for (const id of ids) expect(id).toMatch(/^[0-9a-f]{64}$/);
@@ -129,6 +150,29 @@ describe('mint provenance — txId uniqueness', () => {
     const author = mintTxIdFor(authorRewardContext(POST_A), HEIGHT);
     const unlock = mintTxIdFor(postlockUnlockContext(POST_A), HEIGHT);
     expect(author).not.toBe(unlock);
+  });
+
+  // The prune legs' equivalent of the pair above: one user who both authored
+  // and liked inside a single pruned subtree gets two refund mints with the
+  // same key, the same root and the same height. Only the reason tag separates
+  // them, which is why there are two tags rather than one.
+  it('prune-refund-author and prune-refund-liker do not collide for one user in one subtree', () => {
+    const both = pubkey(0x77);
+    expect(mintTxIdFor(pruneRefundAuthorContext(ROOT_A, both), HEIGHT)).not.toBe(
+      mintTxIdFor(pruneRefundLikerContext(ROOT_A, both), HEIGHT),
+    );
+  });
+
+  // Why `rootPostHash` is in the subject at all: `settlePruneUtxo` runs once
+  // per prune entry, so two entries in one block call it twice at one height.
+  // Without the entry's identity these two would be the same id at `index` 0.
+  it('the same refund leg in two prune entries at one height produces different txIds', () => {
+    expect(mintTxIdFor(pruneRefundAuthorContext(ROOT_A, OWNER), HEIGHT)).not.toBe(
+      mintTxIdFor(pruneRefundAuthorContext(ROOT_B, OWNER), HEIGHT),
+    );
+    expect(mintTxIdFor(pruneRefundLikerContext(ROOT_A, LIKER), HEIGHT)).not.toBe(
+      mintTxIdFor(pruneRefundLikerContext(ROOT_B, LIKER), HEIGHT),
+    );
   });
 
   it('postlock-unlock and postlock-remainder do not collide either', () => {

@@ -15,16 +15,27 @@ import type { MintContext } from '../mint-provenance.js';
  * block-application path can use it.
  *
  * `ctx` says *why* — the half of the box's synthetic transaction id this
- * function cannot know. It is required rather than optional so a new call site
- * cannot silently produce a provenance-less box; `null` is the one explicit way
- * to say "no reason is defined for this site yet" and currently has exactly one
- * caller (`settlePruneUtxo` — see the note there).
+ * function cannot know. It admitted `null` through the migration window, for
+ * the single site that had no reason defined yet; `settlePruneUtxo` was that
+ * site, G2a gave it the two `prune-refund-*` reasons, and G2b removed the
+ * escape hatch.
+ *
+ * Non-nullable is deliberate rather than tidy-up. `tsconfig` covers `src`, so a
+ * required parameter is a **compile error at the call site** — exactly where
+ * omitting provenance breaks consensus. Keeping `| null` would leave the store
+ * as the only line of defence, and once G3 makes `utxo_boxes.tx_id`/
+ * `output_index` NOT NULL that becomes a constraint failure at block
+ * application: fail-closed, but late, and it reads as a store bug rather than
+ * as a missing mint reason. Nothing can legitimately pass `null` again either:
+ * the contract requires a new mint reason to arrive as a tag *plus* an encoding
+ * *plus* an argument that `(height, reason, subject)` cannot repeat, so "no
+ * reason" is not a state a correct producer can be in.
  */
 export function mintKarma(
   userId: Uint8Array,
   amount: bigint,
   blockHeight: number,
-  ctx: MintContext | null,
+  ctx: MintContext,
 ): string {
   if (amount <= 0n) return '';
 
@@ -55,10 +66,8 @@ export function mintKarma(
   // order under `variableMapSize: false`, so a producer that interleaved these
   // would serialize to different bytes than the same box read back from SQLite
   // — a restart-triggered stateRoot fork, from nothing but key order.
-  if (ctx) {
-    newBox.txId = mintTxIdFor(ctx, blockHeight);
-    newBox.index = MINT_OUTPUT_INDEX;
-  }
+  newBox.txId = mintTxIdFor(ctx, blockHeight);
+  newBox.index = MINT_OUTPUT_INDEX;
   // After the attach, not before: phase G redefines `computeBoxId` to hash
   // `txId`/`index`. Inert until then — the legacy derivation strips them via
   // `canonicalBoxBytes`, which is what keeps every existing box id unmoved.

@@ -729,7 +729,7 @@ function applyMutationPhase(
 
     // 5. Settle UTXO — deterministic from post IDs
     try {
-      settlePruneUtxo(entry.subtreePostIds, height);
+      settlePruneUtxo(entry.rootPostHash, entry.subtreePostIds, height);
     } catch (err) {
       console.error(`Block ${height}: prune settlement failed for ${entry.rootPostHash}: ${String(err)}`);
       return false;

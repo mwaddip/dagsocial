@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import { computeMintTxId } from '@dagsocial/types';
+import { computeBoxId, computeMintTxId } from '@dagsocial/types';
 import type { AnyBox } from '@dagsocial/types';
 import type { BlockJournal, BoxMutation } from '../../src/store/journal.js';
 
@@ -90,24 +90,30 @@ describe('mint producers attach provenance (Spec G phase C1)', () => {
 
   // --- the invariant the whole phase rests on ------------------------------
 
-  it('no box id moves: minting with provenance yields the id minting without does', async () => {
-    const owner = user(0x01);
-
-    const { initDb, closeDb } = await importDbFresh();
+  // Reworded at phase G2b, same invariant. The "without" arm used to be a
+  // second `mintKarma` call passing `null`; `ctx` is required now, so that arm
+  // is unreachable through the producer. It is reconstructed from the produced
+  // box instead — strip `id`/`txId`/`index` and re-derive — which asserts the
+  // same equality against the **shipped** producer rather than against a
+  // second, differently-configured call.
+  it('no box id moves: the minted id is the id the same box has with no provenance', async () => {
+    const { initDb } = await importDbFresh();
+    const { getBox } = await importUtxoFresh();
     const { mintKarma } = await import('../../src/services/karma.js');
-    initDb(':memory:');
-    const bare = mintKarma(owner, 40n, HEIGHT, null);
-    closeDb();
-
-    vi.resetModules();
-    const fresh = await importDbFresh();
-    const { mintKarma: mintAgain } = await import('../../src/services/karma.js');
     const { authorRewardContext } = await import('../../src/mint-provenance.js');
-    fresh.initDb(':memory:');
-    const withProvenance = mintAgain(owner, 40n, HEIGHT, authorRewardContext(POST_A));
+    initDb(':memory:');
 
-    expect(withProvenance).toBe(bare);
-    expect(bare).toMatch(/^[0-9a-f]{64}$/);
+    const minted = mintKarma(user(0x01), 40n, HEIGHT, authorRewardContext(POST_A));
+    const stored = getBox(minted)!;
+
+    // Provenance is present on what was stored — otherwise this would compare
+    // a bare box against a bare box and pass for the wrong reason.
+    expect(stored.txId).toBeDefined();
+    expect(stored.index).toBe(0);
+
+    const { id: _id, txId: _txId, index: _index, ...bare } = stored;
+    expect(computeBoxId(bare as AnyBox)).toBe(minted);
+    expect(minted).toMatch(/^[0-9a-f]{64}$/);
   });
 
   // --- the provenance itself ------------------------------------------------
@@ -143,19 +149,13 @@ describe('mint producers attach provenance (Spec G phase C1)', () => {
     expect((stored as { lockedUntilBlock?: number }).lockedUntilBlock).toBe(HEIGHT + 90);
   });
 
-  it('a null context leaves no provenance keys at all, not undefined ones', async () => {
-    const { initDb } = await importDbFresh();
-    const { getBox } = await importUtxoFresh();
-    const { mintKarma } = await import('../../src/services/karma.js');
-    initDb(':memory:');
-
-    // `settlePruneUtxo` is the one caller in this state — a contract gap, not a
-    // deferral (see the note on that function). Key *presence* is the
-    // assertion: an explicit `undefined` is the shape that forks the chain.
-    const stored = getBox(mintKarma(user(0x04), 7n, HEIGHT, null))!;
-    expect('txId' in stored).toBe(false);
-    expect('index' in stored).toBe(false);
-  });
+  // A test pinning the `null`-context shape lived here until phase G2b. It was
+  // deleted rather than adapted: `mintKarma`/`mintCredits` now take a required
+  // `MintContext`, so the state it described is unreachable — and keeping it
+  // would have forced `| null` to stay alive purely to satisfy it, inverting
+  // the dependency. (The store-side half, NOT NULL on
+  // `utxo_boxes.tx_id`/`output_index`, lands at G3 with the fixture migration
+  // those columns force.)
 
   // --- key order: provenance appended last ---------------------------------
 

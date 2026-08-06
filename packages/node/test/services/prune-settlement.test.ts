@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { computeBoxId } from '@dagsocial/types';
+import { computeBoxId, computeMintTxId } from '@dagsocial/types';
 import type {
   PostLockBox,
   LikeBox,
@@ -49,8 +49,17 @@ async function importUtxo() {
 
 async function importSettlePruneUtxo() {
   const mod = await import('../../src/services/settle-prune-utxo.js');
+  // ⚠ Hand-maintained mirror of the real arity. `tsconfig.json` has
+  // `include: ["src"]`, so nothing type-checks this cast against the function
+  // it describes — when `settlePruneUtxo` gained `rootPostHash`, this signature
+  // and every call below had to be updated by hand, and only the test run would
+  // have caught a miss. Change the source signature, change this too.
   return mod as {
-    settlePruneUtxo: (postIds: string[], blockHeight: number) => void;
+    settlePruneUtxo: (
+      rootPostHash: string,
+      postIds: string[],
+      blockHeight: number,
+    ) => void;
   };
 }
 
@@ -318,7 +327,7 @@ describe('settlePruneUtxo', () => {
     const oldKarma = makeKarmaBox(40n, authorId, 1);
     utxo.insertBox(oldKarma);
 
-    const journal = await journaled(10, () => settlePruneUtxo([rootPostId], 10));
+    const journal = await journaled(10, () => settlePruneUtxo(rootPostId, [rootPostId], 10));
 
     // PostLockBox consumed
     expect(removedIds(journal)).toContain(lockBox.id);
@@ -352,7 +361,7 @@ describe('settlePruneUtxo', () => {
     const likeBox = makeLikeBox(likerId, rootPostId, 1);
     utxo.insertBox(likeBox);
 
-    const journal = await journaled(10, () => settlePruneUtxo([rootPostId], 10));
+    const journal = await journaled(10, () => settlePruneUtxo(rootPostId, [rootPostId], 10));
 
     // LikeBox consumed
     expect(removedIds(journal)).toContain(likeBox.id);
@@ -368,7 +377,7 @@ describe('settlePruneUtxo', () => {
   it('handles empty postId list', async () => {
     const { settlePruneUtxo } = await importSettlePruneUtxo();
 
-    const journal = await journaled(5, () => settlePruneUtxo([], 5));
+    const journal = await journaled(5, () => settlePruneUtxo('0'.repeat(64), [], 5));
     expect(journal.mutations.length).toBe(0);
   });
 
@@ -385,7 +394,7 @@ describe('settlePruneUtxo', () => {
     utxo.insertBox(lockBox);
     utxo.consumeBox(lockBox.id!, 5); // Already spent at block 5
 
-    const journal = await journaled(10, () => settlePruneUtxo([rootPostId], 10));
+    const journal = await journaled(10, () => settlePruneUtxo(rootPostId, [rootPostId], 10));
 
     // Already-spent box should not be re-consumed, and no refund karma minted
     // (getPostLockBox returns only unspent boxes, so it returns null)
@@ -405,7 +414,7 @@ describe('settlePruneUtxo', () => {
     utxo.insertBox(likeBox);
     utxo.consumeBox(likeBox.id!, 3); // Already spent
 
-    const journal = await journaled(10, () => settlePruneUtxo([rootPostId], 10));
+    const journal = await journaled(10, () => settlePruneUtxo(rootPostId, [rootPostId], 10));
 
     expect(removedIds(journal)).not.toContain(likeBox.id);
     expect(journal.mutations.length).toBe(0);
@@ -434,7 +443,7 @@ describe('settlePruneUtxo', () => {
     utxo.insertBox(like2);
 
     const journal = await journaled(10, () =>
-      settlePruneUtxo([postId1, postId2], 10),
+      settlePruneUtxo(postId1, [postId1, postId2], 10),
     );
 
     // All four boxes consumed
@@ -472,7 +481,7 @@ describe('settlePruneUtxo', () => {
     const { settlePruneUtxo } = await importSettlePruneUtxo();
 
     const postId = 'e'.repeat(64);
-    const journal = await journaled(10, () => settlePruneUtxo([postId], 10));
+    const journal = await journaled(10, () => settlePruneUtxo(postId, [postId], 10));
     expect(journal.mutations.length).toBe(0);
   });
 
@@ -487,7 +496,7 @@ describe('settlePruneUtxo', () => {
     const lockBox = makePostLockBox(0, authorId, rootPostId, 1);
     utxo.insertBox(lockBox);
 
-    const journal = await journaled(10, () => settlePruneUtxo([rootPostId], 10));
+    const journal = await journaled(10, () => settlePruneUtxo(rootPostId, [rootPostId], 10));
 
     // Zero-value box is skipped (lockBox.value > 0 check)
     expect(removedIds(journal)).not.toContain(lockBox.id);
@@ -508,7 +517,7 @@ describe('settlePruneUtxo', () => {
     utxo.insertBox(otherLikeBox);
 
     const journal = await journaled(10, () =>
-      settlePruneUtxo([targetPostId], 10),
+      settlePruneUtxo(targetPostId, [targetPostId], 10),
     );
 
     // LikeBox for otherPostId should not be consumed
@@ -516,6 +525,126 @@ describe('settlePruneUtxo', () => {
     // Box should remain unspent
     const db = getDb();
     expect(boxIsSpent(db, otherLikeBox.id!)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: prune refund provenance (Spec G phase G2a)
+// ---------------------------------------------------------------------------
+
+/**
+ * The subject the contract's reason/subject table pins, built here **without**
+ * calling the encoder — `utf8(rootPostHash)` ‖ raw key, 96 bytes. Deriving the
+ * expectation independently is what makes these tests fail when the encoder
+ * drops `rootPostHash` rather than move with it.
+ */
+function expectedSubject(rootPostHash: string, key: Uint8Array): Uint8Array {
+  return new Uint8Array(Buffer.concat([Buffer.from(rootPostHash, 'utf-8'), Buffer.from(key)]));
+}
+
+/** Every karma row the settlement left behind, oldest insert first. */
+function karmaRows(db: Database): Array<{
+  tx_id: string | null;
+  output_index: number | null;
+  value: number;
+}> {
+  return db
+    .prepare(
+      `SELECT tx_id, output_index, value FROM utxo_boxes
+       WHERE box_type = 'karma' ORDER BY value ASC`,
+    )
+    .all() as Array<{ tx_id: string | null; output_index: number | null; value: number }>;
+}
+
+describe('settlePruneUtxo — refund provenance', () => {
+  beforeEach(async () => {
+    vi.resetModules();
+    const db = await importDb();
+    db.initDb(':memory:');
+  });
+
+  afterEach(() => {
+    vi.resetModules();
+  });
+
+  // The load-bearing case for `rootPostHash`. `block-apply.ts` calls settlement
+  // once per prune entry, so two entries in one block are two calls at one
+  // height. An author refunded by both would, on a subject of just the owner,
+  // derive the same mintTxId twice at index 0 — tripping
+  // UNIQUE(tx_id, output_index) and rejecting a legitimate block.
+  it('two prune entries at one height refunding the same author both apply', async () => {
+    const { getDb } = await importDb();
+    const utxo = await importUtxo();
+    const { settlePruneUtxo } = await importSettlePruneUtxo();
+
+    const rootA = 'a'.repeat(64);
+    const rootB = 'b'.repeat(64);
+    const authorId = makeUserId('author-in-both-subtrees');
+
+    utxo.insertBox(makePostLockBox(100, authorId, rootA, 1));
+    utxo.insertBox(makePostLockBox(50, authorId, rootB, 1));
+
+    // One journal, one height, two entries — exactly the loop in block-apply.
+    const journal = await journaled(10, () => {
+      settlePruneUtxo(rootA, [rootA], 10);
+      settlePruneUtxo(rootB, [rootB], 10);
+    });
+
+    // Second mint merges the first, so the survivor holds 100 + 50.
+    const rows = karmaRows(getDb());
+    expect(rows.map((r) => r.value)).toEqual([100, 150]);
+
+    // Both rows persist — the merge marks the first spent, it does not delete
+    // the row — so the two mints must occupy distinct provenance keys.
+    expect(rows.map((r) => r.tx_id)).toEqual([
+      computeMintTxId(10, 'prune-refund-author', expectedSubject(rootA, authorId)),
+      computeMintTxId(10, 'prune-refund-author', expectedSubject(rootB, authorId)),
+    ]);
+    expect(rows.map((r) => r.output_index)).toEqual([0, 0]);
+    expect(insertedIds(journal).length).toBe(2);
+  });
+
+  // The other half of the pair: one entry, one user, both legs.
+  it('a user who both authored and liked in one subtree gets two distinct mints', async () => {
+    const { getDb } = await importDb();
+    const utxo = await importUtxo();
+    const { settlePruneUtxo } = await importSettlePruneUtxo();
+
+    const root = 'c'.repeat(64);
+    const user = makeUserId('author-and-liker');
+
+    utxo.insertBox(makePostLockBox(100, user, root, 1));
+    utxo.insertBox(makeLikeBox(user, root, 1));
+
+    await journaled(10, () => settlePruneUtxo(root, [root], 10));
+
+    // Author leg mints 100; the liker leg merges it and mints 100 + 2.
+    const rows = karmaRows(getDb());
+    expect(rows.map((r) => r.value)).toEqual([100, 102]);
+    expect(rows.map((r) => r.tx_id)).toEqual([
+      computeMintTxId(10, 'prune-refund-author', expectedSubject(root, user)),
+      computeMintTxId(10, 'prune-refund-liker', expectedSubject(root, user)),
+    ]);
+  });
+
+  it('the liker leg carries the liker key, not the pruned post author', async () => {
+    const { getDb } = await importDb();
+    const utxo = await importUtxo();
+    const { settlePruneUtxo } = await importSettlePruneUtxo();
+
+    const root = 'd'.repeat(64);
+    const likerId = makeUserId('liker-only');
+
+    utxo.insertBox(makeLikeBox(likerId, root, 1));
+
+    await journaled(10, () => settlePruneUtxo(root, [root], 10));
+
+    const rows = karmaRows(getDb());
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.tx_id).toBe(
+      computeMintTxId(10, 'prune-refund-liker', expectedSubject(root, likerId)),
+    );
+    expect(rows[0]!.output_index).toBe(0);
   });
 });
 
@@ -564,7 +693,7 @@ describe('Full prune lifecycle (UTXO settlement path)', () => {
 
     // 4. Apply settlement
     const journal = await journaled(10, () =>
-      settlePruneUtxo([rootId, replyId], 10),
+      settlePruneUtxo(rootId, [rootId, replyId], 10),
     );
 
     // 5. Verify PostLockBoxes consumed

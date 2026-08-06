@@ -1,4 +1,4 @@
-import { computeMintTxId } from '@dagsocial/types';
+import { computeMintTxId, u32BE } from '@dagsocial/types';
 import type { MintReason, PostId, TxId } from '@dagsocial/types';
 
 /**
@@ -32,25 +32,13 @@ export const GENESIS_FAUCET_CREDITS = 1;
 
 const utf8 = new TextEncoder();
 
-/**
- * Mirror of the `u32BE` in `@dagsocial/types`' `utxo.ts`, which is
- * module-private there.
- *
- * It must stay byte-identical: these bytes land in a `subject`, which types
- * hashes as opaque input, so a divergence here silently moves mint txIds — and
- * therefore box ids — with nothing to catch it. Same totality discipline: a
- * value outside the encodable domain writes the all-ones sentinel rather than
- * throwing, so id derivation cannot become a panic on untrusted input (M-5),
- * and the encodable domain excludes the sentinel so a well-formed index never
- * collides with a malformed one.
- */
-const U32_SENTINEL = 0xffffffff;
-
-function u32BE(n: number): Uint8Array {
-  const encodable = typeof n === 'number' && Number.isSafeInteger(n) && n >= 0 && n < U32_SENTINEL;
-  const v = encodable ? n : U32_SENTINEL;
-  return new Uint8Array([(v >>> 24) & 0xff, (v >>> 16) & 0xff, (v >>> 8) & 0xff, v & 0xff]);
-}
+// `u32BE` is *imported* from types, not mirrored here (phase G checklist item
+// 9). It was a byte-for-byte copy until types exported it, and a copy is
+// exactly what could not be allowed to drift: these bytes land in a `subject`,
+// which types hashes as opaque input, so a divergence would silently move mint
+// txIds — and therefore box ids — with nothing to catch it. One implementation
+// now feeds both `computeMintTxId`'s height field and the subjects below,
+// sentinel behaviour included.
 
 /**
  * Concatenate subject parts. Plain byte concatenation with no length prefix —
@@ -73,14 +61,16 @@ function concat(...parts: Uint8Array[]): Uint8Array {
 //
 // One function per reason, each producing the fixed-width `subject` the
 // contract's reason/subject table specifies. This module exists so that rule is
-// reviewable in one place instead of at eight call sites.
+// reviewable in one place instead of at every call site.
 //
 // Each returns a whole `MintContext` rather than bare bytes, so "right subject,
 // wrong reason" is unrepresentable at a call site. That pairing is load-bearing
-// for exactly one pair: `author-reward` and `postlock-unlock` mint to the same
-// author, for the same post, at the same height, and are separated by nothing
-// but the reason tag. Getting one wrong produces a box-id collision, not an
-// error.
+// for exactly two pairs, both of which mint the same value to the same key at
+// the same height and are separated by nothing but the reason tag:
+// `author-reward`/`postlock-unlock` at epoch tally, and
+// `prune-refund-author`/`prune-refund-liker` for a user who both authored and
+// liked inside one pruned subtree. Getting one wrong produces a box-id
+// collision, not an error.
 //
 // Byte forms follow TYPES_INTERFACE → "Pinned byte forms": a hex-typed value
 // (`PostId`) enters as the UTF-8 bytes of its hex text, a `Uint8Array`-typed
@@ -145,6 +135,37 @@ export function decayContext(owner: Uint8Array): MintContext {
  */
 export function genesisContext(which: number): MintContext {
   return { reason: 'genesis', subject: u32BE(which) };
+}
+
+/**
+ * `prune-refund-author` — 96 bytes: the pruned subtree's root post id as hex
+ * text, then the refunded author's 32 raw pubkey bytes. Unambiguous by the same
+ * argument as `likerRefundContext`: the 32-byte suffix pins the split point.
+ *
+ * The subject names the **prune entry**, not the post the karma was locked
+ * against — refunds are aggregated per user across the whole subtree, so no
+ * single postId is available to name. `rootPostHash` is load-bearing rather
+ * than decoration: `settlePruneUtxo` runs once per prune entry, so a block
+ * carrying two entries calls it twice at one height. Without the entry's
+ * identity in the subject, an author with refunds in both subtrees derives the
+ * same `mintTxId` twice at `index` 0, trips `UNIQUE(tx_id, output_index)`, and
+ * a legitimate block is rejected.
+ */
+export function pruneRefundAuthorContext(rootPostHash: PostId, owner: Uint8Array): MintContext {
+  return { reason: 'prune-refund-author', subject: concat(utf8.encode(rootPostHash), owner) };
+}
+
+/**
+ * `prune-refund-liker` — 96 bytes, the same encoding against the liker.
+ *
+ * Two reasons rather than one, for the same reason `author-reward` and
+ * `liker-refund` are two at epoch tally: the same user can be both an author
+ * and a liker within one pruned subtree — they replied in a thread they also
+ * liked — and a single tag would give both of that user's mints an identical
+ * `(height, reason, subject)`.
+ */
+export function pruneRefundLikerContext(rootPostHash: PostId, likerId: Uint8Array): MintContext {
+  return { reason: 'prune-refund-liker', subject: concat(utf8.encode(rootPostHash), likerId) };
 }
 
 // ---------------------------------------------------------------------------

@@ -30,13 +30,16 @@ import type { MintContext } from '../mint-provenance.js';
  * with the combined value + amount. Same pattern as mintKarma.
  *
  * `ctx` precedes `lockedUntilBlock` because it is required and that one is
- * optional — and because it belongs with the other identity inputs.
+ * optional — and because it belongs with the other identity inputs. It stopped
+ * admitting `null` at phase G2b, for the reason spelled out on `mintKarma`: a
+ * required parameter fails at compile time in `src`, where omitting provenance
+ * breaks consensus, rather than leaving the store to catch it later.
  */
 export function mintCredits(
   owner: Uint8Array,
   amount: bigint,
   blockHeight: number,
-  ctx: MintContext | null,
+  ctx: MintContext,
   lockedUntilBlock?: number,
 ): string {
   if (amount <= 0n) return '';
@@ -72,10 +75,8 @@ export function mintCredits(
   }
   // Appended after every candidate field — including the conditional
   // `lockedUntilBlock` — so this matches `rowToBox`'s key order. See mintKarma.
-  if (ctx) {
-    newBox.txId = mintTxIdFor(ctx, blockHeight);
-    newBox.index = MINT_OUTPUT_INDEX;
-  }
+  newBox.txId = mintTxIdFor(ctx, blockHeight);
+  newBox.index = MINT_OUTPUT_INDEX;
   newBox.id = computeBoxId(newBox);
 
   insertBox(newBox);
