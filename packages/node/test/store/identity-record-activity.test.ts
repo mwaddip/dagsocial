@@ -5,6 +5,7 @@ import { computeBoxId } from '@dagsocial/types';
 import type { AnyBox, CreditBox, KarmaBox, UserId } from '@dagsocial/types';
 import type { BlockJournal } from '../../src/store/journal.js';
 import type { IdentityRecord } from '../../src/store/identity-records.js';
+import { fixtureProvenance } from '../helpers.js';
 
 /**
  * Spec G phase D2 — `insertBox` populates the identity record's activity clock.
@@ -57,30 +58,32 @@ function owner(label: string): UserId {
   return new Uint8Array(createHash('blake2b512').update(label).digest().subarray(0, 32));
 }
 
-function karmaBox(o: UserId, value: bigint, createdAtBlock: number, decayBurn?: boolean): KarmaBox {
+function karmaBox(o: UserId, seed: number, value: bigint, decayBurn?: boolean): KarmaBox {
   const box: KarmaBox = {
     boxType: 'karma',
     value,
-    createdAtBlock,
     owner: o,
     guard: 'owner_signature',
-    proofSource: `p-${createdAtBlock}-${value}-${decayBurn ?? 'n'}`,
-    lastTouchBlock: createdAtBlock,
+    // `seed` was `createdAtBlock` before phase G3b deleted the field. It stays
+    // as a fixture discriminator so distinct boxes keep distinct proofSources —
+    // and therefore distinct ids — but it is no longer a box field.
+    proofSource: `p-${seed}-${value}-${decayBurn ?? 'n'}`,
   };
   if (decayBurn !== undefined) box.decayBurn = decayBurn;
+  Object.assign(box, fixtureProvenance(box, seed));
   box.id = computeBoxId(box);
   return box;
 }
 
-function creditBox(o: UserId, value: bigint, createdAtBlock: number): CreditBox {
+function creditBox(o: UserId, value: bigint, seed: number): CreditBox {
   const box: CreditBox = {
     boxType: 'credit',
     value,
-    createdAtBlock,
     owner: o,
     guard: 'owner_signature',
-    proofSource: createdAtBlock,
+    proofSource: seed,
   };
+  Object.assign(box, fixtureProvenance(box, 1));
   box.id = computeBoxId(box);
   return box;
 }

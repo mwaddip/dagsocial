@@ -164,8 +164,9 @@ describe('identity records in the block journal (Spec G phase B2)', () => {
 
     beginBlockJournal(1);
     insertBox({
-      id: 'ab'.repeat(32), boxType: 'karma', value: 5n, createdAtBlock: 1,
-      owner: uidBytes(), guard: 'owner_signature', proofSource: 'x', lastTouchBlock: 1,
+      id: 'ab'.repeat(32), boxType: 'karma', value: 5n,
+      owner: uidBytes(), guard: 'owner_signature', proofSource: 'x',
+      txId: 'cd'.repeat(32), index: 0,
     } as never);
     putIdentityRecord(uidBytes(), { lastActivityBlock: 1, lastDecayBlock: 0 });
     const j = finishBlockJournal();

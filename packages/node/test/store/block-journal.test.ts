@@ -1,4 +1,5 @@
-import { uid } from '../helpers.js';
+import {
+  fixtureProvenance, uid } from '../helpers.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { AnyBox, KarmaBox, LikeBox } from '@dagsocial/types';
 
@@ -23,28 +24,25 @@ async function importAll() {
 const OWNER = uid('journal-owner');
 
 function makeKarmaBox(id: string, value = 100n): KarmaBox {
-  return {
-    id,
-    boxType: 'karma',
+  const candidate = {
+    boxType: 'karma' as const,
     value,
-    createdAtBlock: 1,
     owner: OWNER,
-    guard: 'owner_signature',
-    proofSource: 'tx-test',
-    lastTouchBlock: 1,
+    guard: 'owner_signature' as const,
+    proofSource: `tx-test-${id}`,
   };
+  return { id, ...candidate, ...fixtureProvenance(candidate, 1) };
 }
 
 function makeLikeBox(id: string, liker: string, targetPostId: string): LikeBox {
-  return {
-    id,
-    boxType: 'like',
+  const candidate = {
+    boxType: 'like' as const,
     value: 2n,
-    createdAtBlock: 1,
     likerId: uid(liker),
     targetPostId,
-    guard: 'epoch_tally',
+    guard: 'epoch_tally' as const,
   };
+  return { id, ...candidate, ...fixtureProvenance(candidate, 1, hashSeed(id)) };
 }
 
 // ---------------------------------------------------------------------------
@@ -378,3 +376,10 @@ describe('block journal (store choke-point recording)', () => {
     expect(cnt.c).toBe(1);
   });
 });
+
+/** Stable small integer from a fixture id, so distinct boxes get distinct provenance. */
+function hashSeed(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return h % 1_000_000;
+}

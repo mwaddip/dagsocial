@@ -87,6 +87,27 @@ export function createInvite(
     );
   }
 
+  // ---- 4b. The bond must point at THIS transaction's InviteBox ----
+  //
+  // Checked at **create**, not only when the bond is dereferenced at commit
+  // (user decision, 2026-08-06). The old `inviteBoxId: BoxId` was validated
+  // nowhere here: a bond could name any box in the world, and a wrong value
+  // surfaced one transaction later as "InviteBox not found for bond commit" —
+  // a dangling reference rather than a rejected transaction.
+  //
+  // Pairing by output index makes the *scope* structural — a bond can only
+  // address an output of its own transaction — and this check makes the
+  // *target* structural too. Together, a bond paired with anything other than
+  // the invite it shipped with is inexpressible rather than caught late, which
+  // is the whole reason the index form was chosen over re-encoding the id.
+  if (tx.outputs[bondOut.inviteOutputIndex] !== inviteOut) {
+    throw new ClientError(
+      `BondBox.inviteOutputIndex must address the InviteBox output of the same ` +
+      `transaction: got ${bondOut.inviteOutputIndex}, InviteBox is at ` +
+      `${tx.outputs.indexOf(inviteOut)}`,
+    );
+  }
+
   // ---- 5. Validate transaction (guards, transitions, decay) ----
   const result = validateTx(deps, tx, currentBlockHeight);
   if (!result.valid) {
@@ -106,12 +127,18 @@ export function createInvite(
   // getting this backwards silent rather than an error.
   const txId = computeTxId(tx);
 
-  // These two ids are predictions the client acts on: `routes/invites.ts`
-  // returns `inviteBox.id`, the client bakes it into `bond.inviteBoxId`, and
-  // `utxo-engine.ts` dereferences it on-chain at bond commit. They must equal
-  // what block application will store, so they are materialized exactly the way
-  // that path materializes them — `tx` here is client-supplied decoded CBOR, so
-  // the strip-before-append in `materializeOutput` is load-bearing.
+  // These two ids are still returned, and they must still equal what block
+  // application will store — so they are materialized exactly the way that path
+  // materializes them, and `tx` here is client-supplied decoded CBOR, so the
+  // strip-before-append in `materializeOutput` is load-bearing.
+  //
+  // What changed (user decision, 2026-08-06): the client no longer has to
+  // *predict* `inviteBox.id` in order to build the bond. It says which output
+  // index the invite is at, and the node resolves the pair from
+  // `(txId, inviteOutputIndex)` at commit. These are now informational —
+  // an id the client can display or track, not one it has to get right for the
+  // flow to work. That is strictly stronger than the "exact prediction" Spec G
+  // aimed at: prediction became unnecessary rather than merely reliable.
   return {
     status: 'pending',
     txId,

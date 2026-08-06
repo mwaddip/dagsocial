@@ -1,4 +1,5 @@
-import { uid } from '../helpers.js';
+import {
+  fixtureProvenance, uid } from '../helpers.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type Database from 'better-sqlite3';
 import { randomBytes } from 'node:crypto';
@@ -64,72 +65,66 @@ const OWNER_A = bytes(32);
 const OWNER_B = bytes(32);
 
 function makeKarmaBox(overrides: Partial<KarmaBox> = {}): KarmaBox {
-  return {
-    id: '',
-    boxType: 'karma',
+  const candidate = {
+    boxType: 'karma' as const,
     value: 100n,
-    createdAtBlock: 1,
     owner: OWNER_A,
-    guard: 'owner_signature',
+    guard: 'owner_signature' as const,
     proofSource: 'tx-genesis-001',
-    lastTouchBlock: 1,
     ...overrides,
   };
+  return { id: '', ...candidate, ...fixtureProvenance(candidate, 1) };
 }
 
 function makeCreditBox(overrides: Partial<CreditBox> = {}): CreditBox {
-  return {
-    id: '',
-    boxType: 'credit',
+  const candidate = {
+    boxType: 'credit' as const,
     value: 1000n,
-    createdAtBlock: 1,
     owner: OWNER_A,
-    guard: 'owner_signature',
+    guard: 'owner_signature' as const,
     proofSource: 1,
     ...overrides,
   };
+  return { id: '', ...candidate, ...fixtureProvenance(candidate, 1) };
 }
 
 function makeLikeBox(overrides: Partial<LikeBox> = {}): LikeBox {
-  return {
-    id: '',
-    boxType: 'like',
+  const candidate = {
+    boxType: 'like' as const,
     value: 2n,
-    createdAtBlock: 5,
     likerId: uid('liker123'),
     targetPostId: 'post456',
-    guard: 'epoch_tally',
+    guard: 'epoch_tally' as const,
     ...overrides,
   };
+  return { id: '', ...candidate, ...fixtureProvenance(candidate, 1) };
 }
 
 function makeInviteBox(overrides: Partial<InviteBox> = {}): InviteBox {
-  return {
-    id: '',
-    boxType: 'invite',
+  const candidate = {
+    boxType: 'invite' as const,
     value: 50n,
-    createdAtBlock: 3,
     secretHash: bytes(32),
     inviterId: uid('alice-inviter'),
-    guard: 'hash_preimage_with_bond',
+    guard: 'hash_preimage_with_bond' as const,
     ...overrides,
   };
+  return { id: '', ...candidate, ...fixtureProvenance(candidate, 1) };
 }
 
 function makeBondBox(overrides: Partial<BondBox> = {}): BondBox {
-  return {
-    id: '',
-    boxType: 'bond',
+  const candidate = {
+    boxType: 'bond' as const,
     value: 10n,
-    createdAtBlock: 3,
     inviterId: uid('alice-inviter'),
-    inviteBoxId: '',
+    inviteOutputIndex: 0,
     inviteePublicKey: new Uint8Array(0),
     probationStartBlock: 0,
     probationEndBlock: 0,
-    guard: 'bond_dual',
+    guard: 'bond_dual' as const,
     ...overrides,
   };
+  return { id: '', ...candidate, ...fixtureProvenance(candidate, 1) };
 }
 
 // ---------------------------------------------------------------------------
@@ -154,7 +149,8 @@ describe('utxo store', () => {
 
     initDb(':memory:');
 
-    const box = makeKarmaBox({ value: 200n, proofSource: 'tx-post-abc', lastTouchBlock: 7 });
+    const box = makeKarmaBox({ value: 200n, proofSource: 'tx-post-abc' });
+    Object.assign(box, fixtureProvenance(box, 1));
     box.id = computeBoxId(box);
     insertBox(box);
 
@@ -162,11 +158,16 @@ describe('utxo store', () => {
     expect(result).not.toBeNull();
     expect(result.boxType).toBe('karma');
     expect(result.value).toBe(200n);
-    expect(result.createdAtBlock).toBe(1);
     expect(result.owner).toEqual(OWNER_A);
     expect(result.guard).toBe('owner_signature');
     expect(result.proofSource).toBe('tx-post-abc');
-    expect(result.lastTouchBlock).toBe(7);
+    // `createdAtBlock`/`lastTouchBlock` were asserted here and are gone with
+    // phase G3b. Provenance is what round-trips now, and it has to: the box id
+    // derives from it, so a row that lost it would reconstruct a box that no
+    // longer hashes to its own key.
+    expect(result.txId).toBe(box.txId);
+    expect(result.index).toBe(box.index);
+    expect(computeBoxId(result)).toBe(result.id);
   });
 
   it('insertBox + getBox round-trip preserves decayBurn on KarmaBox', async () => {
@@ -177,6 +178,7 @@ describe('utxo store', () => {
     initDb(':memory:');
 
     const box = makeKarmaBox({ value: 100n, decayBurn: true });
+    Object.assign(box, fixtureProvenance(box, 1));
     box.id = computeBoxId(box);
     insertBox(box);
 
@@ -193,6 +195,7 @@ describe('utxo store', () => {
     initDb(':memory:');
 
     const box = makeCreditBox({ value: 5000n, proofSource: 42 });
+    Object.assign(box, fixtureProvenance(box, 1));
     box.id = computeBoxId(box);
     insertBox(box);
 
@@ -213,6 +216,7 @@ describe('utxo store', () => {
     initDb(':memory:');
 
     const box = makeLikeBox({ likerId: uid('user-liker'), targetPostId: 'post-target-1' });
+    Object.assign(box, fixtureProvenance(box, 1));
     box.id = computeBoxId(box);
     insertBox(box);
 
@@ -234,6 +238,7 @@ describe('utxo store', () => {
 
     const secretHash = bytes(32);
     const box = makeInviteBox({ value: 30n, secretHash, inviterId: uid('inviter-alice') });
+    Object.assign(box, fixtureProvenance(box, 1));
     box.id = computeBoxId(box);
     insertBox(box);
 
@@ -261,6 +266,7 @@ describe('utxo store', () => {
       probationStartBlock: 100,
       probationEndBlock: 1100,
     });
+    Object.assign(box, fixtureProvenance(box, 1));
     box.id = computeBoxId(box);
     insertBox(box);
 
@@ -298,6 +304,7 @@ describe('utxo store', () => {
     initDb(':memory:');
 
     const box = makeKarmaBox({ value: 75n, owner: OWNER_A });
+    Object.assign(box, fixtureProvenance(box, 1));
     box.id = computeBoxId(box);
     insertBox(box);
 
@@ -324,6 +331,7 @@ describe('utxo store', () => {
     initDb(':memory:');
 
     const box = makeCreditBox({ value: 999n, owner: OWNER_A, proofSource: 3 });
+    Object.assign(box, fixtureProvenance(box, 1));
     box.id = computeBoxId(box);
     insertBox(box);
 
@@ -347,14 +355,17 @@ describe('utxo store', () => {
     initDb(':memory:');
 
     const inv1 = makeInviteBox({ value: 20n, inviterId: uid('alice') });
+    Object.assign(inv1, fixtureProvenance(inv1, 1));
     inv1.id = computeBoxId(inv1);
     insertBox(inv1);
 
     const inv2 = makeInviteBox({ value: 30n, inviterId: uid('alice') });
+    Object.assign(inv2, fixtureProvenance(inv2, 1));
     inv2.id = computeBoxId(inv2);
     insertBox(inv2);
 
     const inv3 = makeInviteBox({ value: 40n, inviterId: uid('bob') });
+    Object.assign(inv3, fixtureProvenance(inv3, 1));
     inv3.id = computeBoxId(inv3);
     insertBox(inv3);
 
@@ -382,10 +393,12 @@ describe('utxo store', () => {
     expect(getPendingInviteCount(uid('alice'))).toBe(0);
 
     const inv1 = makeInviteBox({ inviterId: uid('alice') });
+    Object.assign(inv1, fixtureProvenance(inv1, 1));
     inv1.id = computeBoxId(inv1);
     insertBox(inv1);
 
     const inv2 = makeInviteBox({ inviterId: uid('alice') });
+    Object.assign(inv2, fixtureProvenance(inv2, 1));
     inv2.id = computeBoxId(inv2);
     insertBox(inv2);
 
@@ -405,14 +418,17 @@ describe('utxo store', () => {
     initDb(':memory:');
 
     const bond1 = makeBondBox({ inviterId: uid('charlie'), value: 10n });
+    Object.assign(bond1, fixtureProvenance(bond1, 1));
     bond1.id = computeBoxId(bond1);
     insertBox(bond1);
 
     const bond2 = makeBondBox({ inviterId: uid('charlie'), value: 15n });
+    Object.assign(bond2, fixtureProvenance(bond2, 1));
     bond2.id = computeBoxId(bond2);
     insertBox(bond2);
 
     const bond3 = makeBondBox({ inviterId: uid('dave'), value: 20n });
+    Object.assign(bond3, fixtureProvenance(bond3, 1));
     bond3.id = computeBoxId(bond3);
     insertBox(bond3);
 
@@ -440,14 +456,17 @@ describe('utxo store', () => {
     initDb(':memory:');
 
     const like1 = makeLikeBox({ targetPostId: 'post-aaa', likerId: uid('user1') });
+    Object.assign(like1, fixtureProvenance(like1, 1));
     like1.id = computeBoxId(like1);
     insertBox(like1);
 
     const like2 = makeLikeBox({ targetPostId: 'post-aaa', likerId: uid('user2') });
+    Object.assign(like2, fixtureProvenance(like2, 1));
     like2.id = computeBoxId(like2);
     insertBox(like2);
 
     const like3 = makeLikeBox({ targetPostId: 'post-bbb', likerId: uid('user3') });
+    Object.assign(like3, fixtureProvenance(like3, 1));
     like3.id = computeBoxId(like3);
     insertBox(like3);
 
@@ -473,10 +492,12 @@ describe('utxo store', () => {
     initDb(':memory:');
 
     const like1 = makeLikeBox({ targetPostId: 'p1', likerId: uid('u1') });
+    Object.assign(like1, fixtureProvenance(like1, 1));
     like1.id = computeBoxId(like1);
     insertBox(like1);
 
     const like2 = makeLikeBox({ targetPostId: 'p2', likerId: uid('u2') });
+    Object.assign(like2, fixtureProvenance(like2, 1));
     like2.id = computeBoxId(like2);
     insertBox(like2);
 
@@ -498,6 +519,7 @@ describe('utxo store', () => {
     initDb(':memory:');
 
     const box = makeKarmaBox({ value: 50n });
+    Object.assign(box, fixtureProvenance(box, 1));
     box.id = computeBoxId(box);
     insertBox(box);
 
@@ -520,14 +542,17 @@ describe('utxo store', () => {
     initDb(':memory:');
 
     const like1 = makeLikeBox({ likerId: uid('u1') });
+    Object.assign(like1, fixtureProvenance(like1, 1));
     like1.id = computeBoxId(like1);
     insertBox(like1);
 
     const like2 = makeLikeBox({ likerId: uid('u2') });
+    Object.assign(like2, fixtureProvenance(like2, 1));
     like2.id = computeBoxId(like2);
     insertBox(like2);
 
     const like3 = makeLikeBox({ likerId: uid('u3') });
+    Object.assign(like3, fixtureProvenance(like3, 1));
     like3.id = computeBoxId(like3);
     insertBox(like3);
 
@@ -572,14 +597,17 @@ describe('utxo store', () => {
 
     const owner = bytes(32);
     const box1 = makeKarmaBox({ value: 100n, owner });
+    Object.assign(box1, fixtureProvenance(box1, 1));
     box1.id = computeBoxId(box1);
     insertBox(box1);
 
     const box2 = makeKarmaBox({ value: 200n, owner });
+    Object.assign(box2, fixtureProvenance(box2, 1));
     box2.id = computeBoxId(box2);
     insertBox(box2);
 
     const box3 = makeKarmaBox({ value: 50n, owner });
+    Object.assign(box3, fixtureProvenance(box3, 1));
     box3.id = computeBoxId(box3);
     insertBox(box3);
 
@@ -614,10 +642,12 @@ describe('utxo store', () => {
     const bob = bytes(32).fill(0xbb);
 
     const aliceBox = makeKarmaBox({ value: 100n, owner: alice });
+    Object.assign(aliceBox, fixtureProvenance(aliceBox, 1));
     aliceBox.id = computeBoxId(aliceBox);
     insertBox(aliceBox);
 
     const bobBox = makeKarmaBox({ value: 200n, owner: bob });
+    Object.assign(bobBox, fixtureProvenance(bobBox, 1));
     bobBox.id = computeBoxId(bobBox);
     insertBox(bobBox);
 
@@ -637,10 +667,12 @@ describe('utxo store', () => {
 
     const owner = bytes(32);
     const box1 = makeCreditBox({ value: 300n, owner });
+    Object.assign(box1, fixtureProvenance(box1, 1));
     box1.id = computeBoxId(box1);
     insertBox(box1);
 
     const box2 = makeCreditBox({ value: 500n, owner });
+    Object.assign(box2, fixtureProvenance(box2, 1));
     box2.id = computeBoxId(box2);
     insertBox(box2);
 
@@ -675,20 +707,24 @@ describe('utxo store', () => {
     const currentHeight = 100;
 
     const box1 = makeCreditBox({ value: 300n, owner, proofSource: 1 });
+    Object.assign(box1, fixtureProvenance(box1, 1));
     box1.id = computeBoxId(box1);
     insertBox(box1);
 
     const box2 = makeCreditBox({ value: 500n, owner, proofSource: 2 });
     box2.lockedUntilBlock = 150;
+    Object.assign(box2, fixtureProvenance(box2, 1));
     box2.id = computeBoxId(box2);
     insertBox(box2);
 
     const box3 = makeCreditBox({ value: 200n, owner, proofSource: 3 });
     box3.lockedUntilBlock = 50;
+    Object.assign(box3, fixtureProvenance(box3, 1));
     box3.id = computeBoxId(box3);
     insertBox(box3);
 
     const box4 = makeCreditBox({ value: 100n, owner, proofSource: 4 });
+    Object.assign(box4, fixtureProvenance(box4, 1));
     box4.id = computeBoxId(box4);
     insertBox(box4);
 
@@ -709,6 +745,7 @@ describe('utxo store', () => {
     const owner = bytes(32);
     const box = makeCreditBox({ value: 500n, owner, proofSource: 2 });
     box.lockedUntilBlock = 200;
+    Object.assign(box, fixtureProvenance(box, 1));
     box.id = computeBoxId(box);
     insertBox(box);
 

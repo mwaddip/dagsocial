@@ -16,7 +16,6 @@ import {
   decodeOrderingBlock,
   encodeTx,
   decodeTx,
-  serializeTx,
 } from '../src/serialization.js';
 import type { Post } from '../src/post.js';
 import type { Stump } from '../src/stump.js';
@@ -115,11 +114,9 @@ function makeKarmaBox(): KarmaBox {
   return {
     boxType: 'karma',
     value: 100n,
-    createdAtBlock: 1,
     owner: new Uint8Array(32).fill(0xaa),
     guard: 'owner_signature',
     proofSource: 'genesis',
-    lastTouchBlock: 1,
   };
 }
 
@@ -344,14 +341,14 @@ describe('CBOR serialization', () => {
       expect(decoded.inputs).toEqual(tx.inputs);
     });
 
-    it('serializeTx is deterministic', () => {
-      const a = serializeTx(makeTx());
-      const b = serializeTx(makeTx());
-      expect(Buffer.compare(a, b)).toBe(0);
-    });
   });
 
   // Box serialization moved to test/utxo.test.ts by Spec G phase 0: `serializeBox`
   // was deleted here, and its two cases ("excludes id", "is deterministic") now
   // run against `canonicalBoxBytes` — the encoder that actually computes ids.
+  //
+  // Phase G3b deleted `serializeTx` on the same grounds and dropped its
+  // determinism case rather than re-pointing it: the re-point already existed.
+  // `test/utxo.test.ts` → `computeTxId` → "is deterministic" asserts the same
+  // property against the function that actually computes transaction ids.
 });

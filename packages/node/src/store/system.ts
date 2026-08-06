@@ -97,14 +97,12 @@ export function ensureSystemKarmaBox(systemPubKey: Uint8Array, currentHeight: nu
   const box: KarmaBox = {
     boxType: 'karma',
     value: SYSTEM_KARMA_INITIAL,
-    createdAtBlock: genesisHeight,
     owner: systemPubKey,
     guard: 'owner_signature',
     proofSource: 'genesis:system',
-    lastTouchBlock: genesisHeight,
+    txId: mintTxIdFor(genesisContext(GENESIS_SYSTEM_KARMA), genesisHeight),
+    index: MINT_OUTPUT_INDEX,
   };
-  box.txId = mintTxIdFor(genesisContext(GENESIS_SYSTEM_KARMA), genesisHeight);
-  box.index = MINT_OUTPUT_INDEX;
   box.id = computeBoxId(box);
   insertBox(box);
 
@@ -150,19 +148,18 @@ export function ensureFaucetCreditBox(
 
   const genesisHeight = currentHeight > 0 ? currentHeight : 1;
 
-  const box: CreditBox = {
-    boxType: 'credit',
-    value: FAUCET_CREDITS_INITIAL,
-    createdAtBlock: genesisHeight,
-    owner: systemPubKey,
-    guard: 'owner_signature',
-    proofSource: genesisHeight,
-  };
   // A `u32BE` selector separates the two genesis boxes, not the ASCII tags Spec
   // G §3.2 sketched: those are variable-length and merely prefix-free, which
   // the fixed-length-or-self-delimiting rule cannot check per encoding.
-  box.txId = mintTxIdFor(genesisContext(GENESIS_FAUCET_CREDITS), genesisHeight);
-  box.index = MINT_OUTPUT_INDEX;
+  const box: CreditBox = {
+    boxType: 'credit',
+    value: FAUCET_CREDITS_INITIAL,
+    owner: systemPubKey,
+    guard: 'owner_signature',
+    proofSource: genesisHeight,
+    txId: mintTxIdFor(genesisContext(GENESIS_FAUCET_CREDITS), genesisHeight),
+    index: MINT_OUTPUT_INDEX,
+  };
   box.id = computeBoxId(box);
   insertBox(box);
 }

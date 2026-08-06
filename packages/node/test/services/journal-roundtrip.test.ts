@@ -26,6 +26,7 @@ import type {
 } from '@dagsocial/types';
 import type Database from 'better-sqlite3';
 import {
+  fixtureProvenance,
   signTransaction,
   makeTestIdentity,
   makePost,
@@ -338,11 +339,11 @@ describe('journal round-trip per mutation class (P1 acceptance)', () => {
     const seeded: CreditBox = {
       boxType: 'credit',
       value: 100n,
-      createdAtBlock: 0,
       owner: minerB.userId,
       guard: 'owner_signature',
       proofSource: 0,
     };
+    Object.assign(seeded, fixtureProvenance(seeded, 1));
     seeded.id = computeBoxId(seeded);
     utxo.insertBox(seeded);
 
@@ -480,11 +481,11 @@ describe('journal round-trip per mutation class (P1 acceptance)', () => {
       boxType: 'post_lock',
       value: 30n,
       originalValue: 30n,
-      createdAtBlock: 0,
       owner: author.userId,
       targetPostId: postId,
       guard: 'epoch_tally',
     };
+    Object.assign(lockBox, fixtureProvenance(lockBox, 1));
     lockBox.id = computeBoxId(lockBox);
     utxo.insertBox(lockBox);
 
@@ -540,11 +541,11 @@ describe('journal round-trip per mutation class (P1 acceptance)', () => {
     const senderBox: CreditBox = {
       boxType: 'credit',
       value: 100n,
-      createdAtBlock: 0,
       owner: sender.userId,
       guard: 'owner_signature',
       proofSource: 0,
     };
+    Object.assign(senderBox, fixtureProvenance(senderBox, 1));
     senderBox.id = computeBoxId(senderBox);
     utxo.insertBox(senderBox);
 
@@ -562,7 +563,6 @@ describe('journal round-trip per mutation class (P1 acceptance)', () => {
         {
           boxType: 'credit',
           value: 40n,
-          createdAtBlock: 0,
           owner: recipient.userId,
           guard: 'owner_signature',
           proofSource: -1,
@@ -570,7 +570,6 @@ describe('journal round-trip per mutation class (P1 acceptance)', () => {
         {
           boxType: 'credit',
           value: 60n,
-          createdAtBlock: 0,
           owner: sender.userId,
           guard: 'owner_signature',
           proofSource: -1,
@@ -621,11 +620,11 @@ describe('journal round-trip per mutation class (P1 acceptance)', () => {
       boxType: 'post_lock',
       value: 30n,
       originalValue: 30n,
-      createdAtBlock: 0,
       owner: author.userId,
       targetPostId: postId,
       guard: 'epoch_tally',
     };
+    Object.assign(lockBox, fixtureProvenance(lockBox, 1));
     lockBox.id = computeBoxId(lockBox);
     utxo.insertBox(lockBox);
     const likeBox = makeLikeBox(liker.userId, postId, 0);

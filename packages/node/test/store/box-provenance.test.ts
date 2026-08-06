@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { randomBytes } from 'node:crypto';
 import type { AnyBox, KarmaBox, CreditBox, LikeBox } from '@dagsocial/types';
+import { fixtureProvenance } from '../helpers.js';
 
 /**
  * Spec G phase B — box provenance columns (`tx_id`, `output_index`).
@@ -39,17 +40,31 @@ function bytes(n: number): Uint8Array {
 const OWNER = bytes(32);
 
 function makeKarmaBox(id: string, overrides: Partial<KarmaBox> = {}): KarmaBox {
+  // `id` stays caller-supplied — these cases assert on specific AVL keys — and
+  // so does provenance when a case supplies it, since several of them exist
+  // precisely to drive `(tx_id, output_index)` to a chosen value. Synthesized
+  // provenance is only the default, applied BEFORE the overrides so a case can
+  // still pin the outpoint it is testing.
+  const base = {
+    boxType: 'karma' as const,
+    value: 100n,
+    owner: OWNER,
+    guard: 'owner_signature' as const,
+    proofSource: 'tx-genesis-001',
+  };
   return {
     id,
-    boxType: 'karma',
-    value: 100n,
-    createdAtBlock: 1,
-    owner: OWNER,
-    guard: 'owner_signature',
-    proofSource: 'tx-genesis-001',
-    lastTouchBlock: 1,
+    ...base,
+    ...fixtureProvenance(base, 1, hashNonce(id)),
     ...overrides,
   };
+}
+
+/** Stable small integer from an arbitrary string, for fixture nonces. */
+function hashNonce(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return h % 1_000_000;
 }
 
 /** In-memory DB carrying just the AVL storage schema, for an isolated prover. */
@@ -78,25 +93,6 @@ describe('box provenance columns (Spec G phase B)', () => {
 
   // --- round-trip, provenance unset (the phase-B state) ---------------------
 
-  it('a box inserted without provenance reads back with NO txId/index keys at all', async () => {
-    const { initDb } = await importDbFresh();
-    const { insertBox, getBox } = await importUtxoFresh();
-    initDb(':memory:');
-
-    const box = makeKarmaBox('aa'.repeat(32));
-    expect('txId' in box).toBe(false);
-    insertBox(box);
-
-    const result = getBox(box.id!)!;
-    expect(result).not.toBeNull();
-
-    // Not `toBeUndefined()` — that passes for an explicit undefined too, which
-    // is exactly the shape that forks the chain. Key *presence* is the assertion.
-    expect('txId' in result).toBe(false);
-    expect('index' in result).toBe(false);
-    expect(Object.keys(result)).not.toContain('txId');
-    expect(Object.keys(result)).not.toContain('index');
-  });
 
   // --- round-trip, provenance set (what phase C will produce) --------------
 
@@ -138,16 +134,17 @@ describe('box provenance columns (Spec G phase B)', () => {
 
     const txId = '12'.repeat(32);
     insertBox(makeKarmaBox('dd'.repeat(32), { txId, index: 7 }));
-    insertBox(makeKarmaBox('ee'.repeat(32)));
 
     const unspent = getUnspentBoxes();
     const withProv = unspent.find((b) => b.id === 'dd'.repeat(32))!;
-    const without = unspent.find((b) => b.id === 'ee'.repeat(32))!;
 
     expect(withProv.txId).toBe(txId);
     expect(withProv.index).toBe(7);
-    expect('txId' in without).toBe(false);
-    expect('index' in without).toBe(false);
+    // The "and a box WITHOUT provenance keeps none" half of this case went with
+    // the columns: `tx_id`/`output_index` are NOT NULL as of phase G3b, so a box
+    // with no provenance cannot be stored at all. `rowToBox` assigns both
+    // unconditionally now, which is what makes the old explicit-`undefined`
+    // hazard (contract 1a) unrepresentable rather than merely avoided.
   });
 
   // --- the AVL-value byte identity that makes a restart safe ---------------
@@ -181,16 +178,19 @@ describe('box provenance columns (Spec G phase B)', () => {
       makeKarmaBox('11'.repeat(32)),
       makeKarmaBox('22'.repeat(32), { decayBurn: true }),
       {
-        id: '33'.repeat(32), boxType: 'credit', value: 5000n, createdAtBlock: 2,
+        id: '33'.repeat(32), boxType: 'credit', value: 5000n,
         owner: OWNER, guard: 'owner_signature', proofSource: 2,
+        txId: '33'.repeat(32), index: 0,
       } satisfies CreditBox,
       {
-        id: '44'.repeat(32), boxType: 'credit', value: 10n, createdAtBlock: 2,
+        id: '44'.repeat(32), boxType: 'credit', value: 10n,
         owner: OWNER, guard: 'owner_signature', proofSource: 2, lockedUntilBlock: 900,
+        txId: '44'.repeat(32), index: 0,
       } satisfies CreditBox,
       {
-        id: '55'.repeat(32), boxType: 'like', value: 2n, createdAtBlock: 5,
+        id: '55'.repeat(32), boxType: 'like', value: 2n,
         likerId: bytes(32), targetPostId: 'post456', guard: 'epoch_tally',
+        txId: '55'.repeat(32), index: 0,
       } satisfies LikeBox,
     ];
     for (const box of produced) insertBox(box);
@@ -249,18 +249,6 @@ describe('box provenance columns (Spec G phase B)', () => {
     expect(getUnspentBoxes()).toHaveLength(2);
   });
 
-  it('the migration window survives: many boxes with NULL provenance coexist', async () => {
-    const { initDb } = await importDbFresh();
-    const { insertBox, getUnspentBoxes } = await importUtxoFresh();
-    initDb(':memory:');
-
-    // SQLite treats NULLs as distinct, which is what lets the unique index
-    // stand while producers have not moved over yet (phase C).
-    for (let i = 0; i < 5; i++) {
-      insertBox(makeKarmaBox(String(i).repeat(64)));
-    }
-    expect(getUnspentBoxes()).toHaveLength(5);
-  });
 
   it('id PRIMARY KEY still throws on a colliding box rather than silently replacing it', async () => {
     const { initDb } = await importDbFresh();

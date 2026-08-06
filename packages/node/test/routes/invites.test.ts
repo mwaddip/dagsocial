@@ -1,10 +1,14 @@
-import { txToJson, signTransaction } from '../helpers.js';
+import {
+  seedAsOneTx,
+  fixtureProvenance,
+  txToJson, signTransaction } from '../helpers.js';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import express from 'express';
 import http from 'http';
 import { createHash, generateKeyPairSync, createPrivateKey } from 'crypto';
 import { initDb, closeDb, getDb } from '../../src/store/db.js';
-import { getKarmaBox, getBox as storeGetBox, insertBox as storeInsertBox } from '../../src/store/utxo.js';
+import {
+  getBoxByProvenance as storeGetBoxByProvenance, getKarmaBox, getBox as storeGetBox, insertBox as storeInsertBox } from '../../src/store/utxo.js';
 import { getCurrentHeight } from '../../src/store/ordering.js';
 import {
   createInvite,
@@ -20,7 +24,8 @@ import {
   PROTOCOL_VERSION,
   INVITE_PROBATION_BLOCKS,
 } from '@dagsocial/types';
-import type { KarmaBox, InviteBox, BondBox, UtxoTransaction, AnyBox } from '@dagsocial/types';
+import type {
+  CandidateOf, KarmaBox, InviteBox, BondBox, UtxoTransaction, AnyBox } from '@dagsocial/types';
 import { createRouter } from '../../src/routes/invites.js';
 import type { InvitesDeps } from '../../src/routes/invites.js';
 import { ClientError } from '../../src/services/client-error.js';
@@ -44,6 +49,7 @@ async function request(
         const r = db.prepare('SELECT spent_at_block FROM utxo_boxes WHERE id = ?').get(id) as { spent_at_block: number | null } | undefined;
         return r && r.spent_at_block === null ? box : null;
       },
+      getBoxByProvenance: storeGetBoxByProvenance,
       insertBox: (box: AnyBox) => { storeInsertBox(box); },
       consumeBox: (id: string, atBlock: number) => {
         db.prepare('UPDATE utxo_boxes SET spent_at_block = ? WHERE id = ?').run(atBlock, id);
@@ -118,48 +124,46 @@ describe('invites routes', () => {
     const karma: KarmaBox = {
       boxType: 'karma',
       value: 100n,
-      createdAtBlock: 1,
       owner: inviterId,
       guard: 'owner_signature',
       proofSource: 'test-create',
-      lastTouchBlock: 1,
     };
+    Object.assign(karma, fixtureProvenance(karma, 1));
     const karmaId = computeBoxId(karma);
     storeInsertBox({ ...karma, id: karmaId, boxType: 'karma', guard: 'owner_signature' } as KarmaBox);
 
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: 50n,
-      createdAtBlock: 1,
       owner: inviterId,
       guard: 'owner_signature',
       proofSource: 'create-invite',
-      lastTouchBlock: 1,
     };
+    Object.assign(newKarma, fixtureProvenance(newKarma, 1));
     const newKarmaId = computeBoxId(newKarma);
 
     const secretHash = new Uint8Array(32).fill(0x99);
     const inviteBox: InviteBox = {
       boxType: 'invite',
       value: INVITE_KARMA_AMOUNT,
-      createdAtBlock: 1,
       secretHash,
       inviterId,
       guard: 'hash_preimage_with_bond',
     };
+    Object.assign(inviteBox, fixtureProvenance(inviteBox, 1));
     const inviteBoxId = computeBoxId(inviteBox);
 
     const bondBox: BondBox = {
       boxType: 'bond',
       value: INVITE_BOND_KARMA,
-      createdAtBlock: 1,
       inviterId,
-      inviteBoxId,
+      inviteOutputIndex: 1,
       inviteePublicKey: new Uint8Array(0),
       probationStartBlock: 0,
       probationEndBlock: 0,
       guard: 'bond_dual',
     };
+    Object.assign(bondBox, fixtureProvenance(bondBox, 1));
     const bondBoxId = computeBoxId(bondBox);
 
     const tx: UtxoTransaction = {
@@ -198,27 +202,30 @@ describe('invites routes', () => {
     const inviteBox: InviteBox = {
       boxType: 'invite',
       value: INVITE_KARMA_AMOUNT,
-      createdAtBlock: 1,
       secretHash,
       inviterId,
       guard: 'hash_preimage_with_bond',
     };
-    const inviteBoxId = computeBoxId(inviteBox);
-    storeInsertBox({ ...inviteBox, id: inviteBoxId, boxType: 'invite', guard: 'hash_preimage_with_bond' } as InviteBox);
-
-    const bondBox: BondBox = {
-      boxType: 'bond',
+    // Invite and bond are seeded as outputs 0 and 1 of ONE synthetic
+    // transaction: the bond resolves its invite from
+    // `(bond.txId, bond.inviteOutputIndex)`, so seeding them independently
+    // would leave the bond addressing a transaction with no invite at that
+    // index — the mispairing the index form makes inexpressible.
+    const bondCandidate = {
+      boxType: 'bond' as const,
       value: INVITE_BOND_KARMA,
-      createdAtBlock: 1,
       inviterId,
-      inviteBoxId: inviteBoxId,
+      inviteOutputIndex: 0,
       inviteePublicKey: new Uint8Array(0),
       probationStartBlock: 0,
       probationEndBlock: 0,
-      guard: 'bond_dual',
+      guard: 'bond_dual' as const,
     };
-    const bondBoxId = computeBoxId(bondBox);
-    storeInsertBox({ ...bondBox, id: bondBoxId, boxType: 'bond', guard: 'bond_dual' } as BondBox);
+    const [seededInvite, seededBond] = seedAsOneTx([inviteBox, bondCandidate]);
+    const inviteBoxId = seededInvite!.id!;
+    const bondBoxId = seededBond!.id!;
+    storeInsertBox(seededInvite!);
+    storeInsertBox(seededBond!);
 
     const newKp = generateKeyPair();
     const inviteePubKey = newKp.publicKey;
@@ -229,22 +236,22 @@ describe('invites routes', () => {
       type: 'pkcs8',
     });
 
-    const bondOut: BondBox = {
+    // `checkTransitions` requires the output bond to preserve the input's
+    // `inviteOutputIndex`, which the seeded pair above put at 0.
+    const bondOut: CandidateOf<BondBox> = {
       boxType: 'bond',
       value: INVITE_BOND_KARMA,
-      createdAtBlock: 5,
       inviterId,
-      inviteBoxId: inviteBoxId,
+      inviteOutputIndex: 0,
       inviteePublicKey: inviteePubKey,
       probationStartBlock: 5,
       probationEndBlock: 5 + INVITE_PROBATION_BLOCKS,
       guard: 'bond_dual',
     };
-    const bondOutId = computeBoxId(bondOut);
 
     const tx: UtxoTransaction = {
       inputs: [bondBoxId],
-      outputs: [{ ...bondOut, id: bondOutId }],
+      outputs: [bondOut],
       signatures: {},
       preimages: { [bondBoxId]: secret },
       protocolVersion: PROTOCOL_VERSION,
@@ -272,27 +279,30 @@ describe('invites routes', () => {
     const inviteBox: InviteBox = {
       boxType: 'invite',
       value: INVITE_KARMA_AMOUNT,
-      createdAtBlock: 1,
       secretHash,
       inviterId,
       guard: 'hash_preimage_with_bond',
     };
-    const inviteBoxId = computeBoxId(inviteBox);
-    storeInsertBox({ ...inviteBox, id: inviteBoxId, boxType: 'invite', guard: 'hash_preimage_with_bond' } as InviteBox);
-
-    const bondBox: BondBox = {
-      boxType: 'bond',
+    // Invite and bond are seeded as outputs 0 and 1 of ONE synthetic
+    // transaction: the bond resolves its invite from
+    // `(bond.txId, bond.inviteOutputIndex)`, so seeding them independently
+    // would leave the bond addressing a transaction with no invite at that
+    // index — the mispairing the index form makes inexpressible.
+    const bondCandidate = {
+      boxType: 'bond' as const,
       value: INVITE_BOND_KARMA,
-      createdAtBlock: 1,
       inviterId,
-      inviteBoxId,
+      inviteOutputIndex: 0,
       inviteePublicKey: new Uint8Array(0),
       probationStartBlock: 0,
       probationEndBlock: 0,
-      guard: 'bond_dual',
+      guard: 'bond_dual' as const,
     };
-    const bondBoxId = computeBoxId(bondBox);
-    storeInsertBox({ ...bondBox, id: bondBoxId, boxType: 'bond', guard: 'bond_dual' } as BondBox);
+    const [seededInvite, seededBond] = seedAsOneTx([inviteBox, bondCandidate]);
+    const inviteBoxId = seededInvite!.id!;
+    const bondBoxId = seededBond!.id!;
+    storeInsertBox(seededInvite!);
+    storeInsertBox(seededBond!);
 
     const newKp = generateKeyPair();
     const inviteePubKey = newKp.publicKey;
@@ -310,7 +320,7 @@ describe('invites routes', () => {
     ).run(
       JSON.stringify({
         inviterId: Buffer.from(inviterId).toString('hex'),
-        inviteBoxId,
+        inviteOutputIndex: 1,
         inviteePublicKey: Array.from(inviteePubKey),
         probationStartBlock: 3,
         probationEndBlock: 3 + INVITE_PROBATION_BLOCKS,
@@ -321,25 +331,24 @@ describe('invites routes', () => {
     const karmaOut: KarmaBox = {
       boxType: 'karma',
       value: INVITE_KARMA_AMOUNT,
-      createdAtBlock: 5,
       owner: inviteePubKey,
       guard: 'owner_signature',
       proofSource: `invite-claim:${inviteBoxId}`,
-      lastTouchBlock: 5,
     };
+    Object.assign(karmaOut, fixtureProvenance(karmaOut, 1));
     const karmaOutId = computeBoxId(karmaOut);
 
     const bondOut: BondBox = {
       boxType: 'bond',
       value: INVITE_BOND_KARMA,
-      createdAtBlock: 3,
       inviterId,
-      inviteBoxId,
+      inviteOutputIndex: 1,
       inviteePublicKey: inviteePubKey,
       probationStartBlock: 3,
       probationEndBlock: 3 + INVITE_PROBATION_BLOCKS,
       guard: 'bond_dual',
     };
+    Object.assign(bondOut, fixtureProvenance(bondOut, 1));
     const bondOutId = computeBoxId(bondOut);
 
     const tx: UtxoTransaction = {
@@ -373,37 +382,39 @@ describe('invites routes', () => {
     const inviteBox: InviteBox = {
       boxType: 'invite',
       value: INVITE_KARMA_AMOUNT,
-      createdAtBlock: blockHeight,
       secretHash,
       inviterId,
       guard: 'hash_preimage_with_bond',
     };
-    const inviteBoxId = computeBoxId(inviteBox);
-    storeInsertBox({ ...inviteBox, id: inviteBoxId, boxType: 'invite', guard: 'hash_preimage_with_bond' } as InviteBox);
-
-    const bondBox: BondBox = {
-      boxType: 'bond',
+    // Invite and bond are seeded as outputs 0 and 1 of ONE synthetic
+    // transaction: the bond resolves its invite from
+    // `(bond.txId, bond.inviteOutputIndex)`, so seeding them independently
+    // would leave the bond addressing a transaction with no invite at that
+    // index — the mispairing the index form makes inexpressible.
+    const bondCandidate = {
+      boxType: 'bond' as const,
       value: INVITE_BOND_KARMA,
-      createdAtBlock: blockHeight,
       inviterId,
-      inviteBoxId,
+      inviteOutputIndex: 0,
       inviteePublicKey: new Uint8Array(0),
       probationStartBlock: 0,
       probationEndBlock: 0,
-      guard: 'bond_dual',
+      guard: 'bond_dual' as const,
     };
-    const bondBoxId = computeBoxId(bondBox);
-    storeInsertBox({ ...bondBox, id: bondBoxId, boxType: 'bond', guard: 'bond_dual' } as BondBox);
+    const [seededInvite, seededBond] = seedAsOneTx([inviteBox, bondCandidate]);
+    const inviteBoxId = seededInvite!.id!;
+    const bondBoxId = seededBond!.id!;
+    storeInsertBox(seededInvite!);
+    storeInsertBox(seededBond!);
 
     const karmaIn: KarmaBox = {
       boxType: 'karma',
       value: 200n,
-      createdAtBlock: blockHeight,
       owner: inviterId,
       guard: 'owner_signature',
       proofSource: 'test-cancel',
-      lastTouchBlock: blockHeight,
     };
+    Object.assign(karmaIn, fixtureProvenance(karmaIn, 1));
     const karmaInId = computeBoxId(karmaIn);
     storeInsertBox({ ...karmaIn, id: karmaInId, boxType: 'karma', guard: 'owner_signature' } as KarmaBox);
 
@@ -411,12 +422,11 @@ describe('invites routes', () => {
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: totalValue,
-      createdAtBlock: blockHeight,
       owner: inviterId,
       guard: 'owner_signature',
       proofSource: `invite-cancel:${inviteBoxId}`,
-      lastTouchBlock: blockHeight,
     };
+    Object.assign(newKarma, fixtureProvenance(newKarma, 1));
     const newKarmaId = computeBoxId(newKarma);
 
     const tx: UtxoTransaction = {
@@ -445,27 +455,30 @@ describe('invites routes', () => {
     const inviteBox: InviteBox = {
       boxType: 'invite',
       value: INVITE_KARMA_AMOUNT,
-      createdAtBlock: blockHeight,
       secretHash,
       inviterId,
       guard: 'hash_preimage_with_bond',
     };
-    const inviteBoxId = computeBoxId(inviteBox);
-    storeInsertBox({ ...inviteBox, id: inviteBoxId, boxType: 'invite', guard: 'hash_preimage_with_bond' } as InviteBox);
-
-    const bondBox: BondBox = {
-      boxType: 'bond',
+    // Invite and bond are seeded as outputs 0 and 1 of ONE synthetic
+    // transaction: the bond resolves its invite from
+    // `(bond.txId, bond.inviteOutputIndex)`, so seeding them independently
+    // would leave the bond addressing a transaction with no invite at that
+    // index — the mispairing the index form makes inexpressible.
+    const bondCandidate = {
+      boxType: 'bond' as const,
       value: INVITE_BOND_KARMA,
-      createdAtBlock: blockHeight,
       inviterId,
-      inviteBoxId,
+      inviteOutputIndex: 0,
       inviteePublicKey: new Uint8Array(0),
       probationStartBlock: 0,
       probationEndBlock: 0,
-      guard: 'bond_dual',
+      guard: 'bond_dual' as const,
     };
-    const bondBoxId = computeBoxId(bondBox);
-    storeInsertBox({ ...bondBox, id: bondBoxId, boxType: 'bond', guard: 'bond_dual' } as BondBox);
+    const [seededInvite, seededBond] = seedAsOneTx([inviteBox, bondCandidate]);
+    const inviteBoxId = seededInvite!.id!;
+    const bondBoxId = seededBond!.id!;
+    storeInsertBox(seededInvite!);
+    storeInsertBox(seededBond!);
 
     const wrongKp = generateKeyPair();
     const wrongPubKey = wrongKp.publicKey;
@@ -479,12 +492,11 @@ describe('invites routes', () => {
     const wrongKarma: KarmaBox = {
       boxType: 'karma',
       value: 200n,
-      createdAtBlock: blockHeight,
       owner: wrongPubKey,
       guard: 'owner_signature',
       proofSource: 'test-wrong',
-      lastTouchBlock: blockHeight,
     };
+    Object.assign(wrongKarma, fixtureProvenance(wrongKarma, 1));
     const wrongKarmaId = computeBoxId(wrongKarma);
     storeInsertBox({ ...wrongKarma, id: wrongKarmaId, boxType: 'karma', guard: 'owner_signature' } as KarmaBox);
 
@@ -492,12 +504,11 @@ describe('invites routes', () => {
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: totalValue,
-      createdAtBlock: blockHeight,
       owner: wrongPubKey,
       guard: 'owner_signature',
       proofSource: `invite-cancel:${inviteBoxId}`,
-      lastTouchBlock: blockHeight,
     };
+    Object.assign(newKarma, fixtureProvenance(newKarma, 1));
     const newKarmaId = computeBoxId(newKarma);
 
     const tx: UtxoTransaction = {

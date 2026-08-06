@@ -1,4 +1,6 @@
-import { uid, txToJson, rawPublicKey, signTransaction } from '../helpers.js';
+import {
+  fixtureProvenance,
+  uid, txToJson, rawPublicKey, signTransaction } from '../helpers.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import express from 'express';
 import http from 'http';
@@ -197,12 +199,11 @@ describe('posts routes', () => {
     const karmaBox: KarmaBox = {
       boxType: 'karma',
       value: 100n,
-      createdAtBlock: 1,
       owner: userId,
       guard: 'owner_signature',
       proofSource: 'genesis',
-      lastTouchBlock: 1,
     };
+    Object.assign(karmaBox, fixtureProvenance(karmaBox, 1));
     const karmaBoxId = computeBoxId(karmaBox);
     insertBox({ ...karmaBox, id: karmaBoxId });
 
@@ -217,18 +218,16 @@ describe('posts routes', () => {
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: 100n - POST_LOCK_THREAD_COST,
-      createdAtBlock: 5,
       owner: userId,
       guard: 'owner_signature',
       proofSource: 'post-lock',
-      lastTouchBlock: 5,
     };
+    Object.assign(newKarma, fixtureProvenance(newKarma, 1));
     const newKarmaId = computeBoxId(newKarma);
 
     const postLockBox: PostLockBox = {
       boxType: 'post_lock',
       value: POST_LOCK_THREAD_COST,
-      createdAtBlock: 5,
       originalValue: POST_LOCK_THREAD_COST,
       owner: userId,
       targetPostId: '', // Will be filled by postId after submission

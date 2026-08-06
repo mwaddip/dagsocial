@@ -26,6 +26,7 @@ import {
   computeCandidateBoxId, canonicalBoxBytes,
 } from '@dagsocial/types';
 import type {
+  CandidateOf,
   Post, KarmaBox, CreditBox, LikeBox, InviteBox, BondBox, PostLockBox, VouchBox,
   AnyBox, UtxoTransaction,
 } from '@dagsocial/types';
@@ -65,56 +66,64 @@ const GOLDEN_POST_ID =
 // (Spec B P0: bigint `value` → CBOR uint64, number fields → minimal-int)
 // ---------------------------------------------------------------------------
 
-const GOLDEN_KARMA_BOX: KarmaBox = {
+const GOLDEN_KARMA_CANDIDATE: CandidateOf<KarmaBox> = {
   boxType: 'karma',
   value: 100n,
-  createdAtBlock: 70000,          // > 65536 — locks the wide-int encoding path (L-5)
   owner: GOLDEN_AUTHOR,
   guard: 'owner_signature',
   proofSource: 'genesis',
-  lastTouchBlock: 70000,
 };
 
-const GOLDEN_CREDIT_BOX: CreditBox = {
+const GOLDEN_CREDIT_CANDIDATE: CandidateOf<CreditBox> = {
   boxType: 'credit',
   value: 123456789n * 10n ** 8n,  // 12_345_678_900_000_000 > 2^53 — the range P0 exists for
-  createdAtBlock: 70000,
   owner: GOLDEN_AUTHOR,
   guard: 'owner_signature',
-  proofSource: 42,
+  proofSource: 70000,             // > 65536 — locks the wide-int encoding path (L-5)
 };
 
 const GOLDEN_UTXO_TX: UtxoTransaction = {
   inputs: ['1111111111111111111111111111111111111111111111111111111111111111'],
-  outputs: [GOLDEN_KARMA_BOX, GOLDEN_CREDIT_BOX],
+  outputs: [GOLDEN_KARMA_CANDIDATE, GOLDEN_CREDIT_CANDIDATE],
   signatures: {},
   protocolVersion: 1,
 };
 
 const GOLDEN_KARMA_BOX_ID =
-  '83c95fbb82c1ba033280286ea0fd5a4dd09776c6c68e1426dfdae1668947c9d1';
+  '778a084f4d14df3118b1598cc9cdaac603d18412beb2de56d0290200e30c4622';
 const GOLDEN_CREDIT_BOX_ID =
-  'b256df0c3fca8bd2e7567d11ca66e4e1e4cd41b0ab148ec5956907047b596905';
+  '14e4bdb5a820ddbc7c8f8e99d6bdac69fa5b5935b576949fbab53bae5323bc9d';
 const GOLDEN_UTXO_TX_ID =
-  '0156333db37f658f278aef3ba2c9d2ce3c2f126cf7fb98b7a835dde4ee92ac7c';
+  '43d122fc103ffb4931710add70c900ee14e0684de9a4b02eadb8a0ea437e47a0';
+
+/** The candidates as block application materializes them out of GOLDEN_UTXO_TX. */
+const GOLDEN_KARMA_BOX: KarmaBox =
+  { ...GOLDEN_KARMA_CANDIDATE, txId: GOLDEN_UTXO_TX_ID, index: 0 };
+const GOLDEN_CREDIT_BOX: CreditBox =
+  { ...GOLDEN_CREDIT_CANDIDATE, txId: GOLDEN_UTXO_TX_ID, index: 1 };
 
 // ---------------------------------------------------------------------------
-// Spec G provenance vectors — the derivation phase G switches to, not yet live.
+// Spec G provenance vectors — LIVE as of phase G3b.
 //
 // The provenance is the real one for these boxes: GOLDEN_UTXO_TX creates the
 // karma box at index 0 and the credit box at index 1. Values measured from
 // `computeCandidateBoxId` in @dagsocial/types, so both implementations are
 // pinned to a constant rather than only to each other.
+//
+// `GOLDEN_KARMA_CANDIDATE_ID` now equals `GOLDEN_KARMA_BOX_ID` above, and that
+// is the phase's whole point rather than a copy-paste slip: `computeBoxId` IS
+// `computeCandidateBoxId` applied to the box's own provenance, so the "legacy"
+// and "candidate" ids collapsed into one derivation on both sides.
 // ---------------------------------------------------------------------------
 
 const GOLDEN_KARMA_CANDIDATE_ID =            // (GOLDEN_UTXO_TX_ID, index 0)
-  'ca9de5d61004c54f75b89d73fa3a031ebfa5beeea5e9b1c39a6209fba05ff0f3';
+  '778a084f4d14df3118b1598cc9cdaac603d18412beb2de56d0290200e30c4622';
 const GOLDEN_CREDIT_CANDIDATE_ID =           // (GOLDEN_UTXO_TX_ID, index 1)
-  '98de447636ea488345fe44eba052c60c2b267a98e4fc30264598edeac762b542';
+  '14e4bdb5a820ddbc7c8f8e99d6bdac69fa5b5935b576949fbab53bae5323bc9d';
 const GOLDEN_KARMA_CANDIDATE_ID_WIDE_INDEX = // index 0x12345678 — endianness-visible
-  '1245c4cfbd3f211a986c1f6baff35d2939fedd2d58adf74771e569559c260ea3';
+  '9a61d4abc3ddd0684b2873b56ebcf77530853c0ec53817450f1fde678342310f';
 const GOLDEN_KARMA_CANDIDATE_ID_SENTINEL =   // any index outside [0, 2³²−1)
-  'f5ca8d41c759b546879b1ae91cc910e42ef62106e7c013b85fb8045fc2d9ca61';
+  '6f86b05beaf09ce7cfc61add7ff3979fd4ced08527287786ebeef33b95419efb';
 
 // ---------------------------------------------------------------------------
 // One fixture per box type (Spec G phase E3)
@@ -139,31 +148,37 @@ const BYTES_INVITEE = new Uint8Array(32).fill(0xb2);
 const BYTES_TARGET = new Uint8Array(32).fill(0xc3);
 
 const GOLDEN_LIKE_BOX: LikeBox = {
-  boxType: 'like', value: 2n, createdAtBlock: 70000,
+  boxType: 'like', value: 2n, 
   likerId: GOLDEN_AUTHOR, targetPostId: GOLDEN_POST_ID, guard: 'epoch_tally',
 };
 
 const GOLDEN_INVITE_BOX: InviteBox = {
-  boxType: 'invite', value: 10n, createdAtBlock: 70000,
+  boxType: 'invite', value: 10n, 
   secretHash: BYTES_SECRET, inviterId: GOLDEN_AUTHOR, guard: 'hash_preimage_with_bond',
 };
 
 const GOLDEN_BOND_BOX: BondBox = {
-  boxType: 'bond', value: 5n, createdAtBlock: 70000,
+  boxType: 'bond', value: 5n, 
   inviterId: GOLDEN_AUTHOR,
-  inviteBoxId: GOLDEN_KARMA_BOX_ID,   // a BoxId — hex *text*, deliberately not a binary field
+  // Was `inviteBoxId: BoxId` — hex text, deliberately not a binary field. Now a
+  // plain integer (user decision, 2026-08-06), so this fixture no longer covers
+  // the "hex-string field that must NOT be treated as binary" case. `BondBox`
+  // has no such field left; `targetPostId` on like/post_lock still does, and
+  // `ALL_BOX_TYPES` runs every type through both encoders, so the case is still
+  // exercised — just not here.
+  inviteOutputIndex: 1,
   inviteePublicKey: BYTES_INVITEE,
   probationStartBlock: 0, probationEndBlock: 0, guard: 'bond_dual',
 };
 
 const GOLDEN_POST_LOCK_BOX: PostLockBox = {
-  boxType: 'post_lock', value: 8n, createdAtBlock: 70000,
+  boxType: 'post_lock', value: 8n, 
   originalValue: 10n, owner: GOLDEN_AUTHOR, targetPostId: GOLDEN_POST_ID,
   guard: 'epoch_tally',
 };
 
 const GOLDEN_VOUCH_BOX: VouchBox = {
-  boxType: 'vouch', value: 1n, createdAtBlock: 70000,
+  boxType: 'vouch', value: 1n, 
   voucherId: GOLDEN_AUTHOR, targetId: BYTES_TARGET, guard: 'owner_signature',
 };
 
@@ -290,6 +305,7 @@ function loadUiCrypto(): UiCrypto {
     'const encoder = new TextEncoder();',
     extractConst(html, 'POST_ID_DOMAIN'),
     extractConst(html, 'BOX_ID_DOMAIN'),
+    extractConst(html, 'TX_ID_DOMAIN'),
     extractConst(html, 'U32_SENTINEL'),
     extractDeclaration(html, 'function buf2hex('),
     extractDeclaration(html, 'function hex2buf('),
@@ -478,9 +494,12 @@ describe('demo UI ↔ @dagsocial/types box-value encoding mirror (Spec B P0)', (
     // value 100n → 1b + u64BE(100); value 12345678900000000n → 1b + u64BE
     expect(karmaHex).toContain('1b0000000000000064');
     expect(creditHex).toContain('1b002bdc545d587500');
-    // createdAtBlock 70000 stays minimal-int (uint32 form 1a00011170, not 1b…)
-    expect(karmaHex).toContain('1a00011170');
-    expect(karmaHex).not.toContain('1b0000000000011170');
+    // A number field above 65536 stays minimal-int (uint32 form 1a00011170, not
+    // the 1b… uint64 form `value` uses). Asserted on the credit box:
+    // `proofSource` carries this pin since phase G3b deleted `createdAtBlock`,
+    // after which a karma box's canonical bytes hold no number field at all.
+    expect(creditHex).toContain('1a00011170');
+    expect(creditHex).not.toContain('1b0000000000011170');
   });
 
   it('cborEncodeInt matches cbor-x across the full number range (L-5)', () => {
@@ -665,9 +684,13 @@ describe('demo UI ↔ @dagsocial/types box identity mirror (Spec G phase E)', ()
   });
 
   it('the derivation is not the legacy one — the tag and provenance both bind', () => {
-    expect(GOLDEN_KARMA_CANDIDATE_ID).not.toBe(GOLDEN_KARMA_BOX_ID);
-    expect(ui.computeCandidateBoxId(asUi(GOLDEN_KARMA_BOX), GOLDEN_UTXO_TX_ID, 0))
-      .not.toBe(ui.computeBoxId(asUi(GOLDEN_KARMA_BOX)));
+    // Inverted by phase G3b: there is no legacy derivation left to differ from.
+    // `computeBoxId` IS `computeCandidateBoxId` applied to the box's own
+    // provenance — on BOTH sides — so these must now be equal, and the mirror is
+    // what proves the client collapsed them the same way the node did.
+    expect(GOLDEN_KARMA_CANDIDATE_ID).toBe(GOLDEN_KARMA_BOX_ID);
+    expect(ui.computeCandidateBoxId(asUi(GOLDEN_KARMA_CANDIDATE), GOLDEN_UTXO_TX_ID, 0))
+      .toBe(ui.computeBoxId(asUi(GOLDEN_KARMA_BOX)));
   });
 
   it('both txId and index enter the derivation', () => {

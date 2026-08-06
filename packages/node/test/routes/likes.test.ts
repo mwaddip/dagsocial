@@ -1,11 +1,14 @@
-import { uid, txToJson, rawPublicKey, signTransaction } from '../helpers.js';
+import {
+  fixtureProvenance,
+  uid, txToJson, rawPublicKey, signTransaction } from '../helpers.js';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import express from 'express';
 import http from 'http';
 import { createHash, generateKeyPairSync, createPrivateKey, sign as cryptoSign } from 'crypto';
 import { initDb, closeDb, getDb } from '../../src/store/db.js';
 import { insertPost } from '../../src/store/posts.js';
-import { insertBox, getKarmaBox, getBox as storeGetBox } from '../../src/store/utxo.js';
+import {
+  getBoxByProvenance as storeGetBoxByProvenance, insertBox, getKarmaBox, getBox as storeGetBox } from '../../src/store/utxo.js';
 import { insertLike } from '../../src/store/likes.js';
 import { getCurrentHeight } from '../../src/store/ordering.js';
 import { castLike, removeLike } from '../../src/services/likes.js';
@@ -46,6 +49,7 @@ async function request(
           .get(id) as { spent_at_block: number | null } | undefined;
         return r && r.spent_at_block === null ? box : null;
       },
+      getBoxByProvenance: storeGetBoxByProvenance,
       insertBox: (box: AnyBox) => {
         insertBox(box);
       },
@@ -100,21 +104,18 @@ function buildLikeTx(
   likerPubKey: Uint8Array,
   likerPubKeyHex: string,
   postId: string,
-  createdAtBlock: number,
+  seed: number,
 ): { tx: UtxoTransaction; txJson: Record<string, unknown> } {
   const newKarma: KarmaBox = {
     boxType: 'karma',
     value: karmaBox.value - LIKE_COST,
-    createdAtBlock,
     owner: likerPubKey,
     guard: 'owner_signature',
     proofSource: `like:${postId}`,
-    lastTouchBlock: createdAtBlock,
   };
   const likeBox: LikeBox = {
     boxType: 'like',
     value: LIKE_COST,
-    createdAtBlock,
     likerId,
     targetPostId: postId,
     guard: 'epoch_tally',
@@ -186,12 +187,11 @@ describe('likes routes', () => {
     karmaBox = {
       boxType: 'karma',
       value: 100n,
-      createdAtBlock: 1,
       owner: likerKp.publicKey,
       guard: 'owner_signature',
       proofSource: 'test',
-      lastTouchBlock: 1,
     };
+    Object.assign(karmaBox, fixtureProvenance(karmaBox, 1));
     const karmaBoxId = computeBoxId(karmaBox);
     const karmaWithId: KarmaBox = { ...karmaBox, id: karmaBoxId };
     insertBox(karmaWithId);
@@ -226,12 +226,11 @@ describe('likes routes', () => {
     const freeKarmaBox: KarmaBox = {
       boxType: 'karma',
       value: 100n,
-      createdAtBlock: 1,
       owner: freeLikerKp.publicKey,
       guard: 'owner_signature',
       proofSource: 'test',
-      lastTouchBlock: 1,
     };
+    Object.assign(freeKarmaBox, fixtureProvenance(freeKarmaBox, 1));
     const freeKarmaBoxId = computeBoxId(freeKarmaBox);
     insertBox({ ...freeKarmaBox, id: freeKarmaBoxId });
 
@@ -428,11 +427,11 @@ describe('likes routes', () => {
     const likeBox: LikeBox = {
       boxType: 'like',
       value: LIKE_COST,
-      createdAtBlock: 1,
       likerId,
       targetPostId: postId,
       guard: 'epoch_tally',
     };
+    Object.assign(likeBox, fixtureProvenance(likeBox, 1));
     const likeBoxId = computeBoxId(likeBox);
     insertBox({ ...likeBox, id: likeBoxId });
 
@@ -440,11 +439,9 @@ describe('likes routes', () => {
     const karmaOut: KarmaBox = {
       boxType: 'karma',
       value: LIKE_COST,
-      createdAtBlock: 5,
       owner: likerId,
       guard: 'owner_signature',
       proofSource: `unlike:${postId}`,
-      lastTouchBlock: 5,
     };
 
     const tx: UtxoTransaction = {

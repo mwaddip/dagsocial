@@ -593,13 +593,20 @@ function cborEncode(value) {
  * an id-only strip, the first *server-returned* box the UI hashes — those carry
  * `txId`/`index` from phase C on — would hash provenance into the id and
  * silently disagree with the node. Both flows that predict an id (the invite
- * flow's `bond.inviteBoxId`, the unlike path's cached LikeBox id) would surface
+ * flow's predicted invite id, the unlike path's cached LikeBox id) would surface
  * that as a dangling reference or an unspendable box, never as an error.
  * Inert on client-built boxes: destructuring absent keys yields the same rest.
  *
  * One rule with two callers, so box and tx derivation cannot drift — the same
- * reason types routes `computeTxId`'s outputs through it. Field order is
- * untouched: key order is consensus-visible and matches the node's producers.
+ * reason types routes `computeTxId`'s outputs through it.
+ *
+ * **Key order is imposed here, not inherited from the caller** (Spec G phase
+ * G3b). The node sorts keys in its own `canonicalBoxBytes`, so this must sort
+ * identically or every id diverges. `Array.prototype.sort` with no comparator
+ * compares UTF-16 code units and is not locale-aware, so both sides agree; every
+ * box field name is ASCII, so the order is plain byte order. Before this, key
+ * order was consensus-visible and the UI had to match each producer's field
+ * order by hand.
  *
  * Also converts the hex-string form of binary fields — how the UI's tx builders
  * carry them — to the raw bytes cbor-x sees on the node.
@@ -614,7 +621,8 @@ function canonicalBoxBytes(box) {
   const binaryFields = ['owner', 'likerId', 'secretHash', 'inviterId', 'inviteePublicKey',
     'voucherId', 'targetId'];
   const boxForCbor = {};
-  for (const [k, v] of Object.entries(rest)) {
+  for (const k of Object.keys(rest).sort()) {
+    const v = rest[k];
     if (binaryFields.includes(k) && typeof v === 'string') {
       boxForCbor[k] = hex2buf(v);
     } else {
@@ -628,13 +636,20 @@ function canonicalBoxBytes(box) {
 // computeTxId (client-side, matches server @dagsocial/types computeTxId)
 // ===========================================================================
 
+/** Domain tag for the transaction-id preimage. Mirrors @dagsocial/types. */
+const TX_ID_DOMAIN = encoder.encode('dagsocial/tx-id/1');
+
 /**
  * Deterministic transaction ID.
- * Hashes inputs (hex strings), canonical output bytes (id + provenance
- * stripped), preimages (sorted by boxId), and protocolVersion.
+ * Hashes TX_ID_DOMAIN, inputs (hex strings), canonical output bytes (id +
+ * provenance stripped), preimages (sorted by boxId), and protocolVersion.
+ *
+ * The domain tag is applied as of Spec G phase G3b, in the same commit as the
+ * node's. Box ids, transaction ids and identity-record keys share one 32-byte
+ * keyspace, so the separation has to be in the preimage.
  */
 function computeTxId(tx) {
-  const parts = [];
+  const parts = [TX_ID_DOMAIN];
 
   // 1. Inputs — hash hex strings as UTF-8 text
   for (const input of tx.inputs) {
@@ -812,17 +827,14 @@ function buildKarmaLockTx(karmaBox, lockAmount, targetPostId, pubKeyHex) {
   const karmaOutput = {
     boxType: 'karma',
     value: newKarmaValue,
-    createdAtBlock: now,
     owner: pubKeyHex,
     guard: 'owner_signature',
     proofSource: targetPostId,
-    lastTouchBlock: now,
   };
 
   const postLockOutput = {
     boxType: 'post_lock',
     value: lockAmount,
-    createdAtBlock: now,
     originalValue: lockAmount,
     owner: pubKeyHex,
     targetPostId,
@@ -847,17 +859,14 @@ function buildLikeTx(karmaBox, targetPostId, pubKeyHex) {
   const karmaOutput = {
     boxType: 'karma',
     value: newKarmaValue,
-    createdAtBlock: now,
     owner: pubKeyHex,
     guard: 'owner_signature',
     proofSource: targetPostId,
-    lastTouchBlock: now,
   };
 
   const likeOutput = {
     boxType: 'like',
     value: LIKE_COST,
-    createdAtBlock: now,
     likerId: pubKeyHex,
     targetPostId,
     guard: 'epoch_tally',
@@ -885,11 +894,9 @@ function buildUnlikeTx(likeBoxId, pubKeyHex) {
   const karmaOutput = {
     boxType: 'karma',
     value: refundValue,
-    createdAtBlock: now,
     owner: pubKeyHex,
     guard: 'owner_signature',
     proofSource: 'unlike',
-    lastTouchBlock: now,
   };
 
   return {
@@ -911,31 +918,38 @@ function buildCreateInviteTx(karmaBox, pubKeyHex, secretHashHex) {
   const karmaOutput = {
     boxType: 'karma',
     value: newKarmaValue,
-    createdAtBlock: now,
     owner: pubKeyHex,
     guard: 'owner_signature',
     proofSource: 'invite-create',
-    lastTouchBlock: now,
   };
 
   const inviteOutput = {
     boxType: 'invite',
     value: INVITE_KARMA_AMOUNT,
-    createdAtBlock: now,
     secretHash: secretHashHex,
     inviterId: pubKeyHex,
     guard: 'hash_preimage_with_bond',
   };
 
-  const inviteBoxId = computeBoxId(inviteOutput);
-  inviteOutput.id = inviteBoxId;
+  // The invite is output index 1 of this transaction, and that is all the bond
+  // needs to say (user decision, 2026-08-06).
+  //
+  // This used to predict the InviteBox's id and bake it into the bond. Under the
+  // provenance derivation that is **circular** — the id derives from the txId,
+  // and a bond content field is inside the bytes `computeTxId` hashes, so no
+  // fixed point exists. Pairing by output index removes the prediction rather
+  // than repairing it: the client states a position it already knows, and the
+  // node resolves the invite from `(txId, inviteOutputIndex)` at commit.
+  //
+  // Note what this costs the client: nothing. The invite flow no longer needs to
+  // compute a box id at all.
+  const INVITE_OUTPUT_INDEX = 1;
 
   const bondOutput = {
     boxType: 'bond',
     value: INVITE_BOND_KARMA,
-    createdAtBlock: now,
     inviterId: pubKeyHex,
-    inviteBoxId: inviteBoxId,
+    inviteOutputIndex: INVITE_OUTPUT_INDEX,
     inviteePublicKey: '00'.repeat(32), // 32 zero bytes = unclaimed
     probationStartBlock: 0,
     probationEndBlock: 0,
@@ -963,19 +977,18 @@ function buildClaimInviteTx(inviteBox, bondBox, inviteePubKeyHex, secretHex) {
   const karmaOutput = {
     boxType: 'karma',
     value: inviteBox.value,
-    createdAtBlock: now,
     owner: inviteePubKeyHex,
     guard: 'owner_signature',
     proofSource: inviteBox.id,
-    lastTouchBlock: now,
   };
 
   const bondOutput = {
     boxType: 'bond',
     value: bondBox.value,
-    createdAtBlock: now,
-    inviterId: inviteBox.inviterId,
-    inviteBoxId: bondBox.inviteBoxId || '',
+    // Preserved verbatim from the input bond — `checkTransitions` requires it
+    // to match, and it still addresses the invite in the bond's ORIGINAL
+    // creating transaction, not this one.
+    inviteOutputIndex: bondBox.inviteOutputIndex ?? 0,
     inviteePublicKey: inviteePubKeyHex,
     probationStartBlock: bondBox.probationStartBlock,
     probationEndBlock: bondBox.probationEndBlock,
@@ -995,7 +1008,7 @@ function buildClaimInviteTx(inviteBox, bondBox, inviteePubKeyHex, secretHex) {
  * Build a commit tx: BondBox(unclaimed) → BondBox(committed).
  * Called as step 1 of the two-step redeem. The preimage proves knowledge
  * of the secret without publishing it on-chain yet.
- * @param {Object} bondBox - { id, value, inviterId, inviteBoxId }
+ * @param {Object} bondBox - { id, value, inviterId, inviteOutputIndex }
  * @param {string} inviteePubKeyHex
  * @param {string} secretHex - raw hex preimage for bond_dual's hash_preimage path
  */
@@ -1005,9 +1018,8 @@ function buildCommitTx(bondBox, inviteePubKeyHex, secretHex) {
   const bondOutput = {
     boxType: 'bond',
     value: bondBox.value,
-    createdAtBlock: now,
     inviterId: bondBox.inviterId,
-    inviteBoxId: bondBox.inviteBoxId,
+    inviteOutputIndex: bondBox.inviteOutputIndex ?? 0,
     inviteePublicKey: inviteePubKeyHex,
     probationStartBlock: now,
     probationEndBlock: now + INVITE_PROBATION_BLOCKS,
@@ -1039,11 +1051,9 @@ function buildCancelInviteTx(karmaBox, inviteBox, bondBox, pubKeyHex) {
   const karmaOutput = {
     boxType: 'karma',
     value: totalRefund,
-    createdAtBlock: now,
     owner: pubKeyHex,
     guard: 'owner_signature',
     proofSource: 'invite-cancel',
-    lastTouchBlock: now,
   };
 
   return {
@@ -1058,22 +1068,23 @@ function buildCancelInviteTx(karmaBox, inviteBox, bondBox, pubKeyHex) {
 // Box identity (client-side, matches server @dagsocial/types)
 // ===========================================================================
 
-/**
- * Legacy content-hash box id: blake2b512(canonicalBoxBytes(box))[0:32].
- *
- * Still the **active** derivation on both sides — node's `computeBoxId` has not
- * moved either — so every id this UI computes today is unchanged. Spec G phase G
- * switches both sides to `computeCandidateBoxId` in one commit; switching only
- * here would immediately break the two flows that predict an id the node must
- * later agree with.
- */
-function computeBoxId(box) {
-  const hash = blake2b(canonicalBoxBytes(box), null, 64).slice(0, 32);
-  return buf2hex(hash);
-}
-
 /** Domain tag for the Spec G box-id preimage. Mirrors @dagsocial/types. */
 const BOX_ID_DOMAIN = encoder.encode('dagsocial/box-id/1');
+
+/**
+ * Box id of a box that already carries its provenance — the mirror of
+ * `computeBoxId` in @dagsocial/types.
+ *
+ * As of Spec G phase G3b this is exactly `computeCandidateBoxId` applied to the
+ * box's own `txId`/`index`, so there is one derivation on both sides rather than
+ * two. The legacy content hash it replaced (`blake2b512(canonicalBoxBytes(box))`,
+ * no domain tag, no provenance) is gone from the node in the same commit —
+ * flipping only one side would break the two flows that predict an id the node
+ * must later agree with.
+ */
+function computeBoxId(box) {
+  return computeCandidateBoxId(box, box.txId, box.index);
+}
 
 /**
  * Spec G box id, derived from creating-transaction provenance:
@@ -1081,9 +1092,11 @@ const BOX_ID_DOMAIN = encoder.encode('dagsocial/box-id/1');
  *   blake2b512( BOX_ID_DOMAIN ‖ canonicalBoxBytes(candidate)
  *               ‖ utf8(txId) ‖ u32BE(index) )[0:32]
  *
- * **Not wired to anything yet** — it lands here so phase G can flip the client
- * and the node in a single commit. Until then this UI must keep computing the
- * ids the node computes.
+ * This is now the live derivation — `computeBoxId` above delegates to it, and
+ * the unlike path's cached LikeBox id flows through it, and prediction there is
+ * **exact** rather than guessed: the signer knows the txId and picks the index.
+ * The invite flow no longer predicts at all — its bond names an output index
+ * instead of a box id (user decision, 2026-08-06).
  *
  * `txId` enters as the **UTF-8 bytes of its 64-char hex string**, not decoded:
  * consistent with how every other id enters a preimage here (`computeTxId`
@@ -1548,7 +1561,7 @@ async function doLike(targetPostId) {
 
     const pubKeyHex = buf2hex(pubKeyRaw);
     const tx = buildLikeTx(karmaBox, targetPostId, pubKeyHex);
-    const { signature } = await signTxId(tx);
+    const { txId, signature } = await signTxId(tx);
     tx.signatures[pubKeyHex] = signature;
 
     const res = await fetch(API + '/likes', {
@@ -1561,9 +1574,18 @@ async function doLike(targetPostId) {
       return false;
     }
 
-    // Compute and store the LikeBox ID for later unlike
+    // Compute and store the LikeBox ID for later unlike.
+    //
+    // Spec G phase G3b: derived from the signed transaction's own id and the
+    // output's index, which is what makes this prediction **exact** rather than
+    // guessed — the signer knows the txId and picks the index, so the id it
+    // caches is the id block application will store. There is no circularity
+    // here: `computeTxId` hashes output *candidates*, and no output field
+    // carries a box id, so the txId is fully determined before the derivation
+    // runs. This is now the only flow that predicts a box id: the invite flow
+    // names an output index instead, so it needs no prediction.
     if (data.status === 'pending') {
-      const likeBoxId = computeBoxId(tx.outputs[1]); // second output is the LikeBox
+      const likeBoxId = computeCandidateBoxId(tx.outputs[1], txId, 1); // second output is the LikeBox
       likeBoxes.set(targetPostId, { likeBoxId, isFree: false });
     } else if (data.status === 'free') {
       likeBoxes.set(targetPostId, { likeBoxId: null, isFree: true, likeId: data.likeId });
@@ -1605,11 +1627,9 @@ async function doUnlike(targetPostId) {
         outputs: [{
           boxType: 'karma',
           value: sourceBox.value,
-          createdAtBlock: now,
           owner: pubKeyHex,
           guard: 'owner_signature',
           proofSource: 'unlike-free',
-          lastTouchBlock: now,
         }],
         signatures: {},
         protocolVersion: PROTOCOL_VERSION,
@@ -2151,7 +2171,6 @@ function buildCreditTransferTx(creditBoxes, recipientHex, amount) {
   const outputs = [{
     boxType: 'credit',
     value: amount,
-    createdAtBlock: now,
     owner: recipientHex,
     guard: 'owner_signature',
     proofSource: -1,
@@ -2160,7 +2179,6 @@ function buildCreditTransferTx(creditBoxes, recipientHex, amount) {
     outputs.push({
       boxType: 'credit',
       value: change,
-      createdAtBlock: now,
       owner: buf2hex(pubKeyRaw),
       guard: 'owner_signature',
       proofSource: -1,
@@ -2337,7 +2355,9 @@ document.getElementById('redeemInviteBtn').addEventListener('click', async () =>
       id: bondBoxId,
       value: INVITE_BOND_KARMA,
       inviterId,
-      inviteBoxId: inviteBoxId,
+      // The invite is output 1 of the bond's creating transaction — the position
+      // `buildCreateInviteTx` put it at. Carried, not predicted.
+      inviteOutputIndex: 1,
     };
 
     const commitTx = buildCommitTx(bondBox, inviteePubKeyHex, secretHex);

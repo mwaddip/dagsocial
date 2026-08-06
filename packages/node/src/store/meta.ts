@@ -1,6 +1,18 @@
 import { getDb } from './db.js';
 
-export const CURRENT_SCHEMA_VERSION = 0;
+/**
+ * Bumped 0 → 1 by Spec G phase G3b — the first time this counter has ever
+ * moved, and the first time it could earn its keep.
+ *
+ * `CREATE TABLE IF NOT EXISTS` does not tighten an existing database, so an old
+ * `dagsocial.db` would silently keep nullable `tx_id`/`output_index` and boxes
+ * carrying a deleted `createdAtBlock` — the one outcome `db.ts`'s own precedent
+ * rules out ("a DB predating a schema change should fail loudly at startup;
+ * pre-stable, reset acceptable"). `index.ts` already reads this, compares it and
+ * refuses to start on a mismatch; until now it compared 0 against 0 and could
+ * never act. No bespoke guard belongs alongside it.
+ */
+export const CURRENT_SCHEMA_VERSION = 1;
 
 /**
  * Retrieve a metadata value by key. Returns null if the key does not exist.

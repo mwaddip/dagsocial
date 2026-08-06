@@ -1,4 +1,5 @@
-import { uid } from '../helpers.js';
+import {
+  fixtureProvenance, uid } from '../helpers.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import express from 'express';
 import http from 'http';
@@ -116,24 +117,22 @@ describe('UTXO routes', () => {
     const karmaBox: KarmaBox = {
       boxType: 'karma',
       value: 42n,
-      createdAtBlock: 1,
       owner: kp1.publicKey,
       guard: 'owner_signature',
       proofSource: 'test',
-      lastTouchBlock: 1,
     };
+    Object.assign(karmaBox, fixtureProvenance(karmaBox, 1));
     insertBox({ ...karmaBox, id: computeBoxId(karmaBox) });
 
     // Second karma box for same user — multi-box total must sum across all boxes
     const karmaBox2: KarmaBox = {
       boxType: 'karma',
       value: 58n,
-      createdAtBlock: 2,
       owner: kp1.publicKey,
       guard: 'owner_signature',
       proofSource: 'test',
-      lastTouchBlock: 2,
     };
+    Object.assign(karmaBox2, fixtureProvenance(karmaBox2, 1));
     insertBox({ ...karmaBox2, id: computeBoxId(karmaBox2) });
 
     // User with credits
@@ -143,11 +142,11 @@ describe('UTXO routes', () => {
     const creditBox: CreditBox = {
       boxType: 'credit',
       value: 99n,
-      createdAtBlock: 2,
       owner: kp2.publicKey,
       guard: 'owner_signature',
       proofSource: 1,
     };
+    Object.assign(creditBox, fixtureProvenance(creditBox, 1));
     insertBox({ ...creditBox, id: computeBoxId(creditBox) });
 
     // User with invites and bonds
@@ -157,22 +156,22 @@ describe('UTXO routes', () => {
     const inviteBox: InviteBox = {
       boxType: 'invite',
       value: 10n,
-      createdAtBlock: 3,
       secretHash: new Uint8Array(32).fill(0xaa),
       inviterId: inviteUserId,
       guard: 'hash_preimage',
     };
+    Object.assign(inviteBox, fixtureProvenance(inviteBox, 1));
     insertBox({ ...inviteBox, id: computeBoxId(inviteBox) });
     const bondBox: BondBox = {
       boxType: 'bond',
       value: 5n,
-      createdAtBlock: 3,
       inviterId: inviteUserId,
       inviteePublicKey: new Uint8Array(32).fill(0xbb),
       probationStartBlock: 100,
       probationEndBlock: 1100,
       guard: 'inviter_signature',
     };
+    Object.assign(bondBox, fixtureProvenance(bondBox, 1));
     insertBox({ ...bondBox, id: computeBoxId(bondBox) });
 
     // Initialize system keypair for faucet tests
@@ -248,11 +247,11 @@ describe('UTXO routes', () => {
       const box: CreditBox = {
         boxType: 'credit',
         value: 200n,
-        createdAtBlock: 10,
         owner: senderPubKey,
         guard: 'owner_signature',
         proofSource: 10,
       };
+      Object.assign(box, fixtureProvenance(box, 1));
       insertBox({ ...box, id: computeBoxId(box) });
     });
 
@@ -340,7 +339,6 @@ describe('UTXO routes', () => {
       const outputs: CreditBox[] = [{
         boxType: 'credit',
         value: amount,
-        createdAtBlock: currentHeight,
         owner: receiverPubKey,
         guard: 'owner_signature',
         proofSource: -1,
@@ -349,7 +347,6 @@ describe('UTXO routes', () => {
         outputs.push({
           boxType: 'credit',
           value: change,
-          createdAtBlock: currentHeight,
           owner: senderPubKey,
           guard: 'owner_signature',
           proofSource: -1,

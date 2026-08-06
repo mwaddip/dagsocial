@@ -27,11 +27,9 @@ describe('GET /api/v1/proof/:boxId', () => {
       id: 'aa'.repeat(32),
       boxType: 'karma' as const,
       value: 100n,
-      createdAtBlock: 1,
       owner: new Uint8Array(32).fill(0xaa),
       guard: 'owner_signature' as const,
       proofSource: 'mint-1',
-      lastTouchBlock: 1,
     };
     // Spec G phase D: the tree holds two entity kinds, so the fixture does too.
     applyBlockMutations(handle.prover, [], [box], [

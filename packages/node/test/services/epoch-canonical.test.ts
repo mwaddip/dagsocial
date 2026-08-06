@@ -5,6 +5,7 @@ import {
   canonicalRewardsJson,
   canonicalEpochTallyJson,
 } from '../../src/services/epoch-canonical.js';
+import { fixtureProvenance } from '../helpers.js';
 
 // ---------------------------------------------------------------------------
 // Builders
@@ -42,11 +43,12 @@ function makePostLockBox(id: string, targetPostId: string, value: number): PostL
     boxType: 'post_lock',
     value,
     originalValue: 5,
-    createdAtBlock: 7,
     owner: new Uint8Array([1, 2, 3, 4]),
     targetPostId,
     guard: 'epoch_tally',
-  } as PostLockBox;
+    txId: id,
+    index: 0,
+  } as unknown as PostLockBox;
 }
 
 /**
@@ -68,6 +70,7 @@ function makeTally(): EpochTally {
       makePostLockBox('lock-new-1', 'post-alpha', 3),
     ],
   };
+  return { id, ...candidate, ...fixtureProvenance(candidate, 1, hashSeed(id)) };
 }
 
 /**
@@ -250,3 +253,10 @@ describe('canonical epoch-tally serialization (audit C-6)', () => {
     expect(computeUtxoTxRoot(changedTree)).not.toBe(computeUtxoTxRoot(localTree));
   });
 });
+
+/** Stable small integer from a fixture id, so distinct boxes get distinct provenance. */
+function hashSeed(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return h % 1_000_000;
+}

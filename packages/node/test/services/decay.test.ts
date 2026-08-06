@@ -41,11 +41,9 @@ function makeKarmaBox(overrides: Partial<KarmaBox> = {}): KarmaBox {
   return {
     boxType: 'karma',
     value: 100n,
-    createdAtBlock: 0,
     owner: OWNER,
     guard: 'owner_signature',
     proofSource: 'test',
-    lastTouchBlock: 0,
     id: 'box-' + Math.random().toString(36).slice(2, 8),
     ...overrides,
   };

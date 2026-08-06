@@ -760,115 +760,98 @@ and is the cleaner end state. It is deliberately **not** done here: it is
 consensus-visible surgery across every box-building site, and it stops being
 urgent once drift is caught by test.)*
 
-### Phase G checklist — everything the tightening phase owes
+### Phase G checklist — LANDED (phases G1–G3b)
 
-Obligations have accumulated across phases B–D and are stated where they were
-found, which is right for context and wrong for not missing any. Consolidated:
+Obligations accumulated across phases B–D and were stated where they were found,
+which is right for context and wrong for not missing any. All nine are done;
+kept here as the record of what closed, and where the reasoning lives.
 
-**Format tightening (the phase's own work)**
+**Format tightening**
 
-1. `computeBoxId` switches to the provenance derivation; `TX_ID_DOMAIN` is
-   applied to `computeTxId`. Both move every id — this is the one phase where
-   that is allowed, and every id-asserting test updates together.
-2. `txId`/`index` become **required** on `BoxBase`; `UtxoTransaction.outputs`
-   becomes `BoxCandidate[]`.
-3. `createdAtBlock` and `lastTouchBlock` are deleted from the box protocol. The
-   `created_at_block` **column** stays (store-only, never a consensus input).
-4. `utxo_boxes.tx_id` / `output_index` become `NOT NULL` — **and this belongs in
-   the same commit as the box-field deletions, not earlier.** Tightening the
-   columns invalidates ~190 test fixtures across 28 files that seed pre-block
-   boxes without provenance; those same fixtures must be edited again when
-   `createdAtBlock`/`lastTouchBlock` leave the box. Doing it in two passes means
-   touching all of them twice, for the same reason the id-moving changes are one
-   atomic commit. *(Production is unaffected either way: all eight `insertBox`
-   sites set both fields — verified during G2, and note the literal grep
-   `insertBox(` misses the point-free `credits.ts` `.forEach(insertBox)`.)*
-   `test/store/box-provenance.test.ts`'s nullable-pinning cases are **deleted**
-   rather than repaired: they pin a state that ceases to exist.
+1. ✅ `computeBoxId` **is** `computeCandidateBoxId(box, box.txId, box.index)`, and
+   `TX_ID_DOMAIN` is applied to `computeTxId` — including in the demo UI, in the
+   same commit. There is now exactly **one** implementation of each: node's
+   `utxo-engine.ts` carried a second `computeTxId` (its own cbor-x `Encoder`,
+   the id-only strip in its **sixth** location) which produced the hash
+   *signatures were verified against*; applying the domain tag to types alone
+   would have left builders signing a tagged id while the engine verified an
+   untagged one. Deleted in G3b.
+2. ✅ `txId`/`index` required on `BoxBase`; `UtxoTransaction.outputs` is
+   `AnyBoxCandidate[]` (`TYPES_INTERFACE.md` → BoxId for why that is not the
+   base `BoxCandidate`). `id` stays optional, deliberately — same reference.
+3. ✅ `createdAtBlock` and `lastTouchBlock` deleted from the box protocol. The
+   `created_at_block` **column** stays; `last_touch_block` was dropped with the
+   field, having had no reader anywhere — only the INSERT that wrote it.
+4. ✅ `utxo_boxes.tx_id` / `output_index` are `NOT NULL`, in the same commit as
+   the box-field deletions. That grouping earned itself twice over: it avoided
+   editing ~190 fixtures twice, **and** NOT NULL turned out to be the only thing
+   that fails loudly. `TextEncoder` encodes `undefined` as zero bytes and `u32BE`
+   maps it to the sentinel, so a box with missing provenance derives a stable
+   *wrong* id rather than throwing — invisible in the one phase where every
+   golden legitimately moves. `box-provenance.test.ts`'s nullable-pinning cases
+   were deleted, not repaired.
+4b. ✅ `CURRENT_SCHEMA_VERSION` 0 → 1 — the first time the counter has moved, and
+   the first time it could act.
 
-4b. **Bump `CURRENT_SCHEMA_VERSION`.** `CREATE TABLE IF NOT EXISTS` does not
-   tighten an existing database, so an old `dagsocial.db` would silently keep
-   nullable columns — the one outcome `db.ts`'s own precedent rules out ("a DB
-   predating a schema change should fail loudly at startup; pre-stable, reset
-   acceptable"). The guard for this already exists and has **never fired**:
-   `CURRENT_SCHEMA_VERSION` in `store/meta.ts` is still `0` and was not bumped
-   across P0–P3, so `index.ts` reads it, compares it, and can never act. Phase G
-   is where an existing DB genuinely becomes invalid, so it is where the counter
-   finally earns its keep. Do not add a bespoke guard alongside it.
+**Correctness debts that only became enforceable here**
 
-**Correctness debts that only become enforceable here**
+5. ✅ **Canonical key ordering in both encoders**, plus the demo UI's. Retires
+   hazards 1b and 1c. `post_lock`'s producer-vs-`rowToBox` divergence is fixed
+   **by the sort, not by reordering that site** — a producer can no longer get
+   key order wrong because it no longer chooses it.
+6. ✅ Attach-provenance-before-deriving-the-id is now testable, and tested:
+   `computeBoxId` observes `txId`/`index`, so the two orders are no longer
+   byte-identical.
+7. ✅ `insertBox` takes the height from the open journal
+   (`openBlockJournalHeight()`), never from the box. Deleting the field is what
+   proved it: there is nothing else it could read. `0` outside a journal —
+   genesis and bootstrap — which is honest rather than a fallback.
 
-5. **Canonical key ordering in both encoders** (→ "1b"). Lexicographic key sort
-   is the simplest total rule. This subsumes the `post_lock` producer-vs-
-   `rowToBox` field-order violation, which must **not** be fixed by reordering
-   that one site, and it retires the attacker-key-position hazard (→ "1c").
-6. **Attach-provenance-before-deriving-the-id** becomes testable (phase C report
-   §5.1). Today `canonicalBoxBytes` strips provenance, so both orders are
-   byte-identical and the discipline is unenforced.
-7. **The journal-height rule becomes forced** (phase D). `insertBox` must take
-   the height from the open journal, not from `box.createdAtBlock` — currently
-   indistinguishable, because every production karma producer sets
-   `createdAtBlock` to the block height anyway. Deleting the field is what
-   proves it.
+**Blockers, both cleared before G3**
 
-**Blockers — these make phase G *fail* if not done first**
+8. ✅ `settlePruneUtxo` mint reasons (G2).
+9. ✅ `u32BE` exported from `@dagsocial/types` (G1).
 
-8. **`settlePruneUtxo` has no mint reason — do this FIRST.** Its two `mintKarma`
-   sites pass `null`, which is harmless only while the columns are nullable, and
-   item 4 turns it into a hard failure. Add `prune-refund-author` and
-   `prune-refund-liker` to `MintReason` in types, their subject encoders in
-   `mint-provenance.ts`, and a `rootPostHash` parameter to `settlePruneUtxo`.
-   Fully specified in "Box Identity and Mint Provenance" → reason table — the
-   encodings, the two-reasons-not-one argument and the per-entry collision are
-   decided, not open.
-9. **`u32BE` should be exported from `@dagsocial/types`.** `mint-provenance.ts`
-   currently mirrors it, sentinel included; a silent divergence would move mint
-   txIds with nothing to catch it. Nothing is wrong today — this is hardening,
-   and it is the one item here that needs no decision.
+### What G3 changed that was NOT on this list
 
-Items 6 and 7 share a shape worth noting: a rule that is *correct* but
-*unenforceable* while the legacy field still exists. Neither is a defect today;
-both are why phase G is the phase that closes the design rather than merely
-tidying it.
+**`BondBox.inviteBoxId` → `inviteOutputIndex`** (user decision, 2026-08-06). A
+box id in a **content** field is circular under the provenance derivation: the id
+derives from the creating `txId`, and a content field is inside the bytes
+`computeTxId` hashes. Measured: no fixed point exists. Spec G §3.1's
+"no circularity" argument covers *provenance* fields and does not reach this.
 
-### Bonds pair by output index, not by box id (G3b)
+The index form is not a workaround for the hash cycle. The bond and its invite
+are always outputs of one transaction, so pairing by position makes a bond that
+names *someone else's* invite inexpressible — the old field could name any box in
+the world and was checked only when dereferenced, one transaction later. Two
+things carry it:
 
-`BondBox` carries **`inviteOutputIndex: number`**, not `inviteBoxId: BoxId`. At
-bond commit the node resolves the paired invite from
-`(bond.txId, inviteOutputIndex)` — the `UNIQUE(tx_id, output_index)` index
-already in the schema makes that one query and guarantees at most one match.
+- `invites.ts` rejects at **create** if `inviteOutputIndex` does not address the
+  InviteBox output of the same transaction. Scope is structural, target is
+  checked; together a mispaired bond cannot be built.
+- the commit path resolves via `getBoxByProvenance(bond.txId, inviteOutputIndex)`,
+  backed by the `UNIQUE(tx_id, output_index)` index that already existed. Both
+  `checkTransitions` preservation checks compare the index.
 
-**Why the id could not stay.** `inviteBoxId` was a **content** field, so it sat
-inside the bytes `computeTxId` hashes: the invite's id depends on the txId, which
-depends on the bond's content, which held that id. Measured in phase G3b —
-**no fixed point**, four iterations each landing somewhere new. Spec G §3.1's
-no-circularity argument covers `id`/`txId`/`index` as *provenance* and does not
-reach a content field carrying a box id; `inviteBoxId` was the only one in the
-box set. Left alone it fails as a dangling reference *one transaction later*, at
-`utxo-engine`'s commit-time `getBox`, which is the `p3a-box-id-parked` failure
-mode through a different door.
+**The demo UI stops predicting an id for invites entirely** — it states an output
+index it already knows. That is stronger than the "exact prediction" Spec G aimed
+at: prediction became *unnecessary*. The unlike path still genuinely predicts, and
+is now the only flow that does.
 
-> **The generalisation, which outlives this fix:** whether the id derivation
-> depends on a field is a question about **content**, not about which fields are
-> tagged as provenance. Any future box field holding another box's id reopens
-> this exactly.
+### A frozen golden cannot defend a property
 
-**Three obligations that travel with it:**
+Found by G3b's mutation battery and general beyond this spec. Dropping
+`TX_ID_DOMAIN` was killed only by three frozen-constant assertions. A golden
+catches a removal **only because the golden was regenerated after the change**,
+so the assertion is "this id equals this number" and the natural response to it
+failing is to update the number — which is exactly what a phase that legitimately
+moves every golden invites.
 
-1. **Validate at create, not only at commit.** Nothing checked `inviteBoxId` when
-   the bond was created, which is precisely why the failure surfaced late. Reject
-   at create when `inviteOutputIndex` does not address an `InviteBox` output of
-   **the same transaction**. The point of this design is that a bond pointing at
-   someone else's invite is *inexpressible*, not merely caught later — that must
-   be enforced, not left as an accident of the lookup.
-2. **Both preservation checks** in `checkTransitions` that compared
-   `bondOut.inviteBoxId === bondIn.inviteBoxId` become index comparisons, or they
-   silently pass on a field that no longer exists.
-3. **The demo UI stops predicting.** The invite prediction existed only to fill
-   this field; the client now names an output index. That is *stronger* than what
-   Spec G promised — prediction becomes **unnecessary** here rather than exact —
-   so the end-to-end prediction test must exercise the **unlike** path, which
-   still genuinely predicts.
+**A property needs an assertion that does not depend on the current output.** The
+working shape is an *independent recompute*: write the preimage out from the
+contract text and compare, rather than calling the function under test. Applied
+to the domain tags in `types/test/utxo.test.ts`, alongside distinctness and
+prefix-freeness over the tag set.
 
 ### Discriminants are semantic, never positional
 

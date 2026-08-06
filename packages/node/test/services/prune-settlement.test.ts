@@ -7,6 +7,7 @@ import type {
 } from '@dagsocial/types';
 import type { BlockJournal, BoxMutation } from '../../src/store/journal.js';
 import type Database from 'better-sqlite3';
+import { fixtureProvenance } from '../helpers.js';
 
 // ---------------------------------------------------------------------------
 // Dynamic import helpers (module-level DB state requires reset + fresh import)
@@ -110,17 +111,17 @@ function makePostLockBox(
   value: number,
   owner: Uint8Array,
   targetPostId: string,
-  createdAtBlock: number,
+  seed: number,
 ): PostLockBox {
   const box: PostLockBox = {
     boxType: 'post_lock',
     value,
-    createdAtBlock,
     originalValue: value,
     owner,
     targetPostId,
     guard: 'epoch_tally',
   };
+  Object.assign(box, fixtureProvenance(box, seed));
   box.id = computeBoxId(box);
   return box;
 }
@@ -128,16 +129,16 @@ function makePostLockBox(
 function makeLikeBox(
   likerId: Uint8Array,
   targetPostId: string,
-  createdAtBlock: number,
+  seed: number,
 ): LikeBox {
   const box: LikeBox = {
     boxType: 'like',
     value: 2,
-    createdAtBlock,
     likerId,
     targetPostId,
     guard: 'epoch_tally',
   };
+  Object.assign(box, fixtureProvenance(box, seed));
   box.id = computeBoxId(box);
   return box;
 }
@@ -145,17 +146,16 @@ function makeLikeBox(
 function makeKarmaBox(
   value: bigint,
   owner: Uint8Array,
-  createdAtBlock: number,
+  seed: number,
 ): KarmaBox {
   const box: KarmaBox = {
     boxType: 'karma',
     value,
-    createdAtBlock,
     owner,
     guard: 'owner_signature',
     proofSource: 'genesis',
-    lastTouchBlock: createdAtBlock,
   };
+  Object.assign(box, fixtureProvenance(box, seed));
   box.id = computeBoxId(box);
   return box;
 }

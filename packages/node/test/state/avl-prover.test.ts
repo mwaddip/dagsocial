@@ -352,10 +352,8 @@ function makeKarmaBox(id: string, value: bigint, height: number) {
     id,
     boxType: 'karma' as const,
     value,
-    createdAtBlock: height,
     owner: new Uint8Array(32).fill(0x77),
     guard: 'owner_signature' as const,
     proofSource: 'mint-1',
-    lastTouchBlock: height,
   };
 }

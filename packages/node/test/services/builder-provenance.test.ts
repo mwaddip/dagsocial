@@ -13,7 +13,8 @@ import { initDb, closeDb } from '../../src/store/db.js';
 import { insertBox, getBox } from '../../src/store/utxo.js';
 import { createInvite } from '../../src/services/invites.js';
 import { validateTx, materializeOutput } from '../../src/services/utxo-engine.js';
-import { signTransaction } from '../helpers.js';
+import {
+  fixtureProvenance, signTransaction } from '../helpers.js';
 
 /**
  * Spec G phase C4 — the invite flow's *predicted* box ids.
@@ -56,28 +57,24 @@ describe('invite id prediction carries transaction provenance', () => {
     const karma: KarmaBox = {
       boxType: 'karma',
       value: 100n,
-      createdAtBlock: 1,
       owner: inviterId,
       guard: 'owner_signature',
       proofSource: 'seed',
-      lastTouchBlock: 1,
     };
+    Object.assign(karma, fixtureProvenance(karma, 1));
     karma.id = computeBoxId(karma);
     insertBox(karma);
 
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: 100n - INVITE_KARMA_AMOUNT - INVITE_BOND_KARMA,
-      createdAtBlock: 1,
       owner: inviterId,
       guard: 'owner_signature',
       proofSource: 'create-invite',
-      lastTouchBlock: 1,
     };
     const inviteBox: InviteBox = {
       boxType: 'invite',
       value: INVITE_KARMA_AMOUNT,
-      createdAtBlock: 1,
       secretHash: new Uint8Array(32).fill(0x99),
       inviterId,
       guard: 'hash_preimage_with_bond',
@@ -85,9 +82,11 @@ describe('invite id prediction carries transaction provenance', () => {
     const bondBox: BondBox = {
       boxType: 'bond',
       value: INVITE_BOND_KARMA,
-      createdAtBlock: 1,
       inviterId,
-      inviteBoxId: computeBoxId(inviteBox),
+      // The invite is output 1 of this transaction ([karma, invite, bond]).
+      // `createInvite` rejects any other value as of phase G3b, so this is now
+      // asserted rather than merely conventional.
+      inviteOutputIndex: 1,
       inviteePublicKey: new Uint8Array(0),
       probationStartBlock: 0,
       probationEndBlock: 0,

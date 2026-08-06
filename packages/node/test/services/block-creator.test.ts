@@ -1,4 +1,6 @@
-import { uid, signTransaction } from '../helpers.js';
+import {
+  fixtureProvenance,
+  uid, signTransaction } from '../helpers.js';
 import {
   describe,
   it,
@@ -216,16 +218,16 @@ function makePost(authorId: Uint8Array, content = 'test post'): Post {
 function makeLikeBox(
   likerId: Uint8Array,
   targetPostId: string,
-  createdAtBlock: number,
+  seed: number,
 ): LikeBox {
   const box: LikeBox = {
     boxType: 'like',
     value: 2n,
-    createdAtBlock,
     likerId,
     targetPostId,
     guard: 'epoch_tally',
   };
+  Object.assign(box, fixtureProvenance(box, seed));
   const id = computeBoxId(box);
   box.id = id;
   return box;
@@ -240,17 +242,16 @@ function expectedAuthorReward(likeCount: number): bigint {
 function makeKarmaBox(
   value: bigint,
   owner: Uint8Array,
-  createdAtBlock: number,
+  seed: number,
 ): KarmaBox {
   const box: KarmaBox = {
     boxType: 'karma',
     value,
-    createdAtBlock,
     owner,
     guard: 'owner_signature',
     proofSource: 'genesis',
-    lastTouchBlock: createdAtBlock,
   };
+  Object.assign(box, fixtureProvenance(box, seed));
   const id = computeBoxId(box);
   box.id = id;
   return box;
@@ -276,16 +277,13 @@ function makeLikeTx(
       {
         boxType: 'karma',
         value: karmaBox.value - LIKE_COST,
-        createdAtBlock: 0,
         owner: liker.userId,
         guard: 'owner_signature',
         proofSource: 'like_op',
-        lastTouchBlock: 0,
       } as KarmaBox,
       {
         boxType: 'like',
         value: LIKE_COST,
-        createdAtBlock: 0,
         likerId: liker.userId,
         targetPostId,
         guard: 'epoch_tally',

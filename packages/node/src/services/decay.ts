@@ -161,25 +161,21 @@ export function applyKarmaDecay(
     }
 
     // Create single consolidated replacement box
-    const newBox: KarmaBox = {
-      boxType: 'karma',
-      value: newValue,
-      createdAtBlock: currentHeight,
-      owner,
-      guard: 'owner_signature',
-      proofSource: `decay-${currentHeight}`,
-      lastTouchBlock: currentHeight,
-      decayBurn: true,
-    };
-    // Appended after every candidate field, matching `rowToBox`'s
-    // `withProvenance` — `decayBurn` included, since it is the last field the
-    // producer sets and `rowToBox` sets it in the same position.
+    // Field order is free as of phase G3b — both encoders sort keys.
     //
     // `owner` alone is an injective subject here: `applyKarmaDecay` visits each
     // owner at most once per call (`getKarmaOwners` returns distinct owners) and
     // runs once per block, so `(height, 'decay', owner)` cannot repeat.
-    newBox.txId = mintTxIdFor(decayContext(owner), currentHeight);
-    newBox.index = MINT_OUTPUT_INDEX;
+    const newBox: KarmaBox = {
+      boxType: 'karma',
+      value: newValue,
+      owner,
+      guard: 'owner_signature',
+      proofSource: `decay-${currentHeight}`,
+      decayBurn: true,
+      txId: mintTxIdFor(decayContext(owner), currentHeight),
+      index: MINT_OUTPUT_INDEX,
+    };
     const boxId = computeBoxId(newBox);
     newBox.id = boxId;
     deps.insertBox(newBox);

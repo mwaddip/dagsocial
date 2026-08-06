@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import {
+  describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   generateKeyPairSync,
   createHash,
@@ -23,6 +24,7 @@ import {
   getKarmaBox,
   insertBox as storeInsertBox,
   getBox as storeGetBox,
+  getBoxByProvenance as storeGetBoxByProvenance,
   consumeBox as storeConsumeBox,
   getPendingEntries,
   insertMempoolSubBlock,
@@ -30,7 +32,9 @@ import {
 import { createInvite, claimInvite, cancelInvite, commitInvite } from '../../src/services/invites.js';
 import { validateTx } from '../../src/services/utxo-engine.js';
 import type { UtxoEngineDeps } from '../../src/services/utxo-engine.js';
-import { rawPublicKey, signTransaction } from '../helpers.js';
+import {
+  seedAsOneTx,
+  fixtureProvenance, rawPublicKey, signTransaction } from '../helpers.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -40,67 +44,63 @@ import { rawPublicKey, signTransaction } from '../helpers.js';
 function createKarmaBox(
   owner: Uint8Array,
   value: bigint,
-  createdAtBlock: number,
+  seed: number,
   proofSource = 'test',
 ): KarmaBox {
   const box: Omit<KarmaBox, 'id'> & { id?: string } = {
     boxType: 'karma',
     value,
-    createdAtBlock,
     owner,
     guard: 'owner_signature',
     proofSource,
-    lastTouchBlock: createdAtBlock,
   };
+  Object.assign(box, fixtureProvenance(box, seed));
   const id = computeBoxId(box);
   const full: KarmaBox = { ...box, id, boxType: 'karma', guard: 'owner_signature' };
   storeInsertBox(full);
   return full;
 }
 
-/** Create and insert an invite box into UTXO. */
-function insertInviteBox(
-  value: bigint,
-  createdAtBlock: number,
+/**
+ * Create and insert an invite box, and the bond paired with it.
+ *
+ * They are seeded as outputs 0 and 1 of ONE synthetic transaction, because the
+ * bond resolves its InviteBox from `(bond.txId, bond.inviteOutputIndex)` (user
+ * decision, 2026-08-06). Two independently-seeded boxes would leave the bond
+ * addressing a transaction with no invite at that index — the mispairing the
+ * index form exists to make inexpressible, so a fixture must not fake it.
+ *
+ * That is also why they are one helper now rather than two: the pairing is a
+ * property of the pair, and a caller cannot construct half of it correctly.
+ */
+function insertInviteAndBond(
+  inviteValue: bigint,
+  bondValue: bigint,
+  seed: number,
   secretHash: Uint8Array,
   inviterId: Uint8Array,
-): InviteBox {
-  const box: Omit<InviteBox, 'id'> & { id?: string } = {
-    boxType: 'invite',
-    value,
-    createdAtBlock,
+): { inviteBox: InviteBox; bondBox: BondBox } {
+  const inviteCandidate = {
+    boxType: 'invite' as const,
+    value: inviteValue,
     secretHash,
     inviterId,
-    guard: 'hash_preimage_with_bond',
+    guard: 'hash_preimage_with_bond' as const,
   };
-  const id = computeBoxId(box);
-  const full: InviteBox = { ...box, id, boxType: 'invite', guard: 'hash_preimage_with_bond' };
-  storeInsertBox(full);
-  return full;
-}
-
-/** Create and insert a bond box into UTXO. */
-function insertBondBox(
-  value: bigint,
-  createdAtBlock: number,
-  inviterId: Uint8Array,
-  inviteBoxId: string,
-): BondBox {
-  const box: Omit<BondBox, 'id'> & { id?: string } = {
-    boxType: 'bond',
-    value,
-    createdAtBlock,
+  const bondCandidate = {
+    boxType: 'bond' as const,
+    value: bondValue,
     inviterId,
-    inviteBoxId,
+    inviteOutputIndex: 0,
     inviteePublicKey: new Uint8Array(0),
     probationStartBlock: 0,
     probationEndBlock: 0,
-    guard: 'bond_dual',
+    guard: 'bond_dual' as const,
   };
-  const id = computeBoxId(box);
-  const full: BondBox = { ...box, id, boxType: 'bond', guard: 'bond_dual' };
-  storeInsertBox(full);
-  return full;
+  const [inviteBox, bondBox] = seedAsOneTx([inviteCandidate, bondCandidate], seed);
+  storeInsertBox(inviteBox!);
+  storeInsertBox(bondBox!);
+  return { inviteBox: inviteBox as InviteBox, bondBox: bondBox as BondBox };
 }
 
 // ---------------------------------------------------------------------------
@@ -127,6 +127,7 @@ describe('invites service', () => {
           .get(id) as { spent_at_block: number | null } | undefined;
         return r && r.spent_at_block === null ? box : null;
       },
+      getBoxByProvenance: storeGetBoxByProvenance,
       insertBox: (box: AnyBox) => storeInsertBox(box),
       consumeBox: (id: string, atBlock: number) => storeConsumeBox(id, atBlock),
       getKarmaBox: (owner: Uint8Array) => getKarmaBox(owner),
@@ -171,12 +172,11 @@ describe('invites service', () => {
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: 50n,
-      createdAtBlock: 1,
       owner: inviterPubKey,
       guard: 'owner_signature',
       proofSource: 'test',
-      lastTouchBlock: 1,
     };
+    Object.assign(newKarma, fixtureProvenance(newKarma, 1));
     const newKarmaId = computeBoxId(newKarma);
 
     const secret = new Uint8Array(32).fill(0x01);
@@ -185,24 +185,24 @@ describe('invites service', () => {
     const inviteBox: InviteBox = {
       boxType: 'invite',
       value: INVITE_KARMA_AMOUNT,
-      createdAtBlock: 1,
       secretHash,
       inviterId,
       guard: 'hash_preimage_with_bond',
     };
+    Object.assign(inviteBox, fixtureProvenance(inviteBox, 1));
     const inviteBoxId = computeBoxId(inviteBox);
 
     const bondBox: BondBox = {
       boxType: 'bond',
       value: INVITE_BOND_KARMA,
-      createdAtBlock: 1,
       inviterId,
-      inviteBoxId: inviteBoxId,
+      inviteOutputIndex: 1,
       inviteePublicKey: new Uint8Array(0),
       probationStartBlock: 0,
       probationEndBlock: 0,
       guard: 'bond_dual',
     };
+    Object.assign(bondBox, fixtureProvenance(bondBox, 1));
     const bondBoxId = computeBoxId(bondBox);
 
     const tx: UtxoTransaction = {
@@ -252,21 +252,21 @@ describe('invites service', () => {
     const secretHash = createHash('blake2b512').update(Buffer.from(secret)).digest().subarray(0, 32);
 
     // Manually insert invite and bond boxes into UTXO (simulating confirmed create)
-    const inviteBox = insertInviteBox(INVITE_KARMA_AMOUNT, 1, secretHash, inviterId);
-    const bondBox = insertBondBox(INVITE_BOND_KARMA, 1, inviterId, inviteBox.id!);
+    const { inviteBox, bondBox } = insertInviteAndBond(
+      INVITE_KARMA_AMOUNT, INVITE_BOND_KARMA, 1, secretHash, inviterId);
 
     // ---- Step 1: Commit ----
     const bondOutCommitted: BondBox = {
       boxType: 'bond',
       value: INVITE_BOND_KARMA,
-      createdAtBlock: 3,
       inviterId,
-      inviteBoxId: inviteBox.id!,
+      inviteOutputIndex: 0,
       inviteePublicKey: inviteePubKey,
       probationStartBlock: 3,
       probationEndBlock: 3 + INVITE_PROBATION_BLOCKS,
       guard: 'bond_dual',
     };
+    Object.assign(bondOutCommitted, fixtureProvenance(bondOutCommitted, 1));
     const bondOutCommittedId = computeBoxId(bondOutCommitted);
 
     const commitTx: UtxoTransaction = {
@@ -289,7 +289,7 @@ describe('invites service', () => {
     ).run(
       JSON.stringify({
         inviterId: Buffer.from(inviterId).toString('hex'),
-        inviteBoxId: inviteBox.id,
+        inviteOutputIndex: 0,
         inviteePublicKey: Array.from(inviteePubKey),
         probationStartBlock: 3,
         probationEndBlock: 3 + INVITE_PROBATION_BLOCKS,
@@ -301,26 +301,25 @@ describe('invites service', () => {
     const karmaOut: KarmaBox = {
       boxType: 'karma',
       value: INVITE_KARMA_AMOUNT,
-      createdAtBlock: 5,
       owner: inviteePubKey,
       guard: 'owner_signature',
       proofSource: `invite-claim:${inviteBox.id}`,
-      lastTouchBlock: 5,
     };
+    Object.assign(karmaOut, fixtureProvenance(karmaOut, 1));
     const karmaOutId = computeBoxId(karmaOut);
 
     // BondOut preserves commitment fields
     const bondOutReveal: BondBox = {
       boxType: 'bond',
       value: INVITE_BOND_KARMA,
-      createdAtBlock: 3,
       inviterId,
-      inviteBoxId: inviteBox.id!,
+      inviteOutputIndex: 0,
       inviteePublicKey: inviteePubKey,
       probationStartBlock: 3,
       probationEndBlock: 3 + INVITE_PROBATION_BLOCKS,
       guard: 'bond_dual',
     };
+    Object.assign(bondOutReveal, fixtureProvenance(bondOutReveal, 1));
     const bondOutRevealId = computeBoxId(bondOutReveal);
 
     const revealTx: UtxoTransaction = {
@@ -350,20 +349,20 @@ describe('invites service', () => {
     const secret = new Uint8Array(32).fill(0x42);
     const secretHash = createHash('blake2b512').update(Buffer.from(secret)).digest().subarray(0, 32);
 
-    const inviteBox = insertInviteBox(INVITE_KARMA_AMOUNT, 1, secretHash, inviterId);
-    const bondBox = insertBondBox(INVITE_BOND_KARMA, 1, inviterId, inviteBox.id!);
+    const { inviteBox, bondBox } = insertInviteAndBond(
+      INVITE_KARMA_AMOUNT, INVITE_BOND_KARMA, 1, secretHash, inviterId);
 
     const bondOut: BondBox = {
       boxType: 'bond',
       value: INVITE_BOND_KARMA,
-      createdAtBlock: 5,
       inviterId,
-      inviteBoxId: inviteBox.id!,
+      inviteOutputIndex: 0,
       inviteePublicKey: inviteePubKey,
       probationStartBlock: 5,
       probationEndBlock: 5 + INVITE_PROBATION_BLOCKS,
       guard: 'bond_dual',
     };
+    Object.assign(bondOut, fixtureProvenance(bondOut, 1));
     const bondOutId = computeBoxId(bondOut);
 
     const tx: UtxoTransaction = {
@@ -401,15 +400,14 @@ describe('invites service', () => {
     const secretHash = createHash('blake2b512').update(Buffer.from(secret)).digest().subarray(0, 32);
     const wrongSecret = new Uint8Array(32).fill(0xff);
 
-    const inviteBox = insertInviteBox(INVITE_KARMA_AMOUNT, 1, secretHash, inviterId);
-    const bondBox = insertBondBox(INVITE_BOND_KARMA, 1, inviterId, inviteBox.id!);
+    const { inviteBox, bondBox } = insertInviteAndBond(
+      INVITE_KARMA_AMOUNT, INVITE_BOND_KARMA, 1, secretHash, inviterId);
 
     const bondOut: BondBox = {
       boxType: 'bond',
       value: INVITE_BOND_KARMA,
-      createdAtBlock: 5,
       inviterId,
-      inviteBoxId: inviteBox.id!,
+      inviteOutputIndex: 0,
       inviteePublicKey: inviteePubKey,
       probationStartBlock: 5,
       probationEndBlock: 5 + INVITE_PROBATION_BLOCKS,
@@ -435,8 +433,8 @@ describe('invites service', () => {
     const secret = new Uint8Array(32).fill(0x42);
     const secretHash = createHash('blake2b512').update(Buffer.from(secret)).digest().subarray(0, 32);
 
-    const inviteBox = insertInviteBox(INVITE_KARMA_AMOUNT, 1, secretHash, inviterId);
-    const bondBox = insertBondBox(INVITE_BOND_KARMA, 1, inviterId, inviteBox.id!);
+    const { inviteBox, bondBox } = insertInviteAndBond(
+      INVITE_KARMA_AMOUNT, INVITE_BOND_KARMA, 1, secretHash, inviterId);
 
     // Simulate confirmed commit by updating extra_data
     const db = getDb();
@@ -445,7 +443,7 @@ describe('invites service', () => {
     ).run(
       JSON.stringify({
         inviterId: Buffer.from(inviterId).toString('hex'),
-        inviteBoxId: inviteBox.id,
+        inviteOutputIndex: 0,
         inviteePublicKey: Array.from(inviteePubKey),
         probationStartBlock: 3,
         probationEndBlock: 3 + INVITE_PROBATION_BLOCKS,
@@ -456,9 +454,8 @@ describe('invites service', () => {
     const bondOut: BondBox = {
       boxType: 'bond',
       value: INVITE_BOND_KARMA,
-      createdAtBlock: 5,
       inviterId,
-      inviteBoxId: inviteBox.id!,
+      inviteOutputIndex: 0,
       inviteePublicKey: inviteePubKey,
       probationStartBlock: 5,
       probationEndBlock: 5 + INVITE_PROBATION_BLOCKS,
@@ -484,8 +481,8 @@ describe('invites service', () => {
     const secret = new Uint8Array(32).fill(0x42);
     const secretHash = createHash('blake2b512').update(Buffer.from(secret)).digest().subarray(0, 32);
 
-    const inviteBox = insertInviteBox(INVITE_KARMA_AMOUNT, 1, secretHash, inviterId);
-    const bondBox = insertBondBox(INVITE_BOND_KARMA, 1, inviterId, inviteBox.id!);
+    const { inviteBox, bondBox } = insertInviteAndBond(
+      INVITE_KARMA_AMOUNT, INVITE_BOND_KARMA, 1, secretHash, inviterId);
 
     // Simulate BondBox committed to a different pubkey (attacker's)
     const attackerKeys = generateKeyPairSync('ed25519');
@@ -496,7 +493,7 @@ describe('invites service', () => {
     ).run(
       JSON.stringify({
         inviterId: Buffer.from(inviterId).toString('hex'),
-        inviteBoxId: inviteBox.id,
+        inviteOutputIndex: 0,
         inviteePublicKey: Array.from(attackerPubKey),
         probationStartBlock: 3,
         probationEndBlock: 3 + INVITE_PROBATION_BLOCKS,
@@ -507,18 +504,15 @@ describe('invites service', () => {
     const karmaOut: KarmaBox = {
       boxType: 'karma',
       value: INVITE_KARMA_AMOUNT,
-      createdAtBlock: 5,
       owner: inviteePubKey,
       guard: 'owner_signature',
       proofSource: `invite-claim:${inviteBox.id}`,
-      lastTouchBlock: 5,
     };
     const bondOut: BondBox = {
       boxType: 'bond',
       value: INVITE_BOND_KARMA,
-      createdAtBlock: 3,
       inviterId,
-      inviteBoxId: inviteBox.id!,
+      inviteOutputIndex: 0,
       inviteePublicKey: attackerPubKey,
       probationStartBlock: 3,
       probationEndBlock: 3 + INVITE_PROBATION_BLOCKS,
@@ -549,8 +543,8 @@ describe('invites service', () => {
 
     const secret = new Uint8Array(32).fill(0xaa);
     const secretHash = createHash('blake2b512').update(Buffer.from(secret)).digest().subarray(0, 32);
-    const inviteBox = insertInviteBox(INVITE_KARMA_AMOUNT, 1, secretHash, inviterId);
-    const bondBox = insertBondBox(INVITE_BOND_KARMA, 1, inviterId, inviteBox.id!);
+    const { inviteBox, bondBox } = insertInviteAndBond(
+      INVITE_KARMA_AMOUNT, INVITE_BOND_KARMA, 1, secretHash, inviterId);
 
     // Simulate committed BondBox by updating extra_data
     const db = getDb();
@@ -559,7 +553,7 @@ describe('invites service', () => {
     ).run(
       JSON.stringify({
         inviterId: Buffer.from(inviterId).toString('hex'),
-        inviteBoxId: inviteBox.id,
+        inviteOutputIndex: 0,
         inviteePublicKey: Array.from(inviteePubKey),
         probationStartBlock: 3,
         probationEndBlock: 3 + INVITE_PROBATION_BLOCKS,
@@ -571,11 +565,9 @@ describe('invites service', () => {
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: totalValue,
-      createdAtBlock: 10,
       owner: inviterPubKey,
       guard: 'owner_signature',
       proofSource: `invite-cancel:${inviteBox.id}`,
-      lastTouchBlock: 10,
     };
 
     const tx: UtxoTransaction = {
@@ -601,20 +593,19 @@ describe('invites service', () => {
     const secretHash = createHash('blake2b512').update(Buffer.from(secret)).digest().subarray(0, 32);
 
     // Manually insert invite and bond boxes into UTXO
-    const inviteBox = insertInviteBox(INVITE_KARMA_AMOUNT, 1, secretHash, inviterId);
-    const bondBox = insertBondBox(INVITE_BOND_KARMA, 1, inviterId, inviteBox.id!);
+    const { inviteBox, bondBox } = insertInviteAndBond(
+      INVITE_KARMA_AMOUNT, INVITE_BOND_KARMA, 1, secretHash, inviterId);
 
     // Build cancel tx: karma + invite + bond -> karma (all value returned)
     const totalValue = 100n + INVITE_KARMA_AMOUNT + INVITE_BOND_KARMA;
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: totalValue,
-      createdAtBlock: 5,
       owner: inviterPubKey,
       guard: 'owner_signature',
       proofSource: `invite-cancel:${inviteBox.id}`,
-      lastTouchBlock: 5,
     };
+    Object.assign(newKarma, fixtureProvenance(newKarma, 1));
     const newKarmaId = computeBoxId(newKarma);
 
     const tx: UtxoTransaction = {
@@ -671,29 +662,26 @@ describe('invites service', () => {
       const newKarma: KarmaBox = {
         boxType: 'karma',
         value: 50n,
-        createdAtBlock: i + 1,
         owner: inviterPubKey,
         guard: 'owner_signature',
         proofSource: `test-${i}`,
-        lastTouchBlock: i + 1,
       };
       const secret = new Uint8Array(32).fill(i + 1);
       const secretHash = createHash('blake2b512').update(Buffer.from(secret)).digest().subarray(0, 32);
       const inviteBox: InviteBox = {
         boxType: 'invite',
         value: INVITE_KARMA_AMOUNT,
-        createdAtBlock: i + 1,
         secretHash,
         inviterId,
         guard: 'hash_preimage_with_bond',
       };
+      Object.assign(inviteBox, fixtureProvenance(inviteBox, 1));
       const inviteBoxId = computeBoxId(inviteBox);
       const bondBox: BondBox = {
         boxType: 'bond',
         value: INVITE_BOND_KARMA,
-        createdAtBlock: i + 1,
         inviterId,
-        inviteBoxId,
+        inviteOutputIndex: 1,
         inviteePublicKey: new Uint8Array(0),
         probationStartBlock: 0,
         probationEndBlock: 0,
@@ -720,29 +708,26 @@ describe('invites service', () => {
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: 50n,
-      createdAtBlock: 99,
       owner: inviterPubKey,
       guard: 'owner_signature',
       proofSource: 'overflow-test',
-      lastTouchBlock: 99,
     };
     const secret = new Uint8Array(32).fill(0xff);
     const secretHash = createHash('blake2b512').update(Buffer.from(secret)).digest().subarray(0, 32);
     const inviteBox: InviteBox = {
       boxType: 'invite',
       value: INVITE_KARMA_AMOUNT,
-      createdAtBlock: 99,
       secretHash,
       inviterId,
       guard: 'hash_preimage_with_bond',
     };
+    Object.assign(inviteBox, fixtureProvenance(inviteBox, 1));
     const inviteBoxId = computeBoxId(inviteBox);
     const bondBox: BondBox = {
       boxType: 'bond',
       value: INVITE_BOND_KARMA,
-      createdAtBlock: 99,
       inviterId,
-      inviteBoxId,
+      inviteOutputIndex: 1,
       inviteePublicKey: new Uint8Array(0),
       probationStartBlock: 0,
       probationEndBlock: 0,
@@ -781,11 +766,9 @@ describe('invites service', () => {
       const newKarma: KarmaBox = {
         boxType: 'karma',
         value: 50n,
-        createdAtBlock: seed,
         owner,
         guard: 'owner_signature',
         proofSource: `seed-${ownerHex}-${seed}`,
-        lastTouchBlock: seed,
       };
       const secret = new Uint8Array(32).fill(seed);
       const secretHash = createHash('blake2b512')
@@ -795,18 +778,17 @@ describe('invites service', () => {
       const inviteBox: InviteBox = {
         boxType: 'invite',
         value: INVITE_KARMA_AMOUNT,
-        createdAtBlock: seed,
         secretHash,
         inviterId: owner,
         guard: 'hash_preimage_with_bond',
       };
+      Object.assign(inviteBox, fixtureProvenance(inviteBox, 1));
       const inviteBoxId = computeBoxId(inviteBox);
       const bondBox: BondBox = {
         boxType: 'bond',
         value: INVITE_BOND_KARMA,
-        createdAtBlock: seed,
         inviterId: owner,
-        inviteBoxId,
+        inviteOutputIndex: 1,
         inviteePublicKey: new Uint8Array(0),
         probationStartBlock: 0,
         probationEndBlock: 0,
@@ -870,29 +852,26 @@ describe('invites service', () => {
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: 0n,
-      createdAtBlock: 1,
       owner: inviterPubKey,
       guard: 'owner_signature',
       proofSource: 'test',
-      lastTouchBlock: 1,
     };
     const secret = new Uint8Array(32).fill(0x01);
     const secretHash = createHash('blake2b512').update(Buffer.from(secret)).digest().subarray(0, 32);
     const inviteBox: InviteBox = {
       boxType: 'invite',
       value: INVITE_KARMA_AMOUNT,
-      createdAtBlock: 1,
       secretHash,
       inviterId,
       guard: 'hash_preimage_with_bond',
     };
+    Object.assign(inviteBox, fixtureProvenance(inviteBox, 1));
     const inviteBoxId = computeBoxId(inviteBox);
     const bondBox: BondBox = {
       boxType: 'bond',
       value: INVITE_BOND_KARMA,
-      createdAtBlock: 1,
       inviterId,
-      inviteBoxId,
+      inviteOutputIndex: 1,
       inviteePublicKey: new Uint8Array(0),
       probationStartBlock: 0,
       probationEndBlock: 0,
@@ -921,8 +900,8 @@ describe('invites service', () => {
   it('Claim fails with wrong secret', () => {
     const secret = new Uint8Array(32).fill(0x42);
     const secretHash = createHash('blake2b512').update(Buffer.from(secret)).digest().subarray(0, 32);
-    const inviteBox = insertInviteBox(INVITE_KARMA_AMOUNT, 1, secretHash, inviterId);
-    const bondBox = insertBondBox(INVITE_BOND_KARMA, 1, inviterId, inviteBox.id!);
+    const { inviteBox, bondBox } = insertInviteAndBond(
+      INVITE_KARMA_AMOUNT, INVITE_BOND_KARMA, 1, secretHash, inviterId);
 
     // Simulate committed BondBox
     const db = getDb();
@@ -931,7 +910,7 @@ describe('invites service', () => {
     ).run(
       JSON.stringify({
         inviterId: Buffer.from(inviterId).toString('hex'),
-        inviteBoxId: inviteBox.id,
+        inviteOutputIndex: 0,
         inviteePublicKey: Array.from(inviteePubKey),
         probationStartBlock: 3,
         probationEndBlock: 3 + INVITE_PROBATION_BLOCKS,
@@ -943,18 +922,15 @@ describe('invites service', () => {
     const karmaOut: KarmaBox = {
       boxType: 'karma',
       value: INVITE_KARMA_AMOUNT,
-      createdAtBlock: 5,
       owner: inviteePubKey,
       guard: 'owner_signature',
       proofSource: `invite-claim:${inviteBox.id}`,
-      lastTouchBlock: 5,
     };
     const bondOut: BondBox = {
       boxType: 'bond',
       value: INVITE_BOND_KARMA,
-      createdAtBlock: 3,
       inviterId,
-      inviteBoxId: inviteBox.id!,
+      inviteOutputIndex: 0,
       inviteePublicKey: inviteePubKey,
       probationStartBlock: 3,
       probationEndBlock: 3 + INVITE_PROBATION_BLOCKS,
@@ -986,8 +962,8 @@ describe('invites service', () => {
 
     const secret = new Uint8Array(32).fill(0x42);
     const secretHash = createHash('blake2b512').update(Buffer.from(secret)).digest().subarray(0, 32);
-    const inviteBox = insertInviteBox(INVITE_KARMA_AMOUNT, 1, secretHash, inviterId);
-    const bondBox = insertBondBox(INVITE_BOND_KARMA, 1, inviterId, inviteBox.id!);
+    const { inviteBox, bondBox } = insertInviteAndBond(
+      INVITE_KARMA_AMOUNT, INVITE_BOND_KARMA, 1, secretHash, inviterId);
 
     // Simulate committed BondBox
     const db = getDb();
@@ -996,7 +972,7 @@ describe('invites service', () => {
     ).run(
       JSON.stringify({
         inviterId: Buffer.from(inviterId).toString('hex'),
-        inviteBoxId: inviteBox.id,
+        inviteOutputIndex: 0,
         inviteePublicKey: Array.from(inviteePubKey),
         probationStartBlock: 3,
         probationEndBlock: 3 + INVITE_PROBATION_BLOCKS,
@@ -1007,18 +983,15 @@ describe('invites service', () => {
     const karmaOut: KarmaBox = {
       boxType: 'karma',
       value: INVITE_KARMA_AMOUNT,
-      createdAtBlock: 5,
       owner: inviteePubKey,
       guard: 'owner_signature',
       proofSource: `invite-claim:${inviteBox.id}`,
-      lastTouchBlock: 5,
     };
     const bondOut: BondBox = {
       boxType: 'bond',
       value: INVITE_BOND_KARMA,
-      createdAtBlock: 3,
       inviterId,
-      inviteBoxId: inviteBox.id!,
+      inviteOutputIndex: 0,
       inviteePublicKey: inviteePubKey,
       probationStartBlock: 3,
       probationEndBlock: 3 + INVITE_PROBATION_BLOCKS,
@@ -1050,8 +1023,8 @@ describe('invites service', () => {
 
     const secret = new Uint8Array(32).fill(0xaa);
     const secretHash = createHash('blake2b512').update(Buffer.from(secret)).digest().subarray(0, 32);
-    const inviteBox = insertInviteBox(INVITE_KARMA_AMOUNT, 1, secretHash, inviterId);
-    const bondBox = insertBondBox(INVITE_BOND_KARMA, 1, inviterId, inviteBox.id!);
+    const { inviteBox, bondBox } = insertInviteAndBond(
+      INVITE_KARMA_AMOUNT, INVITE_BOND_KARMA, 1, secretHash, inviterId);
 
     // Simulate confirmed claim by marking invite box as spent
     db.prepare('UPDATE utxo_boxes SET spent_at_block = ? WHERE id = ?').run(3, inviteBox.id);
@@ -1061,11 +1034,9 @@ describe('invites service', () => {
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: totalValue,
-      createdAtBlock: 10,
       owner: inviterPubKey,
       guard: 'owner_signature',
       proofSource: `invite-cancel:${inviteBox.id}`,
-      lastTouchBlock: 10,
     };
 
     const tx: UtxoTransaction = {
@@ -1088,18 +1059,16 @@ describe('invites service', () => {
 
     const secret = new Uint8Array(32).fill(0xaa);
     const secretHash = createHash('blake2b512').update(Buffer.from(secret)).digest().subarray(0, 32);
-    const inviteBox = insertInviteBox(INVITE_KARMA_AMOUNT, 1, secretHash, inviterId);
-    const bondBox = insertBondBox(INVITE_BOND_KARMA, 1, inviterId, inviteBox.id!);
+    const { inviteBox, bondBox } = insertInviteAndBond(
+      INVITE_KARMA_AMOUNT, INVITE_BOND_KARMA, 1, secretHash, inviterId);
 
     const totalValue = 100n + INVITE_KARMA_AMOUNT + INVITE_BOND_KARMA;
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: totalValue,
-      createdAtBlock: 5,
       owner: inviterPubKey,
       guard: 'owner_signature',
       proofSource: `invite-cancel:${inviteBox.id}`,
-      lastTouchBlock: 5,
     };
 
     const tx: UtxoTransaction = {
@@ -1145,8 +1114,8 @@ describe('invites service', () => {
         .update(Buffer.from(secret))
         .digest()
         .subarray(0, 32);
-      inviteBox = insertInviteBox(INVITE_KARMA_AMOUNT, 1, secretHash, inviterId);
-      bondBox = insertBondBox(INVITE_BOND_KARMA, 1, inviterId, inviteBox.id!);
+      ({ inviteBox, bondBox } = insertInviteAndBond(
+        INVITE_KARMA_AMOUNT, INVITE_BOND_KARMA, 1, secretHash, inviterId));
     });
 
     /** Unsigned, otherwise well-formed commit: uncommitted bond → bond bound to `committedKey`. */
@@ -1154,9 +1123,8 @@ describe('invites service', () => {
       const bondOut: BondBox = {
         boxType: 'bond',
         value: INVITE_BOND_KARMA,
-        createdAtBlock: 5,
         inviterId,
-        inviteBoxId: inviteBox.id!,
+        inviteOutputIndex: 0,
         inviteePublicKey: committedKey,
         probationStartBlock: 5,
         probationEndBlock: 5 + INVITE_PROBATION_BLOCKS,

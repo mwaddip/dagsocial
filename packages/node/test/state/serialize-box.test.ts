@@ -15,11 +15,9 @@ describe('serializeBox', () => {
       id: 'ab'.repeat(32),
       boxType: 'karma' as const,
       value: 100n,
-      createdAtBlock: 5,
       owner: new Uint8Array(32).fill(0xaa),
       guard: 'owner_signature' as const,
       proofSource: 'mint-1',
-      lastTouchBlock: 5,
     };
     const serialized = serializeBox(box);
     const deserialized = deserializeBoxWithId(box.id, serialized);
@@ -31,7 +29,6 @@ describe('serializeBox', () => {
       id: 'cd'.repeat(32),
       boxType: 'credit' as const,
       value: 50n,
-      createdAtBlock: 10,
       owner: new Uint8Array(32).fill(0xbb),
       guard: 'owner_signature' as const,
       proofSource: 10,
@@ -45,7 +42,6 @@ describe('serializeBox', () => {
       id: 'ef'.repeat(32),
       boxType: 'like' as const,
       value: 2n,
-      createdAtBlock: 3,
       likerId: new Uint8Array(32).fill(0x11),
       targetPostId: 'post-1',
       guard: 'epoch_tally' as const,
@@ -58,7 +54,6 @@ describe('serializeBox', () => {
       id: 'gh'.repeat(32),
       boxType: 'invite' as const,
       value: 10n,
-      createdAtBlock: 7,
       secretHash: new Uint8Array(32).fill(0x22),
       inviterId: new Uint8Array(32).fill(0x33),
       guard: 'hash_preimage_with_bond' as const,
@@ -71,9 +66,8 @@ describe('serializeBox', () => {
       id: 'ij'.repeat(32),
       boxType: 'bond' as const,
       value: 5n,
-      createdAtBlock: 7,
       inviterId: new Uint8Array(32).fill(0x33),
-      inviteBoxId: 'gh'.repeat(32),
+      inviteOutputIndex: 0,
       inviteePublicKey: new Uint8Array(32),
       probationStartBlock: 0,
       probationEndBlock: 0,
@@ -88,7 +82,6 @@ describe('serializeBox', () => {
       boxType: 'post_lock' as const,
       value: 5n,
       originalValue: 5n,
-      createdAtBlock: 4,
       owner: new Uint8Array(32).fill(0x44),
       targetPostId: 'post-2',
       guard: 'epoch_tally' as const,
@@ -101,11 +94,9 @@ describe('serializeBox', () => {
       id: 'mn'.repeat(32),
       boxType: 'karma' as const,
       value: 42n,
-      createdAtBlock: 1,
       owner: new Uint8Array(32).fill(0x55),
       guard: 'owner_signature' as const,
       proofSource: 'mint-0',
-      lastTouchBlock: 1,
     };
     const a = serializeBox(box);
     const b = serializeBox({ ...box });
@@ -117,11 +108,9 @@ describe('serializeBox', () => {
       id: 'op'.repeat(32),
       boxType: 'karma' as const,
       value: 1n,
-      createdAtBlock: 0,
       owner: new Uint8Array(32),
       guard: 'owner_signature' as const,
       proofSource: '',
-      lastTouchBlock: 0,
     };
     const fields = deserializeBox(serializeBox(box));
     expect(fields).not.toHaveProperty('id');
@@ -133,11 +122,9 @@ describe('serializeBox', () => {
       id: 'qr'.repeat(32),
       boxType: 'karma' as const,
       value: 1n,
-      createdAtBlock: 0,
       owner: new Uint8Array(32),
       guard: 'owner_signature' as const,
       proofSource: '',
-      lastTouchBlock: 0,
     };
     const bytes = serializeBox(box);
     expect(() => deserializeBox(bytes.slice(0, 3))).toThrow();

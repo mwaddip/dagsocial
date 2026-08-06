@@ -39,7 +39,6 @@ function creditCandidate(value: bigint, owner: Uint8Array): CreditBox {
   return {
     boxType: 'credit',
     value,
-    createdAtBlock: 12,
     owner,
     guard: 'owner_signature',
     proofSource: -1,
@@ -64,17 +63,26 @@ describe('transaction output provenance (Spec G phase C3)', () => {
     expect(outputs[1]!.index).toBe(1);
   });
 
-  it('leaves the box id unmoved — provenance is stripped before it is hashed', async () => {
+  it('binds the box id to the transaction and the position it was created at', async () => {
     const { materializeOutput } = await import('../../src/services/utxo-engine.js');
+    const { computeCandidateBoxId } = await import('@dagsocial/types');
 
-    // The load-bearing invariant for every phase before G: attaching provenance
-    // must not move an id. `computeBoxId` strips it via `canonicalBoxBytes`.
+    // Inverted by phase G3b. This asserted that attaching provenance must NOT
+    // move an id — the load-bearing invariant for every phase *before* G, since
+    // ids had to stay put while producers moved over. From G3b on the opposite
+    // is required: an id that ignored its own provenance would be the M-11 id.
     const candidate = creditCandidate(100n, user(0xb1));
     const materialized = materializeOutput(candidate, TX_ID, 3);
-    expect(materialized.id).toBe(computeBoxId(candidate));
+
+    expect(materialized.id).toBe(computeCandidateBoxId(candidate, TX_ID, 3));
+    // Same candidate, different outpoint — different box. This is what makes
+    // two byte-identical outputs in one transaction distinguishable, which the
+    // content hash could not do (the `utxo_boxes.id` PK collision).
+    expect(materializeOutput(candidate, TX_ID, 4).id).not.toBe(materialized.id);
+    expect(materializeOutput(candidate, 'a'.repeat(64), 3).id).not.toBe(materialized.id);
   });
 
-  it('appends provenance last, so the store reconstruction is byte-identical', async () => {
+  it('the store reconstruction is byte-identical (key order is canonical now)', async () => {
     const { initDb } = await importDbFresh();
     const { insertBox, getBox } = await importUtxoFresh();
     const { serializeBox } = await import('../../src/state/serialize-box.js');
@@ -107,7 +115,6 @@ describe('transaction output provenance (Spec G phase C3)', () => {
       txId: 'aa'.repeat(32),
       index: 99,
       value: 100n,
-      createdAtBlock: 12,
       owner: user(0xd1),
       guard: 'owner_signature',
       proofSource: -1,
@@ -142,29 +149,29 @@ describe('transaction output provenance (Spec G phase C3)', () => {
     // identity does not hold for it and never did.
     const candidates: AnyBox[] = [
       {
-        boxType: 'karma', value: 5n, createdAtBlock: 12, owner: user(0xe1),
-        guard: 'owner_signature', proofSource: 'p', lastTouchBlock: 12,
+        boxType: 'karma', value: 5n, owner: user(0xe1),
+        guard: 'owner_signature', proofSource: 'p', 
       } satisfies KarmaBox,
       creditCandidate(7n, user(0xe2)),
       {
-        boxType: 'credit', value: 8n, createdAtBlock: 12, owner: user(0xe3),
+        boxType: 'credit', value: 8n, owner: user(0xe3),
         guard: 'owner_signature', proofSource: -1, lockedUntilBlock: 900,
       } satisfies CreditBox,
       {
-        boxType: 'like', value: 2n, createdAtBlock: 12, likerId: user(0xe4),
+        boxType: 'like', value: 2n, likerId: user(0xe4),
         targetPostId: 'ab'.repeat(32), guard: 'epoch_tally',
       },
       {
-        boxType: 'invite', value: 1n, createdAtBlock: 12, secretHash: user(0xe5),
+        boxType: 'invite', value: 1n, secretHash: user(0xe5),
         inviterId: user(0xe6), guard: 'hash_preimage_with_bond',
       },
       {
-        boxType: 'bond', value: 3n, createdAtBlock: 12, inviterId: user(0xe7),
-        inviteBoxId: 'cd'.repeat(32), inviteePublicKey: user(0xe8),
+        boxType: 'bond', value: 3n, inviterId: user(0xe7),
+        inviteOutputIndex: 0, inviteePublicKey: user(0xe8),
         probationStartBlock: 1, probationEndBlock: 9, guard: 'bond_dual',
       },
       {
-        boxType: 'vouch', value: 1n, createdAtBlock: 12, voucherId: user(0xe9),
+        boxType: 'vouch', value: 1n, voucherId: user(0xe9),
         targetId: user(0xea), guard: 'owner_signature',
       },
     ] as AnyBox[];
@@ -182,7 +189,17 @@ describe('transaction output provenance (Spec G phase C3)', () => {
     });
   });
 
-  it('applyTx rewrites createdAtBlock without displacing provenance', async () => {
+  it('applyTx stores the materialized box unchanged, and the height goes to the column', async () => {
+    // Was "applyTx rewrites createdAtBlock without displacing provenance".
+    // There is no rewrite any more: that rewrite WAS M-11 — it moved the box's
+    // height while leaving the id committed to the client's declared one — and
+    // phase G3b closes it by deleting the field rather than by rewriting it.
+    //
+    // Two things replace the old assertion. The stored box must be byte-identical
+    // to what `materializeOutput` produced, because any key added or reordered on
+    // the way in now changes the id. And the settled height must still reach the
+    // `created_at_block` store column, taken from the open journal — the only
+    // place `insertBox` can now get it (checklist item 7).
     const { initDb } = await importDbFresh();
     const { insertBox, getBox } = await importUtxoFresh();
     const { serializeBox } = await import('../../src/state/serialize-box.js');
@@ -206,15 +223,14 @@ describe('transaction output provenance (Spec G phase C3)', () => {
       777,
     );
 
-    // `createdAtBlock` is an existing key, so the rewrite updates it in place
-    // and provenance stays at the end. The id is deliberately NOT re-derived —
-    // that is M-11, and phase G closes it by deleting the field.
     const restored = getBox(produced.id!)!;
-    expect(restored.createdAtBlock).toBe(777);
     expect(restored.txId).toBe(TX_ID);
     expect(restored.index).toBe(0);
+    // The box carries no height at all — that is the point of the deletion.
+    expect('createdAtBlock' in restored).toBe(false);
+    expect('lastTouchBlock' in restored).toBe(false);
     expect(Buffer.from(serializeBox(restored)).toString('hex')).toBe(
-      Buffer.from(serializeBox({ ...produced, createdAtBlock: 777 })).toString('hex'),
+      Buffer.from(serializeBox({ ...produced })).toString('hex'),
     );
   });
 });

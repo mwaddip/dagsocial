@@ -61,12 +61,38 @@ const cborEncode = (obj: unknown): Uint8Array =>
   boxEncoder.encode(obj) as unknown as Uint8Array;
 
 /**
+ * Impose a total, caller-independent order on an object's own keys.
+ *
+ * Mirrors `canonicalBoxBytes`'s rule in `@dagsocial/types` — the same
+ * lexicographic sort, applied to the other encoder. `Array.prototype.sort` with
+ * no comparator compares UTF-16 code units and is **not** locale-aware, so it is
+ * deterministic across platforms; every box field name is ASCII, so the order is
+ * plain byte order.
+ */
+function sortKeys(obj: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(obj).sort()) out[key] = obj[key];
+  return out;
+}
+
+/**
  * Serialize an AnyBox to a deterministic Uint8Array.
- * Format: boxTypeTag(1) || CBOR(boxFields)
+ * Format: boxTypeTag(1) || CBOR(sorted boxFields)
  *
  * The box `id` is NOT included in the CBOR payload — it is the AVL key,
  * not part of the value. The `boxType` is encoded as a tag byte so
  * deserialization can reconstruct the discriminant.
+ *
+ * **Key order is imposed here, not inherited from the caller** (Spec G phase
+ * G3b, contract hazard 1b). This encoder uses `variableMapSize: false` and
+ * cbor-x emits keys in JS insertion order, so before this the caller's field
+ * order was consensus-visible in the `stateRoot`. The convention was that
+ * `rowToBox` mirrored each producer's order; `post_lock` did not obey it
+ * (`originalValue`/`createdAtBlock` transposed), which made wiping the AVL store
+ * without wiping the chain silently change the root. Sorting at the single
+ * encode site retires that: a producer can no longer get key order wrong,
+ * because it no longer chooses it. `withProvenance`'s append-last discipline in
+ * `store/utxo.ts` is likewise no longer load-bearing.
  */
 export function serializeBox(box: AnyBox): Uint8Array {
   const tag = BOX_TYPE_TAG[box.boxType];
@@ -75,7 +101,7 @@ export function serializeBox(box: AnyBox): Uint8Array {
   // Omit `id` and `boxType` from CBOR — id is the AVL key, boxType is the tag byte
   const { id: _id, boxType: _bt, ...fields } = box;
 
-  const payload = cborEncode(fields);
+  const payload = cborEncode(sortKeys(fields));
 
   const out = new Uint8Array(1 + payload.length);
   out[0] = tag;

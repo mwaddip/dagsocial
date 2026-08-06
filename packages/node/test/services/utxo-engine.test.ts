@@ -1,4 +1,7 @@
-import { uid } from '../helpers.js';
+import {
+  seedAsOneTx,
+  fixtureProvenance,
+  uid } from '../helpers.js';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   generateKeyPairSync,
@@ -7,6 +10,7 @@ import {
   type KeyObject,
 } from 'crypto';
 import {
+  computeCandidateBoxId,
   computeBoxId,
   computeTxId,
   LIKE_COST,
@@ -32,6 +36,7 @@ import {
   closeDb,
   getDb,
   getBox as storeGetBox,
+  getBoxByProvenance as storeGetBoxByProvenance,
   getKarmaBox,
   insertBox as storeInsertBox,
   consumeBox as storeConsumeBox,
@@ -99,6 +104,7 @@ describe('validateAndApplyTx', () => {
           .get(id) as { spent_at_block: number | null } | undefined;
         return r && r.spent_at_block === null ? box : null;
       },
+      getBoxByProvenance: storeGetBoxByProvenance,
       insertBox: (box: AnyBox) => storeInsertBox(box),
       consumeBox: (id: string, atBlock: number) => storeConsumeBox(id, atBlock),
       getKarmaBox: (owner: Uint8Array) => getKarmaBox(owner),
@@ -133,18 +139,17 @@ describe('validateAndApplyTx', () => {
   function createAndInsertKarma(
     owner: Uint8Array,
     value: bigint,
-    createdAtBlock: number,
+    seed: number,
     proofSource = 'test',
   ): KarmaBox {
     const box: Omit<KarmaBox, 'id'> & { id?: string } = {
       boxType: 'karma',
       value,
-      createdAtBlock,
       owner,
       guard: 'owner_signature',
       proofSource,
-      lastTouchBlock: createdAtBlock,
     };
+    Object.assign(box, fixtureProvenance(box, seed));
     const id = computeBoxId(box);
     const full: KarmaBox = { ...box, id, boxType: 'karma', guard: 'owner_signature' };
     storeInsertBox(full);
@@ -180,11 +185,9 @@ describe('validateAndApplyTx', () => {
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: 100n,
-      createdAtBlock: 10,
       owner: ownerPubKey,
       guard: 'owner_signature',
       proofSource: 'test',
-      lastTouchBlock: 10,
     };
 
     const tx = buildSignedTx([karma.id!], [newKarma], ownerPrivKey, ownerPubKey);
@@ -196,8 +199,13 @@ describe('validateAndApplyTx', () => {
     // Input box should now be spent
     expect(deps.getBox(karma.id!)).toBeNull();
 
-    // Output box should exist and have an id assigned
-    const outputBox = deps.getBox(computeBoxId(newKarma));
+    // Output box should exist and have an id assigned.
+    //
+    // Derived from the transaction's own id and the output's position, not from
+    // the bare candidate: `computeBoxId` binds provenance as of phase G3b, so
+    // re-deriving from a candidate with none yields a stable but meaningless id
+    // — the test would look green while asserting nothing (report §F3).
+    const outputBox = deps.getBox(computeCandidateBoxId(newKarma, result.txId!, 0));
     expect(outputBox).not.toBeNull();
     expect(outputBox!.boxType).toBe('karma');
     expect((outputBox as KarmaBox).value).toBe(100n);
@@ -212,30 +220,27 @@ describe('validateAndApplyTx', () => {
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: 70n,
-      createdAtBlock: 10,
       owner: ownerPubKey,
       guard: 'owner_signature',
       proofSource: 'test',
-      lastTouchBlock: 10,
     };
 
     const secretHash = new Uint8Array(32).fill(0xaa);
     const inviteBox: InviteBox = {
       boxType: 'invite',
       value: 15n,
-      createdAtBlock: 10,
       secretHash,
       inviterId: ownerUserId,
       guard: 'hash_preimage_with_bond',
     };
+    Object.assign(inviteBox, fixtureProvenance(inviteBox, 1));
     const inviteId = computeBoxId(inviteBox);
 
     const bondBox: BondBox = {
       boxType: 'bond',
       value: 15n,
-      createdAtBlock: 10,
       inviterId: ownerUserId,
-      inviteBoxId: inviteId,
+      inviteOutputIndex: 0,
       inviteePublicKey: new Uint8Array(32),
       probationStartBlock: 0,
       probationEndBlock: 0,
@@ -254,9 +259,9 @@ describe('validateAndApplyTx', () => {
     expect(result.error).toBeUndefined();
 
     // All outputs should exist
-    expect(deps.getBox(computeBoxId(newKarma))).not.toBeNull();
-    expect(deps.getBox(computeBoxId(inviteBox))).not.toBeNull();
-    expect(deps.getBox(computeBoxId(bondBox))).not.toBeNull();
+    expect(deps.getBox(computeCandidateBoxId(newKarma, result.txId!, 0))).not.toBeNull();
+    expect(deps.getBox(computeCandidateBoxId(inviteBox, result.txId!, 1))).not.toBeNull();
+    expect(deps.getBox(computeCandidateBoxId(bondBox, result.txId!, 2))).not.toBeNull();
   });
 
   // -------------------------------------------------------------------------
@@ -268,17 +273,14 @@ describe('validateAndApplyTx', () => {
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: 98n,
-      createdAtBlock: 10,
       owner: ownerPubKey,
       guard: 'owner_signature',
       proofSource: 'test',
-      lastTouchBlock: 10,
     };
 
     const likeBox: LikeBox = {
       boxType: 'like',
       value: LIKE_COST,
-      createdAtBlock: 10,
       likerId: ownerUserId,
       targetPostId: 'aa'.repeat(32),
       guard: 'epoch_tally',
@@ -294,7 +296,7 @@ describe('validateAndApplyTx', () => {
 
     expect(result.valid).toBe(true);
     expect(result.error).toBeUndefined();
-    expect(deps.getBox(computeBoxId(likeBox))).not.toBeNull();
+    expect(deps.getBox(computeCandidateBoxId(likeBox, result.txId!, 1))).not.toBeNull();
   });
 
   // -------------------------------------------------------------------------
@@ -309,11 +311,9 @@ describe('validateAndApplyTx', () => {
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: 100n,
-      createdAtBlock: 10,
       owner: ownerPubKey,
       guard: 'owner_signature',
       proofSource: 'test',
-      lastTouchBlock: 10,
     };
 
     const tx = buildSignedTx([karma.id!], [newKarma], ownerPrivKey, ownerPubKey);
@@ -333,11 +333,9 @@ describe('validateAndApplyTx', () => {
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: 120n,
-      createdAtBlock: 10,
       owner: ownerPubKey,
       guard: 'owner_signature',
       proofSource: 'test',
-      lastTouchBlock: 10,
     };
 
     const tx = buildSignedTx([karma.id!], [newKarma], ownerPrivKey, ownerPubKey);
@@ -363,11 +361,9 @@ describe('validateAndApplyTx', () => {
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: 100n,
-      createdAtBlock: 10,
       owner: otherPubRaw,
       guard: 'owner_signature',
       proofSource: 'test',
-      lastTouchBlock: 10,
     };
 
     const tx = buildSignedTx([karma.id!], [newKarma], ownerPrivKey, ownerPubKey);
@@ -386,11 +382,9 @@ describe('validateAndApplyTx', () => {
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: 100n,
-      createdAtBlock: 10,
       owner: ownerPubKey,
       guard: 'owner_signature',
       proofSource: 'test',
-      lastTouchBlock: 10,
     };
 
     // Build tx WITHOUT the owner's signature
@@ -415,11 +409,9 @@ describe('validateAndApplyTx', () => {
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: 100n,
-      createdAtBlock: 10,
       owner: ownerPubKey,
       guard: 'owner_signature',
       proofSource: 'test',
-      lastTouchBlock: 10,
     };
 
     const tx = buildSignedTx([karma.id!], [newKarma], ownerPrivKey, ownerPubKey);
@@ -455,22 +447,17 @@ describe('validateAndApplyTx', () => {
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: 100n - LIKE_COST,
-      createdAtBlock: 10,
       owner: ownerPubKey,
       guard: 'owner_signature',
       proofSource: 'test',
-      lastTouchBlock: 10,
     };
     const likeBox: LikeBox = {
       boxType: 'like',
       value: LIKE_COST,
-      createdAtBlock: 10,
       likerId: ownerUserId,
       targetPostId: 'bb'.repeat(32),
       guard: 'epoch_tally',
     };
-
-    const expectedIds = [computeBoxId(newKarma), computeBoxId(likeBox)];
 
     const tx = buildSignedTx(
       [karma.id!],
@@ -482,7 +469,11 @@ describe('validateAndApplyTx', () => {
 
     expect(result.valid).toBe(true);
 
-    // All output boxes should exist with their computed IDs
+    // All output boxes should exist with their computed IDs, derived from the
+    // transaction's own id and each output's position.
+    const expectedIds = [newKarma, likeBox].map((c, i) =>
+      computeCandidateBoxId(c, result.txId!, i),
+    );
     for (const expectedId of expectedIds) {
       const box = storeGetBox(expectedId);
       expect(box).not.toBeNull();
@@ -499,11 +490,9 @@ describe('validateAndApplyTx', () => {
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: 100n,
-      createdAtBlock: 10,
       owner: ownerPubKey,
       guard: 'owner_signature',
       proofSource: 'test',
-      lastTouchBlock: 10,
     };
 
     const tx = buildSignedTx([karma.id!], [newKarma], ownerPrivKey, ownerPubKey);
@@ -512,7 +501,9 @@ describe('validateAndApplyTx', () => {
     expect(result.valid).toBe(true);
     expect(result.computedOutputs).toBeDefined();
     expect(result.computedOutputs!.length).toBe(1);
-    expect(result.computedOutputs![0]!.id).toBe(computeBoxId(newKarma));
+    expect(result.computedOutputs![0]!.id).toBe(
+      computeCandidateBoxId(newKarma, result.txId!, 0),
+    );
     expect(result.txId).toBeDefined();
 
     // Box should still exist and be unspent (getBox returns null for spent boxes)
@@ -553,39 +544,41 @@ describe('validateAndApplyTx', () => {
       const inviteBox: InviteBox = {
         boxType: 'invite',
         value: 25n,
-        createdAtBlock: 1,
         secretHash,
         inviterId: inviterPubKey,
         guard: 'hash_preimage_with_bond',
       };
-      inviteBoxId = computeBoxId(inviteBox);
-      storeInsertBox({ ...inviteBox, id: inviteBoxId });
-
-      // Create an unclaimed bond box paired with the invite
-      const bondBox: BondBox = {
-        boxType: 'bond',
+      // Create an unclaimed bond box paired with the invite.
+      //
+      // Seeded as outputs 0 and 1 of ONE synthetic transaction, because the bond
+      // now finds its invite at `(bond.txId, bond.inviteOutputIndex)`. Two
+      // independently-seeded boxes would leave the bond pointing at an index of
+      // a transaction with no invite at it — the mispairing the index form
+      // exists to make inexpressible, so the fixture must not fake it.
+      const bondCandidate = {
+        boxType: 'bond' as const,
         value: 25n,
-        createdAtBlock: 1,
         inviterId: inviterPubKey,
-        inviteBoxId: inviteBoxId,
+        inviteOutputIndex: 0,
         inviteePublicKey: new Uint8Array(0),
         probationStartBlock: 0,
         probationEndBlock: 0,
-        guard: 'bond_dual',
+        guard: 'bond_dual' as const,
       };
-      bondBoxId = computeBoxId(bondBox);
-      storeInsertBox({ ...bondBox, id: bondBoxId });
+      const [seededInvite, seededBond] = seedAsOneTx([inviteBox, bondCandidate]);
+      inviteBoxId = seededInvite!.id!;
+      bondBoxId = seededBond!.id!;
+      storeInsertBox(seededInvite!);
+      storeInsertBox(seededBond!);
     });
 
     it('rejects tx with no BondBox input', () => {
       const newKarmaBox: KarmaBox = {
         boxType: 'karma',
         value: 25n,
-        createdAtBlock: 10,
         owner: new Uint8Array(32),
         guard: 'owner_signature',
         proofSource: 'claim',
-        lastTouchBlock: 10,
       };
 
       const tx: UtxoTransaction = {
@@ -604,9 +597,8 @@ describe('validateAndApplyTx', () => {
       const bondOut: BondBox = {
         boxType: 'bond',
         value: 25n,
-        createdAtBlock: 1,
         inviterId: inviterPubKey,
-        inviteBoxId,
+        inviteOutputIndex: 0,
         inviteePublicKey: new Uint8Array(0),
         probationStartBlock: 0,
         probationEndBlock: 0,
@@ -615,11 +607,9 @@ describe('validateAndApplyTx', () => {
       const karmaOut: KarmaBox = {
         boxType: 'karma',
         value: 25n,
-        createdAtBlock: 10,
         owner: new Uint8Array(32),
         guard: 'owner_signature',
         proofSource: 'claim',
-        lastTouchBlock: 10,
       };
 
       const tx: UtxoTransaction = {
@@ -639,9 +629,8 @@ describe('validateAndApplyTx', () => {
       const bondOut: BondBox = {
         boxType: 'bond',
         value: 25n,
-        createdAtBlock: 1,
         inviterId: inviterPubKey,
-        inviteBoxId,
+        inviteOutputIndex: 0,
         inviteePublicKey: new Uint8Array(0),
         probationStartBlock: 0,
         probationEndBlock: 0,
@@ -650,11 +639,9 @@ describe('validateAndApplyTx', () => {
       const karmaOut: KarmaBox = {
         boxType: 'karma',
         value: 25n,
-        createdAtBlock: 10,
         owner: new Uint8Array(32),
         guard: 'owner_signature',
         proofSource: 'claim',
-        lastTouchBlock: 10,
       };
 
       const tx: UtxoTransaction = {
@@ -677,7 +664,7 @@ describe('validateAndApplyTx', () => {
       ).run(
         JSON.stringify({
           inviterId: Buffer.from(inviterPubKey).toString('hex'),
-          inviteBoxId,
+          inviteOutputIndex: 0,
           inviteePublicKey: Array.from(inviteePubKey),
           probationStartBlock: 3,
           probationEndBlock: 1003,
@@ -688,9 +675,8 @@ describe('validateAndApplyTx', () => {
       const bondOut: BondBox = {
         boxType: 'bond',
         value: 25n,
-        createdAtBlock: 1,
         inviterId: inviterPubKey,
-        inviteBoxId,
+        inviteOutputIndex: 0,
         inviteePublicKey: inviteePubKey,
         probationStartBlock: 3,
         probationEndBlock: 1003,
@@ -699,11 +685,9 @@ describe('validateAndApplyTx', () => {
       const karmaOut: KarmaBox = {
         boxType: 'karma',
         value: 25n,
-        createdAtBlock: 10,
         owner: inviteePubKey,
         guard: 'owner_signature',
         proofSource: 'claim',
-        lastTouchBlock: 10,
       };
 
       const tx: UtxoTransaction = {
@@ -751,28 +735,27 @@ describe('validateAndApplyTx', () => {
       const inviteBox: InviteBox = {
         boxType: 'invite',
         value: 25n,
-        createdAtBlock: 1,
         secretHash,
         inviterId: inviterPubKey,
         guard: 'hash_preimage_with_bond',
       };
-      inviteBoxId = computeBoxId(inviteBox);
-      storeInsertBox({ ...inviteBox, id: inviteBoxId });
-
-      // Create unclaimed bond box paired with invite
-      const bondBox: BondBox = {
-        boxType: 'bond',
+      // Invite and bond seeded as outputs 0 and 1 of ONE synthetic transaction —
+      // the bond resolves its invite from `(txId, inviteOutputIndex)`.
+      const bondCandidate = {
+        boxType: 'bond' as const,
         value: 25n,
-        createdAtBlock: 1,
         inviterId: inviterPubKey,
-        inviteBoxId: inviteBoxId,
+        inviteOutputIndex: 0,
         inviteePublicKey: new Uint8Array(0),
         probationStartBlock: 0,
         probationEndBlock: 0,
-        guard: 'bond_dual',
+        guard: 'bond_dual' as const,
       };
-      bondBoxId = computeBoxId(bondBox);
-      storeInsertBox({ ...bondBox, id: bondBoxId });
+      const [seededInvite, seededBond] = seedAsOneTx([inviteBox, bondCandidate]);
+      inviteBoxId = seededInvite!.id!;
+      bondBoxId = seededBond!.id!;
+      storeInsertBox(seededInvite!);
+      storeInsertBox(seededBond!);
     });
 
     /** Build a signed reveal tx with preimages and invitee signature. */
@@ -800,7 +783,7 @@ describe('validateAndApplyTx', () => {
       ).run(
         JSON.stringify({
           inviterId: Buffer.from(inviterPubKey).toString('hex'),
-          inviteBoxId,
+          inviteOutputIndex: 0,
           inviteePublicKey: Array.from(inviteePubKey),
           probationStartBlock: 3,
           probationEndBlock: 1003,
@@ -811,18 +794,15 @@ describe('validateAndApplyTx', () => {
       const karmaOut: KarmaBox = {
         boxType: 'karma',
         value: 25n,
-        createdAtBlock: 10,
         owner: inviteePubKey,
         guard: 'owner_signature',
         proofSource: 'claim',
-        lastTouchBlock: 10,
       };
       const bondOut: BondBox = {
         boxType: 'bond',
         value: 25n,
-        createdAtBlock: 1,
         inviterId: inviterPubKey,
-        inviteBoxId,
+        inviteOutputIndex: 0,
         inviteePublicKey: inviteePubKey,
         probationStartBlock: 3,
         probationEndBlock: 1003,
@@ -840,11 +820,9 @@ describe('validateAndApplyTx', () => {
       const karmaOut: KarmaBox = {
         boxType: 'karma',
         value: 50n,
-        createdAtBlock: 10,
         owner: inviteePubKey,
         guard: 'owner_signature',
         proofSource: 'claim',
-        lastTouchBlock: 10,
       };
 
       const tx: UtxoTransaction = {
@@ -867,18 +845,15 @@ describe('validateAndApplyTx', () => {
       const karmaOut: KarmaBox = {
         boxType: 'karma',
         value: 25n,
-        createdAtBlock: 10,
         owner: inviteePubKey,
         guard: 'owner_signature',
         proofSource: 'claim',
-        lastTouchBlock: 10,
       };
       const bondOut: BondBox = {
         boxType: 'bond',
         value: 25n,
-        createdAtBlock: 1,
         inviterId: inviterPubKey,
-        inviteBoxId,
+        inviteOutputIndex: 0,
         inviteePublicKey: new Uint8Array(0),
         probationStartBlock: 0,
         probationEndBlock: 0,
@@ -918,16 +893,13 @@ describe('validateAndApplyTx', () => {
       const newKarma: KarmaBox = {
         boxType: 'karma',
         value: 100n,
-        createdAtBlock: 10,
         owner: ownerPubKey,
         guard: 'owner_signature',
         proofSource: 'test',
-        lastTouchBlock: 10,
       };
       const likeBox: LikeBox = {
         boxType: 'like',
         value: LIKE_COST,
-        createdAtBlock: 10,
         likerId: ownerUserId,
         targetPostId: 'cc'.repeat(32),
         guard: 'epoch_tally',
@@ -957,16 +929,13 @@ describe('validateAndApplyTx', () => {
       const newKarma: KarmaBox = {
         boxType: 'karma',
         value: 100n - LIKE_COST,
-        createdAtBlock: 10,
         owner: ownerPubKey,
         guard: 'owner_signature',
         proofSource: 'test',
-        lastTouchBlock: 10,
       };
       const likeBox: LikeBox = {
         boxType: 'like',
         value: LIKE_COST,
-        createdAtBlock: 10,
         likerId: ownerUserId,
         targetPostId: 'dd'.repeat(32),
         guard: 'epoch_tally',
@@ -1001,11 +970,9 @@ describe('validateAndApplyTx', () => {
         const newKarma = {
           boxType: 'karma',
           value: badValue,
-          createdAtBlock: 10,
           owner: ownerPubKey,
           guard: 'owner_signature',
           proofSource: 'test',
-          lastTouchBlock: 10,
         } as unknown as KarmaBox;
 
         const tx = buildSignedTx([karma.id!], [newKarma], ownerPrivKey, ownerPubKey);
@@ -1025,16 +992,13 @@ describe('validateAndApplyTx', () => {
       const newKarma: KarmaBox = {
         boxType: 'karma',
         value: 15n,
-        createdAtBlock: 10,
         owner: ownerPubKey,
         guard: 'owner_signature',
         proofSource: 'test',
-        lastTouchBlock: 10,
       };
       const likeBox = {
         boxType: 'like',
         value: -5,
-        createdAtBlock: 10,
         likerId: ownerUserId,
         targetPostId: 'ee'.repeat(32),
         guard: 'epoch_tally',
@@ -1062,17 +1026,14 @@ describe('validateAndApplyTx', () => {
       const newKarma: KarmaBox = {
         boxType: 'karma',
         value: 100n - POST_LOCK_THREAD_COST,
-        createdAtBlock: 10,
         owner: ownerPubKey,
         guard: 'owner_signature',
         proofSource: 'test',
-        lastTouchBlock: 10,
       };
       const postLock: PostLockBox = {
         boxType: 'post_lock',
         value: POST_LOCK_THREAD_COST,
         originalValue: POST_LOCK_THREAD_COST,
-        createdAtBlock: 10,
         owner: ownerPubKey,
         targetPostId: 'ab'.repeat(32),
         guard: 'epoch_tally',
@@ -1098,16 +1059,13 @@ describe('validateAndApplyTx', () => {
       const newKarma: KarmaBox = {
         boxType: 'karma',
         value: 100n - VOUCH_KARMA_AMOUNT,
-        createdAtBlock: 10,
         owner: ownerPubKey,
         guard: 'owner_signature',
         proofSource: 'test',
-        lastTouchBlock: 10,
       };
       const vouchBox: VouchBox = {
         boxType: 'vouch',
         value: VOUCH_KARMA_AMOUNT,
-        createdAtBlock: 10,
         voucherId: ownerPubKey,
         targetId: targetPubRaw,
         guard: 'owner_signature',
@@ -1131,16 +1089,13 @@ describe('validateAndApplyTx', () => {
       const newKarma: KarmaBox = {
         boxType: 'karma',
         value: 100n - INVITE_KARMA_AMOUNT - INVITE_BOND_KARMA,
-        createdAtBlock: 10,
         owner: ownerPubKey,
         guard: 'owner_signature',
         proofSource: 'test',
-        lastTouchBlock: 10,
       };
       const inviteBox: InviteBox = {
         boxType: 'invite',
         value: INVITE_KARMA_AMOUNT,
-        createdAtBlock: 10,
         secretHash: new Uint8Array(32).fill(0xbb),
         inviterId: ownerUserId,
         guard: 'hash_preimage_with_bond',
@@ -1148,9 +1103,8 @@ describe('validateAndApplyTx', () => {
       const bondBox: BondBox = {
         boxType: 'bond',
         value: INVITE_BOND_KARMA,
-        createdAtBlock: 10,
         inviterId: ownerUserId,
-        inviteBoxId: computeBoxId(inviteBox),
+        inviteOutputIndex: 0,
         inviteePublicKey: new Uint8Array(0),
         probationStartBlock: 0,
         probationEndBlock: 0,
@@ -1177,16 +1131,13 @@ describe('validateAndApplyTx', () => {
       const newKarma: KarmaBox = {
         boxType: 'karma',
         value: 100n,
-        createdAtBlock: 10,
         owner: ownerPubKey,
         guard: 'owner_signature',
         proofSource: 'test',
-        lastTouchBlock: 10,
       };
       const inviteBox: InviteBox = {
         boxType: 'invite',
         value: INVITE_KARMA_AMOUNT,
-        createdAtBlock: 10,
         secretHash: new Uint8Array(32).fill(0xcc),
         inviterId: ownerUserId,
         guard: 'hash_preimage_with_bond',
@@ -1194,9 +1145,8 @@ describe('validateAndApplyTx', () => {
       const bondBox: BondBox = {
         boxType: 'bond',
         value: INVITE_BOND_KARMA,
-        createdAtBlock: 10,
         inviterId: ownerUserId,
-        inviteBoxId: computeBoxId(inviteBox),
+        inviteOutputIndex: 0,
         inviteePublicKey: new Uint8Array(0),
         probationStartBlock: 0,
         probationEndBlock: 0,
@@ -1219,14 +1169,14 @@ describe('validateAndApplyTx', () => {
       const bondBox: BondBox = {
         boxType: 'bond',
         value: INVITE_BOND_KARMA,
-        createdAtBlock: 1,
         inviterId: ownerPubKey,
-        inviteBoxId: 'ff'.repeat(32),
+        inviteOutputIndex: 0,
         inviteePublicKey: new Uint8Array(0),
         probationStartBlock: 0,
         probationEndBlock: 0,
         guard: 'bond_dual',
       };
+      Object.assign(bondBox, fixtureProvenance(bondBox, 1));
       const bondBoxId = computeBoxId(bondBox);
       storeInsertBox({ ...bondBox, id: bondBoxId });
 
@@ -1243,11 +1193,11 @@ describe('validateAndApplyTx', () => {
       const vouchBox: VouchBox = {
         boxType: 'vouch',
         value: VOUCH_KARMA_AMOUNT,
-        createdAtBlock: 1,
         voucherId: ownerPubKey,
         targetId: rawPublicKey(targetPub),
         guard: 'owner_signature',
       };
+      Object.assign(vouchBox, fixtureProvenance(vouchBox, 1));
       const vouchBoxId = computeBoxId(vouchBox);
       storeInsertBox({ ...vouchBox, id: vouchBoxId });
 
@@ -1279,19 +1229,19 @@ describe('validateAndApplyTx', () => {
       const creditBox = {
         boxType: 'credit' as const,
         value: 100n,
-        createdAtBlock: 1,
         owner: ownerPubKey,
         guard: 'owner_signature' as const,
         proofSource: 'test',
       };
+      Object.assign(creditBox, fixtureProvenance(creditBox, 1));
       const creditBoxId = computeBoxId(creditBox);
       storeInsertBox({ ...creditBox, id: creditBoxId } as AnyBox);
 
       const tx = buildSignedTx(
         [creditBoxId],
         [
-          { ...creditBox, value: 30n, owner: recipientRaw, createdAtBlock: 10 },
-          { ...creditBox, value: 70n, createdAtBlock: 10 },
+          { ...creditBox, value: 30n, owner: recipientRaw },
+          { ...creditBox, value: 70n },
         ] as AnyBox[],
         ownerPrivKey,
         ownerPubKey,
@@ -1351,28 +1301,28 @@ describe('validateAndApplyTx', () => {
       const inviteBox: InviteBox = {
         boxType: 'invite',
         value: INVITE_KARMA_AMOUNT,
-        createdAtBlock: 1,
         secretHash,
         inviterId: inviterPubKey,
         guard: 'hash_preimage_with_bond',
       };
-      inviteBoxId = computeBoxId(inviteBox);
-      storeInsertBox({ ...inviteBox, id: inviteBoxId });
-
-      // Uncommitted bond — the state the sweep depends on.
-      const bondBox: BondBox = {
-        boxType: 'bond',
+      // Uncommitted bond — the state the sweep depends on. Seeded with the
+      // invite as outputs 0 and 1 of ONE synthetic transaction, so the bond's
+      // `inviteOutputIndex` resolves to the invite it shipped with.
+      const bondCandidate = {
+        boxType: 'bond' as const,
         value: INVITE_BOND_KARMA,
-        createdAtBlock: 1,
         inviterId: inviterPubKey,
-        inviteBoxId,
+        inviteOutputIndex: 0,
         inviteePublicKey: new Uint8Array(0),
         probationStartBlock: 0,
         probationEndBlock: 0,
-        guard: 'bond_dual',
+        guard: 'bond_dual' as const,
       };
-      bondBoxId = computeBoxId(bondBox);
-      storeInsertBox({ ...bondBox, id: bondBoxId });
+      const [seededInvite, seededBond] = seedAsOneTx([inviteBox, bondCandidate], 1, 42);
+      inviteBoxId = seededInvite!.id!;
+      bondBoxId = seededBond!.id!;
+      storeInsertBox(seededInvite!);
+      storeInsertBox(seededBond!);
     });
 
     /**
@@ -1385,11 +1335,9 @@ describe('validateAndApplyTx', () => {
       const karmaOut: KarmaBox = {
         boxType: 'karma',
         value: SWEPT_TOTAL,
-        createdAtBlock: 10,
         owner: beneficiary,
         guard: 'owner_signature',
         proofSource: `invite-cancel:${inviteBoxId}`,
-        lastTouchBlock: 10,
       };
       return {
         inputs: [karmaInId, inviteBoxId, bondBoxId],

@@ -3,10 +3,12 @@ import express from 'express';
 import http from 'http';
 import { initDb, closeDb, getDb } from '../../src/store/db.js';
 import { getCurrentHeight } from '../../src/store/ordering.js';
+import { fixtureProvenance } from '../helpers.js';
 import {
   getKarmaBox,
   insertBox,
   getBox,
+  getBoxByProvenance,
 } from '../../src/store/utxo.js';
 import { getPendingEntries } from '../../src/store/mempool.js';
 import { initSystemKeypair, ensureSystemKarmaBox, getSystemKeypair } from '../../src/store/system.js';
@@ -52,6 +54,7 @@ function buildDeps(): FaucetDeps {
     getKarmaBox,
     getCurrentHeight,
     getBox,
+    getBoxByProvenance,
     insertBox,
     consumeBox: (id: string, atBlock: number) => {
       getDb().prepare('UPDATE utxo_boxes SET spent_at_block = ? WHERE id = ?').run(atBlock, id);
@@ -257,12 +260,11 @@ describe('faucet route', () => {
     const box: KarmaBox = {
       boxType: 'karma',
       value: 100n,
-      createdAtBlock: 1,
       owner: pk,
       guard: 'owner_signature',
       proofSource: 'faucet',
-      lastTouchBlock: 1,
     };
+    Object.assign(box, fixtureProvenance(box, 1));
     insertBox({ ...box, id: computeBoxId(box) });
 
     const app = buildApp(deps);
@@ -275,12 +277,11 @@ describe('faucet route', () => {
     const box: KarmaBox = {
       boxType: 'karma',
       value: 100n,
-      createdAtBlock: 1,
       owner: pk,
       guard: 'owner_signature',
       proofSource: 'faucet',
-      lastTouchBlock: 2,
     };
+    Object.assign(box, fixtureProvenance(box, 1));
     const boxId = computeBoxId(box);
     insertBox({ ...box, id: boxId });
     getDb().prepare('UPDATE utxo_boxes SET spent_at_block = ? WHERE id = ?').run(5, boxId);

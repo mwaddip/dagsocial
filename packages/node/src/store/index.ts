@@ -21,6 +21,7 @@ export {
 
 export {
   getBox,
+  getBoxByProvenance,
   getKarmaBox,
   getKarmaBoxes,
   getCreditBox,

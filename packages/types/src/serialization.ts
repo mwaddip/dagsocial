@@ -176,14 +176,14 @@ export function decodeOrderingBlock(bytes: Uint8Array): OrderingBlock {
 // UTXO transaction
 // ---------------------------------------------------------------------------
 
-export function serializeTx(tx: UtxoTransaction): Uint8Array {
-  // Exclude id from output boxes and only hash structural data
-  return toBuffer({
-    inputs: tx.inputs,
-    outputs: tx.outputs.map(({ id, ...rest }) => rest),
-    protocolVersion: tx.protocolVersion,
-  });
-}
+// `serializeTx` lived here and was deleted by Spec G phase G3b, for the reason
+// phase 0 deleted `serializeBox` eleven lines above: no `src` caller, and built
+// on cbor-x's *default* `encode` — neither of the two encoders that matter. Its
+// only reference was a determinism test, which went with it. A transaction's
+// identity comes from `computeTxId` in `utxo.ts`, which routes outputs through
+// `canonicalBoxBytes`; `serializeTx` carried a sixth copy of the id-only strip
+// that phase A fixed there, and pinning determinism against an encoder no
+// production path uses pinned nothing.
 
 export function encodeTx(tx: UtxoTransaction): Uint8Array {
   return toBuffer(tx);

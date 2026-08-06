@@ -75,6 +75,8 @@ export {
 export type {
   BoxId,
   BoxCandidate,
+  CandidateOf,
+  AnyBoxCandidate,
   BoxBase,
   BoxGuard,
   MintReason,
@@ -110,7 +112,6 @@ export type {
 
 // Serialization
 export {
-  serializeTx,
   encodePost,
   decodePost,
   encodeStump,

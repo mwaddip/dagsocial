@@ -3,6 +3,7 @@ import Database from 'better-sqlite3';
 import { computeBoxId, computeMintTxId } from '@dagsocial/types';
 import type { AnyBox } from '@dagsocial/types';
 import type { BlockJournal, BoxMutation } from '../../src/store/journal.js';
+import { fixtureProvenance } from '../helpers.js';
 
 /**
  * Spec G phase C1 — the mint producers attach provenance.
@@ -96,7 +97,7 @@ describe('mint producers attach provenance (Spec G phase C1)', () => {
   // box instead — strip `id`/`txId`/`index` and re-derive — which asserts the
   // same equality against the **shipped** producer rather than against a
   // second, differently-configured call.
-  it('no box id moves: the minted id is the id the same box has with no provenance', async () => {
+  it('the minted id BINDS its provenance — stripping it changes the id', async () => {
     const { initDb } = await importDbFresh();
     const { getBox } = await importUtxoFresh();
     const { mintKarma } = await import('../../src/services/karma.js');
@@ -106,13 +107,20 @@ describe('mint producers attach provenance (Spec G phase C1)', () => {
     const minted = mintKarma(user(0x01), 40n, HEIGHT, authorRewardContext(POST_A));
     const stored = getBox(minted)!;
 
-    // Provenance is present on what was stored — otherwise this would compare
-    // a bare box against a bare box and pass for the wrong reason.
+    // Inverted by phase G3b. This asserted the opposite — that stripping
+    // provenance left the id unmoved — which is what the *legacy* derivation
+    // guaranteed and is precisely what made ids dishonest (M-11). Under the
+    // provenance derivation the id must depend on `txId`/`index`, so the same
+    // fixture now proves the reverse.
     expect(stored.txId).toBeDefined();
     expect(stored.index).toBe(0);
 
-    const { id: _id, txId: _txId, index: _index, ...bare } = stored;
-    expect(computeBoxId(bare as AnyBox)).toBe(minted);
+    // The stored box re-derives its own id: honesty, structurally.
+    expect(computeBoxId(stored)).toBe(minted);
+
+    // And the same box under different provenance does not.
+    expect(computeBoxId({ ...stored, index: 1 })).not.toBe(minted);
+    expect(computeBoxId({ ...stored, txId: 'a'.repeat(64) })).not.toBe(minted);
     expect(minted).toMatch(/^[0-9a-f]{64}$/);
   });
 
@@ -451,12 +459,12 @@ describe('direct mint producers attach provenance (Spec G phase C2)', () => {
       boxType: 'post_lock' as const,
       value: 10n,
       originalValue: 10n,
-      createdAtBlock: 1,
       owner,
       targetPostId: POST_A,
       guard: 'epoch_tally' as const,
       id: '',
     };
+    Object.assign(lockBox, fixtureProvenance(lockBox, 1));
     lockBox.id = computeBoxId(lockBox);
     insertBox(lockBox);
     for (let n = 0; n < POST_LOCK_UNLOCK_PER_LIKES; n++) {

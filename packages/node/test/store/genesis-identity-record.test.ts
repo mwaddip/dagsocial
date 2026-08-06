@@ -2,6 +2,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type Database from 'better-sqlite3';
 import type { KarmaBox, UserId } from '@dagsocial/types';
 import type { IdentityRecord } from '../../src/store/identity-records.js';
+import {
+  GENESIS_SYSTEM_KARMA,
+  genesisContext,
+  mintTxIdFor,
+} from '../../src/mint-provenance.js';
 
 /**
  * Spec G phase D — genesis writes its own identity record.
@@ -68,7 +73,11 @@ describe('genesis identity record (Spec G phase D)', () => {
     // `getCurrentHeight()` is 0 on a fresh chain, and genesis clamps to 1.
     const box = s.system.ensureSystemKarmaBox(keypair.publicKey, 0);
 
-    expect(box.createdAtBlock).toBe(1);
+    // The box carries no height field any more (phase G3b), so the cross-check
+    // is against the height baked into its **mint txId** — which is now the only
+    // place a genesis height appears in the box, and is consensus-visible where
+    // `created_at_block` never was.
+    expect(box.txId).toBe(mintTxIdFor(genesisContext(GENESIS_SYSTEM_KARMA), 1));
     expect(s.records.getIdentityRecord(keypair.publicKey)).toEqual({
       lastActivityBlock: 1,
       lastDecayBlock: 0,
@@ -82,7 +91,7 @@ describe('genesis identity record (Spec G phase D)', () => {
 
     const box = s.system.ensureSystemKarmaBox(keypair.publicKey, 500);
 
-    expect(box.createdAtBlock).toBe(500);
+    expect(box.txId).toBe(mintTxIdFor(genesisContext(GENESIS_SYSTEM_KARMA), 500));
     expect(s.records.getIdentityRecord(keypair.publicKey)).toEqual({
       lastActivityBlock: 500,
       lastDecayBlock: 0,

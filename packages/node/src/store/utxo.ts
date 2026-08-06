@@ -32,10 +32,9 @@ interface UtxoRow {
   created_at_block: bigint;
   owner: Buffer | null;
   extra_data: string | null;
-  // Creating-transaction provenance (Spec G phase B). Nullable through the
-  // migration window — no producer sets them until phase C.
-  tx_id: string | null;
-  output_index: bigint | null;
+  // Creating-transaction provenance (Spec G phase B), NOT NULL as of G3b.
+  tx_id: string;
+  output_index: bigint;
 }
 
 // ---------------------------------------------------------------------------
@@ -44,7 +43,6 @@ interface UtxoRow {
 
 interface KarmaExtra {
   proofSource: string;
-  lastTouchBlock: number;
   decayBurn?: boolean;
 }
 
@@ -65,7 +63,7 @@ interface InviteExtra {
 
 interface BondExtra {
   inviterId: string;                // hex-encoded pubkey in JSON (Uint8Array in code)
-  inviteBoxId: string;              // BoxId of the paired InviteBox
+  inviteOutputIndex: number;        // Output position of the paired InviteBox in this bond's own tx
   inviteePublicKey: number[] | null;
   probationStartBlock: number | null;
   probationEndBlock: number | null;
@@ -97,51 +95,59 @@ function pubkeyToHex(pk: Uint8Array): string {
 }
 
 /**
- * Attach creating-transaction provenance to a reconstructed box.
+ * Provenance as the row carries it.
  *
- * ⚠ **Consensus-critical: assign conditionally, never as explicit `undefined`.**
- * `state/serialize-box.ts` strips only `id` and `boxType`, so `txId`/`index`
- * reach the AVL *value* — and cbor-x distinguishes an absent key from a
- * present-but-`undefined` one. A key set to `undefined` encodes as `f7` *and*
- * increments the fixed two-byte map header (measured: `{value, guard}` →
- * `b90002…`; the same object plus `txId: undefined, index: undefined` →
- * `b90004…f7…f7`). So a box reconstructed here with explicit `undefined`
- * provenance serializes to different bytes than the same box built by a
- * producer without those keys, and a node that **restarts** and re-bootstraps
- * its prover from `getUnspentBoxes` would compute a different `stateRoot` than
- * one that stayed up — a restart-triggered consensus fork, from nothing but an
- * object shape.
+ * `tx_id`/`output_index` became NOT NULL in phase G3b, so this is now
+ * unconditional — the conditional-assignment discipline it replaced existed
+ * because a nullable column could yield a box with no provenance, and setting a
+ * key to explicit `undefined` is byte-visible in the AVL value (cbor-x encodes
+ * it as `f7` *and* increments the fixed two-byte map header). With the columns
+ * NOT NULL that shape is unrepresentable.
  *
- * `??` collapses both `null` (column present, unset) and `undefined` (column
- * not selected) before the guard, so neither can leak through as a key.
- *
- * This is the discipline `rowToBox` already applies to `decayBurn` and
- * `lockedUntilBlock`. Box **ids** are not exposed — `canonicalBoxBytes`
- * destructures provenance away and is total over both shapes — only the AVL
- * value is. See NODE_INTERFACE, AVL+ State Root → "Two entity kinds" → 1a.
- *
- * Provenance is appended **after** every candidate field, so phase C producers
- * must build boxes the same way or the two shapes will disagree on key order,
- * which `variableMapSize: false` also makes byte-visible.
+ * Key **order** no longer matters either: both encoders sort keys as of G3b, so
+ * the old "append provenance after every candidate field, and make every
+ * producer do the same" rule is retired. That rule is what `post_lock` violated.
  */
-function withProvenance<T extends AnyBox>(box: T, row: UtxoRow): T {
-  const txId = row.tx_id ?? undefined;
-  const index = row.output_index ?? undefined;
-  if (txId !== undefined) box.txId = txId;
-  if (index !== undefined) box.index = Number(index);
-  return box;
+function provenanceOf(row: UtxoRow): { txId: string; index: number } {
+  return { txId: row.tx_id, index: Number(row.output_index) };
+}
+
+/**
+ * The height to record in the `created_at_block` **store column**.
+ *
+ * Taken from the open block journal, never from the box (Spec G phase G checklist
+ * item 7). Until G3b the box carried a `createdAtBlock` and `insertBox` wrote
+ * that, which was indistinguishable from this because every production producer
+ * set the field to the block height anyway — the rule was correct but
+ * unenforceable. Deleting the field is what proves it: there is now nothing else
+ * `insertBox` could read.
+ *
+ * `0` when no journal is open. That is every non-block path — genesis and
+ * bootstrap — and it is honest rather than a fallback: those boxes were not
+ * created by block application, and `0` is not a real block height. The column
+ * is display and `getUnspentBoxes` ordering only; consensus must never read it
+ * (Spec G D3), so an approximate value here cannot reach the `stateRoot`.
+ */
+function settledHeight(): number {
+  return openBlockJournalHeight() ?? 0;
 }
 
 /**
  * Reconstruct a typed box from a utxo_boxes row.
  *
- * Columns id, box_type, value, created_at_block and owner are read directly;
- * `guard` is a per-boxType constant reconstructed from the discriminant.
- * Everything else — including proofSource and lastTouchBlock, whose columns
- * exist for SQL predicates only — is parsed from the extra_data JSON column.
+ * Columns id, box_type, value and owner are read directly; `guard` is a
+ * per-boxType constant reconstructed from the discriminant. Everything else is
+ * parsed from the extra_data JSON column.
+ *
+ * `created_at_block` is deliberately NOT read: it is a store column and never a
+ * box field (Spec G D3), and putting it back on the object would change every
+ * box id — `canonicalBoxBytes` strips only `id`/`txId`/`index`, so any stray key
+ * enters the hash. The same is true of any other decoration a display path might
+ * want; add a separate query instead.
  */
 function rowToBox(row: UtxoRow): AnyBox {
   const extra = row.extra_data ? JSON.parse(row.extra_data) : {};
+  const prov = provenanceOf(row);
 
   switch (row.box_type) {
     case 'karma': {
@@ -150,16 +156,15 @@ function rowToBox(row: UtxoRow): AnyBox {
         id: row.id,
         boxType: 'karma',
         value: row.value,
-        createdAtBlock: Number(row.created_at_block),
         owner: new Uint8Array(row.owner!),
         guard: 'owner_signature',
         proofSource: e.proofSource,
-        lastTouchBlock: e.lastTouchBlock,
+        ...prov,
       };
       if (e.decayBurn !== undefined) {
         kb.decayBurn = e.decayBurn;
       }
-      return withProvenance(kb satisfies KarmaBox as KarmaBox, row);
+      return kb;
     }
 
     case 'credit': {
@@ -168,86 +173,82 @@ function rowToBox(row: UtxoRow): AnyBox {
         id: row.id,
         boxType: 'credit',
         value: row.value,
-        createdAtBlock: Number(row.created_at_block),
         owner: new Uint8Array(row.owner!),
         guard: 'owner_signature',
         proofSource: e.proofSource,
+        ...prov,
       };
       if (e.lockedUntilBlock !== undefined) {
         cb.lockedUntilBlock = e.lockedUntilBlock;
       }
-      return withProvenance(cb satisfies CreditBox as CreditBox, row);
+      return cb;
     }
 
-    case 'like': {
-      const e = extra as LikeExtra;
-      return withProvenance({
+    case 'like':
+      return {
         id: row.id,
         boxType: 'like',
         value: 2n,
-        createdAtBlock: Number(row.created_at_block),
-        likerId: hexToPubkey(e.likerId),
-        targetPostId: e.targetPostId,
+        likerId: hexToPubkey((extra as LikeExtra).likerId),
+        targetPostId: (extra as LikeExtra).targetPostId,
         guard: 'epoch_tally',
-      } satisfies LikeBox as LikeBox, row);
-    }
+        ...prov,
+      };
 
-    case 'invite': {
-      const e = extra as InviteExtra;
-      return withProvenance({
+    case 'invite':
+      return {
         id: row.id,
         boxType: 'invite',
         value: row.value,
-        createdAtBlock: Number(row.created_at_block),
-        secretHash: new Uint8Array(e.secretHash),
-        inviterId: hexToPubkey(e.inviterId),
+        secretHash: new Uint8Array((extra as InviteExtra).secretHash),
+        inviterId: hexToPubkey((extra as InviteExtra).inviterId),
         guard: 'hash_preimage_with_bond',
-      } satisfies InviteBox as InviteBox, row);
-    }
+        ...prov,
+      };
 
     case 'bond': {
       const e = extra as BondExtra;
-      return withProvenance({
+      return {
         id: row.id,
         boxType: 'bond',
         value: row.value,
-        createdAtBlock: Number(row.created_at_block),
         inviterId: hexToPubkey(e.inviterId),
-        inviteBoxId: e.inviteBoxId ?? '',
+        inviteOutputIndex: e.inviteOutputIndex ?? 0,
         inviteePublicKey: e.inviteePublicKey
           ? new Uint8Array(e.inviteePublicKey)
           : new Uint8Array(0),
         probationStartBlock: e.probationStartBlock ?? 0,
         probationEndBlock: e.probationEndBlock ?? 0,
         guard: 'bond_dual',
-      } satisfies BondBox as BondBox, row);
+        ...prov,
+      };
     }
 
     case 'post_lock': {
       const e = extra as PostLockExtra;
-      return withProvenance({
+      return {
         id: row.id,
         boxType: 'post_lock',
         value: row.value,
-        createdAtBlock: Number(row.created_at_block),
         originalValue: BigInt(e.originalValue),
         owner: new Uint8Array(e.owner),
         targetPostId: e.targetPostId,
         guard: 'epoch_tally',
-      } satisfies PostLockBox as PostLockBox, row);
+        ...prov,
+      };
     }
 
     case 'vouch': {
       const e = extra as VouchExtra;
-      return withProvenance({
+      return {
         id: row.id,
         boxType: 'vouch',
         value: 1n,
-        createdAtBlock: Number(row.created_at_block),
         voucherId: hexToPubkey(e.voucherId),
         targetId: hexToPubkey(e.targetId),
         guard: 'owner_signature',
-      } satisfies VouchBox as VouchBox, row);
+        ...prov,
+      };
     }
 
     default:
@@ -269,6 +270,27 @@ export function getBox(boxId: string): AnyBox | null {
     .prepare('SELECT * FROM utxo_boxes WHERE id = ? AND spent_at_block IS NULL')
     .safeIntegers()
     .get(boxId) as UtxoRow | undefined;
+  return row ? rowToBox(row) : null;
+}
+
+/**
+ * Resolve an unspent box by its creating-transaction provenance.
+ *
+ * `UNIQUE(tx_id, output_index)` makes the pair name at most one box, so no
+ * `LIMIT` or ordering is needed — the index *is* the uniqueness argument.
+ *
+ * Added for the bond commit path (user decision, 2026-08-06): `BondBox` pairs
+ * with its InviteBox by output index rather than by box id, because a box id in
+ * a content field is circular under the provenance derivation. This is the
+ * lookup that replaces `getBox(bond.inviteBoxId)`.
+ */
+export function getBoxByProvenance(txId: string, index: number): AnyBox | null {
+  const row = getDb()
+    .prepare(
+      'SELECT * FROM utxo_boxes WHERE tx_id = ? AND output_index = ? AND spent_at_block IS NULL',
+    )
+    .safeIntegers()
+    .get(txId, index) as UtxoRow | undefined;
   return row ? rowToBox(row) : null;
 }
 
@@ -610,7 +632,6 @@ export function insertBox(box: AnyBox): void {
   let extraData: unknown;
   let owner: Buffer | null = null;
   let proofSource: string | null = null;
-  let lastTouchBlock: number | null = null;
   // Set below iff this box is a non-decay karma box — the identity whose
   // activity clock this insertion advances (Spec G phase D). Carried out of the
   // switch rather than bumped inside it so the record is written *after* the
@@ -623,7 +644,6 @@ export function insertBox(box: AnyBox): void {
       const k = box as KarmaBox;
       const ke: KarmaExtra = {
         proofSource: k.proofSource,
-        lastTouchBlock: k.lastTouchBlock,
       };
       if (k.decayBurn !== undefined) {
         ke.decayBurn = k.decayBurn;
@@ -631,7 +651,6 @@ export function insertBox(box: AnyBox): void {
       extraData = ke satisfies KarmaExtra;
       owner = Buffer.from(k.owner);
       proofSource = k.proofSource;
-      lastTouchBlock = k.lastTouchBlock;
       // `!== true`, not `=== undefined`: a decay-burn box is the one karma box
       // that must NOT reset the clock, and `decayBurn: false` is normal
       // activity. This is the same test `isIdentityStale` applied to boxes.
@@ -669,7 +688,7 @@ export function insertBox(box: AnyBox): void {
       const b = box as BondBox;
       extraData = {
         inviterId: pubkeyToHex(b.inviterId),
-        inviteBoxId: b.inviteBoxId,
+        inviteOutputIndex: b.inviteOutputIndex,
         inviteePublicKey:
           b.inviteePublicKey.length > 0
             ? Array.from(b.inviteePublicKey)
@@ -713,21 +732,20 @@ export function insertBox(box: AnyBox): void {
   db.prepare(
     `INSERT INTO utxo_boxes
        (id, box_type, value, created_at_block, spent_at_block,
-        owner, guard, proof_source, extra_data, last_touch_block,
+        owner, guard, proof_source, extra_data,
         tx_id, output_index)
-     VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
   ).run(
     box.id,
     box.boxType,
     box.value,
-    box.createdAtBlock,
+    settledHeight(),
     owner,
     box.guard,
     proofSource,
     JSON.stringify(extraData),
-    lastTouchBlock,
-    box.txId ?? null,
-    box.index ?? null,
+    box.txId,
+    box.index,
   );
 
   recordBoxInsert(box);

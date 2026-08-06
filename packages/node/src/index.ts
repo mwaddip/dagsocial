@@ -28,6 +28,7 @@ import {
   getPost,
   insertPost,
   getBox,
+  getBoxByProvenance,
   getUnspentBoxes,
   getCurrentHeight,
   insertMempoolSubBlock,
@@ -311,6 +312,7 @@ net.onOrderingBlock(async (block) => {
 net.onTx((tx) => {
   const deps = {
     getBox,
+    getBoxByProvenance,
     insertBox: () => {},
     consumeBox: () => {},
     getKarmaBox,

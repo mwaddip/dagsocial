@@ -139,8 +139,8 @@ export function postLockTx(
     inputs: boxes.map(b => b.boxId),
     outputs: [
       {
-        boxType: 'karma', value: t - lockAmount, createdAtBlock: 0,
-        owner: author, guard: 'owner_signature', proofSource: targetPostId, lastTouchBlock: 0,
+        boxType: 'karma', value: t - lockAmount, 
+        owner: author, guard: 'owner_signature', proofSource: targetPostId, 
       },
       {
         boxType: 'post_lock', value: lockAmount, originalValue: lockAmount,
@@ -162,11 +162,11 @@ export function likeTx(
     inputs: boxes.map(b => b.boxId),
     outputs: [
       {
-        boxType: 'karma', value: t - LIKE_COST, createdAtBlock: 0,
-        owner: liker, guard: 'owner_signature', proofSource: targetPostId, lastTouchBlock: 0,
+        boxType: 'karma', value: t - LIKE_COST, 
+        owner: liker, guard: 'owner_signature', proofSource: targetPostId, 
       },
       {
-        boxType: 'like', value: LIKE_COST, createdAtBlock: 0,
+        boxType: 'like', value: LIKE_COST, 
         likerId: liker, targetPostId, guard: 'epoch_tally',
       },
     ],

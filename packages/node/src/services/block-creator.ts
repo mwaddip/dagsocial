@@ -756,25 +756,23 @@ export function computeEpochTally(blockHeight: number): EpochTally {
     consumedPostLockBoxIds.push(plb.id);
 
     if (remainingLocked > 0n) {
+      // `post_lock`'s producer-vs-`rowToBox` field-order divergence — the one
+      // known live instance of contract hazard 1b — is **fixed** as of phase
+      // G3b, and deliberately not by reordering this site: both encoders now
+      // sort keys, so the two shapes agree whatever order either writes.
+      //
+      // One remainder box per post per tally, and the tally runs once per epoch
+      // block, so `(height, 'postlock-remainder', targetPostId)` cannot repeat.
       const newPlb: PostLockBox = {
         boxType: 'post_lock',
         value: remainingLocked,
         originalValue: plb.originalValue,
-        createdAtBlock: blockHeight,
         owner: plb.owner,
         targetPostId: plb.targetPostId,
         guard: 'epoch_tally',
+        txId: mintTxIdFor(postlockRemainderContext(plb.targetPostId), blockHeight),
+        index: MINT_OUTPUT_INDEX,
       };
-      // Appended last, matching `rowToBox`'s `withProvenance`. The candidate
-      // field order above is NOT touched: `post_lock` has a pre-existing
-      // producer-vs-`rowToBox` divergence (`originalValue`/`createdAtBlock` are
-      // swapped), which is contract 1b's to fix in phase G. Appending after it
-      // leaves that divergence exactly as it is rather than compounding it.
-      //
-      // One remainder box per post per tally, and the tally runs once per epoch
-      // block, so `(height, 'postlock-remainder', targetPostId)` cannot repeat.
-      newPlb.txId = mintTxIdFor(postlockRemainderContext(plb.targetPostId), blockHeight);
-      newPlb.index = MINT_OUTPUT_INDEX;
       newPlb.id = computeBoxId(newPlb);
       newPostLockBoxes.push(newPlb);
     }

@@ -94,7 +94,6 @@ function epochTallyToJson(tally: EpochTally): Record<string, unknown> {
       boxType: b.boxType,
       value: b.value.toString(),
       originalValue: b.originalValue.toString(),
-      createdAtBlock: b.createdAtBlock,
       owner: Buffer.from(b.owner).toString('hex'),
       targetPostId: b.targetPostId,
       guard: b.guard,

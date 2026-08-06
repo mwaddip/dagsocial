@@ -52,25 +52,24 @@ export function mintKarma(
     ? (existingBoxes[0]!.proofSource ?? `mint-${blockHeight}`)
     : `mint-${blockHeight}`;
 
+  // Field order here is free as of phase G3b: both encoders sort keys, so a
+  // producer can no longer disagree with `rowToBox` about it. That is what
+  // retired the "append provenance last, and make every producer do the same"
+  // discipline this block used to carry.
   const newBox: KarmaBox = {
     boxType: 'karma',
     value: newValue,
-    createdAtBlock: blockHeight,
     owner: userId,
     guard: 'owner_signature',
     proofSource,
-    lastTouchBlock: blockHeight,
+    txId: mintTxIdFor(ctx, blockHeight),
+    index: MINT_OUTPUT_INDEX,
   };
-  // Provenance is appended **after** every candidate field, matching
-  // `rowToBox`'s `withProvenance`. `serializeBox` spreads box keys in insertion
-  // order under `variableMapSize: false`, so a producer that interleaved these
-  // would serialize to different bytes than the same box read back from SQLite
-  // — a restart-triggered stateRoot fork, from nothing but key order.
-  newBox.txId = mintTxIdFor(ctx, blockHeight);
-  newBox.index = MINT_OUTPUT_INDEX;
-  // After the attach, not before: phase G redefines `computeBoxId` to hash
-  // `txId`/`index`. Inert until then — the legacy derivation strips them via
-  // `canonicalBoxBytes`, which is what keeps every existing box id unmoved.
+  // After provenance is set, never before: `computeBoxId` hashes `txId`/`index`
+  // as of phase G3b, so deriving the id from a box that lacks them would produce
+  // an id nothing can reproduce. This ordering is now enforceable — before the
+  // switch `canonicalBoxBytes` stripped provenance and both orders were
+  // byte-identical (phase C report §5.1).
   const boxId = computeBoxId(newBox);
   newBox.id = boxId;
 

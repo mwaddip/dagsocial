@@ -170,25 +170,41 @@ Box identity derives from **creating-transaction provenance**, not from content 
 simultaneously *honest* (matching an apply-mutated box) and *predictable* (known at signing
 time); provenance gives both, and makes collisions structurally impossible.
 
-Two types, not one:
+Two shapes, not one:
 
 ```
-interface BoxCandidate {
+interface BoxCandidate {              // the shared BASE — no per-type fields
   boxType: "karma" | "credit" | "like" | "invite" | "bond" | "post_lock" | "vouch"
   value: bigint                // integer base units — uniform bigint (see "Value denomination")
-  // ...per-type fields
 }
 
 interface BoxBase extends BoxCandidate {
-  id: BoxId                    // blake2b512 over candidate ‖ provenance
+  id?: BoxId                   // blake2b512 over candidate ‖ provenance — see the note below
   txId: TxId                   // creating transaction — real or synthetic (see Mint identity)
   index: number                // u32, position within that transaction's outputs
 }
+
+type CandidateOf<B extends BoxBase> = Omit<B, "id" | "txId" | "index">
+type AnyBoxCandidate = CandidateOf<KarmaBox> | CandidateOf<CreditBox> | …   // all seven
 ```
 
-A `BoxCandidate` is what a creator builds and what `computeTxId` hashes. A `BoxBase` is what
-exists in the ledger, the store, and the AVL value. The split makes "has an id but no
-provenance" — the M-11 state — unrepresentable.
+**`BoxCandidate` is the base, `CandidateOf<B>` is the per-type candidate.** An earlier draft of
+this block wrote `BoxCandidate` with a `…per-type fields` placeholder, which read as though one
+name covered both; it does not, and typing `UtxoTransaction.outputs` as the base would erase
+`owner`, `guard`, `likerId` and force a cast at every consumer. `Omit` is applied **per union
+member** — omitting from a union collapses it to the common keys. `UtxoTransaction.outputs` is
+`AnyBoxCandidate[]`.
+
+A candidate is what a creator builds and what `computeTxId` hashes. A `BoxBase` is what exists
+in the ledger, the store, and the AVL value. The split makes "has provenance-free identity" —
+the M-11 state — unrepresentable.
+
+> **`id` is optional, and deliberately.** A producer builds the candidate-plus-provenance object
+> and hashes *it* to obtain the id, so the value is genuinely absent for exactly one expression,
+> and `computeBoxId` takes `Omit<BoxBase, "id">`. Requiring it would mean a second "box without
+> an id yet" type at every producer, for no safety the invariant below does not already give.
+> **Every box in the ledger, the store and the AVL value has one** — that is an invariant, not a
+> type-level guarantee.
 
 `computeBoxId` is a **total function of a stored box**: drop `id`/`txId`/`index` to recover
 candidate bytes, then re-derive. So `stored.id === computeBoxId(stored)` holds by construction
@@ -270,44 +286,27 @@ assumption — a mirror written to the CBOR canonicalisation rules computes diff
 demo UI already encodes this way; full bytes are pinned as golden vectors in
 `test/utxo.test.ts`.
 
-#### Migration window (Spec G phases A–F)
+#### Key ordering is canonical (Spec G phase G3b)
 
-During implementation `txId`/`index` are **optional** and `createdAtBlock` is retained, so every
-phase lands workspace-green. Phase G tightens them to required, deletes `createdAtBlock` and
-`lastTouchBlock`, and switches the derivation. **This subsection is deleted with phase G.**
+`canonicalBoxBytes` **imposes** a total key order — a lexicographic sort of the candidate's own
+keys — rather than inheriting the caller's insertion order. Node's `serializeBox` and the demo
+UI's mirror apply the identical rule.
 
-Two things the Functions table below describes in their **end state** but which are
-deliberately not yet true, so the contract is not read as demanding them early:
+This retires contract hazards **1b and 1c** in `NODE_INTERFACE.md`. cbor-x emits map keys in JS
+insertion order, so before this a producer's field order was consensus-visible: the same box
+built two ways hashed to two ids, and `post_lock` genuinely diverged between its producer and
+`rowToBox`. The fix is at the single encode site, **not** at the diverging producer — a producer
+can no longer get key order wrong because it no longer chooses it, and the "make every producer
+match `rowToBox`" discipline is retired with it.
 
-- **`computeBoxId` keeps its legacy content-hash derivation** until phase G. It is the M-11
-  derivation and cannot be honest, but switching it before node's producers set provenance
-  would break every existing consumer at once.
+`Array.prototype.sort` with no comparator compares UTF-16 code units and is **not** locale-aware
+(that is `localeCompare`), so it is deterministic across platforms. Every box field name is
+ASCII, so the order is plain byte order. The sort is **shallow**: box fields are primitives,
+strings and `Uint8Array`s, and a nested object added later would need it applied recursively.
 
-  ⚠ **Its strip rule was a separate defect — fixed in phase C0, before phase C.** The legacy
-  implementation destructured only `id` and did not route through `canonicalBoxBytes`, so the
-  moment a producer set `txId`/`index` and called it, those fields entered the hash and the id
-  moved. Measured against the repo's own golden vectors, pre-fix:
-
-  | Golden | Bare | With `txId`/`index` set |
-  |---|---|---|
-  | `GOLDEN_KARMA_BOX_ID` | `83c95fbb82c1ba03…` | `7f8b0ba3…` |
-  | `GOLDEN_CREDIT_BOX_ID` | `b256df0c3fca8bd2…` | `32ff8e72…` |
-
-  Left unfixed, phase C would have changed **every box id** — the one thing no phase before G
-  may do — and would have broken the demo UI mirror and the invite flow's predicted
-  `inviteBoxId`, since the client computes ids from a box with no provenance.
-
-  `computeBoxId` now hashes `canonicalBoxBytes(box)`, so there is exactly one strip rule and it
-  cannot drift from `computeCandidateBoxId` — the same fix phase A applied to `computeTxId`
-  (report §8), in the one place that pass did not reach. The **derivation** is untouched: no
-  domain tag, no `txId`/`index` in the preimage, until phase G.
-
-  The change was **inert**: no box carried provenance, so destructuring absent keys yielded an
-  identical `rest`, and both goldens plus node's 747 tests were unmoved. That inertness is what
-  made it safe to land early — and it is also why a test is non-vacuous only when it hashes a
-  box that *does* carry provenance.
-- **`TX_ID_DOMAIN` is exported but not yet applied** in `computeTxId`. Applying it changes
-  every txId and node's golden vectors with it — phase G, alongside the `computeBoxId` switch.
+> A mirror implementation that sorts differently — or not at all — computes different ids for
+> every box. This sits alongside the cbor-x-framing warning above as the second thing a mirror
+> must get right.
 
 #### Value denomination (P0 — Spec B, 8-decimal BigInt)
 

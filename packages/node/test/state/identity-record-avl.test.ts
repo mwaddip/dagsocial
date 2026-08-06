@@ -16,6 +16,7 @@ import {
 } from '../../src/state/avl-prover.js';
 import type { KarmaBox, AnyBox } from '@dagsocial/types';
 import type { IdentityRecord } from '../../src/store/identity-records.js';
+import { fixtureProvenance } from '../helpers.js';
 
 /**
  * Spec G phase B3 — identity records as the AVL tree's second entity kind.
@@ -41,16 +42,14 @@ function makeAvlDb(): Database.Database {
 }
 
 function makeKarmaBox(id: string, value = 10n): KarmaBox {
-  return {
-    id,
-    boxType: 'karma',
+  const candidate = {
+    boxType: 'karma' as const,
     value,
-    createdAtBlock: 1,
     owner: new Uint8Array(randomBytes(32)),
-    guard: 'owner_signature',
+    guard: 'owner_signature' as const,
     proofSource: 'tx-1',
-    lastTouchBlock: 1,
   };
+  return { id, ...candidate, ...fixtureProvenance(candidate, 1, hashSeed(id)) };
 }
 
 const REC: IdentityRecord = { lastActivityBlock: 42, lastDecayBlock: 7 };
@@ -84,19 +83,19 @@ describe('identity records in the AVL tree (Spec G phase B3)', () => {
     const owner = new Uint8Array(randomBytes(32));
     const boxes: AnyBox[] = [
       makeKarmaBox('01'.repeat(32)),
-      { id: '02'.repeat(32), boxType: 'credit', value: 5n, createdAtBlock: 1,
+      { id: '02'.repeat(32), boxType: 'credit', value: 5n, 
         owner, guard: 'owner_signature', proofSource: 1 },
-      { id: '03'.repeat(32), boxType: 'like', value: 2n, createdAtBlock: 1,
+      { id: '03'.repeat(32), boxType: 'like', value: 2n, 
         likerId: owner, targetPostId: 'p1', guard: 'epoch_tally' },
-      { id: '04'.repeat(32), boxType: 'invite', value: 50n, createdAtBlock: 1,
+      { id: '04'.repeat(32), boxType: 'invite', value: 50n, 
         secretHash: new Uint8Array(randomBytes(32)), inviterId: owner,
         guard: 'hash_preimage_with_bond' },
-      { id: '05'.repeat(32), boxType: 'bond', value: 10n, createdAtBlock: 1,
-        inviterId: owner, inviteBoxId: '', inviteePublicKey: new Uint8Array(0),
+      { id: '05'.repeat(32), boxType: 'bond', value: 10n, 
+        inviterId: owner, inviteOutputIndex: 0, inviteePublicKey: new Uint8Array(0),
         probationStartBlock: 0, probationEndBlock: 0, guard: 'bond_dual' },
-      { id: '06'.repeat(32), boxType: 'post_lock', value: 5n, createdAtBlock: 1,
+      { id: '06'.repeat(32), boxType: 'post_lock', value: 5n, 
         originalValue: 5n, owner, targetPostId: 'p1', guard: 'epoch_tally' },
-      { id: '07'.repeat(32), boxType: 'vouch', value: 1n, createdAtBlock: 1,
+      { id: '07'.repeat(32), boxType: 'vouch', value: 1n, 
         voucherId: owner, targetId: owner, guard: 'owner_signature' },
     ];
 
@@ -287,3 +286,10 @@ describe('identity records in the AVL tree (Spec G phase B3)', () => {
     expect(Buffer.from(d1).toString('hex')).toBe(Buffer.from(d2).toString('hex'));
   });
 });
+
+/** Stable small integer from a fixture id, so distinct boxes get distinct provenance. */
+function hashSeed(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return h % 1_000_000;
+}

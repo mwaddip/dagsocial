@@ -50,12 +50,38 @@ function encodeForHash(data: unknown): Uint8Array {
  *
  * Mirror implementations must reproduce cbor-x's exact framing, notably the
  * fixed two-byte map header (`b9 <count>`), not minimal-length canonical CBOR.
+ *
+ * **Key order is imposed here, not inherited from the caller** (Spec G phase
+ * G3b, contract hazard 1b). cbor-x emits map keys in JS insertion order, so
+ * before this every producer's field order was consensus-visible: the same box
+ * built two ways hashed to two ids, and `post_lock` really did diverge between
+ * its producer and `rowToBox`. Sorting at the single encode site retires that
+ * whole class — a producer can no longer get key order wrong, because it no
+ * longer chooses it.
  */
 export function canonicalBoxBytes(candidate: BoxCandidate): Uint8Array {
   // Strip id/provenance at runtime — TS `Omit<>` does not enforce it, and the
   // same call must work on a stored box.
   const { id: _id, txId: _txId, index: _index, ...rest } = candidate as BoxBase;
-  return encodeForHash(rest);
+  return encodeForHash(sortKeys(rest));
+}
+
+/**
+ * Impose a total, caller-independent order on an object's own keys.
+ *
+ * `Array.prototype.sort` with no comparator compares UTF-16 code units and is
+ * **not** locale-aware (that is `localeCompare`), so this is deterministic
+ * across platforms and reproducible by any mirror implementation. Every box
+ * field name is ASCII, so the order is plain byte order.
+ *
+ * Shallow by design: box fields are primitives, strings and `Uint8Array`s, with
+ * no nested objects. A nested object added later would need this applied
+ * recursively — and would be a protocol change either way.
+ */
+function sortKeys(obj: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(obj).sort()) out[key] = obj[key];
+  return out;
 }
 
 /**
@@ -173,29 +199,22 @@ export function computeMintTxId(height: number, reason: MintReason, subject: Uin
 }
 
 /**
- * Legacy content-hash box id: `blake2b512(canonicalBoxBytes(box))[0:32]`.
+ * Box id of a **stored** box — a total function of the box itself.
  *
- * The *derivation* is unchanged during the Spec G migration window (phases A–F)
- * — no domain tag, no `txId`/`index` in the preimage — so every existing
- * producer, consumer and golden vector keeps passing while node and the demo UI
- * move over. Phase G redefines it as
- * `computeCandidateBoxId(candidate, box.txId, box.index)` and deletes this
- * derivation — which is what closes M-11, since this one hashes the
- * apply-mutated `createdAtBlock` and so cannot match the box that gets stored.
+ * As of Spec G phase G3b this is exactly `computeCandidateBoxId` applied to the
+ * box's own provenance, so there is one derivation rather than two. The legacy
+ * content hash it replaced (`blake2b512(canonicalBoxBytes(box))`, no domain tag,
+ * no provenance in the preimage) is gone — that derivation is what M-11 was:
+ * it hashed the apply-mutated `createdAtBlock`, so a stored box could not match
+ * its own id. Deleting the field and binding the id to `txId ‖ index` is what
+ * makes `stored.id === computeBoxId(stored)` hold **by construction** for every
+ * box in the UTXO set, checkable by any light client, indexer or AVL prover.
  *
- * What *did* change (phase C0) is the strip rule: this goes through
- * `canonicalBoxBytes` rather than a local `{ id, ...rest }`, so there is exactly
- * one rule and `computeBoxId` and `computeCandidateBoxId` cannot drift. Same
- * defect phase A fixed in `computeTxId`, in the one place that pass did not
- * reach. It matters from phase C on: once producers set `txId`/`index`, a local
- * id-only strip hashes provenance into the legacy id and **every box id moves**
- * — which no phase before G may do, and which would break the demo UI mirror
- * and the invite flow's predicted `inviteBoxId`, both of which compute ids from
- * a box with no provenance. Inert on a tree where no box carries provenance:
- * destructuring absent keys yields an identical `rest`.
+ * Takes one argument, and must keep taking one: a second argument would mean the
+ * box no longer carries what its id derives from.
  */
 export function computeBoxId(box: Omit<BoxBase, 'id'>): BoxId {
-  return createHash('blake2b512').update(canonicalBoxBytes(box)).digest().subarray(0, 32).toString('hex');
+  return computeCandidateBoxId(box, box.txId, box.index);
 }
 
 // ---------------------------------------------------------------------------
@@ -211,24 +230,43 @@ export type BoxGuard = 'owner_signature' | 'epoch_tally' | 'hash_preimage' | 'in
 export interface BoxCandidate {
   boxType: 'karma' | 'credit' | 'like' | 'invite' | 'bond' | 'post_lock' | 'vouch';
   value: bigint;        // integer base units, uniform across box types; value < 2^64 keeps the CBOR uint64 form
-  createdAtBlock: number;
+  // `createdAtBlock` was here and is **deleted** (Spec G phase G3b, D3). It was
+  // the only apply-mutated field, and its presence is what made the id
+  // dishonest. The node still records the settled height in a `created_at_block`
+  // store column, which consensus code must never read: it is not committed in
+  // the `stateRoot`, so a node bootstrapping from an AVL snapshot cannot
+  // reconstruct it. The decay clock reads a committed per-identity record.
 }
 
 /**
  * A box as it exists in the ledger, the store and the AVL value: a candidate
  * plus the provenance that gives it identity.
  *
- * `txId`/`index` are **optional** and `createdAtBlock` is **retained** for the
- * Spec G migration window (phases A–F), so each phase lands workspace-green
- * while node's producers move over. Phase G makes them required, drops
- * `createdAtBlock` and `lastTouchBlock`, and switches the derivation — at which
- * point "has an id but no provenance", the M-11 state, becomes unrepresentable.
+ * `txId`/`index` are **required** (Spec G phase G3a), which is what makes "has
+ * an id but no provenance" — the M-11 state — unrepresentable rather than merely
+ * discouraged. A producer that forgets provenance is now a compile error, in the
+ * same way phase G2 turned a missing `MintContext` into one.
+ *
+ * `id` stays optional: producers build the candidate-plus-provenance object and
+ * hash *it* to get the id, so the value is genuinely absent for one expression.
+ * Every stored box has one — see the invariant in `TYPES_INTERFACE.md`.
  */
 export interface BoxBase extends BoxCandidate {
-  id?: BoxId;           // Computed via computeBoxId; optional during construction
-  txId?: TxId;          // Creating transaction — real or synthetic (see computeMintTxId)
-  index?: number;       // u32, position within that transaction's outputs
+  id?: BoxId;           // Computed via computeBoxId; absent only mid-construction
+  txId: TxId;           // Creating transaction — real or synthetic (see computeMintTxId)
+  index: number;        // u32, position within that transaction's outputs
 }
+
+/**
+ * A box as its creator builds it: the per-type fields, with identity and
+ * provenance removed.
+ *
+ * `BoxCandidate` above is the shared *base*; this is the per-box-type form the
+ * contract's `interface BoxCandidate { …per-type fields }` describes. `Omit` is
+ * applied per member rather than to `AnyBox` as a whole, because omitting from a
+ * union collapses it to the common keys.
+ */
+export type CandidateOf<B extends BoxBase> = Omit<B, 'id' | 'txId' | 'index'>;
 
 // --- Karma ---
 
@@ -237,7 +275,9 @@ export interface KarmaBox extends BoxBase {
   owner: Uint8Array;          // 32 raw bytes — Ed25519 public key
   guard: 'owner_signature';
   proofSource: string;        // PostId | StumpHash | InviteTxId
-  lastTouchBlock: number;     // = createdAtBlock on creation
+  // `lastTouchBlock` was here and is **deleted** (Spec G phase G3b). It had no
+  // reader anywhere in `src` — the decay clock reads the committed per-identity
+  // record, not box ages.
   decayBurn?: boolean;
 }
 
@@ -277,7 +317,25 @@ export interface BondBox extends BoxBase {
   boxType: 'bond';
   value: bigint;                    // D karma deposited
   inviterId: UserId;               // Owner — the inviter
-  inviteBoxId: BoxId;              // Which InviteBox this pairs with (for commit secret lookup)
+  /**
+   * Which output of this bond's **own creating transaction** is the paired
+   * InviteBox. Replaces `inviteBoxId: BoxId` (user decision, 2026-08-06).
+   *
+   * A box id here would be **circular**: the id derives from the creating
+   * transaction's `txId`, and this is a content field, so it sits inside the
+   * bytes `computeTxId` hashes. Measured: no fixed point exists. Spec G §3.1's
+   * "no circularity" argument covers *provenance* fields (`computeTxId` excludes
+   * `id`/`txId`/`index`) and does not reach a content field carrying a box id.
+   *
+   * An index is not merely a workaround for that. The bond and the invite are
+   * always outputs of one transaction, so pairing by position makes a bond that
+   * points at *someone else's* invite inexpressible rather than caught late —
+   * the old field could name any box in the world and was only checked when it
+   * was dereferenced, one transaction later. The invite resolves from
+   * `(bond.txId, inviteOutputIndex)`, which `UNIQUE(tx_id, output_index)`
+   * already indexes.
+   */
+  inviteOutputIndex: number;
   inviteePublicKey: Uint8Array;    // 32 raw bytes — set during commit
   probationStartBlock: number;     // Set during commit
   probationEndBlock: number;       // probationStartBlock + INVITE_PROBATION_BLOCKS
@@ -311,13 +369,29 @@ export interface VouchBox extends BoxBase {
 
 export type AnyBox = KarmaBox | CreditBox | LikeBox | InviteBox | BondBox | PostLockBox | VouchBox;
 
+/** Every box type in its creator-built form — no `id`, no provenance. */
+export type AnyBoxCandidate =
+  | CandidateOf<KarmaBox>
+  | CandidateOf<CreditBox>
+  | CandidateOf<LikeBox>
+  | CandidateOf<InviteBox>
+  | CandidateOf<BondBox>
+  | CandidateOf<PostLockBox>
+  | CandidateOf<VouchBox>;
+
 // ---------------------------------------------------------------------------
 // UTXO transaction
 // ---------------------------------------------------------------------------
 
 export interface UtxoTransaction {
   inputs: BoxId[];
-  outputs: AnyBox[];
+  /**
+   * Candidates, not boxes (Spec G phase G3a). A transaction's outputs cannot
+   * carry provenance: their `txId` is the id of the very transaction being
+   * built, so a signed output with an `id` in it would be circular. Block
+   * application materializes them — see node's `materializeOutput`.
+   */
+  outputs: AnyBoxCandidate[];
   signatures: Record<string, Uint8Array>;  // publicKey (hex) → Ed25519 sig (64 bytes) over txId
   preimages?: Record<string, Uint8Array>;  // boxId → hash preimage for hash_preimage guards
   protocolVersion: number;
@@ -333,9 +407,17 @@ export interface UtxoTransaction {
  * `{ id, ...rest }` strip would hash provenance into the very txId that
  * provenance is derived from — circular, and it would make a transaction's id
  * depend on ids that cannot exist until that id is known.
+ *
+ * `TX_ID_DOMAIN` is applied as of Spec G phase G3b. Box ids, transaction ids and
+ * identity-record keys share one 32-byte keyspace and the AVL tree holds two
+ * entity kinds, so the separation has to be in the preimage. This is also **the
+ * only implementation** — node's `utxo-engine.ts` carried a second one until
+ * G3b deleted it; it verified signatures against an untagged id while every
+ * builder signed a tagged one.
  */
 export function computeTxId(tx: UtxoTransaction): TxId {
   const h = createHash('blake2b512');
+  h.update(TX_ID_DOMAIN);
   for (const input of tx.inputs) {
     h.update(input);
   }

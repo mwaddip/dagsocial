@@ -61,10 +61,8 @@ function mockDeps(
         boxType: 'karma',
         value: 100,
         owner: new Uint8Array(32),
-        createdAtBlock: 1,
         guard: 'owner_signature',
         proofSource: 'genesis',
-        lastTouchBlock: 1,
       }) as AnyBox,
     onSubBlockReceived: () => {},
     metaPut: (key: string, value: Uint8Array) => {
@@ -105,16 +103,13 @@ function makeKarmaLockTx(): UtxoTransaction {
       {
         boxType: 'karma',
         value: 75,
-        createdAtBlock: 5,
         owner: new Uint8Array(32),
         guard: 'owner_signature',
         proofSource: 'post-lock',
-        lastTouchBlock: 5,
       } as KarmaBox,
       {
         boxType: 'post_lock',
         value: 25,
-        createdAtBlock: 5,
         originalValue: 25,
         owner: new Uint8Array(32),
         targetPostId: '',

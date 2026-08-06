@@ -26,7 +26,6 @@ describe('VouchBox', () => {
     const box: Omit<VouchBox, 'id'> = {
       boxType: 'vouch',
       value: 1n,
-      createdAtBlock: 100,
       voucherId,
       targetId,
       guard: 'owner_signature',
@@ -43,11 +42,11 @@ describe('VouchBox', () => {
     const target1 = new Uint8Array(32).fill(2);
     const target2 = new Uint8Array(32).fill(3);
     const id1 = computeBoxId({
-      boxType: 'vouch', value: 1n, createdAtBlock: 100,
+      boxType: 'vouch', value: 1n, 
       voucherId, targetId: target1, guard: 'owner_signature',
     });
     const id2 = computeBoxId({
-      boxType: 'vouch', value: 1n, createdAtBlock: 100,
+      boxType: 'vouch', value: 1n, 
       voucherId, targetId: target2, guard: 'owner_signature',
     });
     expect(id1).not.toBe(id2);

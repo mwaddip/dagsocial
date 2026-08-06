@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { createHash } from 'crypto';
 import { decode as cborDecode } from 'cbor-x';
 import {
   computeBoxId,
@@ -14,7 +15,7 @@ import {
   INVITE_KARMA_AMOUNT,
   INVITE_BOND_KARMA,
 } from '../src/index.js';
-import type { KarmaBox, CreditBox, LikeBox, InviteBox, BondBox, UtxoTransaction, MintReason } from '../src/index.js';
+import type { CandidateOf, KarmaBox, CreditBox, LikeBox, InviteBox, BondBox, UtxoTransaction, MintReason } from '../src/index.js';
 
 const owner = new Uint8Array(32).fill(0xaa);
 
@@ -22,11 +23,9 @@ function makeKarmaBox(overrides: Partial<KarmaBox> = {}): KarmaBox {
   return {
     boxType: 'karma',
     value: 100n,
-    createdAtBlock: 10,
     owner,
     guard: 'owner_signature',
     proofSource: 'genesis',
-    lastTouchBlock: 10,
     ...overrides,
   };
 }
@@ -35,7 +34,6 @@ function makeCreditBox(): CreditBox {
   return {
     boxType: 'credit',
     value: 500n,
-    createdAtBlock: 20,
     owner,
     guard: 'owner_signature',
     proofSource: 42,
@@ -46,7 +44,6 @@ function makeLikeBox(): LikeBox {
   return {
     boxType: 'like',
     value: 2n,
-    createdAtBlock: 30,
     likerId: 'user123',
     targetPostId: 'a'.repeat(64),
     guard: 'epoch_tally',
@@ -57,7 +54,6 @@ function makeInviteBox(): InviteBox {
   return {
     boxType: 'invite',
     value: 10n,
-    createdAtBlock: 15,
     secretHash: new Uint8Array(32).fill(0xbb),
     inviterId: 'user456',
     guard: 'hash_preimage',
@@ -68,7 +64,6 @@ function makeBondBox(): BondBox {
   return {
     boxType: 'bond',
     value: 20n,
-    createdAtBlock: 16,
     inviterId: 'user456',
     inviteePublicKey: new Uint8Array(32).fill(0xcc),
     probationStartBlock: 17,
@@ -130,27 +125,25 @@ describe('boxes', () => {
       expect(id1).not.toBe(id2);
     });
 
-    it('is unaffected by provenance set on the box', () => {
-      // Spec G phase C0. The legacy derivation stays legacy — no domain tag, no
-      // txId/index in the preimage — but it must strip through the *single*
-      // canonical rule. From phase C on, producers materialize boxes with
-      // txId/index set; a local `{ id, ...rest }` strip would hash those into
-      // the legacy id and move every box id, which no phase before G may do.
-      // The demo UI mirror and the invite flow's predicted inviteBoxId both
-      // compute ids from a box with no provenance, so they would diverge too.
+    it('is DETERMINED by the provenance on the box', () => {
+      // The inversion of the phase C0 test that lived here. Until phase G3b the
+      // assertion was that provenance is *stripped* — the legacy derivation had
+      // no `txId`/`index` in the preimage, so a box hashed the same bare or
+      // materialized, and the test existed to prove the single-strip-rule fix
+      // was not a no-op. Under the provenance derivation that property is
+      // exactly wrong: an id that ignored its own provenance would be the M-11
+      // id again.
       //
-      // The fix itself is inert on today's tree — no producer sets provenance
-      // yet, so it moves no existing id, and that is what makes it safe to land
-      // before phase C. This test is what keeps it distinguishable from no fix
-      // at all: it hashes a box that *does* carry provenance.
+      // Same boxes, opposite claim — moving the same `(txId, index)` pair must
+      // move the id, and two indices under one txId must not collide.
       for (const bare of [makeKarmaBox(), makeCreditBox(), makeLikeBox(), makeInviteBox(), makeBondBox()]) {
-        const materialized = {
-          ...bare,
-          id: 'f'.repeat(64),
-          txId: '0156333db37f658f278aef3ba2c9d2ce3c2f126cf7fb98b7a835dde4ee92ac7c',
-          index: 3,
-        };
-        expect(computeBoxId(materialized)).toBe(computeBoxId(bare));
+        const at3 = { ...bare, txId: GOLDEN_TX_ID, index: 3 };
+        const at4 = { ...bare, txId: GOLDEN_TX_ID, index: 4 };
+        const otherTx = { ...bare, txId: 'a'.repeat(64), index: 3 };
+        expect(computeBoxId(at3)).not.toBe(computeBoxId(at4));
+        expect(computeBoxId(at3)).not.toBe(computeBoxId(otherTx));
+        // The stored `id` field is not part of its own preimage.
+        expect(computeBoxId({ ...at3, id: 'f'.repeat(64) })).toBe(computeBoxId(at3));
       }
     });
   });
@@ -165,45 +158,58 @@ describe('boxes', () => {
  * `value` encoding (Spec B P0).
  *
  * `value` encodes as CBOR uint64 (`0x1b` + 8 bytes BE) on every box type;
- * `number` fields (createdAtBlock, …) stay minimal-int. The demo-UI CBOR
- * encoder must reproduce these exact bytes. Do not "fix" a failure by editing
- * the hashes — the encoding is protocol-breaking and unversioned.
+ * `number` fields stay minimal-int. The demo-UI CBOR encoder must reproduce
+ * these exact bytes. Do not "fix" a failure by editing the hashes — the
+ * encoding is protocol-breaking and unversioned.
+ *
+ * The wide-int pin **moved from `createdAtBlock` to `proofSource`** (Spec G
+ * phase G3b). `createdAtBlock: 70000` used to be the only box field above
+ * 65536, which is what locked L-5's wide-int encoding path; deleting the field
+ * would otherwise have dropped that coverage silently, because a karma box's
+ * canonical bytes now carry **no number field at all** (`index` is stripped).
+ * `CreditBox.proofSource` is a block height and carries the pin now.
+ *
+ * Candidates and boxes are separate because the derivation is layered: the
+ * candidates define the transaction, the transaction defines its id, and that id
+ * plus an index defines each box. Writing it in that order is also what shows
+ * this path has no circularity.
  */
 const GOLDEN_OWNER = new Uint8Array(32);
 for (let i = 0; i < 32; i++) GOLDEN_OWNER[i] = i;
 
-const GOLDEN_KARMA_BOX: KarmaBox = {
+const GOLDEN_KARMA_CANDIDATE: CandidateOf<KarmaBox> = {
   boxType: 'karma',
   value: 100n,
-  createdAtBlock: 70000,          // > 65536 — locks the wide-int encoding path (L-5)
   owner: GOLDEN_OWNER,
   guard: 'owner_signature',
   proofSource: 'genesis',
-  lastTouchBlock: 70000,
 };
 
-const GOLDEN_CREDIT_BOX: CreditBox = {
+const GOLDEN_CREDIT_CANDIDATE: CandidateOf<CreditBox> = {
   boxType: 'credit',
   value: 123456789n * 10n ** 8n,  // 12_345_678_900_000_000 > 2^53 — the range P0 exists for
-  createdAtBlock: 70000,
   owner: GOLDEN_OWNER,
   guard: 'owner_signature',
-  proofSource: 42,
+  proofSource: 70000,             // > 65536 — locks the wide-int encoding path (L-5)
 };
 
 const GOLDEN_TX: UtxoTransaction = {
   inputs: ['1111111111111111111111111111111111111111111111111111111111111111'],
-  outputs: [GOLDEN_KARMA_BOX, GOLDEN_CREDIT_BOX],
+  outputs: [GOLDEN_KARMA_CANDIDATE, GOLDEN_CREDIT_CANDIDATE],
   signatures: {},
   protocolVersion: 1,
 };
 
 const GOLDEN_KARMA_BOX_ID =
-  '83c95fbb82c1ba033280286ea0fd5a4dd09776c6c68e1426dfdae1668947c9d1';
+  '778a084f4d14df3118b1598cc9cdaac603d18412beb2de56d0290200e30c4622';
 const GOLDEN_CREDIT_BOX_ID =
-  'b256df0c3fca8bd2e7567d11ca66e4e1e4cd41b0ab148ec5956907047b596905';
+  '14e4bdb5a820ddbc7c8f8e99d6bdac69fa5b5935b576949fbab53bae5323bc9d';
 const GOLDEN_TX_ID =
-  '0156333db37f658f278aef3ba2c9d2ce3c2f126cf7fb98b7a835dde4ee92ac7c';
+  '43d122fc103ffb4931710add70c900ee14e0684de9a4b02eadb8a0ea437e47a0';
+
+/** The two candidates as block application materializes them out of GOLDEN_TX. */
+const GOLDEN_KARMA_BOX: KarmaBox = { ...GOLDEN_KARMA_CANDIDATE, txId: GOLDEN_TX_ID, index: 0 };
+const GOLDEN_CREDIT_BOX: CreditBox = { ...GOLDEN_CREDIT_CANDIDATE, txId: GOLDEN_TX_ID, index: 1 };
 
 /**
  * Full canonical identity bytes, frozen. The substring assertions below say
@@ -214,15 +220,13 @@ const GOLDEN_TX_ID =
  * `serializeBox` did), computes a different box id.
  */
 const GOLDEN_KARMA_BOX_BYTES =
-  'b9000767626f7854797065656b61726d616576616c75651b00000000000000646e63726561746564417' +
-  '4426c6f636b1a00011170656f776e65725820000102030405060708090a0b0c0d0e0f10111213141516' +
-  '1718191a1b1c1d1e1f6567756172646f6f776e65725f7369676e61747572656b70726f6f66536f75726' +
-  '3656767656e657369736e6c617374546f756368426c6f636b1a00011170';
+  'b9000567626f7854797065656b61726d616567756172646f6f776e65725f7369676e6174757265656f776e' +
+  '65725820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f6b70726f6f6653' +
+  '6f757263656767656e657369736576616c75651b0000000000000064';
 const GOLDEN_CREDIT_BOX_BYTES =
-  'b9000667626f7854797065666372656469746576616c75651b002bdc545d5875006e6372656174656441' +
-  '74426c6f636b1a00011170656f776e65725820000102030405060708090a0b0c0d0e0f10111213141516' +
-  '1718191a1b1c1d1e1f6567756172646f6f776e65725f7369676e61747572656b70726f6f66536f757263' +
-  '65182a';
+  'b9000567626f7854797065666372656469746567756172646f6f776e65725f7369676e6174757265656f77' +
+  '6e65725820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f6b70726f6f66' +
+  '536f757263651a000111706576616c75651b002bdc545d587500';
 
 describe('golden vectors (bigint value encoding)', () => {
   it('golden vector: karma boxId is frozen', () => {
@@ -243,9 +247,12 @@ describe('golden vectors (bigint value encoding)', () => {
     // value 100n → 1b + u64BE(100); value 12345678900000000n → 1b + u64BE
     expect(karmaHex).toContain('1b0000000000000064');
     expect(creditHex).toContain('1b002bdc545d587500');
-    // createdAtBlock 70000 stays minimal-int (uint32 form 1a00011170, not 1b…)
-    expect(karmaHex).toContain('1a00011170');
-    expect(karmaHex).not.toContain('1b0000000000011170');
+    // A number field above 65536 stays minimal-int (uint32 form 1a00011170,
+    // not the 1b… uint64 form `value` uses). Asserted on the credit box:
+    // `proofSource` carries this pin since phase G3b deleted `createdAtBlock`,
+    // after which a karma box's canonical bytes hold no number field at all.
+    expect(creditHex).toContain('1a00011170');
+    expect(creditHex).not.toContain('1b0000000000011170');
   });
 
   it('golden vector: full canonical identity bytes are frozen', () => {
@@ -262,7 +269,7 @@ describe('golden vectors (bigint value encoding)', () => {
     const decoded = cborDecode(Buffer.from(canonicalBoxBytes(GOLDEN_CREDIT_BOX)));
     expect(typeof decoded.value).toBe('bigint');
     expect(decoded.value).toBe(12345678900000000n);
-    expect(typeof decoded.createdAtBlock).toBe('number');
+    expect(typeof decoded.proofSource).toBe('number');
   });
 });
 
@@ -302,9 +309,9 @@ const ALL_MINT_REASONS: MintReason[] = [
  * protocol-breaking and unversioned.
  */
 const GOLDEN_CANDIDATE_KARMA_ID =
-  'ca9de5d61004c54f75b89d73fa3a031ebfa5beeea5e9b1c39a6209fba05ff0f3';
+  '778a084f4d14df3118b1598cc9cdaac603d18412beb2de56d0290200e30c4622';
 const GOLDEN_CANDIDATE_CREDIT_ID =
-  '98de447636ea488345fe44eba052c60c2b267a98e4fc30264598edeac762b542';
+  '14e4bdb5a820ddbc7c8f8e99d6bdac69fa5b5935b576949fbab53bae5323bc9d';
 const GOLDEN_MINT_COINBASE_ID =
   'd44c27ca83b922dace550bbb138c5067a5b2ef51a74d640db41477629b9911c4';
 const GOLDEN_MINT_DECAY_ID =
@@ -434,10 +441,35 @@ describe('computeCandidateBoxId', () => {
     expect(new Set(ids).size).toBe(3);
   });
 
-  it('differs from the legacy content-hash id', () => {
-    // computeBoxId's *derivation* stays legacy until phase G (phase C0 changed
-    // only what it strips); the two derivations must not be confusable.
-    expect(computeCandidateBoxId(GOLDEN_KARMA_BOX, GOLDEN_TX_ID, 0)).not.toBe(computeBoxId(GOLDEN_KARMA_BOX));
+  it('IS computeBoxId — one derivation, not two', () => {
+    // The inversion of the phase-A test that asserted these two must not be
+    // confusable, back when `computeBoxId` still carried the legacy content
+    // hash. Phase G3b collapsed them: `computeBoxId(box)` is defined as
+    // `computeCandidateBoxId(box, box.txId, box.index)`.
+    //
+    // This is the property the whole spec turns on — a creator predicting an id
+    // before the box exists and a verifier re-deriving it from the stored box
+    // must run the *same* function, or "predictable" and "honest" are two
+    // different ids again.
+    expect(computeBoxId(GOLDEN_KARMA_BOX)).toBe(
+      computeCandidateBoxId(GOLDEN_KARMA_CANDIDATE, GOLDEN_TX_ID, 0),
+    );
+    expect(computeBoxId(GOLDEN_CREDIT_BOX)).toBe(
+      computeCandidateBoxId(GOLDEN_CREDIT_CANDIDATE, GOLDEN_TX_ID, 1),
+    );
+  });
+
+  it('a stored box re-derives its own id — honesty is structural', () => {
+    // M-11 stated as an invariant: `stored.id === computeBoxId(stored)`. Under
+    // the content hash this could not hold once apply mutated `createdAtBlock`.
+    for (const [candidate, index] of [
+      [GOLDEN_KARMA_CANDIDATE, 0],
+      [GOLDEN_CREDIT_CANDIDATE, 1],
+    ] as const) {
+      const id = computeCandidateBoxId(candidate, GOLDEN_TX_ID, index);
+      const stored = { ...candidate, txId: GOLDEN_TX_ID, index, id };
+      expect(computeBoxId(stored)).toBe(stored.id);
+    }
   });
 
   it('hashes txId as hex text, not as decoded bytes', () => {
@@ -552,6 +584,71 @@ describe('domain separation', () => {
 });
 
 describe('transactions', () => {
+  describe('domain separation (found by G3b mutation testing)', () => {
+    // Dropping `TX_ID_DOMAIN` from `computeTxId` was killed ONLY by frozen
+    // goldens and the UI mirror — three assertions, all of the form "this id
+    // equals this constant". Nothing pinned what the tag is *for*: that box ids,
+    // transaction ids, mint txIds and identity-record keys share one 32-byte
+    // keyspace and must be provably disjoint (TYPES_INTERFACE → Domain tags).
+    //
+    // A golden catches removal only because the golden was regenerated after the
+    // tag was added. These pin the property, so a future id that forgets its tag
+    // fails on meaning rather than on a number someone might "fix".
+
+    it('every domain tag is distinct', () => {
+      const tags = [BOX_ID_DOMAIN, TX_ID_DOMAIN, MINT_ID_DOMAIN, IDENTITY_KEY_DOMAIN]
+        .map((t) => Buffer.from(t).toString('hex'));
+      expect(new Set(tags).size).toBe(tags.length);
+    });
+
+    it('no domain tag is a prefix of another', () => {
+      // Same argument the MintReason set rests on: the tag is followed directly
+      // by caller bytes with no length prefix, so a prefix relation would let
+      // one preimage be read as another domain's.
+      const tags = [BOX_ID_DOMAIN, TX_ID_DOMAIN, MINT_ID_DOMAIN, IDENTITY_KEY_DOMAIN]
+        .map((t) => Buffer.from(t).toString('hex'));
+      for (const a of tags) {
+        for (const b of tags) {
+          if (a !== b) expect(a.startsWith(b)).toBe(false);
+        }
+      }
+    });
+
+    it('the txId preimage is domain-tagged — independently recomputed', () => {
+      // Independent mirror of `computeTxId`, in the shape `u32BEMirror` uses:
+      // written from the contract rather than by calling the function under
+      // test, so removing the tag from the implementation fails HERE and not
+      // only against a frozen hash.
+      const h = createHash('blake2b512');
+      h.update(Buffer.from('dagsocial/tx-id/1'));
+      for (const input of GOLDEN_TX.inputs) h.update(input);
+      for (const out of GOLDEN_TX.outputs) h.update(canonicalBoxBytes(out));
+      h.update(String(GOLDEN_TX.protocolVersion));
+      expect(h.digest().subarray(0, 32).toString('hex')).toBe(computeTxId(GOLDEN_TX));
+    });
+
+    it('the box-id preimage is domain-tagged — independently recomputed', () => {
+      const h = createHash('blake2b512');
+      h.update(Buffer.from('dagsocial/box-id/1'));
+      h.update(canonicalBoxBytes(GOLDEN_KARMA_CANDIDATE));
+      h.update(Buffer.from(GOLDEN_TX_ID, 'utf8'));
+      h.update(u32BE(0));
+      expect(h.digest().subarray(0, 32).toString('hex'))
+        .toBe(computeCandidateBoxId(GOLDEN_KARMA_CANDIDATE, GOLDEN_TX_ID, 0));
+    });
+
+    it('a tx id and a box id over the same bytes cannot collide', () => {
+      // The concrete reason the tags exist: without them these two derivations
+      // could be fed preimages that coincide, and both keys live in one AVL
+      // keyspace. With the tags they are unconditionally distinct.
+      const oneOutput: UtxoTransaction = {
+        inputs: [], outputs: [GOLDEN_KARMA_CANDIDATE], signatures: {}, protocolVersion: 1,
+      };
+      expect(computeTxId(oneOutput))
+        .not.toBe(computeCandidateBoxId(GOLDEN_KARMA_CANDIDATE, '', 0));
+    });
+  });
+
   describe('computeTxId', () => {
     it('returns a 64-char hex string', () => {
       const tx: UtxoTransaction = {

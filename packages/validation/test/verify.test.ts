@@ -478,7 +478,7 @@ describe('verifyTxStructure', () => {
   it('accepts a valid transaction', () => {
     const tx: UtxoTransaction = {
       inputs: ['input1'],
-      outputs: [{ boxType: 'karma', value: 5n, createdAtBlock: 1, owner: new Uint8Array(32), guard: 'owner_signature', proofSource: 'abc', lastTouchBlock: 1 }],
+      outputs: [{ boxType: 'karma', value: 5n, owner: new Uint8Array(32), guard: 'owner_signature', proofSource: 'abc' }],
       signatures: {},
       protocolVersion: 1,
     };
@@ -488,7 +488,7 @@ describe('verifyTxStructure', () => {
   it('rejects transaction with no inputs', () => {
     const tx: UtxoTransaction = {
       inputs: [],
-      outputs: [{ boxType: 'karma', value: 5n, createdAtBlock: 1, owner: new Uint8Array(32), guard: 'owner_signature', proofSource: 'abc', lastTouchBlock: 1 }],
+      outputs: [{ boxType: 'karma', value: 5n, owner: new Uint8Array(32), guard: 'owner_signature', proofSource: 'abc' }],
       signatures: {},
       protocolVersion: 1,
     };
@@ -508,7 +508,7 @@ describe('verifyTxStructure', () => {
   it('rejects transaction with duplicate inputs', () => {
     const tx: UtxoTransaction = {
       inputs: ['input1', 'input1'],
-      outputs: [{ boxType: 'karma', value: 5n, createdAtBlock: 1, owner: new Uint8Array(32), guard: 'owner_signature', proofSource: 'abc', lastTouchBlock: 1 }],
+      outputs: [{ boxType: 'karma', value: 5n, owner: new Uint8Array(32), guard: 'owner_signature', proofSource: 'abc' }],
       signatures: {},
       protocolVersion: 1,
     };

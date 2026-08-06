@@ -39,6 +39,7 @@ import type { AnyBox } from '@dagsocial/types';
 import type { DecayJournalEntry } from '../../src/services/decay.js';
 import type Database from 'better-sqlite3';
 import {
+  fixtureProvenance,
   signTransaction,
   makeTestIdentity,
   makePost,
@@ -769,7 +770,7 @@ describe('block-apply journal recording', () => {
 
     // Spec G phase D: the decay clock is committed state. `oldBox` was inserted
     // with no journal open, so the identity has no record and reads as never
-    // active — which is the same clock its `createdAtBlock: 0` gave before, so
+    // active — which is the same clock its `so
     // the burn below is unchanged.
     const records = await import('../../src/store/identity-records.js');
 
@@ -956,16 +957,13 @@ describe('block-apply embedded tx re-validation', () => {
         {
           boxType: 'karma',
           value: 100n,
-          createdAtBlock: 0,
           owner: attacker.userId,
           guard: 'owner_signature',
           proofSource: 'like_op',
-          lastTouchBlock: 0,
         } as KarmaBox,
         {
           boxType: 'like',
           value: LIKE_COST,
-          createdAtBlock: 0,
           likerId: attacker.userId,
           targetPostId: 'target_post',
           guard: 'epoch_tally',
@@ -1323,11 +1321,11 @@ describe('block-apply mint provenance', () => {
       boxType: 'post_lock',
       value: 10n,
       originalValue: 10n,
-      createdAtBlock: 1,
       owner: author.userId,
       targetPostId: postId,
       guard: 'epoch_tally',
     };
+    Object.assign(lockBox, fixtureProvenance(lockBox, 1));
     lockBox.id = computeBoxId(lockBox);
     utxo.insertBox(lockBox);
 

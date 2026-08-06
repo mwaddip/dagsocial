@@ -151,7 +151,7 @@ function postLockTx(boxes: {boxId:string,value:string}[], lockAmount: bigint, ta
   return {
     inputs: boxes.map(b=>b.boxId),
     outputs: [
-      { boxType:'karma', value:t-lockAmount, createdAtBlock:0, owner:pubRaw, guard:'owner_signature', proofSource:targetPostId, lastTouchBlock:0 },
+      { boxType:'karma', value:t-lockAmount, owner:pubRaw, guard:'owner_signature', proofSource:targetPostId },
       { boxType:'post_lock', value:lockAmount, originalValue:lockAmount, owner:pubRaw, targetPostId, guard:'epoch_tally' },
     ],
     signatures:{},

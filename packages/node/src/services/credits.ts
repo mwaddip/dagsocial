@@ -4,7 +4,7 @@ import {
   selectBoxes,
   PROTOCOL_VERSION,
 } from '@dagsocial/types';
-import type { AnyBox, CreditBox, UtxoTransaction } from '@dagsocial/types';
+import type { CandidateOf, CreditBox, UtxoTransaction } from '@dagsocial/types';
 import { verify as cryptoVerify } from 'crypto';
 import {
   getCreditBoxes,
@@ -62,21 +62,20 @@ export function mintCredits(
     }
   }
 
+  // The conditional field is spread rather than assigned afterwards: spreading
+  // `{}` adds no key at all, so this cannot produce the explicit `undefined`
+  // that contract 1a rules out. Key *order* no longer matters as of phase G3b —
+  // both encoders sort — but present-vs-absent still does.
   const newBox: CreditBox = {
     boxType: 'credit',
     value: newValue,
-    createdAtBlock: blockHeight,
     owner,
     guard: 'owner_signature',
     proofSource: blockHeight,
+    ...(mergedLockedUntilBlock !== undefined ? { lockedUntilBlock: mergedLockedUntilBlock } : {}),
+    txId: mintTxIdFor(ctx, blockHeight),
+    index: MINT_OUTPUT_INDEX,
   };
-  if (mergedLockedUntilBlock !== undefined) {
-    newBox.lockedUntilBlock = mergedLockedUntilBlock;
-  }
-  // Appended after every candidate field — including the conditional
-  // `lockedUntilBlock` — so this matches `rowToBox`'s key order. See mintKarma.
-  newBox.txId = mintTxIdFor(ctx, blockHeight);
-  newBox.index = MINT_OUTPUT_INDEX;
   newBox.id = computeBoxId(newBox);
 
   insertBox(newBox);
@@ -123,12 +122,11 @@ export function sendCredits(
   //    matches what the client signed. Falls back to currentHeight if
   //    expectedHeight is not provided (backward compat for non-UI callers).
   const buildHeight = expectedHeight ?? currentHeight;
-  const outputs: CreditBox[] = [];
+  const outputs: CandidateOf<CreditBox>[] = [];
 
-  const recipientBox: CreditBox = {
+  const recipientBox: CandidateOf<CreditBox> = {
     boxType: 'credit',
     value: amount,
-    createdAtBlock: buildHeight,
     owner: to,
     guard: 'owner_signature',
     proofSource: -1, // transfer (not coinbase)
@@ -136,11 +134,10 @@ export function sendCredits(
   outputs.push(recipientBox);
 
   if (change > 0n) {
-    const changeBox: CreditBox = {
+    const changeBox: CandidateOf<CreditBox> = {
       boxType: 'credit',
       value: change,
-      createdAtBlock: buildHeight,
-      owner: from,
+        owner: from,
       guard: 'owner_signature',
       proofSource: -1,
     };
@@ -148,9 +145,13 @@ export function sendCredits(
   }
 
   // 3. Build transaction
+  //
+  // The outputs no longer carry a precomputed `id`. It was vestigial: nothing
+  // reads an output id, and `computeTxId` strips it through `canonicalBoxBytes`
+  // before hashing — so the transaction id the client signed is unchanged.
   const tx: UtxoTransaction = {
     inputs: selected.map((b) => b.id!),
-    outputs: outputs.map((b) => ({ ...b, id: computeBoxId(b) })),
+    outputs,
     signatures: {},
     protocolVersion: PROTOCOL_VERSION,
   };
@@ -176,7 +177,7 @@ export function sendCredits(
     consumeBox(box.id!, currentHeight);
   }
   tx.outputs
-    .map((box, index) => materializeOutput(box as AnyBox, txId, index))
+    .map((box, index) => materializeOutput(box, txId, index))
     .forEach(insertBox);
 
   return {

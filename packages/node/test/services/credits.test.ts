@@ -5,6 +5,7 @@ import type { CreditBox, UtxoTransaction } from '@dagsocial/types';
 import { initDb, closeDb } from '../../src/store/db.js';
 import { insertBox, getCreditBoxes, getUnlockedCreditBoxes } from '../../src/store/utxo.js';
 import { sendCredits } from '../../src/services/credits.js';
+import { fixtureProvenance } from '../helpers.js';
 
 function rawPublicKey(keyObj: ReturnType<typeof generateKeyPairSync>['publicKey']): Uint8Array {
   const der = keyObj.export({ type: 'spki', format: 'der' }) as Buffer;
@@ -43,7 +44,6 @@ describe('sendCredits', () => {
     const box: CreditBox = {
       boxType: 'credit',
       value,
-      createdAtBlock: HEIGHT - 10,
       owner: alicePubKey,
       guard: 'owner_signature',
       proofSource: HEIGHT - 10,
@@ -51,6 +51,7 @@ describe('sendCredits', () => {
     if (lockedUntilBlock !== undefined) {
       box.lockedUntilBlock = lockedUntilBlock;
     }
+    Object.assign(box, fixtureProvenance(box, 1));
     box.id = computeBoxId(box);
     insertBox(box);
     return box;
@@ -66,7 +67,6 @@ describe('sendCredits', () => {
     const outputs: CreditBox[] = [{
       boxType: 'credit',
       value: amount,
-      createdAtBlock: HEIGHT,
       owner: bobPubKey,
       guard: 'owner_signature',
       proofSource: -1,
@@ -75,7 +75,6 @@ describe('sendCredits', () => {
       outputs.push({
         boxType: 'credit',
         value: change,
-        createdAtBlock: HEIGHT,
         owner: alicePubKey,
         guard: 'owner_signature',
         proofSource: -1,
@@ -147,7 +146,6 @@ describe('sendCredits', () => {
     const candidate: CreditBox = {
       boxType: 'credit',
       value: 42n,
-      createdAtBlock: HEIGHT,
       owner: bobPubKey,
       guard: 'owner_signature',
       proofSource: -1,

@@ -33,6 +33,7 @@ import {
   insertPostPlaceholder,
   insertBox,
   getBox,
+  getBoxByProvenance,
   consumeBox,
   confirmPost,
   pruneSubtree,
@@ -845,6 +846,7 @@ function applyMutationPhase(
   //    block itself is malformed. A valid block cannot contain an invalid tx.
   const utxoDeps = {
     getBox,
+    getBoxByProvenance,
     insertBox,
     consumeBox,
     getKarmaBox,
