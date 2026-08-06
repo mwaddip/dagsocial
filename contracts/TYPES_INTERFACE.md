@@ -779,12 +779,31 @@ export const CHALLENGE_WINDOW_BLOCKS = 10;     // Blocks before challenge expire
 ### Karma
 
 ```typescript
-export const KARMA_POSTING_MINIMUM = 1;              // Minimum karma to post
-export const KARMA_STALE_THRESHOLD_BLOCKS = 20160;   // 28d grace period at 2m blocks
-export const KARMA_DECAY_INTERVAL_BLOCKS = 720;      // 24h decay period at 2m blocks
-export const KARMA_DECAY_AMOUNT = 5;                 // Karma burned per interval
-export const KARMA_MINIMUM = 10;                     // Floor — decay never reduces below
+export const KARMA_POSTING_MINIMUM = 1n;             // consensus — minimum karma to post
+export const KARMA_STALE_THRESHOLD_BLOCKS = 40320;   // consensus — 28d grace at 60s blocks
+export const KARMA_DECAY_INTERVAL_BLOCKS = 1440;     // consensus — 24h decay period at 60s blocks
+export const KARMA_DECAY_AMOUNT = 5n;                // consensus — karma burned per interval
+export const KARMA_MINIMUM = 10n;                    // consensus — floor, decay never reduces below
 ```
+
+> ⚠ **The two `*_BLOCKS` values above are CORRECTED and the code still holds the old ones**
+> (`20160` / `720`). Decision 2026-08-06: **the target block time is 60 seconds**, so these
+> are recomputed from a 2-minute basis. Phase 2 changes `constants.ts`.
+>
+> **This was a unit error, not a tuning question.** The constants were annotated "28 days"
+> and "24 hours" while `ORDERING_BLOCK_INTERVAL_MS` is `60000` and every other time-derived
+> constant is 60s-based — `CREDIT_MINER_REWARD_DELAY` and `MEMPOOL_EXPIRY_BLOCKS` are both
+> `720` for "~12h" (720 minutes ✓), `CREDIT_EPOCH_BLOCKS` is `129_600` for "~90 days" ✓,
+> and `CREDIT_FIXED_RATE_BLOCKS` says "at 60s blocks" outright. **The karma pair were the
+> only constants on a 2-minute basis**, so at the block time the node actually runs they
+> delivered **14 days and 12 hours — half their stated durations.** Decay bit twice as fast
+> and twice as often as documented.
+>
+> ⚠ **Separately, 28 days is itself probably the wrong duration.** The economics design
+> track calls for a **short, days-scale window — "e.g. ~5, not 28"** — so this correction
+> fixes the *unit* while leaving the *value* open. Do not read `40320` as a decided number;
+> it is the faithful translation of a figure that is itself pending the constants-pinning
+> session. **Two independent problems, and only one is fixed here.**
 
 ### Post lock
 

@@ -275,8 +275,8 @@ Classes are defined in `NODE_INTERFACE.md → Configuration`.
 
 | Parameter | Class | Default | Description |
 |-----------|-------|---------|-------------|
-| `KARMA_STALE_THRESHOLD_BLOCKS` | **consensus** | 20160 | Grace period before decay begins |
-| `KARMA_DECAY_INTERVAL_BLOCKS` | **consensus** | 720 | Decay period |
+| `KARMA_STALE_THRESHOLD_BLOCKS` | **consensus** | 40320 | Grace period before decay begins (28d at 60s blocks) |
+| `KARMA_DECAY_INTERVAL_BLOCKS` | **consensus** | 1440 | Decay period (24h at 60s blocks) |
 | `KARMA_DECAY_AMOUNT` | **consensus** | 5 | Karma burned per period |
 | `KARMA_MINIMUM` | **consensus** | 10 | Floor — decay never reduces below this |
 
@@ -286,13 +286,18 @@ Classes are defined in `NODE_INTERFACE.md → Configuration`.
 > Phase 2 promotes them to `@dagsocial/types` constants and removes the `process.env`
 > reads.
 
-> ⚠ **The durations these values encode are ambiguous, and it is a consensus question.**
-> `constants.ts` annotates them "at 2m blocks" (28 days / 24 hours), but
-> `ORDERING_BLOCK_INTERVAL_MS` defaults to **60000** and `MINING_INTERFACE.md`'s emission
-> schedule is computed "at 60-second blocks". At 60s these are **14 days and 12 hours** —
-> half the intended values, so decay bites twice as fast and twice as often. Either the
-> annotations are stale or the target block time is. **Resolve before launch:** these are
-> consensus parameters, so the discrepancy cannot be corrected afterwards without a fork.
+> ✅ **RESOLVED 2026-08-06 — the target block time is 60 seconds, and the two `*_BLOCKS`
+> values are recomputed above.** The code still holds the pre-correction values
+> (`20160` / `720`); Phase 2 changes `constants.ts`.
+>
+> The karma pair were the **only** constants on a 2-minute basis — `CREDIT_MINER_REWARD_DELAY`
+> and `MEMPOOL_EXPIRY_BLOCKS` (both `720` = ~12h), `CREDIT_EPOCH_BLOCKS` (`129_600` = ~90d)
+> and `CREDIT_FIXED_RATE_BLOCKS` ("at 60s blocks") all agree on 60s. So at the block time
+> the node runs, these two delivered **14 days and 12 hours instead of 28 and 24**.
+>
+> ⚠ **The 28-day figure is separately still open.** The economics design track wants a
+> short, days-scale grace window ("e.g. ~5, not 28"), so `40320` is a faithful translation
+> of a value that is itself pending the constants-pinning session — not a decided number.
 
 #### Credit boxes
 
