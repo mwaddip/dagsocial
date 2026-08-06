@@ -47,16 +47,30 @@ framed — they carry raw CBOR directly on the wire as before.
 **The magic is a field of the network profile** (`TYPES_INTERFACE §Network profiles`),
 resolved once at startup from `NETWORK_TYPE`. It is never a per-call-site default.
 
-> ⚠ **VIOLATED — `magic` defaults to `MAGIC_MAINNET` at nine call sites in `net/src/node.ts`
-> plus one in `sync-machine.ts`, independently of the node's configured network.** The node's
-> `NETWORK_MODE` selects no magic at all, so **a node started as testnet frames as mainnet.**
-> The transport separation this table describes does not currently exist; testnet and mainnet
-> peers assemble each other's frames.
+> ⚠ **VIOLATED — the magic is not a fallback, it is the only path. Every node frames as
+> mainnet, on every network, unconditionally.** Measured 2026-08-06, four links:
 >
-> The `?? MAGIC_MAINNET` fallback is the mechanism. A default is the wrong shape here — an
-> unset network is not a mainnet node, it is a misconfigured one, and defaulting silently
-> resolves it toward the network where being wrong costs the most. `NetConfig.magic` becomes
-> **required**, with no fallback, so the omission is a type error rather than a mainnet frame.
+> 1. **This contract declares `magic: number`** (required). **The code declares
+>    `magic?: number`** (`net/src/types.ts:131`) — a pre-existing contract/code drift.
+> 2. **The only caller never passes it.** `node/src/index.ts:147-160` constructs `NetConfig`
+>    with eleven fields; `magic` is not among them.
+> 3. Ten sites therefore always take `?? MAGIC_MAINNET` — nine in `node.ts`, one in
+>    `sync-machine.ts:160`.
+> 4. `NETWORK_MODE` feeds none of them.
+>
+> So the transport separation this table describes **does not exist at all**. `MAGIC_TESTNET`
+> has no production consumer; its only reference outside the table is a classifier
+> (`bogus-addr.ts:85`). Testnet and mainnet peers assemble each other's frames today.
+>
+> **`NetConfig.magic` becomes required, with no fallback.** A default is the wrong shape
+> here — an unset network is not a mainnet node, it is a misconfigured one, and defaulting
+> silently resolves it toward the network where being wrong costs the most. Making it
+> required turns link 2 into a compile error at the single construction site.
+>
+> `node/src/index.ts:145-146` already carries a comment about exactly this failure mode for
+> the peer parameters — *"their defaults as binding only when node supplies them — unset,
+> net's internal fallbacks silently govern instead."* The observation was written down and
+> `magic` was not fixed.
 
 > ⚠ **`KNOWN_FRAME_MAGICS` is hardcoded in `net/src/node.ts` as `[MAGIC_MAINNET,
 > MAGIC_TESTNET]`.** Adding `MAGIC_DEVNET` to wire without updating that list makes devnet
