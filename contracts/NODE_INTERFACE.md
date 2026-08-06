@@ -330,41 +330,40 @@ the JSON (box values are `bigint`; JSON cannot carry one) — clients parse them
 | `GET` | `/blocks/:height` | OrderingBlock object (JSON with hex fields) | 400 if NaN, 404 |
 | `GET` | `/blocks/current` | `{ height, hash }` | — |
 
-### Faucet (testnet only)
+### Faucet (faucet-bearing networks only)
 
 | Method | Path | Request | Response | Errors |
 |--------|------|---------|----------|--------|
-| `POST` | `/faucet` | `{ userId: hex }` | `{ status: "pending", txId, expiresAtHeight }` | 400 if missing fields, 403 if not testnet, 409 if already funded |
+| `POST` | `/faucet` | `{ userId: hex }` | `{ status: "pending", txId, expiresAtHeight }` | 400 if missing fields, 403 on a network without a faucet, 409 if already funded |
 
 Grants 100 karma to an identity, **once per identity, ever** (idempotent). Mints
 from the system keypair — not a transfer. Builds a UTXO transaction creating a
-new karma box and inserts it into the mempool. Gated behind
-`networkMode === "testnet"`.
+new karma box and inserts it into the mempool. Gated on `isFaucetNetwork(config.networkType)`
+(`config.ts`) — an **allow-list**, currently `testnet` and `devnet`.
 
-> ⚠ **PARTIAL — the gate is an allow-list of faucet-bearing networks.** With three networks,
-> an equality test against `"testnet"` leaves devnet — whose entire purpose is disposable
-> local testing — without a faucet. P2-A phase 4 changed all three gates to
-> `!== 'mainnet'`; **phase 4b replaces that with the allow-list**
-> (`networkType === 'testnet' || networkType === 'devnet'`).
->
-> **Why the allow-list, corrected 2026-08-07.** An earlier version of this note argued for
-> the deny-list on the grounds that it leaves a later-added network "faucet-less by default."
-> **That is exactly backwards** — under `!== 'mainnet'`, a network added later is
-> faucet-*enabled* by default. The allow-list is the construction that fails closed: a new
-> network mints nothing until someone names it. The property being defended is *never mint
-> karma from nothing on a network where it has value*, and forgetting to update an allow-list
-> is safe while forgetting to update a deny-list is not.
->
-> This is the third time this unit has chosen fail-closed over convenient-default, and the
-> reasoning is identical each time: `profileFor` throws rather than defaulting, `NetConfig`
-> requires `magic` rather than defaulting it, and the faucet enumerates rather than excluding.
->
-> ⚠ **All three gates move together, always** — the provisioning gate (`index.ts`), the
-> mount gate (`server.ts`) and the handler guard (`routes/utxo.ts`). A subset is worse than
-> none: mount without provisioning gives a faucet with nothing to mint from; provision without
-> mounting leaves unreachable system state. Note the handler guard is written as the
-> **inversion** (a reject condition), so a grep for the enabling expression finds only two of
-> the three.
+**The allow-list is normative, and the reasoning matters more than the current membership.**
+It fails closed: a network added later mints nothing until someone names it. The property
+being defended is *never mint karma from nothing on a network where it has value*, and
+forgetting to update an allow-list is safe while forgetting to update a deny-list is not.
+A deny-list (`!== 'mainnet'`) hands every future network a faucet by default.
+
+This is the third place in this design that chooses fail-closed over convenient-default, on
+identical reasoning: `profileFor` throws rather than defaulting, `NetConfig` requires `magic`
+rather than defaulting it, and the faucet enumerates rather than excluding.
+
+⚠ **All three gates move together, always** — the provisioning gate (`index.ts`), the mount
+gate (`server.ts`) and the handler guard (`routes/utxo.ts`). A subset is worse than none:
+mount without provisioning gives a faucet with nothing to mint from; provision without
+mounting leaves unreachable system state. They call one shared predicate so they cannot
+drift; the handler guard applies it as a **reject** condition, so a grep for the enabling
+expression finds only two of the three.
+
+> **Coverage limit, measured 2026-08-07.** Only the **mount** gate is covered
+> (`server.test.ts`, via the injectable `createApp`). The handler guard reads the
+> module-singleton `config`, and the provisioning gate runs as an import side effect of the
+> entrypoint — mutating either leaves the suite green. Covering the handler guard properly
+> means injecting `networkType` through `UtxoDeps` like every other dependency; the singleton
+> read is the config-at-a-distance pattern §Network Identity exists to remove.
 
 **Idempotency (required):** a given `userId` may be funded at most once, ever. A repeat
 request is rejected (409). Enforced by a durable per-`(userId, asset)` grant ledger
