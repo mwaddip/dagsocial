@@ -847,8 +847,10 @@ interface NetConfig {
   listenAddrs: string
   maxPeers: number
 
-  // Magic bytes — REQUIRED, from the network profile. No default; see §Magic Bytes
+  // Network — both REQUIRED, both supplied by the node from its resolved profile.
+  // No defaults; see §Magic Bytes and §Consensus parameters net enforces.
   magic: number                    // mainnet 0x4D444147 · testnet 0x54444147 · devnet 0x44444147
+  postPowTargetBits: number        // ⚠ NOT IMPLEMENTED — field does not exist yet
 
   // Peer discovery
   minPeers: number                 // floor for fill phase (default 3)
@@ -865,6 +867,47 @@ interface NetConfig {
   penaltySafeIntervalMs: number
 }
 ```
+
+### Consensus parameters net enforces
+
+Stage-1 relay validation checks proof-of-work before forwarding, so **net enforces a
+consensus parameter** and must be told which network it is on. It receives values; it does
+not resolve them, does not import `NetworkProfile`, and reads no environment variable for
+them.
+
+| Value | Why net needs it | Today |
+|---|---|---|
+| `magic` | Frame assembly and the frame-magic check | ⚠ VIOLATED — see §Magic Bytes |
+| `postPowTargetBits` | `gossip.ts:242` verifies post PoW before relay | ⚠ VIOLATED — imports the constant from `@dagsocial/types` |
+
+> ⚠ **`gossip.ts:242` has the same defect node closed as audit A6.** It calls
+> `v.verifyPoW(powInput, post.powNonce, POST_POW_TARGET_BITS)` against the compile-time
+> constant, so post difficulty is network-invariant at the relay boundary even though it is a
+> profile field. **A devnet node would reject its own network's posts** — mined at devnet's
+> target, checked against mainnet's — before they ever reach the node. It must read
+> `config.postPowTargetBits`, supplied by the node.
+
+> ⚠ **VIOLATED — `NETWORK_MAGIC`, an undocumented `network-identity` environment read.**
+> `net/src/config.ts:5`:
+> ```ts
+> magic: parseInt(process.env['NETWORK_MAGIC'] ?? '0x54444147', 16), // default testnet
+> ```
+> Found 2026-08-06 by an exhaustive `process.env` sweep across all five packages. It appears
+> in **no contract** — not here, not in `NODE_INTERFACE §Configuration` — and the ten-unit
+> audit did not surface it. Three problems, in ascending order:
+>
+> 1. **It is a second network selector.** `NETWORK_TYPE` is supposed to be the only
+>    environment variable that can change a consensus parameter.
+> 2. **Its default contradicts the live path.** This says testnet (`0x54444147`); the ten
+>    `?? MAGIC_MAINNET` sites say mainnet. The two disagree about which network an
+>    unconfigured node joins.
+> 3. **It is dead, which is why nobody noticed.** `loadNetConfig` has no production caller
+>    and is not exported from net's barrel — only its own test file calls it. The node builds
+>    its `NetConfig` literal by hand instead. Dead code carrying a live escape hatch is worse
+>    than live code carrying one: it reads as the intended path and invites being wired up.
+>
+> **Resolution: delete `loadNetConfig` and its test.** Net does not resolve configuration —
+> it receives it.
 
 ---
 
