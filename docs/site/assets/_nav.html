@@ -1,0 +1,20 @@
+<nav class="nav" id="siteNav">
+  <a class="nav-item" href="/">Introduction</a>
+  <div class="nav-cat">Notis</div>
+  <a class="nav-item" href="/first-principles/">First principles</a>
+  <a class="nav-item" href="/architecture/">Architecture</a>
+  <a class="nav-item" href="/economy/">Economy</a>
+  <a class="nav-item" href="/karma/">Karma</a>
+</nav>
+<script>
+(function(){
+  var p = location.pathname.replace(/index\.html$/, "") || "/";
+  var items = document.querySelectorAll("#siteNav .nav-item");
+  for (var i = 0; i < items.length; i++) {
+    if (items[i].getAttribute("href") === p) {
+      items[i].classList.add("active");
+      items[i].setAttribute("aria-current", "page");
+    }
+  }
+})();
+</script>

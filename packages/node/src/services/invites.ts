@@ -1,5 +1,4 @@
 import {
-  computeBoxId,
   computeTxId,
   MAX_PENDING_INVITES,
   INVITE_KARMA_AMOUNT,
@@ -12,7 +11,7 @@ import {
   insertUtxoTx,
   countPendingInvites,
 } from '../store/index.js';
-import { validateTx } from './utxo-engine.js';
+import { materializeOutput, validateTx } from './utxo-engine.js';
 import type { UtxoEngineDeps } from './utxo-engine.js';
 import { ClientError } from './client-error.js';
 
@@ -88,6 +87,27 @@ export function createInvite(
     );
   }
 
+  // ---- 4b. The bond must point at THIS transaction's InviteBox ----
+  //
+  // Checked at **create**, not only when the bond is dereferenced at commit
+  // (user decision, 2026-08-06). The old `inviteBoxId: BoxId` was validated
+  // nowhere here: a bond could name any box in the world, and a wrong value
+  // surfaced one transaction later as "InviteBox not found for bond commit" —
+  // a dangling reference rather than a rejected transaction.
+  //
+  // Pairing by output index makes the *scope* structural — a bond can only
+  // address an output of its own transaction — and this check makes the
+  // *target* structural too. Together, a bond paired with anything other than
+  // the invite it shipped with is inexpressible rather than caught late, which
+  // is the whole reason the index form was chosen over re-encoding the id.
+  if (tx.outputs[bondOut.inviteOutputIndex] !== inviteOut) {
+    throw new ClientError(
+      `BondBox.inviteOutputIndex must address the InviteBox output of the same ` +
+      `transaction: got ${bondOut.inviteOutputIndex}, InviteBox is at ` +
+      `${tx.outputs.indexOf(inviteOut)}`,
+    );
+  }
+
   // ---- 5. Validate transaction (guards, transitions, decay) ----
   const result = validateTx(deps, tx, currentBlockHeight);
   if (!result.valid) {
@@ -99,14 +119,32 @@ export function createInvite(
   insertUtxoTx(tx, null, expiresAtHeight);
 
   // ---- 7. Return result ----
+  //
+  // `txId` is computed FIRST, before any provenance is attached: it hashes the
+  // output *candidates*, so attaching first would feed provenance into the very
+  // id it is derived from. `computeTxId` routes outputs through
+  // `canonicalBoxBytes` and so does not observe provenance — which makes
+  // getting this backwards silent rather than an error.
   const txId = computeTxId(tx);
 
+  // These two ids are still returned, and they must still equal what block
+  // application will store — so they are materialized exactly the way that path
+  // materializes them, and `tx` here is client-supplied decoded CBOR, so the
+  // strip-before-append in `materializeOutput` is load-bearing.
+  //
+  // What changed (user decision, 2026-08-06): the client no longer has to
+  // *predict* `inviteBox.id` in order to build the bond. It says which output
+  // index the invite is at, and the node resolves the pair from
+  // `(txId, inviteOutputIndex)` at commit. These are now informational —
+  // an id the client can display or track, not one it has to get right for the
+  // flow to work. That is strictly stronger than the "exact prediction" Spec G
+  // aimed at: prediction became unnecessary rather than merely reliable.
   return {
     status: 'pending',
     txId,
     expiresAtHeight,
-    inviteBox: { ...inviteOut, id: inviteOut.id ?? computeBoxId(inviteOut) },
-    bondBox: { ...bondOut, id: bondOut.id ?? computeBoxId(bondOut) },
+    inviteBox: materializeOutput(inviteOut, txId, tx.outputs.indexOf(inviteOut)) as InviteBox,
+    bondBox: materializeOutput(bondOut, txId, tx.outputs.indexOf(bondOut)) as BondBox,
     tx,
   };
 }
@@ -279,8 +317,13 @@ export function claimInvite(
   insertUtxoTx(tx, null, expiresAtHeight);
 
   // ---- 6. Return result ----
+  // txId first, then provenance — see createInvite.
   const txId = computeTxId(tx);
-  const karmaBoxId = karmaOutput.id ?? computeBoxId(karmaOutput);
+  const karmaBoxId = materializeOutput(
+    karmaOutput,
+    txId,
+    tx.outputs.indexOf(karmaOutput),
+  ).id!;
 
   return {
     status: 'pending',

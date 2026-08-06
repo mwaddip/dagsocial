@@ -1,0 +1,227 @@
+{
+  "capturedBefore": "Spec G phase D — captured from the pre-swap implementation, before D2/D3 edited any source file",
+  "equivalent": {
+    "no-decay-below-threshold": {
+      "name": "no-decay-below-threshold",
+      "decayEvents": [],
+      "finalBalances": {
+        "alice": "100"
+      },
+      "finalBoxCounts": {
+        "alice": 1
+      }
+    },
+    "staleness-boundary-exactly-at-threshold": {
+      "name": "staleness-boundary-exactly-at-threshold",
+      "decayEvents": [
+        {
+          "height": 11,
+          "owner": "alice",
+          "burnAmount": "15",
+          "consumedCount": 1,
+          "balanceAfter": "85"
+        }
+      ],
+      "finalBalances": {
+        "alice": "85"
+      },
+      "finalBoxCounts": {
+        "alice": 1
+      }
+    },
+    "zero-activity-height-at-threshold": {
+      "name": "zero-activity-height-at-threshold",
+      "decayEvents": [
+        {
+          "height": 11,
+          "owner": "alice",
+          "burnAmount": "15",
+          "consumedCount": 1,
+          "balanceAfter": "85"
+        }
+      ],
+      "finalBalances": {
+        "alice": "85"
+      },
+      "finalBoxCounts": {
+        "alice": 1
+      }
+    },
+    "decay-twice-then-thrice": {
+      "name": "decay-twice-then-thrice",
+      "decayEvents": [
+        {
+          "height": 20,
+          "owner": "alice",
+          "burnAmount": "30",
+          "consumedCount": 1,
+          "balanceAfter": "70"
+        },
+        {
+          "height": 26,
+          "owner": "alice",
+          "burnAmount": "10",
+          "consumedCount": 1,
+          "balanceAfter": "60"
+        },
+        {
+          "height": 32,
+          "owner": "alice",
+          "burnAmount": "10",
+          "consumedCount": 1,
+          "balanceAfter": "50"
+        }
+      ],
+      "finalBalances": {
+        "alice": "50"
+      },
+      "finalBoxCounts": {
+        "alice": 1
+      }
+    },
+    "activity-resets-clock-after-decay": {
+      "name": "activity-resets-clock-after-decay",
+      "decayEvents": [
+        {
+          "height": 20,
+          "owner": "alice",
+          "burnAmount": "30",
+          "consumedCount": 1,
+          "balanceAfter": "70"
+        },
+        {
+          "height": 40,
+          "owner": "alice",
+          "burnAmount": "30",
+          "consumedCount": 1,
+          "balanceAfter": "50"
+        }
+      ],
+      "finalBalances": {
+        "alice": "50"
+      },
+      "finalBoxCounts": {
+        "alice": 1
+      }
+    },
+    "decay-then-mint-same-block": {
+      "name": "decay-then-mint-same-block",
+      "decayEvents": [
+        {
+          "height": 20,
+          "owner": "alice",
+          "burnAmount": "30",
+          "consumedCount": 1,
+          "balanceAfter": "70"
+        },
+        {
+          "height": 35,
+          "owner": "alice",
+          "burnAmount": "25",
+          "consumedCount": 1,
+          "balanceAfter": "55"
+        }
+      ],
+      "finalBalances": {
+        "alice": "55"
+      },
+      "finalBoxCounts": {
+        "alice": 1
+      }
+    },
+    "burn-capped-at-minimum-floor": {
+      "name": "burn-capped-at-minimum-floor",
+      "decayEvents": [
+        {
+          "height": 20,
+          "owner": "alice",
+          "burnAmount": "2",
+          "consumedCount": 1,
+          "balanceAfter": "10"
+        }
+      ],
+      "finalBalances": {
+        "alice": "10"
+      },
+      "finalBoxCounts": {
+        "alice": 1
+      }
+    },
+    "below-minimum-never-burns": {
+      "name": "below-minimum-never-burns",
+      "decayEvents": [],
+      "finalBalances": {
+        "alice": "8"
+      },
+      "finalBoxCounts": {
+        "alice": 1
+      }
+    },
+    "two-owners-independent-clocks": {
+      "name": "two-owners-independent-clocks",
+      "decayEvents": [
+        {
+          "height": 20,
+          "owner": "alice",
+          "burnAmount": "30",
+          "consumedCount": 1,
+          "balanceAfter": "70"
+        },
+        {
+          "height": 30,
+          "owner": "alice",
+          "burnAmount": "15",
+          "consumedCount": 1,
+          "balanceAfter": "55"
+        },
+        {
+          "height": 30,
+          "owner": "bob",
+          "burnAmount": "25",
+          "consumedCount": 1,
+          "balanceAfter": "80"
+        }
+      ],
+      "finalBalances": {
+        "alice": "55",
+        "bob": "80"
+      },
+      "finalBoxCounts": {
+        "alice": 1,
+        "bob": 1
+      }
+    },
+    "production-constants": {
+      "name": "production-constants",
+      "decayEvents": [
+        {
+          "height": 20161,
+          "owner": "alice",
+          "burnAmount": "140",
+          "consumedCount": 1,
+          "balanceAfter": "860"
+        },
+        {
+          "height": 20881,
+          "owner": "alice",
+          "burnAmount": "5",
+          "consumedCount": 1,
+          "balanceAfter": "855"
+        },
+        {
+          "height": 22321,
+          "owner": "alice",
+          "burnAmount": "10",
+          "consumedCount": 1,
+          "balanceAfter": "845"
+        }
+      ],
+      "finalBalances": {
+        "alice": "845"
+      },
+      "finalBoxCounts": {
+        "alice": 1
+      }
+    }
+  }
+}

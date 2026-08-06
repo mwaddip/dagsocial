@@ -5,6 +5,7 @@ import type { CreditBox, UtxoTransaction } from '@dagsocial/types';
 import { initDb, closeDb } from '../../src/store/db.js';
 import { insertBox, getCreditBoxes, getUnlockedCreditBoxes } from '../../src/store/utxo.js';
 import { sendCredits } from '../../src/services/credits.js';
+import { fixtureProvenance } from '../helpers.js';
 
 function rawPublicKey(keyObj: ReturnType<typeof generateKeyPairSync>['publicKey']): Uint8Array {
   const der = keyObj.export({ type: 'spki', format: 'der' }) as Buffer;
@@ -43,7 +44,6 @@ describe('sendCredits', () => {
     const box: CreditBox = {
       boxType: 'credit',
       value,
-      createdAtBlock: HEIGHT - 10,
       owner: alicePubKey,
       guard: 'owner_signature',
       proofSource: HEIGHT - 10,
@@ -51,6 +51,7 @@ describe('sendCredits', () => {
     if (lockedUntilBlock !== undefined) {
       box.lockedUntilBlock = lockedUntilBlock;
     }
+    Object.assign(box, fixtureProvenance(box, 1));
     box.id = computeBoxId(box);
     insertBox(box);
     return box;
@@ -66,7 +67,6 @@ describe('sendCredits', () => {
     const outputs: CreditBox[] = [{
       boxType: 'credit',
       value: amount,
-      createdAtBlock: HEIGHT,
       owner: bobPubKey,
       guard: 'owner_signature',
       proofSource: -1,
@@ -75,7 +75,6 @@ describe('sendCredits', () => {
       outputs.push({
         boxType: 'credit',
         value: change,
-        createdAtBlock: HEIGHT,
         owner: alicePubKey,
         guard: 'owner_signature',
         proofSource: -1,
@@ -113,6 +112,74 @@ describe('sendCredits', () => {
     const bobBoxes = getCreditBoxes(bobPubKey);
     expect(bobBoxes).toHaveLength(1);
     expect(bobBoxes[0]!.value).toBe(400n);
+  });
+
+  // -------------------------------------------------------------------------
+  // Spec G phase C4 — provenance is attached AFTER the txId is computed
+  // -------------------------------------------------------------------------
+
+  it('transferred boxes carry the real txId and their output positions', () => {
+    seedCredits(500n);
+    const { signature } = buildSignedTransfer(400n);
+    const result = sendCredits(alicePubKey, bobPubKey, 400n, signature, HEIGHT);
+
+    // Output 0 is the recipient, output 1 the change — the positions
+    // `sendCredits` builds them in.
+    const recipient = getCreditBoxes(bobPubKey)[0]!;
+    const change = getCreditBoxes(alicePubKey).find((b) => b.value === 100n)!;
+
+    expect(recipient.txId).toBe(result.txId);
+    expect(change.txId).toBe(result.txId);
+    expect(recipient.index).toBe(0);
+    expect(change.index).toBe(1);
+  });
+
+  it('computeTxId is invariant under output provenance', async () => {
+    // This is what makes the "attach after, never before" ordering *safe* — and
+    // also what makes getting it backwards **silent**. `computeTxId` routes
+    // outputs through `canonicalBoxBytes`, which strips id/txId/index, so a
+    // builder that attached provenance first would still produce the same txId
+    // and nothing would fail. Pinned here so that if the strip is ever removed,
+    // one test names the reason rather than a dozen signature checks breaking.
+    const { materializeOutput } = await import('../../src/services/utxo-engine.js');
+
+    const candidate: CreditBox = {
+      boxType: 'credit',
+      value: 42n,
+      owner: bobPubKey,
+      guard: 'owner_signature',
+      proofSource: -1,
+    };
+    const tx: UtxoTransaction = {
+      inputs: ['ab'.repeat(32)],
+      outputs: [{ ...candidate, id: computeBoxId(candidate) }],
+      signatures: {},
+      protocolVersion: PROTOCOL_VERSION,
+    };
+
+    const bareTxId = computeTxId(tx);
+    const materialized = { ...tx, outputs: [materializeOutput(candidate, bareTxId, 0)] };
+    expect(computeTxId(materialized)).toBe(bareTxId);
+  });
+
+  it('transferred boxes round-trip byte-identically through the store', async () => {
+    const { serializeBox } = await import('../../src/state/serialize-box.js');
+    const { getBox } = await import('../../src/store/utxo.js');
+
+    seedCredits(500n);
+    const { signature } = buildSignedTransfer(400n);
+    sendCredits(alicePubKey, bobPubKey, 400n, signature, HEIGHT);
+
+    const recipient = getCreditBoxes(bobPubKey)[0]!;
+    const keys = Object.keys(recipient).filter((k) => k !== 'id');
+    expect(keys.slice(-2)).toEqual(['txId', 'index']);
+
+    // rowToBox reconstruction vs. itself is trivially equal; the assertion that
+    // bites is that the producer put provenance where rowToBox puts it, which
+    // the key-order check above pins.
+    expect(Buffer.from(serializeBox(getBox(recipient.id!)!)).toString('hex')).toBe(
+      Buffer.from(serializeBox(recipient)).toString('hex'),
+    );
   });
 
   it('exact-amount transfer produces no change', () => {

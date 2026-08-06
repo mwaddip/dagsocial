@@ -26,6 +26,7 @@ import type {
 } from '@dagsocial/types';
 import type Database from 'better-sqlite3';
 import {
+  fixtureProvenance,
   signTransaction,
   makeTestIdentity,
   makePost,
@@ -191,6 +192,13 @@ function dumpState(db: Database) {
       .prepare('SELECT * FROM vouch_cooldowns ORDER BY voucher_id, target_id')
       .all(),
     freeLikes: db.prepare('SELECT * FROM dag_likes ORDER BY id').all(),
+    // Spec G phase D: identity records are the second **committed** entity, so
+    // "DB identity after revert" has to cover them. Every class that mints
+    // non-decay karma now writes one, which is most of them — leaving this out
+    // would let a record survive a revert unnoticed in all of them.
+    identityRecords: db
+      .prepare('SELECT * FROM identity_records ORDER BY identity_id')
+      .all(),
   };
 }
 
@@ -214,7 +222,7 @@ async function activateProver() {
   const handle = avlMod.createAvlProver();
   const unspent = utxo.getUnspentBoxes();
   if (unspent.length > 0) {
-    avlMod.bootstrapAvlProver(handle, unspent, 0);
+    avlMod.bootstrapAvlProver(handle, unspent, 0, []);
   }
   expect(avlMod.tryGetAvlProver()).not.toBeNull();
   return handle;
@@ -331,11 +339,11 @@ describe('journal round-trip per mutation class (P1 acceptance)', () => {
     const seeded: CreditBox = {
       boxType: 'credit',
       value: 100n,
-      createdAtBlock: 0,
       owner: minerB.userId,
       guard: 'owner_signature',
       proofSource: 0,
     };
+    Object.assign(seeded, fixtureProvenance(seeded, 1));
     seeded.id = computeBoxId(seeded);
     utxo.insertBox(seeded);
 
@@ -473,11 +481,11 @@ describe('journal round-trip per mutation class (P1 acceptance)', () => {
       boxType: 'post_lock',
       value: 30n,
       originalValue: 30n,
-      createdAtBlock: 0,
       owner: author.userId,
       targetPostId: postId,
       guard: 'epoch_tally',
     };
+    Object.assign(lockBox, fixtureProvenance(lockBox, 1));
     lockBox.id = computeBoxId(lockBox);
     utxo.insertBox(lockBox);
 
@@ -533,11 +541,11 @@ describe('journal round-trip per mutation class (P1 acceptance)', () => {
     const senderBox: CreditBox = {
       boxType: 'credit',
       value: 100n,
-      createdAtBlock: 0,
       owner: sender.userId,
       guard: 'owner_signature',
       proofSource: 0,
     };
+    Object.assign(senderBox, fixtureProvenance(senderBox, 1));
     senderBox.id = computeBoxId(senderBox);
     utxo.insertBox(senderBox);
 
@@ -555,7 +563,6 @@ describe('journal round-trip per mutation class (P1 acceptance)', () => {
         {
           boxType: 'credit',
           value: 40n,
-          createdAtBlock: 0,
           owner: recipient.userId,
           guard: 'owner_signature',
           proofSource: -1,
@@ -563,7 +570,6 @@ describe('journal round-trip per mutation class (P1 acceptance)', () => {
         {
           boxType: 'credit',
           value: 60n,
-          createdAtBlock: 0,
           owner: sender.userId,
           guard: 'owner_signature',
           proofSource: -1,
@@ -614,11 +620,11 @@ describe('journal round-trip per mutation class (P1 acceptance)', () => {
       boxType: 'post_lock',
       value: 30n,
       originalValue: 30n,
-      createdAtBlock: 0,
       owner: author.userId,
       targetPostId: postId,
       guard: 'epoch_tally',
     };
+    Object.assign(lockBox, fixtureProvenance(lockBox, 1));
     lockBox.id = computeBoxId(lockBox);
     utxo.insertBox(lockBox);
     const likeBox = makeLikeBox(liker.userId, postId, 0);
@@ -653,7 +659,9 @@ describe('journal round-trip per mutation class (P1 acceptance)', () => {
     };
     const saved = journalStore.getBlockJournal(2)!;
     expect(
-      saved.mutations.filter((m) => m.op === 'remove').map((m) => m.boxId),
+      saved.mutations
+        .filter((m) => m.kind === 'box' && m.op === 'remove')
+        .map((m) => (m as { boxId: string }).boxId),
     ).toEqual(expect.arrayContaining([lockBox.id, likeBox.id, authorKarma.id]));
 
     await assertRoundTrip(db, handle, pre, classBlock);
@@ -753,6 +761,102 @@ describe('journal round-trip per mutation class (P1 acceptance)', () => {
       expect((burned as KarmaBox & { decayBurn?: boolean }).decayBurn).toBe(true);
 
       await assertRoundTrip(db, handle, pre, classBlock!);
+    } finally {
+      if (origThreshold === undefined) delete process.env['KARMA_STALE_THRESHOLD_BLOCKS'];
+      else process.env['KARMA_STALE_THRESHOLD_BLOCKS'] = origThreshold;
+      if (origInterval === undefined) delete process.env['KARMA_DECAY_INTERVAL_BLOCKS'];
+      else process.env['KARMA_DECAY_INTERVAL_BLOCKS'] = origInterval;
+    }
+  });
+
+  it('identity record: two puts to one key in one block reach the tree as the LAST value', async () => {
+    // The record mutation class, and with it the coverage gap phase B's report
+    // §5 handed forward.
+    //
+    // Phase B built `proverFeedFromJournal`'s record arm — including the
+    // collapse-duplicates-to-last-write rule — and could not test it: nothing
+    // populated records, so deleting the arm outright killed nothing. This is
+    // the first block that writes the same record key **twice**.
+    //
+    // Two puts in one block need decay and a karma mint for the same owner at
+    // one height, which the mutation phase's ordering makes reachable:
+    // `applyKarmaDecay` (block-apply.ts:1018) writes `lastDecayBlock`, then
+    // `processVouchCooldowns` (:1026) mints and `insertBox` writes
+    // `lastActivityBlock`. Journal order carries which came last; a sort by key
+    // cannot, which is why the collapse lives in the feed and not in
+    // `applyBlockMutations`.
+    const origThreshold = process.env['KARMA_STALE_THRESHOLD_BLOCKS'];
+    const origInterval = process.env['KARMA_DECAY_INTERVAL_BLOCKS'];
+    try {
+      process.env['KARMA_STALE_THRESHOLD_BLOCKS'] = '3';
+      process.env['KARMA_DECAY_INTERVAL_BLOCKS'] = '1';
+      vi.resetModules();
+
+      const db = await importDb();
+      db.initDb(':memory:');
+
+      const idle = makeTestIdentity();
+      const target = makeTestIdentity();
+      const utxo = await importUtxo();
+      utxo.insertBox(makeKarmaBox(50n, idle.userId, 0));
+
+      const vouchStore = await import('../../src/store/vouch-cooldowns.js');
+      const recordStore = await import('../../src/store/identity-records.js');
+      const { VOUCH_KARMA_AMOUNT } = await import('@dagsocial/types');
+      // Matures at height 4 — the same block decay first fires in.
+      vouchStore.insertVouchCooldown(idle.userId, target.userId, 4, VOUCH_KARMA_AMOUNT);
+
+      const handle = await activateProver();
+      const bc = await importBlockCreator();
+      bc.startBlockCreator(plainConfig);
+
+      bc.createOrderingBlock();
+      bc.createOrderingBlock();
+      bc.createOrderingBlock();
+      const pre = takeSnapshot(db, handle, 3);
+      // Non-vacuity: no record exists yet, so the class block creates one.
+      expect(recordStore.getIdentityRecord(idle.userId)).toBeNull();
+
+      const classBlock = bc.createOrderingBlock();
+      expect(classBlock).not.toBeNull();
+
+      // Both writes happened, in that order.
+      const journalStore = await import('../../src/store/journal.js');
+      const recordMutations = journalStore
+        .getBlockJournal(4)!
+        .mutations.filter((m) => m.kind === 'record');
+      expect(recordMutations).toHaveLength(2);
+      expect(recordMutations[0]).toMatchObject({ record: { lastDecayBlock: 4 } });
+      expect(recordMutations[1]).toMatchObject({
+        record: { lastActivityBlock: 4, lastDecayBlock: 4 },
+      });
+
+      // The TREE holds the last write, not the first. Read it back through the
+      // prover, which is the only place the collapse can be observed.
+      const key = Buffer.from(recordStore.identityRecordKey(idle.userId), 'hex');
+      const serialize = await import('../../src/state/serialize-box.js');
+      const lookup = handle.prover.performOneOperation({ tag: 'Lookup', key });
+      expect(lookup.success).toBe(true);
+      expect(lookup.value).toBeTruthy();
+      expect(serialize.deserializeIdentityRecord(lookup.value!)).toEqual({
+        lastActivityBlock: 4,
+        lastDecayBlock: 4,
+      });
+      // The lookup above recorded proof directions; drop them so the digest
+      // comparisons below see the same prover state the block left behind.
+      handle.prover.prover.generateProof();
+
+      // Round-trip. Assertion 1 (DB identity) now covers `identity_records`,
+      // and `pre.state` has none — so a revert that restored the intra-block
+      // intermediate instead of "absent" fails there, which is exactly the
+      // reverse-replay property. `assertRoundTrip` re-applies at the end.
+      await assertRoundTrip(db, handle, pre, classBlock!);
+
+      // Re-apply landed the record back on the last write, not the first.
+      expect(recordStore.getIdentityRecord(idle.userId)).toEqual({
+        lastActivityBlock: 4,
+        lastDecayBlock: 4,
+      });
     } finally {
       if (origThreshold === undefined) delete process.env['KARMA_STALE_THRESHOLD_BLOCKS'];
       else process.env['KARMA_STALE_THRESHOLD_BLOCKS'] = origThreshold;

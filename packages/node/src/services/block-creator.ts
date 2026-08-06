@@ -27,6 +27,7 @@ import {
   serializePruneEntry,
   hexToBuf,
 } from '@dagsocial/types';
+import { MINT_OUTPUT_INDEX, mintTxIdFor, postlockRemainderContext } from '../mint-provenance.js';
 import {
   verifyOrderingBlockPoW,
   blockHash,
@@ -755,14 +756,22 @@ export function computeEpochTally(blockHeight: number): EpochTally {
     consumedPostLockBoxIds.push(plb.id);
 
     if (remainingLocked > 0n) {
+      // `post_lock`'s producer-vs-`rowToBox` field-order divergence — the one
+      // known live instance of contract hazard 1b — is **fixed** as of phase
+      // G3b, and deliberately not by reordering this site: both encoders now
+      // sort keys, so the two shapes agree whatever order either writes.
+      //
+      // One remainder box per post per tally, and the tally runs once per epoch
+      // block, so `(height, 'postlock-remainder', targetPostId)` cannot repeat.
       const newPlb: PostLockBox = {
         boxType: 'post_lock',
         value: remainingLocked,
         originalValue: plb.originalValue,
-        createdAtBlock: blockHeight,
         owner: plb.owner,
         targetPostId: plb.targetPostId,
         guard: 'epoch_tally',
+        txId: mintTxIdFor(postlockRemainderContext(plb.targetPostId), blockHeight),
+        index: MINT_OUTPUT_INDEX,
       };
       newPlb.id = computeBoxId(newPlb);
       newPostLockBoxes.push(newPlb);

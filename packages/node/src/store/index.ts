@@ -21,6 +21,7 @@ export {
 
 export {
   getBox,
+  getBoxByProvenance,
   getKarmaBox,
   getKarmaBoxes,
   getCreditBox,
@@ -129,3 +130,10 @@ export {
   getVouchesByVoucher,
   hasAnyActiveVouch,
 } from './vouch-queries.js';
+
+export {
+  getIdentityRecord,
+  putIdentityRecord,
+  deleteIdentityRecord,
+} from './identity-records.js';
+export type { IdentityRecord } from './identity-records.js';

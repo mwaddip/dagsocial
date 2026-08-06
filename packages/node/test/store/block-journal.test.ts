@@ -1,4 +1,5 @@
-import { uid } from '../helpers.js';
+import {
+  fixtureProvenance, uid } from '../helpers.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { AnyBox, KarmaBox, LikeBox } from '@dagsocial/types';
 
@@ -23,28 +24,25 @@ async function importAll() {
 const OWNER = uid('journal-owner');
 
 function makeKarmaBox(id: string, value = 100n): KarmaBox {
-  return {
-    id,
-    boxType: 'karma',
+  const candidate = {
+    boxType: 'karma' as const,
     value,
-    createdAtBlock: 1,
     owner: OWNER,
-    guard: 'owner_signature',
-    proofSource: 'tx-test',
-    lastTouchBlock: 1,
+    guard: 'owner_signature' as const,
+    proofSource: `tx-test-${id}`,
   };
+  return { id, ...candidate, ...fixtureProvenance(candidate, 1) };
 }
 
 function makeLikeBox(id: string, liker: string, targetPostId: string): LikeBox {
-  return {
-    id,
-    boxType: 'like',
+  const candidate = {
+    boxType: 'like' as const,
     value: 2n,
-    createdAtBlock: 1,
     likerId: uid(liker),
     targetPostId,
-    guard: 'epoch_tally',
+    guard: 'epoch_tally' as const,
   };
+  return { id, ...candidate, ...fixtureProvenance(candidate, 1, hashSeed(id)) };
 }
 
 // ---------------------------------------------------------------------------
@@ -128,10 +126,19 @@ describe('block journal (store choke-point recording)', () => {
     s.insertBox(box);
     const j = s.finishBlockJournal();
 
-    expect(j.mutations).toEqual([{ op: 'insert', boxId: 'box-k1', box }]);
+    // Spec G phase D: a non-decay karma box also advances its owner's activity
+    // clock at this same choke point, so the karma case journals two mutations
+    // — the box, then the record it caused, in that order.
+    expect(j.mutations[0]).toEqual({ kind: 'box', op: 'insert', boxId: 'box-k1', box });
+    expect(j.mutations[1]).toMatchObject({
+      kind: 'record',
+      identityId: OWNER,
+      record: { lastActivityBlock: 1, lastDecayBlock: 0 },
+    });
+    expect(j.mutations).toHaveLength(2);
   });
 
-  it('consumeBox records {op: remove, boxId} while open', async () => {
+  it('consumeBox records {kind: box, op: remove, boxId} while open', async () => {
     const s = await importAll();
     s.initDb(':memory:');
 
@@ -141,7 +148,7 @@ describe('block journal (store choke-point recording)', () => {
     s.consumeBox('box-k2', 2);
     const j = s.finishBlockJournal();
 
-    expect(j.mutations).toEqual([{ op: 'remove', boxId: 'box-k2' }]);
+    expect(j.mutations).toEqual([{ kind: 'box', op: 'remove', boxId: 'box-k2' }]);
   });
 
   it('markLikeBoxesTallied records one remove per box id and keeps the -1 sentinel', async () => {
@@ -156,8 +163,8 @@ describe('block journal (store choke-point recording)', () => {
     const j = s.finishBlockJournal();
 
     expect(j.mutations).toEqual([
-      { op: 'remove', boxId: 'like-1' },
-      { op: 'remove', boxId: 'like-2' },
+      { kind: 'box', op: 'remove', boxId: 'like-1' },
+      { kind: 'box', op: 'remove', boxId: 'like-2' },
     ]);
     for (const id of ['like-1', 'like-2']) {
       const row = s
@@ -260,11 +267,16 @@ describe('block journal (store choke-point recording)', () => {
     s.insertBox(makeKarmaBox('new-2'));
     const j = s.finishBlockJournal();
 
-    expect(j.mutations.map((m) => [m.op, m.boxId])).toEqual([
-      ['insert', 'new-1'],
-      ['remove', 'pre-existing'],
-      ['remove', 'like-z'],
-      ['insert', 'new-2'],
+    // Each karma insert is immediately followed by the activity-clock record it
+    // caused (Spec G phase D) — the record's position in the log is what makes
+    // reverse-order rollback undo the write before deleting the box behind it.
+    expect(j.mutations.map((m) => [m.kind, (m as { op?: string }).op, (m as { boxId?: string }).boxId])).toEqual([
+      ['box', 'insert', 'new-1'],
+      ['record', undefined, undefined],
+      ['box', 'remove', 'pre-existing'],
+      ['box', 'remove', 'like-z'],
+      ['box', 'insert', 'new-2'],
+      ['record', undefined, undefined],
     ]);
   });
 
@@ -364,3 +376,10 @@ describe('block journal (store choke-point recording)', () => {
     expect(cnt.c).toBe(1);
   });
 });
+
+/** Stable small integer from a fixture id, so distinct boxes get distinct provenance. */
+function hashSeed(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return h % 1_000_000;
+}

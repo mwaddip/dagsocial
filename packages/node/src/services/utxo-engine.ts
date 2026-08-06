@@ -1,35 +1,26 @@
 import { createHash, verify as cryptoVerify } from 'crypto';
-import { Encoder } from 'cbor-x';
-const hashEncoder = new Encoder({ tagUint8Array: false, useRecords: false, mapsAsObjects: true });
-function cborEncodeLocal(data: unknown): Uint8Array {
-  return hashEncoder.encode(data) as unknown as Uint8Array;
-}
 import {
   computeBoxId,
+  computeTxId,
 } from '@dagsocial/types';
-import type { UtxoTransaction, AnyBox, KarmaBox, BondBox, InviteBox, LikeBox } from '@dagsocial/types';
+import type { UtxoTransaction, AnyBox, AnyBoxCandidate, KarmaBox, BondBox, InviteBox, LikeBox } from '@dagsocial/types';
 
-/**
- * Compute txId using THIS package's cbor-x, avoiding module-resolution
- * drift between the types dist and the node runtime.
- */
-function computeTxIdLocal(tx: UtxoTransaction): string {
-  const h = createHash('blake2b512');
-  for (const input of tx.inputs) h.update(input);
-  for (const output of tx.outputs) {
-    const { id, ...rest } = output;
-    h.update(cborEncodeLocal(rest));
-  }
-  if (tx.preimages) {
-    const sorted = Object.keys(tx.preimages).sort();
-    for (const boxId of sorted) {
-      h.update(boxId);
-      h.update(tx.preimages[boxId]!);
-    }
-  }
-  h.update(String(tx.protocolVersion));
-  return h.digest().subarray(0, 32).toString('hex');
-}
+// A local `computeTxIdLocal` lived here — a second implementation of
+// `computeTxId` with its own cbor-x `Encoder` — and was **deleted** by Spec G
+// phase G3b. It was not a helper: it produced the hash signatures are verified
+// against (`checkGuards`) and the `txId` every output is materialized under
+// (`validateTx`), while every *builder* and `block-apply` used types'
+// `computeTxId`. Two consensus-critical hash implementations that agreed only by
+// coincidence — identical `Encoder` options, neither applying a domain tag, and
+// no output carrying `txId`/`index` at runtime, since the strip rules differed
+// (types routes outputs through `canonicalBoxBytes`; this stripped `id` only,
+// the same defect in its sixth location).
+//
+// Its stated justification — "avoiding module-resolution drift between the types
+// dist and the node runtime" — guarded a problem that does not exist: the store
+// holds exactly one cbor-x. It bought no safety and cost a divergence surface
+// that G3b would have detonated, since applying `TX_ID_DOMAIN` to types alone
+// would leave builders signing a tagged id while this verified an untagged one.
 
 import { ed25519PublicKeyToKeyObject } from '@dagsocial/validation';
 
@@ -40,6 +31,12 @@ import { ed25519PublicKeyToKeyObject } from '@dagsocial/validation';
 export interface UtxoEngineDeps {
   /** Return the box if it exists AND is unspent. Return null for spent or missing boxes. */
   getBox: (id: string) => AnyBox | null;
+  /**
+   * Resolve a box by its creating-transaction provenance. Backed by
+   * `UNIQUE(tx_id, output_index)`, so it names at most one box. Used by the bond
+   * commit path to find the InviteBox its bond shipped with.
+   */
+  getBoxByProvenance: (txId: string, index: number) => AnyBox | null;
   insertBox: (box: AnyBox) => void;
   consumeBox: (id: string, atBlock: number) => void;
   getKarmaBox: (owner: Uint8Array) => KarmaBox | null;
@@ -90,7 +87,7 @@ function verifyGuardSignature(
  */
 function checkTransitions(
   inputs: AnyBox[],
-  outputs: AnyBox[],
+  outputs: AnyBoxCandidate[],
   deps?: UtxoEngineDeps,
 ): { valid: boolean; error?: string } {
   // Handle invite cancel: KarmaBox + InviteBox + BondBox → KarmaBox
@@ -138,7 +135,7 @@ function checkTransitions(
               Buffer.from(bondIn.inviteePublicKey).toString('hex') &&
             bondOut.probationStartBlock === bondIn.probationStartBlock &&
             bondOut.probationEndBlock === bondIn.probationEndBlock &&
-            bondOut.inviteBoxId === bondIn.inviteBoxId &&
+            bondOut.inviteOutputIndex === bondIn.inviteOutputIndex &&
             Buffer.from(bondOut.inviterId).toString('hex') ===
               Buffer.from(bondIn.inviterId).toString('hex') &&
             Buffer.from(karmaOut.owner).toString('hex') ===
@@ -284,7 +281,7 @@ function checkTransitions(
             bondOut.inviteePublicKey.length === 32 &&
             bondOut.probationStartBlock > 0 &&
             bondOut.probationEndBlock > bondOut.probationStartBlock &&
-            bondOut.inviteBoxId === bondIn.inviteBoxId &&
+            bondOut.inviteOutputIndex === bondIn.inviteOutputIndex &&
             Buffer.from(bondOut.inviterId).toString('hex') ===
               Buffer.from(bondIn.inviterId).toString('hex')) {
           return { valid: true };
@@ -383,7 +380,7 @@ function checkTransitions(
  * clear error; this check covers every other entry point (gossip, blocks).
  * This is the tight apply-side twin of validation's loose coinbase pre-filter.
  */
-function checkOutputValues(outputs: AnyBox[]): UtxoResult {
+function checkOutputValues(outputs: AnyBoxCandidate[]): UtxoResult {
   for (const box of outputs) {
     const value = box.value as unknown;
     if (typeof value !== 'bigint' || value < 0n || value >= (1n << 64n)) {
@@ -417,7 +414,7 @@ function checkOutputValues(outputs: AnyBox[]): UtxoResult {
  */
 function checkValueConservation(
   inputBoxes: AnyBox[],
-  outputs: AnyBox[],
+  outputs: AnyBoxCandidate[],
 ): UtxoResult {
   const outputValueCheck = checkOutputValues(outputs);
   if (!outputValueCheck.valid) return outputValueCheck;
@@ -448,7 +445,7 @@ function checkGuards(
   tx: UtxoTransaction,
   inputBoxes: AnyBox[],
 ): UtxoResult {
-  const txHash = Buffer.from(computeTxIdLocal(tx), 'hex');
+  const txHash = Buffer.from(computeTxId(tx), 'hex');
 
   for (const box of inputBoxes) {
     switch (box.guard) {
@@ -547,12 +544,24 @@ function checkGuards(
             error: `Bond box ${box.id} requires inviter signature, committed invitee signature, or preimage for commit`,
           };
         }
-        // Look up the paired InviteBox to get the expected secretHash
-        const pairedInviteBox = deps.getBox(bondBox.inviteBoxId);
+        // Look up the paired InviteBox to get the expected secretHash.
+        //
+        // Resolved from `(bond.txId, bond.inviteOutputIndex)` rather than from a
+        // stored box id (user decision, 2026-08-06): a box id here would be
+        // circular, since it derives from the very txId that hashes this field.
+        // The pair is confined to one transaction by construction, so this
+        // cannot reach an invite the bond did not ship with — the old
+        // `getBox(inviteBoxId)` could name any box in the world.
+        const pairedInviteBox = deps.getBoxByProvenance(
+          bondBox.txId,
+          bondBox.inviteOutputIndex,
+        );
         if (!pairedInviteBox || pairedInviteBox.boxType !== 'invite') {
           return {
             valid: false,
-            error: `InviteBox ${bondBox.inviteBoxId} not found for bond commit`,
+            error:
+              `InviteBox at (${bondBox.txId}, ${bondBox.inviteOutputIndex}) ` +
+              `not found for bond commit`,
           };
         }
         const expectedHash = (pairedInviteBox as InviteBox).secretHash;
@@ -681,16 +690,48 @@ export function validateTx(
   if (!transitionCheck.valid) return transitionCheck;
 
   // Compute output IDs for the caller (so applyTx doesn't re-compute)
-  const computedOutputs = tx.outputs.map((box) => ({
-    ...box,
-    id: computeBoxId(box),
-  })) as AnyBox[];
+  const txId = computeTxId(tx);
+  const computedOutputs = tx.outputs.map((box, index) =>
+    materializeOutput(box, txId, index),
+  );
 
   return {
     valid: true,
     computedOutputs,
-    txId: computeTxIdLocal(tx),
+    txId,
   };
+}
+
+/**
+ * Turn a transaction output candidate into the box that goes into the ledger:
+ * the creating transaction's real id, the output's position within
+ * `tx.outputs`, and the derived box id (Spec G phase C3).
+ *
+ * The `txId` is passed in rather than recomputed. `computeTxId` hashes outputs
+ * through `canonicalBoxBytes`, so it does not *observe* provenance — which
+ * means re-deriving it from a box that already carries some would be silently
+ * wrong rather than an error.
+ *
+ * Any client-supplied `id`/`txId`/`index` is **stripped before** the canonical
+ * pair is appended, not overwritten in place. cbor-x emits map keys in
+ * insertion order under `variableMapSize: false`, so overwriting would leave
+ * the keys wherever the client's CBOR happened to put them — and `rowToBox`
+ * always appends them last. The two shapes would then serialize to different
+ * bytes, so a node that restarted and re-bootstrapped its prover from SQLite
+ * would compute a different `stateRoot` than one that stayed up. Outputs are
+ * attacker-controlled CBOR, so this is reachable rather than theoretical.
+ *
+ * Exported because `block-apply.ts` materializes the outputs of block-embedded
+ * transactions on its own path. One rule for both, so the pool path and the
+ * block path cannot derive different ids for the same transaction.
+ */
+export function materializeOutput(box: AnyBoxCandidate, txId: string, index: number): AnyBox {
+  // The destructure still names all three keys even though `AnyBoxCandidate`
+  // declares none of them: outputs are decoded from attacker-supplied CBOR, so
+  // the runtime shape is not bound by the type.
+  const { id: _id, txId: _txId, index: _index, ...candidate } = box as AnyBox;
+  const withProvenance = { ...candidate, txId, index } as AnyBox;
+  return { ...withProvenance, id: computeBoxId(withProvenance) } as AnyBox;
 }
 
 /**
@@ -736,9 +777,18 @@ export function applyTx(
       deps.consumeBox(id, currentBlockHeight);
     }
     for (const box of outputsWithIds) {
-      // Always set createdAtBlock to the current height — the client may
-      // provide stale or zero values.  The box IS created in this block.
-      deps.insertBox({ ...box, createdAtBlock: currentBlockHeight });
+      // The box goes in exactly as `materializeOutput` built it. This used to
+      // rewrite `createdAtBlock` to the settled height while leaving the id
+      // committed to the client's *declared* height — that discrepancy **was**
+      // M-11, and phase G3b closes it by deleting the field rather than by
+      // rewriting it here. The settled height still reaches the
+      // `created_at_block` store column; `insertBox` takes it from the open
+      // journal, which is the only place it can now come from.
+      //
+      // Spreading the box would also be wrong now for a second reason: any key
+      // added or reordered here changes the id, since `computeBoxId` hashes the
+      // box itself.
+      deps.insertBox(box);
     }
   });
 }

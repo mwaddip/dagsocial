@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import {
+  describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { generateKeyPairSync, type KeyObject } from 'crypto';
 import {
   computeBoxId,
@@ -20,11 +21,13 @@ import {
   insertBox,
   insertVouchCooldown,
   getBox as storeGetBox,
+  getBoxByProvenance as storeGetBoxByProvenance,
   getPendingEntries,
 } from '../../src/store/index.js';
 import { castVouch, initiateUnvouch } from '../../src/services/vouch.js';
 import type { UtxoEngineDeps } from '../../src/services/utxo-engine.js';
-import { rawPublicKey, signTransaction } from '../helpers.js';
+import {
+  fixtureProvenance, rawPublicKey, signTransaction } from '../helpers.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -34,17 +37,16 @@ import { rawPublicKey, signTransaction } from '../helpers.js';
 function createKarmaBox(
   owner: Uint8Array,
   value: bigint,
-  createdAtBlock: number,
+  seed: number,
 ): KarmaBox {
   const box: Omit<KarmaBox, 'id'> & { id?: string } = {
     boxType: 'karma',
     value,
-    createdAtBlock,
     owner,
     guard: 'owner_signature',
     proofSource: 'test',
-    lastTouchBlock: createdAtBlock,
   };
+  Object.assign(box, fixtureProvenance(box, seed));
   const id = computeBoxId(box);
   const full: KarmaBox = { ...box, id, boxType: 'karma', guard: 'owner_signature' };
   insertBox(full);
@@ -55,7 +57,7 @@ function createKarmaBox(
 function createVouchBox(
   voucherId: Uint8Array,
   targetId: Uint8Array,
-  createdAtBlock: number,
+  seed: number,
 ): VouchBox {
   const box: Omit<VouchBox, 'id'> & { id?: string } = {
     boxType: 'vouch',
@@ -63,8 +65,8 @@ function createVouchBox(
     voucherId,
     targetId,
     guard: 'owner_signature',
-    createdAtBlock,
   };
+  Object.assign(box, fixtureProvenance(box, seed));
   const id = computeBoxId(box);
   const full: VouchBox = { ...box, id, boxType: 'vouch', guard: 'owner_signature' };
   insertBox(full);
@@ -75,7 +77,7 @@ function createVouchBox(
 function vouchTxFor(
   voucherId: Uint8Array,
   targetId: Uint8Array,
-  createdAtBlock: number,
+  seed: number,
 ): UtxoTransaction {
   return {
     inputs: [],
@@ -86,7 +88,6 @@ function vouchTxFor(
         voucherId,
         targetId,
         guard: 'owner_signature' as const,
-        createdAtBlock,
       },
     ],
     signatures: {},
@@ -117,6 +118,7 @@ describe('vouch service', () => {
           .get(id) as { spent_at_block: number | null } | undefined;
         return r && r.spent_at_block === null ? box : null;
       },
+      getBoxByProvenance: storeGetBoxByProvenance,
       insertBox: (box: AnyBox) => {
         insertBox(box);
       },
@@ -142,11 +144,9 @@ describe('vouch service', () => {
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: 99n,
-      createdAtBlock: atBlock,
       owner,
       guard: 'owner_signature',
       proofSource: `vouch:${Buffer.from(targetId).toString('hex')}`,
-      lastTouchBlock: atBlock,
     };
     const vouchBox: Omit<VouchBox, 'id'> & { id?: string } = {
       boxType: 'vouch',
@@ -154,7 +154,6 @@ describe('vouch service', () => {
       voucherId: owner,
       targetId,
       guard: 'owner_signature',
-      createdAtBlock: atBlock,
     };
     const tx: UtxoTransaction = {
       inputs: [karmaBoxId],
@@ -219,7 +218,6 @@ describe('vouch service', () => {
             voucherId: voucherPubKey,
             targetId: new Uint8Array(32), // all zeros
             guard: 'owner_signature' as const,
-            createdAtBlock: 5,
           },
         ],
         signatures: {},
@@ -241,7 +239,6 @@ describe('vouch service', () => {
             voucherId: voucherPubKey,
             targetId: voucherPubKey, // same as voucher
             guard: 'owner_signature' as const,
-            createdAtBlock: 5,
           },
         ],
         signatures: {},
@@ -264,7 +261,6 @@ describe('vouch service', () => {
             voucherId: voucherPubKey,
             targetId: targetPubKey,
             guard: 'owner_signature' as const,
-            createdAtBlock: 5,
           },
         ],
         signatures: {},
@@ -292,7 +288,6 @@ describe('vouch service', () => {
             voucherId: voucherPubKey,
             targetId: targetPubKey,
             guard: 'owner_signature' as const,
-            createdAtBlock: 10,
           },
         ],
         signatures: {},
@@ -380,7 +375,6 @@ describe('vouch service', () => {
             voucherId: voucherPubKey,
             targetId: cooldownTarget,
             guard: 'owner_signature' as const,
-            createdAtBlock: 10,
           },
         ],
         signatures: {},
@@ -402,12 +396,11 @@ describe('vouch service', () => {
       const newKarma: KarmaBox = {
         boxType: 'karma',
         value: 99n,
-        createdAtBlock: 5,
         owner: voucherPubKey,
         guard: 'owner_signature',
         proofSource: `vouch:${targetPubKeyHex}`,
-        lastTouchBlock: 5,
       };
+      Object.assign(newKarma, fixtureProvenance(newKarma, 1));
       const newKarmaId = computeBoxId(newKarma);
 
       const vouchBox: Omit<VouchBox, 'id'> & { id?: string } = {
@@ -416,8 +409,8 @@ describe('vouch service', () => {
         voucherId: voucherPubKey,
         targetId: targetPubKey,
         guard: 'owner_signature',
-        createdAtBlock: 5,
       };
+      Object.assign(vouchBox, fixtureProvenance(vouchBox, 1));
       const vouchBoxId = computeBoxId(vouchBox);
 
       const tx: UtxoTransaction = {
@@ -457,12 +450,11 @@ describe('vouch service', () => {
       const newKarma: KarmaBox = {
         boxType: 'karma',
         value: 99n,
-        createdAtBlock: 5,
         owner: voucherPubKey,
         guard: 'owner_signature',
         proofSource: `vouch:${targetPubKeyHex}`,
-        lastTouchBlock: 5,
       };
+      Object.assign(newKarma, fixtureProvenance(newKarma, 1));
       const newKarmaId = computeBoxId(newKarma);
 
       const vouchBox: Omit<VouchBox, 'id'> & { id?: string } = {
@@ -471,8 +463,8 @@ describe('vouch service', () => {
         voucherId: voucherPubKey,
         targetId: targetPubKey,
         guard: 'owner_signature',
-        createdAtBlock: 5,
       };
+      Object.assign(vouchBox, fixtureProvenance(vouchBox, 1));
       const vouchBoxId = computeBoxId(vouchBox);
 
       const tx: UtxoTransaction = {

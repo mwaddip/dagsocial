@@ -3,6 +3,14 @@ import { computeBoxId } from '@dagsocial/types';
 import type { KarmaBox, CreditBox } from '@dagsocial/types';
 import { getDb } from './db.js';
 import { insertBox, getKarmaBox, getCreditBoxes } from './utxo.js';
+import { putIdentityRecord } from './identity-records.js';
+import {
+  GENESIS_FAUCET_CREDITS,
+  GENESIS_SYSTEM_KARMA,
+  MINT_OUTPUT_INDEX,
+  genesisContext,
+  mintTxIdFor,
+} from '../mint-provenance.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -81,17 +89,42 @@ export function ensureSystemKarmaBox(systemPubKey: Uint8Array, currentHeight: nu
   const existing = getKarmaBox(systemPubKey);
   if (existing) return existing;
 
+  // One height for both the recorded block and the mint txId. Derived once
+  // rather than clamped twice, so the id cannot encode a height the box does
+  // not carry.
+  const genesisHeight = currentHeight > 0 ? currentHeight : 1;
+
   const box: KarmaBox = {
     boxType: 'karma',
     value: SYSTEM_KARMA_INITIAL,
-    createdAtBlock: currentHeight > 0 ? currentHeight : 1,
     owner: systemPubKey,
     guard: 'owner_signature',
     proofSource: 'genesis:system',
-    lastTouchBlock: currentHeight > 0 ? currentHeight : 1,
+    txId: mintTxIdFor(genesisContext(GENESIS_SYSTEM_KARMA), genesisHeight),
+    index: MINT_OUTPUT_INDEX,
   };
   box.id = computeBoxId(box);
   insertBox(box);
+
+  // Genesis is the one non-decay karma producer that runs **outside** block
+  // application, so `insertBox`'s choke point cannot bump the activity clock:
+  // there is no open journal, and therefore no settled height for it to read
+  // (Spec G phase D).
+  //
+  // Left unwritten, the system identity would hold karma with no record, and
+  // decay would fall back to "never active" — staleness one block early and one
+  // extra interval charged on the first firing, because the box says
+  // `genesisHeight` and the fallback says 0. Writing it here is the root fix:
+  // the clock and the box get the same height from the same local, so they
+  // cannot disagree.
+  //
+  // With no journal open this records nothing to roll back, which is correct —
+  // genesis is not a block. The row still reaches the `stateRoot` on any node
+  // that bootstraps its prover from the store.
+  putIdentityRecord(box.owner, {
+    lastActivityBlock: genesisHeight,
+    lastDecayBlock: 0,
+  });
   return box;
 }
 
@@ -113,13 +146,19 @@ export function ensureFaucetCreditBox(
   const existing = getCreditBoxes(systemPubKey);
   if (existing.length > 0) return;
 
+  const genesisHeight = currentHeight > 0 ? currentHeight : 1;
+
+  // A `u32BE` selector separates the two genesis boxes, not the ASCII tags Spec
+  // G §3.2 sketched: those are variable-length and merely prefix-free, which
+  // the fixed-length-or-self-delimiting rule cannot check per encoding.
   const box: CreditBox = {
     boxType: 'credit',
     value: FAUCET_CREDITS_INITIAL,
-    createdAtBlock: currentHeight > 0 ? currentHeight : 1,
     owner: systemPubKey,
     guard: 'owner_signature',
-    proofSource: currentHeight > 0 ? currentHeight : 1,
+    proofSource: genesisHeight,
+    txId: mintTxIdFor(genesisContext(GENESIS_FAUCET_CREDITS), genesisHeight),
+    index: MINT_OUTPUT_INDEX,
   };
   box.id = computeBoxId(box);
   insertBox(box);

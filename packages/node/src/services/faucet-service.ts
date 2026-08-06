@@ -1,10 +1,9 @@
 import {
   computeTxId,
-  computeBoxId,
   PROTOCOL_VERSION,
   MEMPOOL_EXPIRY_BLOCKS,
 } from '@dagsocial/types';
-import type { KarmaBox, UtxoTransaction } from '@dagsocial/types';
+import type { CandidateOf, KarmaBox, UtxoTransaction } from '@dagsocial/types';
 import { insertUtxoTx } from '../store/mempool.js';
 import { getSystemKeypair, ensureSystemKarmaBox, signWithSystemKey } from '../store/system.js';
 import {
@@ -122,32 +121,32 @@ export function faucetGrant(
     // ---- 3. Build faucet grant transaction ----
     // Consume: system KarmaBox (value V)
     // Create: system KarmaBox (value V - FAUCET_AMOUNT) + user KarmaBox (value FAUCET_AMOUNT)
-    const newSystemBox: KarmaBox = {
+    // Candidates, not boxes. This builder deliberately attaches no provenance —
+    // it inserts nothing and returns no predicted id, so its outputs get theirs
+    // when block application materializes them (NODE_INTERFACE → "Which
+    // producers attach provenance, and which deliberately do not").
+    const newSystemBox: CandidateOf<KarmaBox> = {
       boxType: 'karma',
       value: systemBox.value - FAUCET_AMOUNT,
-      createdAtBlock: currentHeight,
       owner: sysKeypair.publicKey,
       guard: 'owner_signature',
       proofSource: 'faucet:system',
-      lastTouchBlock: currentHeight,
     };
 
-    const userBox: KarmaBox = {
+    const userBox: CandidateOf<KarmaBox> = {
       boxType: 'karma',
       value: FAUCET_AMOUNT,
-      createdAtBlock: currentHeight,
       owner: userIdBytes,
       guard: 'owner_signature',
       proofSource: 'faucet',
-      lastTouchBlock: currentHeight,
     };
 
+    // The precomputed output `id`s are gone: nothing read them, and `computeTxId`
+    // strips them through `canonicalBoxBytes` before hashing, so the id the
+    // system key signs below is byte-identical to what it was.
     const tx: UtxoTransaction = {
       inputs: [systemBox.id!],
-      outputs: [
-        { ...newSystemBox, id: computeBoxId(newSystemBox) },
-        { ...userBox, id: computeBoxId(userBox) },
-      ],
+      outputs: [newSystemBox, userBox],
       signatures: {},
       protocolVersion: PROTOCOL_VERSION,
     };

@@ -2,6 +2,8 @@ import { createHash, generateKeyPairSync, sign as cryptoSign, type KeyObject } f
 import {
   computeTxId,
   computeBoxId,
+  canonicalBoxBytes,
+  u32BE,
   leafHash,
   buildMerkleRoot,
   hexToBuf,
@@ -11,6 +13,7 @@ import {
   EMPTY_STATE_ROOT,
 } from '@dagsocial/types';
 import { verifyOrderingBlockPoW, blockHash } from '@dagsocial/validation';
+import { materializeOutput } from '../src/services/utxo-engine.js';
 import type {
   UtxoTransaction,
   AnyBox,
@@ -97,40 +100,110 @@ export function makePost(authorId: Uint8Array, content = 'test post'): Post {
   };
 }
 
+/**
+ * Synthetic creating-transaction provenance for a seeded fixture box.
+ *
+ * Fixtures seed boxes directly into the store rather than through a real
+ * transaction or a mint, so they have no txId of their own — but `tx_id` and
+ * `output_index` are NOT NULL as of Spec G phase G3b, and the box id now derives
+ * from them. This manufactures a stand-in.
+ *
+ * Deterministic on the candidate bytes plus the seed height, so a fixture built
+ * twice with the same arguments gets the same box id and golden vectors stay
+ * stable across runs and file orderings. A counter would not: it would make ids
+ * depend on how many boxes a test happened to build first.
+ *
+ * `nonce` is the escape hatch for a test that deliberately seeds two *identical*
+ * boxes — without it they would derive one txId and trip
+ * `UNIQUE(tx_id, output_index)`, which is the collision the id PK used to have.
+ *
+ * Its own domain tag, so a fixture id can never be mistaken for one a real mint
+ * or transaction would produce.
+ */
+const FIXTURE_TX_DOMAIN = new TextEncoder().encode('dagsocial/test-fixture-tx/1');
+
+export function fixtureProvenance(
+  candidate: object,
+  seedHeight: number,
+  nonce = 0,
+): { txId: string; index: number } {
+  const txId = createHash('blake2b512')
+    .update(FIXTURE_TX_DOMAIN)
+    .update(canonicalBoxBytes(candidate as never))
+    .update(u32BE(seedHeight))
+    .update(u32BE(nonce))
+    .digest()
+    .subarray(0, 32)
+    .toString('hex');
+  return { txId, index: 0 };
+}
+
+/**
+ * Give a hand-built candidate the provenance and id a stored box must have.
+ *
+ * The shape every local fixture factory needs since phase G3b: seeding a box
+ * straight into the store now requires `tx_id`/`output_index` (NOT NULL) and an
+ * `id` that actually derives from them. Mutates in place so a factory that
+ * already holds a reference to the candidate keeps seeing the finished box.
+ */
+export function seedProvenance<T extends AnyBox>(candidate: object, seedHeight = 1, nonce = 0): T {
+  Object.assign(candidate, fixtureProvenance(candidate, seedHeight, nonce));
+  Object.assign(candidate, { id: computeBoxId(candidate as T) });
+  return candidate as T;
+}
+
+/**
+ * Seed several candidates as outputs of **one** synthetic transaction.
+ *
+ * The shape an invite/bond pair needs since the bond resolves its InviteBox from
+ * `(bond.txId, bond.inviteOutputIndex)` (user decision, 2026-08-06). Seeding them
+ * with independent provenance would leave the bond pointing at an index of a
+ * transaction that has no invite at it — which is exactly the mispairing the
+ * index form makes inexpressible in production, so a fixture must not fake it.
+ *
+ * Returns the boxes in the order given; each `index` is its position here.
+ */
+export function seedAsOneTx(candidates: object[], seedHeight = 1, nonce = 0): AnyBox[] {
+  const { txId } = fixtureProvenance(candidates[0]!, seedHeight, nonce);
+  return candidates.map((candidate, index) => {
+    const box = { ...candidate, txId, index } as AnyBox;
+    return { ...box, id: computeBoxId(box) } as AnyBox;
+  });
+}
+
 export function makeLikeBox(
   likerId: Uint8Array,
   targetPostId: string,
-  createdAtBlock: number,
+  seedHeight: number,
+  nonce = 0,
 ): LikeBox {
-  const box: LikeBox = {
-    boxType: 'like',
+  const candidate = {
+    boxType: 'like' as const,
     value: 2n,
-    createdAtBlock,
     likerId,
     targetPostId,
-    guard: 'epoch_tally',
+    guard: 'epoch_tally' as const,
   };
-  const id = computeBoxId(box);
-  box.id = id;
+  const box: LikeBox = { ...candidate, ...fixtureProvenance(candidate, seedHeight, nonce) };
+  box.id = computeBoxId(box);
   return box;
 }
 
 export function makeKarmaBox(
   value: bigint,
   owner: Uint8Array,
-  createdAtBlock: number,
+  seedHeight: number,
+  nonce = 0,
 ): KarmaBox {
-  const box: KarmaBox = {
-    boxType: 'karma',
+  const candidate = {
+    boxType: 'karma' as const,
     value,
-    createdAtBlock,
     owner,
-    guard: 'owner_signature',
+    guard: 'owner_signature' as const,
     proofSource: 'genesis',
-    lastTouchBlock: createdAtBlock,
   };
-  const id = computeBoxId(box);
-  box.id = id;
+  const box: KarmaBox = { ...candidate, ...fixtureProvenance(candidate, seedHeight, nonce) };
+  box.id = computeBoxId(box);
   return box;
 }
 
@@ -154,20 +227,17 @@ export function makeLikeTx(
       {
         boxType: 'karma',
         value: karmaBox.value - LIKE_COST,
-        createdAtBlock: 0,
         owner: liker.userId,
         guard: 'owner_signature',
         proofSource: 'like_op',
-        lastTouchBlock: 0,
-      } as KarmaBox,
+      },
       {
         boxType: 'like',
         value: LIKE_COST,
-        createdAtBlock: 0,
         likerId: liker.userId,
         targetPostId,
         guard: 'epoch_tally',
-      } as LikeBox,
+      },
     ],
     signatures: {},
     protocolVersion: PROTOCOL_VERSION,
@@ -176,10 +246,16 @@ export function makeLikeTx(
   return tx;
 }
 
-/** The karma change box a `makeLikeTx` output creates, with its stored id. */
+/**
+ * The karma change box a `makeLikeTx` output creates, with its stored id.
+ *
+ * Routed through the production `materializeOutput` rather than re-deriving
+ * here: the id now binds the creating transaction, so a fixture that computed it
+ * any other way would be asserting against its own arithmetic instead of the
+ * node's.
+ */
 export function changeBoxOf(tx: UtxoTransaction): KarmaBox {
-  const change = tx.outputs[0] as KarmaBox;
-  return { ...change, id: computeBoxId(change) };
+  return materializeOutput(tx.outputs[0]!, computeTxId(tx), 0) as KarmaBox;
 }
 
 export const ZERO_HASH = '0'.repeat(64);
@@ -279,6 +355,10 @@ export async function makeApplicableBlock(
     /** Mine to this identity (coinbase owner + validatorId) instead of a fresh
      *  one — lets a test seed pre-existing boxes for the coinbase owner. */
     miner?: TestIdentity;
+    /** Split the coinbase across these owners instead of paying the miner
+     *  alone — the shape a node with `creditTreasuryPct > 0` produces. The
+     *  shares must sum to the scheduled emission or apply rejects the block. */
+    coinbaseSplit?: Array<{ owner: Uint8Array; value: bigint; isTreasury: boolean }>;
   } = {},
 ): Promise<OrderingBlock> {
   const { computeSubBlockRoot, computeUtxoTxRoot, computeBlockReward } = await import(
@@ -301,19 +381,16 @@ export async function makeApplicableBlock(
     subBlockEntries,
     pruneEntries: opts.pruneEntries ?? [],
   };
+  const lockedUntilBlock = opts.lockedUntilBlock ?? height + CREDIT_MINER_REWARD_DELAY;
   const utxoTxTree = {
     utxoTxIds: [],
     utxoTxs: [],
     likeBoxIds: [],
-    coinbaseOutputs: [
-      {
-        owner: miner.userId,
-        value: computeBlockReward(height),
-        lockedUntilBlock:
-          opts.lockedUntilBlock ?? height + CREDIT_MINER_REWARD_DELAY,
-        isTreasury: false,
-      },
-    ],
+    coinbaseOutputs: (
+      opts.coinbaseSplit ?? [
+        { owner: miner.userId, value: computeBlockReward(height), isTreasury: false },
+      ]
+    ).map((share) => ({ ...share, lockedUntilBlock })),
   };
 
   const header = {

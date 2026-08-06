@@ -238,14 +238,92 @@ describe('canonical prover-feed ordering (M-12)', () => {
     const boxes = ['bb', '33', 'dd', '66', '11'].map((b) =>
       makeKarmaBox(b.repeat(32), 12n, 0),
     );
-    bootstrapAvlProver(h1, boxes, 0);
-    bootstrapAvlProver(h2, [...boxes].reverse(), 0);
+    bootstrapAvlProver(h1, boxes, 0, []);
+    bootstrapAvlProver(h2, [...boxes].reverse(), 0, []);
 
     const d1 = h1.prover.digest();
     const d2 = h2.prover.digest();
     expect(d1).not.toBeNull();
     expect(d2).not.toBeNull();
     expect(Buffer.from(d1!).equals(Buffer.from(d2!))).toBe(true);
+  });
+
+  // --- Two entity kinds through bootstrap (Spec G phase D) -----------------
+
+  it('bootstrapAvlProver: shuffled records → identical digest', () => {
+    const h1 = createAvlProver(db);
+    const h2 = createAvlProver(db2);
+
+    const records = ['ee', '77', '55'].map((b) => ({
+      key: b.repeat(32),
+      record: { lastActivityBlock: 4, lastDecayBlock: 2 },
+    }));
+    bootstrapAvlProver(h1, [], 0, records);
+    bootstrapAvlProver(h2, [], 0, [...records].reverse());
+
+    expect(
+      Buffer.from(h1.prover.digest()!).equals(Buffer.from(h2.prover.digest()!)),
+    ).toBe(true);
+  });
+
+  it('a bootstrapped tree and a live tree agree once records exist', () => {
+    // The restart fork this parameter exists to prevent. A node that stays up
+    // grows its tree block by block through `applyBlockMutations`; a node that
+    // restarts with empty AVL storage rebuilds it from the store through
+    // `bootstrapAvlProver`. Both hold two committed entity kinds, and if the
+    // rebuild fed only boxes the two nodes would disagree on `stateRoot` while
+    // agreeing on every committed byte — undetectable until a block is rejected.
+    const boxes = ['bb', '33', 'dd'].map((b) => makeKarmaBox(b.repeat(32), 12n, 0));
+    const records = ['ee', '77'].map((b, i) => ({
+      key: b.repeat(32),
+      record: { lastActivityBlock: 10 + i, lastDecayBlock: i },
+    }));
+
+    // Live: boxes and records arrive together, as one block's mutations.
+    const live = createAvlProver(db);
+    applyBlockMutations(live.prover, [], boxes, records);
+
+    // Restarted: same committed state, rebuilt from the store.
+    const restarted = createAvlProver(db2);
+    bootstrapAvlProver(restarted, boxes, 0, records);
+
+    expect(
+      Buffer.from(live.prover.digest()!).equals(Buffer.from(restarted.prover.digest()!)),
+    ).toBe(true);
+  });
+
+  it('a bootstrap that drops the records does NOT agree with the live tree', () => {
+    // Non-vacuity for the test above: if the digests matched with the records
+    // omitted, the comparison would prove nothing about them.
+    const boxes = ['bb', '33'].map((b) => makeKarmaBox(b.repeat(32), 12n, 0));
+    const records = [
+      { key: 'ee'.repeat(32), record: { lastActivityBlock: 10, lastDecayBlock: 1 } },
+    ];
+
+    const live = createAvlProver(db);
+    applyBlockMutations(live.prover, [], boxes, records);
+
+    const restarted = createAvlProver(db2);
+    bootstrapAvlProver(restarted, boxes, 0, []); // the forgotten argument
+
+    expect(
+      Buffer.from(live.prover.digest()!).equals(Buffer.from(restarted.prover.digest()!)),
+    ).toBe(false);
+  });
+
+  it('bootstrap record values are committed, not just their keys', () => {
+    // Two trees over the same key with different clocks must differ, or the
+    // record would be a membership marker rather than committed state.
+    const a = createAvlProver(db);
+    const b = createAvlProver(db2);
+    const key = 'ee'.repeat(32);
+
+    bootstrapAvlProver(a, [], 0, [{ key, record: { lastActivityBlock: 10, lastDecayBlock: 1 } }]);
+    bootstrapAvlProver(b, [], 0, [{ key, record: { lastActivityBlock: 11, lastDecayBlock: 1 } }]);
+
+    expect(
+      Buffer.from(a.prover.digest()!).equals(Buffer.from(b.prover.digest()!)),
+    ).toBe(false);
   });
 });
 
@@ -274,10 +352,8 @@ function makeKarmaBox(id: string, value: bigint, height: number) {
     id,
     boxType: 'karma' as const,
     value,
-    createdAtBlock: height,
     owner: new Uint8Array(32).fill(0x77),
     guard: 'owner_signature' as const,
     proofSource: 'mint-1',
-    lastTouchBlock: height,
   };
 }

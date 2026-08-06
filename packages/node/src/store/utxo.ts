@@ -1,5 +1,11 @@
 import { getDb } from './db.js';
-import { isBlockJournalOpen, recordBoxInsert, recordBoxRemove } from './journal.js';
+import {
+  isBlockJournalOpen,
+  openBlockJournalHeight,
+  recordBoxInsert,
+  recordBoxRemove,
+} from './journal.js';
+import { getIdentityRecord, putIdentityRecord } from './identity-records.js';
 import type {
   AnyBox,
   KarmaBox,
@@ -24,12 +30,11 @@ interface UtxoRow {
   box_type: string;
   value: bigint;
   created_at_block: bigint;
-  spent_at_block: bigint | null;
   owner: Buffer | null;
-  guard: string;
-  proof_source: string | null;
   extra_data: string | null;
-  last_touch_block: bigint | null;
+  // Creating-transaction provenance (Spec G phase B), NOT NULL as of G3b.
+  tx_id: string;
+  output_index: bigint;
 }
 
 // ---------------------------------------------------------------------------
@@ -38,7 +43,6 @@ interface UtxoRow {
 
 interface KarmaExtra {
   proofSource: string;
-  lastTouchBlock: number;
   decayBurn?: boolean;
 }
 
@@ -59,7 +63,7 @@ interface InviteExtra {
 
 interface BondExtra {
   inviterId: string;                // hex-encoded pubkey in JSON (Uint8Array in code)
-  inviteBoxId: string;              // BoxId of the paired InviteBox
+  inviteOutputIndex: number;        // Output position of the paired InviteBox in this bond's own tx
   inviteePublicKey: number[] | null;
   probationStartBlock: number | null;
   probationEndBlock: number | null;
@@ -91,14 +95,59 @@ function pubkeyToHex(pk: Uint8Array): string {
 }
 
 /**
+ * Provenance as the row carries it.
+ *
+ * `tx_id`/`output_index` became NOT NULL in phase G3b, so this is now
+ * unconditional — the conditional-assignment discipline it replaced existed
+ * because a nullable column could yield a box with no provenance, and setting a
+ * key to explicit `undefined` is byte-visible in the AVL value (cbor-x encodes
+ * it as `f7` *and* increments the fixed two-byte map header). With the columns
+ * NOT NULL that shape is unrepresentable.
+ *
+ * Key **order** no longer matters either: both encoders sort keys as of G3b, so
+ * the old "append provenance after every candidate field, and make every
+ * producer do the same" rule is retired. That rule is what `post_lock` violated.
+ */
+function provenanceOf(row: UtxoRow): { txId: string; index: number } {
+  return { txId: row.tx_id, index: Number(row.output_index) };
+}
+
+/**
+ * The height to record in the `created_at_block` **store column**.
+ *
+ * Taken from the open block journal, never from the box (Spec G phase G checklist
+ * item 7). Until G3b the box carried a `createdAtBlock` and `insertBox` wrote
+ * that, which was indistinguishable from this because every production producer
+ * set the field to the block height anyway — the rule was correct but
+ * unenforceable. Deleting the field is what proves it: there is now nothing else
+ * `insertBox` could read.
+ *
+ * `0` when no journal is open. That is every non-block path — genesis and
+ * bootstrap — and it is honest rather than a fallback: those boxes were not
+ * created by block application, and `0` is not a real block height. The column
+ * is display and `getUnspentBoxes` ordering only; consensus must never read it
+ * (Spec G D3), so an approximate value here cannot reach the `stateRoot`.
+ */
+function settledHeight(): number {
+  return openBlockJournalHeight() ?? 0;
+}
+
+/**
  * Reconstruct a typed box from a utxo_boxes row.
  *
- * Common columns (id, box_type, value, created_at_block, owner, guard,
- * proof_source, last_touch_block) are read directly.  Box-type-specific fields
- * are parsed from the extra_data JSON column.
+ * Columns id, box_type, value and owner are read directly; `guard` is a
+ * per-boxType constant reconstructed from the discriminant. Everything else is
+ * parsed from the extra_data JSON column.
+ *
+ * `created_at_block` is deliberately NOT read: it is a store column and never a
+ * box field (Spec G D3), and putting it back on the object would change every
+ * box id — `canonicalBoxBytes` strips only `id`/`txId`/`index`, so any stray key
+ * enters the hash. The same is true of any other decoration a display path might
+ * want; add a separate query instead.
  */
 function rowToBox(row: UtxoRow): AnyBox {
   const extra = row.extra_data ? JSON.parse(row.extra_data) : {};
+  const prov = provenanceOf(row);
 
   switch (row.box_type) {
     case 'karma': {
@@ -107,16 +156,15 @@ function rowToBox(row: UtxoRow): AnyBox {
         id: row.id,
         boxType: 'karma',
         value: row.value,
-        createdAtBlock: Number(row.created_at_block),
         owner: new Uint8Array(row.owner!),
         guard: 'owner_signature',
         proofSource: e.proofSource,
-        lastTouchBlock: e.lastTouchBlock,
+        ...prov,
       };
       if (e.decayBurn !== undefined) {
         kb.decayBurn = e.decayBurn;
       }
-      return kb satisfies KarmaBox as KarmaBox;
+      return kb;
     }
 
     case 'credit': {
@@ -125,42 +173,38 @@ function rowToBox(row: UtxoRow): AnyBox {
         id: row.id,
         boxType: 'credit',
         value: row.value,
-        createdAtBlock: Number(row.created_at_block),
         owner: new Uint8Array(row.owner!),
         guard: 'owner_signature',
         proofSource: e.proofSource,
+        ...prov,
       };
       if (e.lockedUntilBlock !== undefined) {
         cb.lockedUntilBlock = e.lockedUntilBlock;
       }
-      return cb satisfies CreditBox as CreditBox;
+      return cb;
     }
 
-    case 'like': {
-      const e = extra as LikeExtra;
+    case 'like':
       return {
         id: row.id,
         boxType: 'like',
         value: 2n,
-        createdAtBlock: Number(row.created_at_block),
-        likerId: hexToPubkey(e.likerId),
-        targetPostId: e.targetPostId,
+        likerId: hexToPubkey((extra as LikeExtra).likerId),
+        targetPostId: (extra as LikeExtra).targetPostId,
         guard: 'epoch_tally',
-      } satisfies LikeBox as LikeBox;
-    }
+        ...prov,
+      };
 
-    case 'invite': {
-      const e = extra as InviteExtra;
+    case 'invite':
       return {
         id: row.id,
         boxType: 'invite',
         value: row.value,
-        createdAtBlock: Number(row.created_at_block),
-        secretHash: new Uint8Array(e.secretHash),
-        inviterId: hexToPubkey(e.inviterId),
+        secretHash: new Uint8Array((extra as InviteExtra).secretHash),
+        inviterId: hexToPubkey((extra as InviteExtra).inviterId),
         guard: 'hash_preimage_with_bond',
-      } satisfies InviteBox as InviteBox;
-    }
+        ...prov,
+      };
 
     case 'bond': {
       const e = extra as BondExtra;
@@ -168,16 +212,16 @@ function rowToBox(row: UtxoRow): AnyBox {
         id: row.id,
         boxType: 'bond',
         value: row.value,
-        createdAtBlock: Number(row.created_at_block),
         inviterId: hexToPubkey(e.inviterId),
-        inviteBoxId: e.inviteBoxId ?? '',
+        inviteOutputIndex: e.inviteOutputIndex ?? 0,
         inviteePublicKey: e.inviteePublicKey
           ? new Uint8Array(e.inviteePublicKey)
           : new Uint8Array(0),
         probationStartBlock: e.probationStartBlock ?? 0,
         probationEndBlock: e.probationEndBlock ?? 0,
         guard: 'bond_dual',
-      } satisfies BondBox as BondBox;
+        ...prov,
+      };
     }
 
     case 'post_lock': {
@@ -186,12 +230,12 @@ function rowToBox(row: UtxoRow): AnyBox {
         id: row.id,
         boxType: 'post_lock',
         value: row.value,
-        createdAtBlock: Number(row.created_at_block),
         originalValue: BigInt(e.originalValue),
         owner: new Uint8Array(e.owner),
         targetPostId: e.targetPostId,
         guard: 'epoch_tally',
-      } satisfies PostLockBox as PostLockBox;
+        ...prov,
+      };
     }
 
     case 'vouch': {
@@ -200,11 +244,11 @@ function rowToBox(row: UtxoRow): AnyBox {
         id: row.id,
         boxType: 'vouch',
         value: 1n,
-        createdAtBlock: Number(row.created_at_block),
         voucherId: hexToPubkey(e.voucherId),
         targetId: hexToPubkey(e.targetId),
         guard: 'owner_signature',
-      } satisfies VouchBox as VouchBox;
+        ...prov,
+      };
     }
 
     default:
@@ -226,6 +270,27 @@ export function getBox(boxId: string): AnyBox | null {
     .prepare('SELECT * FROM utxo_boxes WHERE id = ? AND spent_at_block IS NULL')
     .safeIntegers()
     .get(boxId) as UtxoRow | undefined;
+  return row ? rowToBox(row) : null;
+}
+
+/**
+ * Resolve an unspent box by its creating-transaction provenance.
+ *
+ * `UNIQUE(tx_id, output_index)` makes the pair name at most one box, so no
+ * `LIMIT` or ordering is needed — the index *is* the uniqueness argument.
+ *
+ * Added for the bond commit path (user decision, 2026-08-06): `BondBox` pairs
+ * with its InviteBox by output index rather than by box id, because a box id in
+ * a content field is circular under the provenance derivation. This is the
+ * lookup that replaces `getBox(bond.inviteBoxId)`.
+ */
+export function getBoxByProvenance(txId: string, index: number): AnyBox | null {
+  const row = getDb()
+    .prepare(
+      'SELECT * FROM utxo_boxes WHERE tx_id = ? AND output_index = ? AND spent_at_block IS NULL',
+    )
+    .safeIntegers()
+    .get(txId, index) as UtxoRow | undefined;
   return row ? rowToBox(row) : null;
 }
 
@@ -520,6 +585,35 @@ export function getPostTotalLikes(targetPostId: string): number {
 }
 
 /**
+ * Bump an identity's activity clock to the height of the block being applied
+ * (Spec G phase D; NODE_INTERFACE → "Populating the record").
+ *
+ * Called from `insertBox` for every karma box with `decayBurn !== true` — which
+ * is *exactly* the old staleness predicate ("no unspent non-decay karma box
+ * newer than the threshold") read from the other end. Recording it at the store
+ * choke point is what makes the clock swap behaviour-preserving by
+ * construction rather than by re-derivation at each of the eight producers.
+ *
+ * `lastDecayBlock` is carried through untouched: the two halves of the record
+ * have different writers, and an activity bump that reset the decay clock would
+ * hand the owner a free interval.
+ *
+ * With no journal open — genesis, bootstrap, any non-block path — this records
+ * nothing, consistent with every other choke-point hook. Consensus only reads
+ * the record during block application, and a height invented outside a block
+ * would not be a settled one.
+ */
+function bumpActivityClock(owner: Uint8Array): void {
+  const height = openBlockJournalHeight();
+  if (height === null) return;
+  const existing = getIdentityRecord(owner);
+  putIdentityRecord(owner, {
+    lastActivityBlock: height,
+    lastDecayBlock: existing?.lastDecayBlock ?? 0,
+  });
+}
+
+/**
  * Insert a box into the utxo_boxes table.
  *
  * Common fields are stored directly; box-type-specific fields are serialised
@@ -538,14 +632,18 @@ export function insertBox(box: AnyBox): void {
   let extraData: unknown;
   let owner: Buffer | null = null;
   let proofSource: string | null = null;
-  let lastTouchBlock: number | null = null;
+  // Set below iff this box is a non-decay karma box — the identity whose
+  // activity clock this insertion advances (Spec G phase D). Carried out of the
+  // switch rather than bumped inside it so the record is written *after* the
+  // box row and its journal entry, keeping reverse-order rollback in the order
+  // the two writes happened.
+  let activityOwner: Uint8Array | null = null;
 
   switch (box.boxType) {
     case 'karma': {
       const k = box as KarmaBox;
       const ke: KarmaExtra = {
         proofSource: k.proofSource,
-        lastTouchBlock: k.lastTouchBlock,
       };
       if (k.decayBurn !== undefined) {
         ke.decayBurn = k.decayBurn;
@@ -553,7 +651,10 @@ export function insertBox(box: AnyBox): void {
       extraData = ke satisfies KarmaExtra;
       owner = Buffer.from(k.owner);
       proofSource = k.proofSource;
-      lastTouchBlock = k.lastTouchBlock;
+      // `!== true`, not `=== undefined`: a decay-burn box is the one karma box
+      // that must NOT reset the clock, and `decayBurn: false` is normal
+      // activity. This is the same test `isIdentityStale` applied to boxes.
+      if (k.decayBurn !== true) activityOwner = k.owner;
       break;
     }
     case 'credit': {
@@ -587,7 +688,7 @@ export function insertBox(box: AnyBox): void {
       const b = box as BondBox;
       extraData = {
         inviterId: pubkeyToHex(b.inviterId),
-        inviteBoxId: b.inviteBoxId,
+        inviteOutputIndex: b.inviteOutputIndex,
         inviteePublicKey:
           b.inviteePublicKey.length > 0
             ? Array.from(b.inviteePublicKey)
@@ -621,24 +722,35 @@ export function insertBox(box: AnyBox): void {
       throw new Error(`Unknown box type: ${(box as AnyBox).boxType}`);
   }
 
+  // Plain INSERT, deliberately not INSERT OR REPLACE: two byte-identical boxes
+  // in one block collide on the `id` PRIMARY KEY today, which the apply
+  // funnel's totality catch turns into a block rejection. OR REPLACE would
+  // silently drop the colliding box instead — state corruption in place of a
+  // loud failure. Provenance-derived ids make the collision structurally
+  // impossible at phase G; until then the loud failure is the correct
+  // behaviour (NODE_INTERFACE → "Box provenance columns").
   db.prepare(
     `INSERT INTO utxo_boxes
        (id, box_type, value, created_at_block, spent_at_block,
-        owner, guard, proof_source, extra_data, last_touch_block)
-     VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
+        owner, guard, proof_source, extra_data,
+        tx_id, output_index)
+     VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
   ).run(
     box.id,
     box.boxType,
     box.value,
-    box.createdAtBlock,
+    settledHeight(),
     owner,
     box.guard,
     proofSource,
     JSON.stringify(extraData),
-    lastTouchBlock,
+    box.txId,
+    box.index,
   );
 
   recordBoxInsert(box);
+
+  if (activityOwner !== null) bumpActivityClock(activityOwner);
 }
 
 /**
@@ -675,8 +787,8 @@ export function getUnspentBoxes(): AnyBox[] {
   const db = getDb();
   const rows = db
     .prepare(
-      `SELECT id, box_type, value, created_at_block, spent_at_block,
-              owner, guard, proof_source, extra_data, last_touch_block
+      `SELECT id, box_type, value, created_at_block, owner, extra_data,
+              tx_id, output_index
        FROM utxo_boxes
        WHERE spent_at_block IS NULL
        ORDER BY created_at_block ASC`,

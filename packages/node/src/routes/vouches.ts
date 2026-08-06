@@ -122,7 +122,6 @@ export function createRouter(deps: VouchesDeps): Router {
         vouches: vouches.map((v) => ({
           voucherId: Buffer.from(v.voucherId).toString('hex'),
           targetId: Buffer.from(v.targetId).toString('hex'),
-          createdAtBlock: v.createdAtBlock,
         })),
         count: vouches.length,
       });
@@ -136,7 +135,6 @@ export function createRouter(deps: VouchesDeps): Router {
         vouches: vouches.map((v) => ({
           voucherId: Buffer.from(v.voucherId).toString('hex'),
           targetId: Buffer.from(v.targetId).toString('hex'),
-          createdAtBlock: v.createdAtBlock,
         })),
         count: vouches.length,
       });

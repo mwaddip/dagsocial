@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import {
+  describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   generateKeyPairSync,
   type KeyObject,
@@ -24,12 +25,14 @@ import {
   insertBox,
   insertPost,
   getBox as storeGetBox,
+  getBoxByProvenance as storeGetBoxByProvenance,
   getPendingEntries,
   insertMempoolSubBlock,
 } from '../../src/store/index.js';
 import { castLike } from '../../src/services/likes.js';
 import type { UtxoEngineDeps } from '../../src/services/utxo-engine.js';
-import { rawPublicKey, signTransaction } from '../helpers.js';
+import {
+  fixtureProvenance, rawPublicKey, signTransaction } from '../helpers.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -39,17 +42,16 @@ import { rawPublicKey, signTransaction } from '../helpers.js';
 function createKarmaBox(
   owner: Uint8Array,
   value: bigint,
-  createdAtBlock: number,
+  seed: number,
 ): KarmaBox {
   const box: Omit<KarmaBox, 'id'> & { id?: string } = {
     boxType: 'karma',
     value,
-    createdAtBlock,
     owner,
     guard: 'owner_signature',
     proofSource: 'test',
-    lastTouchBlock: createdAtBlock,
   };
+  Object.assign(box, fixtureProvenance(box, seed));
   const id = computeBoxId(box);
   const full: KarmaBox = { ...box, id, boxType: 'karma', guard: 'owner_signature' };
   insertBox(full);
@@ -77,16 +79,16 @@ function createTestPost(authorId: Uint8Array): string {
 function insertLockedLikeBox(
   likerId: Uint8Array,
   targetPostId: string,
-  createdAtBlock: number,
+  seed: number,
 ): string {
   const box: Omit<LikeBox, 'id'> & { id?: string } = {
     boxType: 'like',
     value: LIKE_COST,
-    createdAtBlock,
     likerId,
     targetPostId,
     guard: 'epoch_tally',
   };
+  Object.assign(box, fixtureProvenance(box, seed));
   const id = computeBoxId(box);
   insertBox({ ...box, id, boxType: 'like', guard: 'epoch_tally' } as LikeBox);
   return id;
@@ -119,6 +121,7 @@ describe('likes service', () => {
           .get(id) as { spent_at_block: number | null } | undefined;
         return r && r.spent_at_block === null ? box : null;
       },
+      getBoxByProvenance: storeGetBoxByProvenance,
       insertBox: (box: AnyBox) => {
         insertBox(box);
       },
@@ -160,21 +163,20 @@ describe('likes service', () => {
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: 98n,
-      createdAtBlock: 5,
       owner: likerPubKey,
       guard: 'owner_signature',
       proofSource: `like:${postId}`,
-      lastTouchBlock: 5,
     };
+    Object.assign(newKarma, fixtureProvenance(newKarma, 1));
     const newKarmaId = computeBoxId(newKarma);
     const likeBox: LikeBox = {
       boxType: 'like',
       value: LIKE_COST,
-      createdAtBlock: 5,
       likerId,
       targetPostId: postId,
       guard: 'epoch_tally',
     };
+    Object.assign(likeBox, fixtureProvenance(likeBox, 1));
     const likeBoxId = computeBoxId(likeBox);
 
     const tx: UtxoTransaction = {
@@ -207,21 +209,20 @@ describe('likes service', () => {
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: 98n,
-      createdAtBlock: 5,
       owner: likerPubKey,
       guard: 'owner_signature',
       proofSource: `like:${postId}`,
-      lastTouchBlock: 5,
     };
+    Object.assign(newKarma, fixtureProvenance(newKarma, 1));
     const newKarmaId = computeBoxId(newKarma);
     const likeBox: LikeBox = {
       boxType: 'like',
       value: LIKE_COST,
-      createdAtBlock: 5,
       likerId,
       targetPostId: postId,
       guard: 'epoch_tally',
     };
+    Object.assign(likeBox, fixtureProvenance(likeBox, 1));
     const likeBoxId = computeBoxId(likeBox);
 
     const tx: UtxoTransaction = {
@@ -267,21 +268,20 @@ describe('likes service', () => {
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: 98n,
-      createdAtBlock: 5,
       owner: likerPubKey,
       guard: 'owner_signature',
       proofSource: `like:${postId}`,
-      lastTouchBlock: 5,
     };
+    Object.assign(newKarma, fixtureProvenance(newKarma, 1));
     const newKarmaId = computeBoxId(newKarma);
     const likeBox: LikeBox = {
       boxType: 'like',
       value: LIKE_COST,
-      createdAtBlock: 5,
       likerId,
       targetPostId: postId,
       guard: 'epoch_tally',
     };
+    Object.assign(likeBox, fixtureProvenance(likeBox, 1));
     const likeBoxId = computeBoxId(likeBox);
 
     const tx: UtxoTransaction = {
@@ -310,21 +310,20 @@ describe('likes service', () => {
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: 98n,
-      createdAtBlock: 5,
       owner: likerPubKey,
       guard: 'owner_signature',
       proofSource: 'like:nonexistent',
-      lastTouchBlock: 5,
     };
+    Object.assign(newKarma, fixtureProvenance(newKarma, 1));
     const newKarmaId = computeBoxId(newKarma);
     const likeBox: LikeBox = {
       boxType: 'like',
       value: LIKE_COST,
-      createdAtBlock: 5,
       likerId,
       targetPostId: 'nonexistent',
       guard: 'epoch_tally',
     };
+    Object.assign(likeBox, fixtureProvenance(likeBox, 1));
     const likeBoxId = computeBoxId(likeBox);
 
     const tx: UtxoTransaction = {
@@ -355,21 +354,20 @@ describe('likes service', () => {
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: 98n,
-      createdAtBlock: 5,
       owner: likerPubKey,
       guard: 'owner_signature',
       proofSource: `like:${postId}`,
-      lastTouchBlock: 5,
     };
+    Object.assign(newKarma, fixtureProvenance(newKarma, 1));
     const newKarmaId = computeBoxId(newKarma);
     const likeBox: LikeBox = {
       boxType: 'like',
       value: LIKE_COST,
-      createdAtBlock: 5,
       likerId,
       targetPostId: postId,
       guard: 'epoch_tally',
     };
+    Object.assign(likeBox, fixtureProvenance(likeBox, 1));
     const likeBoxId = computeBoxId(likeBox);
 
     const tx: UtxoTransaction = {
@@ -397,21 +395,20 @@ describe('likes service', () => {
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: 98n,
-      createdAtBlock: 5,
       owner: likerPubKey,
       guard: 'owner_signature',
       proofSource: `like:${postId}`,
-      lastTouchBlock: 5,
     };
+    Object.assign(newKarma, fixtureProvenance(newKarma, 1));
     const newKarmaId = computeBoxId(newKarma);
     const likeBox: LikeBox = {
       boxType: 'like',
       value: LIKE_COST,
-      createdAtBlock: 5,
       likerId,
       targetPostId: postId,
       guard: 'epoch_tally',
     };
+    Object.assign(likeBox, fixtureProvenance(likeBox, 1));
     const likeBoxId = computeBoxId(likeBox);
 
     const tx: UtxoTransaction = {
@@ -458,16 +455,13 @@ describe('likes service', () => {
       const newKarma: KarmaBox = {
         boxType: 'karma',
         value: 98n,
-        createdAtBlock: 5,
         owner: likerPubKey,
         guard: 'owner_signature',
         proofSource: `like:${postId}`,
-        lastTouchBlock: 5,
       };
       const likeBox: LikeBox = {
         boxType: 'like',
         value: LIKE_COST,
-        createdAtBlock: 5,
         likerId,
         targetPostId: postId,
         guard: 'epoch_tally',
@@ -502,16 +496,13 @@ describe('likes service', () => {
     const otherNewKarma: KarmaBox = {
       boxType: 'karma',
       value: 98n,
-      createdAtBlock: 5,
       owner: otherPub,
       guard: 'owner_signature',
       proofSource: `like:${postId}`,
-      lastTouchBlock: 5,
     };
     const otherLike: LikeBox = {
       boxType: 'like',
       value: LIKE_COST,
-      createdAtBlock: 5,
       likerId: otherPub,
       targetPostId: postId,
       guard: 'epoch_tally',
@@ -540,21 +531,20 @@ describe('likes service', () => {
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: 0n,
-      createdAtBlock: 5,
       owner: likerPubKey,
       guard: 'owner_signature',
       proofSource: `like:${postId}`,
-      lastTouchBlock: 5,
     };
+    Object.assign(newKarma, fixtureProvenance(newKarma, 1));
     const newKarmaId = computeBoxId(newKarma);
     const likeBox: LikeBox = {
       boxType: 'like',
       value: LIKE_COST,
-      createdAtBlock: 5,
       likerId,
       targetPostId: postId,
       guard: 'epoch_tally',
     };
+    Object.assign(likeBox, fixtureProvenance(likeBox, 1));
     const likeBoxId = computeBoxId(likeBox);
 
     const tx: UtxoTransaction = {
@@ -583,21 +573,20 @@ describe('likes service', () => {
     const newKarma: KarmaBox = {
       boxType: 'karma',
       value: 98n,
-      createdAtBlock: 5,
       owner: likerPubKey,
       guard: 'owner_signature',
       proofSource: `like:${postId}`,
-      lastTouchBlock: 5,
     };
+    Object.assign(newKarma, fixtureProvenance(newKarma, 1));
     const newKarmaId = computeBoxId(newKarma);
     const likeBox: LikeBox = {
       boxType: 'like',
       value: LIKE_COST,
-      createdAtBlock: 5,
       likerId,
       targetPostId: postId,
       guard: 'epoch_tally',
     };
+    Object.assign(likeBox, fixtureProvenance(likeBox, 1));
     const likeBoxId = computeBoxId(likeBox);
 
     const tx: UtxoTransaction = {

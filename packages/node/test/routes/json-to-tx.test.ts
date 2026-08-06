@@ -19,11 +19,9 @@ describe('jsonToTx box value validation (audit L-11, Spec B P0)', () => {
         {
           boxType: 'karma',
           value,
-          createdAtBlock: 10,
           owner: ownerHex,
           guard: 'owner_signature',
           proofSource: 'test',
-          lastTouchBlock: 10,
         },
       ],
       signatures: {},
@@ -83,7 +81,6 @@ describe('jsonToTx box value validation (audit L-11, Spec B P0)', () => {
     (raw.outputs as Record<string, unknown>[]).push({
       boxType: 'like',
       value: -LIKE_COST,
-      createdAtBlock: 10,
       likerId: ownerHex,
       targetPostId: 'ef'.repeat(32),
       guard: 'epoch_tally',
@@ -100,7 +97,6 @@ describe('jsonToTx box value validation (audit L-11, Spec B P0)', () => {
           boxType: 'post_lock',
           value: '5',
           originalValue: '5',
-          createdAtBlock: 10,
           owner: ownerHex,
           targetPostId: 'ef'.repeat(32),
           guard: 'epoch_tally',

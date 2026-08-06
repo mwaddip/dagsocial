@@ -671,11 +671,11 @@ describe('revertBlock', () => {
     expect(txRecord.txCbor).toBeInstanceOf(Uint8Array);
 
     const insertedIds = journal!.mutations
-      .filter((m) => m.op === 'insert')
-      .map((m) => m.boxId);
+      .filter((m) => m.kind === 'box' && m.op === 'insert')
+      .map((m) => (m as { boxId: string }).boxId);
     const removedIds = journal!.mutations
-      .filter((m) => m.op === 'remove')
-      .map((m) => m.boxId);
+      .filter((m) => m.kind === 'box' && m.op === 'remove')
+      .map((m) => (m as { boxId: string }).boxId);
     // The like tx's change box was created, its karma input consumed
     expect(insertedIds.length).toBeGreaterThan(0);
     expect(removedIds).toContain(karmaBox.id);
@@ -756,10 +756,16 @@ describe('revertBlock', () => {
       karmaMinimum: KARMA_MINIMUM,
     };
 
+    // Spec G phase D: the decay clock is committed state, injected alongside
+    // the box accessors.
+    const records = await import('../../src/store/identity-records.js');
+
     const deps = {
       getKarmaBoxes,
       consumeBox: utxo.consumeBox,
       insertBox: utxo.insertBox,
+      getIdentityRecord: records.getIdentityRecord,
+      putIdentityRecord: records.putIdentityRecord,
       getKarmaOwners: () => [identity.userId],
     };
 

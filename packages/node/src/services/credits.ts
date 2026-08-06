@@ -4,7 +4,7 @@ import {
   selectBoxes,
   PROTOCOL_VERSION,
 } from '@dagsocial/types';
-import type { CreditBox, UtxoTransaction } from '@dagsocial/types';
+import type { CandidateOf, CreditBox, UtxoTransaction } from '@dagsocial/types';
 import { verify as cryptoVerify } from 'crypto';
 import {
   getCreditBoxes,
@@ -15,6 +15,9 @@ import {
 
 import { ed25519PublicKeyToKeyObject } from '@dagsocial/validation';
 import { ClientError } from './client-error.js';
+import { materializeOutput } from './utxo-engine.js';
+import { MINT_OUTPUT_INDEX, mintTxIdFor } from '../mint-provenance.js';
+import type { MintContext } from '../mint-provenance.js';
 
 // ---------------------------------------------------------------------------
 // Mint (coinbase emission)
@@ -25,11 +28,18 @@ import { ClientError } from './client-error.js';
  *
  * Consumes ALL existing unspent credit boxes and creates a single new one
  * with the combined value + amount. Same pattern as mintKarma.
+ *
+ * `ctx` precedes `lockedUntilBlock` because it is required and that one is
+ * optional — and because it belongs with the other identity inputs. It stopped
+ * admitting `null` at phase G2b, for the reason spelled out on `mintKarma`: a
+ * required parameter fails at compile time in `src`, where omitting provenance
+ * breaks consensus, rather than leaving the store to catch it later.
  */
 export function mintCredits(
   owner: Uint8Array,
   amount: bigint,
   blockHeight: number,
+  ctx: MintContext,
   lockedUntilBlock?: number,
 ): string {
   if (amount <= 0n) return '';
@@ -52,17 +62,20 @@ export function mintCredits(
     }
   }
 
+  // The conditional field is spread rather than assigned afterwards: spreading
+  // `{}` adds no key at all, so this cannot produce the explicit `undefined`
+  // that contract 1a rules out. Key *order* no longer matters as of phase G3b —
+  // both encoders sort — but present-vs-absent still does.
   const newBox: CreditBox = {
     boxType: 'credit',
     value: newValue,
-    createdAtBlock: blockHeight,
     owner,
     guard: 'owner_signature',
     proofSource: blockHeight,
+    ...(mergedLockedUntilBlock !== undefined ? { lockedUntilBlock: mergedLockedUntilBlock } : {}),
+    txId: mintTxIdFor(ctx, blockHeight),
+    index: MINT_OUTPUT_INDEX,
   };
-  if (mergedLockedUntilBlock !== undefined) {
-    newBox.lockedUntilBlock = mergedLockedUntilBlock;
-  }
   newBox.id = computeBoxId(newBox);
 
   insertBox(newBox);
@@ -109,12 +122,11 @@ export function sendCredits(
   //    matches what the client signed. Falls back to currentHeight if
   //    expectedHeight is not provided (backward compat for non-UI callers).
   const buildHeight = expectedHeight ?? currentHeight;
-  const outputs: CreditBox[] = [];
+  const outputs: CandidateOf<CreditBox>[] = [];
 
-  const recipientBox: CreditBox = {
+  const recipientBox: CandidateOf<CreditBox> = {
     boxType: 'credit',
     value: amount,
-    createdAtBlock: buildHeight,
     owner: to,
     guard: 'owner_signature',
     proofSource: -1, // transfer (not coinbase)
@@ -122,11 +134,10 @@ export function sendCredits(
   outputs.push(recipientBox);
 
   if (change > 0n) {
-    const changeBox: CreditBox = {
+    const changeBox: CandidateOf<CreditBox> = {
       boxType: 'credit',
       value: change,
-      createdAtBlock: buildHeight,
-      owner: from,
+        owner: from,
       guard: 'owner_signature',
       proofSource: -1,
     };
@@ -134,9 +145,13 @@ export function sendCredits(
   }
 
   // 3. Build transaction
+  //
+  // The outputs no longer carry a precomputed `id`. It was vestigial: nothing
+  // reads an output id, and `computeTxId` strips it through `canonicalBoxBytes`
+  // before hashing — so the transaction id the client signed is unchanged.
   const tx: UtxoTransaction = {
     inputs: selected.map((b) => b.id!),
-    outputs: outputs.map((b) => ({ ...b, id: computeBoxId(b) })),
+    outputs,
     signatures: {},
     protocolVersion: PROTOCOL_VERSION,
   };
@@ -152,12 +167,18 @@ export function sendCredits(
   }
 
   // 5. Apply to UTXO set
+  //
+  // Provenance is attached only now — after `computeTxId` above, which hashes
+  // the output *candidates*. Attaching first would feed provenance into the
+  // very transaction id it derives from, and because `computeTxId` routes
+  // outputs through `canonicalBoxBytes` it would not observe the difference:
+  // the mistake is silent, not an error.
   for (const box of selected) {
     consumeBox(box.id!, currentHeight);
   }
-  for (const output of tx.outputs) {
-    insertBox(output);
-  }
+  tx.outputs
+    .map((box, index) => materializeOutput(box, txId, index))
+    .forEach(insertBox);
 
   return {
     txId,

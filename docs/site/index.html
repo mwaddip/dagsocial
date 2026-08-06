@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Notis Docs</title>
+<meta name="description" content="Notis is an invite-only decentralized social network built on two ledgers — one for content, one for value — where reputation can't be bought.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Notis Docs">
+<meta property="og:title" content="Notis Docs">
+<meta property="og:description" content="An invite-only decentralized social network where reputation isn't for sale. Two ledgers: one for what people say, one for what things are worth.">
+<meta property="og:url" content="https://docs.notis.fun/">
+<meta name="twitter:card" content="summary">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#020D07; --surface:#06160E; --surface-2:#0A1E13; --border:#143C28; --side:#04120B;
+    --hi:#EAFFF4; --text:#C8E9D8; --muted:#6FB894;
+    --k:#2CFF87; --c:#E8B84B;
+    --k-soft:rgba(44,255,135,.10); --c-soft:rgba(232,184,75,.10);
+    --glow:0 0 24px rgba(44,255,135,.28);
+    --mono:"JetBrains Mono",ui-monospace,"Cascadia Code","SF Mono",Menlo,Consolas,monospace;
+    --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --side-w:250px;
+  }
+  @media (prefers-color-scheme: light){
+    :root:not([data-theme="dark"]){
+      --bg:#EDF3EE; --surface:#F5F9F6; --surface-2:#E4EFE8; --border:#CBDDD0; --side:#E7F0EA;
+      --hi:#0B2C1B; --text:#22402F; --muted:#557460;
+      --k:#0B8A46; --c:#8A5E12; --k-soft:rgba(11,138,70,.08); --c-soft:rgba(138,94,18,.09); --glow:none;
+    }
+  }
+  :root[data-theme="light"]{
+    --bg:#EDF3EE; --surface:#F5F9F6; --surface-2:#E4EFE8; --border:#CBDDD0; --side:#E7F0EA;
+    --hi:#0B2C1B; --text:#22402F; --muted:#557460;
+    --k:#0B8A46; --c:#8A5E12; --k-soft:rgba(11,138,70,.08); --c-soft:rgba(138,94,18,.09); --glow:none;
+  }
+  :root[data-theme="dark"]{
+    --bg:#020D07; --surface:#06160E; --surface-2:#0A1E13; --border:#143C28; --side:#04120B;
+    --hi:#EAFFF4; --text:#C8E9D8; --muted:#6FB894;
+    --k:#2CFF87; --c:#E8B84B; --k-soft:rgba(44,255,135,.10); --c-soft:rgba(232,184,75,.10);
+    --glow:0 0 24px rgba(44,255,135,.28);
+  }
+  *{box-sizing:border-box} html{-webkit-text-size-adjust:100%}
+  body{margin:0; background:var(--bg); color:var(--text); font-family:var(--sans);
+    font-size:17px; line-height:1.68; letter-spacing:.005em; -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility}
+  .mono{font-family:var(--mono)}
+  .sidebar{position:fixed; top:0; left:0; width:var(--side-w); height:100vh; overflow-y:auto;
+    background:var(--side); border-right:1px solid var(--border); padding:26px 18px 40px; z-index:900; transition:transform .22s ease}
+  .side-brand{display:flex; align-items:center; gap:9px; font-family:var(--mono); font-weight:700;
+    font-size:14px; letter-spacing:.14em; color:var(--hi); text-decoration:none; padding:2px 8px 22px}
+  .side-brand .dot{color:var(--k)} .side-brand i{color:var(--muted); font-style:normal; font-weight:400}
+  .nav{display:flex; flex-direction:column; gap:2px}
+  .nav-cat{font-family:var(--mono); font-size:11px; letter-spacing:.2em; text-transform:uppercase; color:var(--muted); padding:16px 8px 6px}
+  .nav-item{display:block; text-decoration:none; color:var(--text); font-size:14.5px;
+    padding:7px 10px 7px 13px; border-radius:6px; border-left:2px solid transparent; transition:.12s}
+  .nav-item:hover{background:var(--surface); color:var(--hi)}
+  .nav-item.active{color:var(--k); border-left-color:var(--k); background:var(--k-soft); font-weight:600}
+  .content{margin-left:var(--side-w); padding:0 32px 100px; min-width:0}
+  .wrap{max-width:760px; margin:0 auto}
+  header.page{padding:70px 0 8px; border-bottom:1px solid var(--border); margin-bottom:8px}
+  .crumb{font-family:var(--mono); font-size:12px; letter-spacing:.16em; text-transform:uppercase; color:var(--muted); margin-bottom:20px}
+  .crumb b{color:var(--k)}
+  h1{font-family:var(--mono); font-size:clamp(29px,5.4vw,44px); line-height:1.1; margin:0 0 18px;
+    color:var(--hi); font-weight:700; letter-spacing:-.01em; text-wrap:balance; text-shadow:var(--glow)}
+  .lede{font-size:clamp(17px,2.2vw,20px); color:var(--text); margin:0 0 20px; max-width:60ch}
+  .lede strong{color:var(--hi); font-weight:600}
+  section{padding:36px 0; border-bottom:1px solid var(--border)}
+  section:last-of-type{border-bottom:0}
+  h2{font-family:var(--mono); font-size:20px; color:var(--hi); margin:0 0 16px; font-weight:700}
+  h2::before{content:"// "; color:var(--k)}
+  p{margin:0 0 16px} strong{color:var(--hi); font-weight:600} em{color:var(--muted); font-style:italic}
+  .accent-k{color:var(--k); font-weight:600} .accent-c{color:var(--c); font-weight:600}
+  .glance{display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:8px}
+  @media (max-width:560px){.glance{grid-template-columns:1fr}}
+  a.card{display:block; text-decoration:none; background:var(--surface); border:1px solid var(--border); border-radius:10px;
+    padding:20px; position:relative; overflow:hidden; transition:transform .12s ease, border-color .12s ease}
+  a.card:hover{transform:translateY(-2px); border-color:var(--k)}
+  a.card.c:hover{border-color:var(--c)}
+  a.card::before{content:""; position:absolute; left:0; top:0; bottom:0; width:3px}
+  a.card.k::before{background:var(--k)} a.card.c::before{background:var(--c)}
+  a.card .tag{font-family:var(--mono); font-size:11.5px; letter-spacing:.16em; text-transform:uppercase; margin-bottom:6px}
+  a.card.k .tag{color:var(--k)} a.card.c .tag{color:var(--c)}
+  a.card h4{margin:0 0 8px; font-size:19px; color:var(--hi); font-family:var(--mono); font-weight:700}
+  a.card p{margin:0; font-size:14.5px; color:var(--text)}
+  footer{padding:34px 0 0; color:var(--muted); font-size:13.5px}
+  footer a{color:var(--k); text-decoration:none; border-bottom:1px solid var(--border)}
+  .theme-toggle{position:fixed; top:16px; right:16px; z-index:950; width:40px; height:40px; border-radius:9px;
+    cursor:pointer; display:flex; align-items:center; justify-content:center; font-size:18px; line-height:1;
+    background:var(--surface); color:var(--k); border:1px solid var(--border); transition:transform .12s ease}
+  .theme-toggle:hover{transform:translateY(-1px)}
+  .theme-toggle:focus-visible, .nav-btn:focus-visible{outline:2px solid var(--k); outline-offset:2px}
+  .nav-btn{display:none; position:fixed; top:16px; left:16px; z-index:950; width:40px; height:40px; border-radius:9px;
+    cursor:pointer; background:var(--surface); color:var(--k); border:1px solid var(--border); font-size:17px; line-height:1}
+  .backdrop{display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:880}
+  .backdrop.show{display:block}
+  @media (max-width:900px){
+    .sidebar{transform:translateX(-100%)} .sidebar.open{transform:translateX(0)}
+    .content{margin-left:0; padding:0 20px 90px}
+    .nav-btn{display:flex; align-items:center; justify-content:center}
+    header.page{padding-top:76px}
+  }
+  @media (prefers-reduced-motion: reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+
+<button class="nav-btn" id="navBtn" aria-label="Toggle navigation">☰</button>
+<button class="theme-toggle" id="themeToggle" title="Toggle light / dark" aria-label="Toggle theme">☀</button>
+<div class="backdrop" id="backdrop"></div>
+
+<aside class="sidebar" id="sidebar">
+  <a class="side-brand" href="/"><span class="dot">◈</span> NOTIS <i>//</i> docs</a>
+  <!--#include virtual="/assets/_nav.html" -->
+</aside>
+
+<main class="content">
+  <div class="wrap">
+    <header class="page">
+      <div class="crumb"><b>Notis</b> // documentation</div>
+      <h1>An invite-only network where reputation isn't for sale.</h1>
+      <p class="lede">Notis is a <strong>decentralized social network</strong> with no company in the middle and no coins handed out at launch. It runs on two separate ledgers — one for what people <em>say</em>, one for what things are <em>worth</em> — and it's built so that gaming the system costs more than it's worth.</p>
+    </header>
+
+    <section>
+      <h2>The one idea to start with</h2>
+      <p>Notis keeps <strong>reputation</strong> and <strong>money</strong> completely apart. <span class="accent-k">Karma</span> is reputation you earn by contributing; <span class="accent-c">credits</span> are money that's mined and traded. A firewall stops them from ever converting into each other — so reputation can't be <em>bought</em>, and money can't be earned just by being popular. Your content stays yours (you can delete it), and security comes from proof-of-work that answers to neither karma nor wealth.</p>
+      <p>Everything else in these docs is a consequence of that separation. Two places to start:</p>
+      <div class="glance">
+        <a class="card k" href="/architecture/">
+          <div class="tag">Read next →</div>
+          <h4>Architecture</h4>
+          <p>How Notis is built: the two ledgers, author-owned content, stumps, and the proof-of-work that secures it all.</p>
+        </a>
+        <a class="card c" href="/economy/">
+          <div class="tag">Read next →</div>
+          <h4>Economy</h4>
+          <p>How karma &amp; credits actually work — earning, spending, decay, the fair launch, and the game theory that keeps it honest.</p>
+        </a>
+      </div>
+    </section>
+
+    <footer>
+      <p class="mono">NOTIS // decentralized social network · dual-ledger · proof-of-work</p>
+      <p>Design in progress — some mechanics described in these docs are still being implemented. · <a href="https://notis.fun">notis.fun</a></p>
+    </footer>
+  </div>
+</main>
+
+<script>
+(function(){
+  var root=document.documentElement, btn=document.getElementById("themeToggle");
+  function eff(){ var t=root.getAttribute("data-theme"); if(t==="dark"||t==="light") return t;
+    return (window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark"; }
+  function apply(t){ root.setAttribute("data-theme",t); if(btn) btn.textContent=(t==="dark"?"☀":"☾");
+    try{ localStorage.setItem("notis-theme",t); }catch(e){} }
+  var saved=null; try{ saved=localStorage.getItem("notis-theme"); }catch(e){}
+  apply(saved||eff());
+  if(btn) btn.addEventListener("click",function(){ apply(eff()==="dark"?"light":"dark"); });
+  var sb=document.getElementById("sidebar"), nb=document.getElementById("navBtn"), bd=document.getElementById("backdrop");
+  function setNav(open){ sb.classList.toggle("open",open); bd.classList.toggle("show",open); }
+  if(nb) nb.addEventListener("click",function(){ setNav(!sb.classList.contains("open")); });
+  if(bd) bd.addEventListener("click",function(){ setNav(false); });
+})();
+</script>
+</body>
+</html>

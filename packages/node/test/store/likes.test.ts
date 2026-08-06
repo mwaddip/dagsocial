@@ -87,8 +87,8 @@ describe('likes store', () => {
 
     // Insert one locked like in utxo_boxes (simulates a like box)
     getDb().prepare(
-      `INSERT INTO utxo_boxes (id, box_type, value, created_at_block, guard, extra_data)
-       VALUES (?, 'like', 2, 5, 'epoch_tally', ?)`,
+      `INSERT INTO utxo_boxes (id, box_type, value, created_at_block, guard, extra_data, tx_id, output_index)
+       VALUES (?, 'like', 2, 5, 'epoch_tally', ?, 'ff00', 0)`,
     ).run('locked-box-1', JSON.stringify({ likerId: uid('user-c'), targetPostId: 'post-1' }));
 
     const counts = getLikeCount('post-1');

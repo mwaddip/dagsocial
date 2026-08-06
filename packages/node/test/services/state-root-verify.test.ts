@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { computeBoxId, EMPTY_STATE_ROOT } from '@dagsocial/types';
 import type { CreditBox, OrderingBlock } from '@dagsocial/types';
 import type Database from 'better-sqlite3';
-import { makeTestIdentity, makeApplicableBlock } from '../helpers.js';
+import {
+  fixtureProvenance, makeTestIdentity, makeApplicableBlock } from '../helpers.js';
 
 // ---------------------------------------------------------------------------
 // Spec B P3 acceptance, verifier side: with VERIFY_STATE_ROOT on (the default
@@ -65,7 +66,7 @@ async function activateProver() {
   const utxo = await importUtxo();
   const handle = avlMod.createAvlProver();
   const unspent = utxo.getUnspentBoxes();
-  if (unspent.length > 0) avlMod.bootstrapAvlProver(handle, unspent, 0);
+  if (unspent.length > 0) avlMod.bootstrapAvlProver(handle, unspent, 0, []);
   expect(avlMod.tryGetAvlProver()).not.toBeNull();
   return handle;
 }
@@ -98,11 +99,11 @@ describe('stateRoot verification (P3 acceptance)', () => {
     const seeded: CreditBox = {
       boxType: 'credit',
       value: 100n,
-      createdAtBlock: 0,
       owner: holder.userId,
       guard: 'owner_signature',
       proofSource: 0,
     };
+    Object.assign(seeded, fixtureProvenance(seeded, 1));
     seeded.id = computeBoxId(seeded);
     (await importUtxo()).insertBox(seeded);
 

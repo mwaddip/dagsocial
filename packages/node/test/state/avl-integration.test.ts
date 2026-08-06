@@ -25,11 +25,9 @@ function makeKarmaBox(id: string, value: bigint, block: number, seed: number): A
     id,
     boxType: 'karma',
     value,
-    createdAtBlock: block,
     owner,
     guard: 'owner_signature',
     proofSource: `mint-${block}-${seed}`,
-    lastTouchBlock: block,
   };
 }
 
@@ -40,7 +38,6 @@ function makeCreditBox(id: string, value: bigint, block: number, seed: number): 
     id,
     boxType: 'credit',
     value,
-    createdAtBlock: block,
     owner,
     guard: 'owner_signature',
     proofSource: block,
@@ -233,6 +230,10 @@ describe('AVL integration — full pipeline', () => {
     const withId = deserializeBoxWithId(sampleBox.id, sampleRaw!);
     expect(withId.id).toBe(sampleBox.id);
     expect(withId.boxType).toBe('karma');
-    expect(withId.createdAtBlock).toBe(1);
+    // The AVL value carries provenance and must (contract 1a): "a box id is a
+    // total function of the stored box" is only checkable *from a proof* if the
+    // proof's value carries everything the derivation consumes.
+    expect(withId.txId).toBe(sampleBox.txId);
+    expect(withId.index).toBe(sampleBox.index);
   });
 });

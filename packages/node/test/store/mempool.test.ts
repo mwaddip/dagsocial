@@ -63,7 +63,6 @@ function likeTx(targetPostId: string, likerHex: string) {
       {
         boxType: 'like',
         value: 2,
-        createdAtBlock: 1,
         likerId: bytes(likerHex),
         targetPostId,
         guard: 'epoch_tally',
@@ -81,7 +80,6 @@ function inviteTx(inviterHex: string) {
       {
         boxType: 'invite',
         value: 25,
-        createdAtBlock: 1,
         inviterId: bytes(inviterHex),
         secretHash: new Uint8Array(32),
         guard: 'hash_preimage_with_bond',
@@ -99,7 +97,6 @@ function vouchTx(voucherHex: string, targetHex: string) {
       {
         boxType: 'vouch',
         value: 10,
-        createdAtBlock: 1,
         voucherId: bytes(voucherHex),
         targetId: bytes(targetHex),
         guard: 'owner_signature',

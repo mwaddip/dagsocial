@@ -161,23 +161,152 @@ producer and verifier stay consistent automatically.
 ### BoxId
 
 ```
-BoxId = string  // blake2b512(canonicalCbor(box)).subarray(0,32).toString('hex')
+BoxId = string  // hex, 32 bytes
+boxId = blake2b512( BOX_ID_DOMAIN ‖ canonicalCbor(candidate) ‖ txId ‖ u32BE(index) )[0:32]
 ```
 
-All box types share a common envelope:
+Box identity derives from **creating-transaction provenance**, not from content alone
+(Spec G — `docs/specs/2026-08-05-box-identity.md`). A pure content hash cannot be
+simultaneously *honest* (matching an apply-mutated box) and *predictable* (known at signing
+time); provenance gives both, and makes collisions structurally impossible.
+
+Two shapes, not one:
 
 ```
-interface BoxBase {
-  id?: BoxId           // Computed via computeBoxId; optional during construction
+interface BoxCandidate {              // the shared BASE — no per-type fields
   boxType: "karma" | "credit" | "like" | "invite" | "bond" | "post_lock" | "vouch"
   value: bigint                // integer base units — uniform bigint (see "Value denomination")
-  createdAtBlock: number
 }
+
+interface BoxBase extends BoxCandidate {
+  id?: BoxId                   // blake2b512 over candidate ‖ provenance — see the note below
+  txId: TxId                   // creating transaction — real or synthetic (see Mint identity)
+  index: number                // u32, position within that transaction's outputs
+}
+
+type CandidateOf<B extends BoxBase> = Omit<B, "id" | "txId" | "index">
+type AnyBoxCandidate = CandidateOf<KarmaBox> | CandidateOf<CreditBox> | …   // all seven
 ```
 
-Box identity is deterministic: `computeBoxId` encodes the box (minus its `id`
-field) as canonical CBOR, hashes with blake2b512, and takes the first 32 bytes
-as a hex string.
+**`BoxCandidate` is the base, `CandidateOf<B>` is the per-type candidate.** An earlier draft of
+this block wrote `BoxCandidate` with a `…per-type fields` placeholder, which read as though one
+name covered both; it does not, and typing `UtxoTransaction.outputs` as the base would erase
+`owner`, `guard`, `likerId` and force a cast at every consumer. `Omit` is applied **per union
+member** — omitting from a union collapses it to the common keys. `UtxoTransaction.outputs` is
+`AnyBoxCandidate[]`.
+
+A candidate is what a creator builds and what `computeTxId` hashes. A `BoxBase` is what exists
+in the ledger, the store, and the AVL value. The split makes "has provenance-free identity" —
+the M-11 state — unrepresentable.
+
+> **`id` is optional, and deliberately.** A producer builds the candidate-plus-provenance object
+> and hashes *it* to obtain the id, so the value is genuinely absent for exactly one expression,
+> and `computeBoxId` takes `Omit<BoxBase, "id">`. Requiring it would mean a second "box without
+> an id yet" type at every producer, for no safety the invariant below does not already give.
+> **Every box in the ledger, the store and the AVL value has one** — that is an invariant, not a
+> type-level guarantee.
+
+`computeBoxId` is a **total function of a stored box**: drop `id`/`txId`/`index` to recover
+candidate bytes, then re-derive. So `stored.id === computeBoxId(stored)` holds by construction
+for every box in the UTXO set, and a light client, indexer, or AVL prover derives the same id
+the node did.
+
+**`createdAtBlock` is NOT a box field.** It was the only apply-mutated field, and its presence
+is what made the id dishonest. The node records the settled height in a store column;
+**consensus code must never read that column**, since it is not committed in the `stateRoot`
+and a node bootstrapping from an AVL snapshot cannot reconstruct it. The decay clock reads a
+committed per-identity record instead — see `NODE_INTERFACE.md`.
+
+#### Mint identity
+
+Boxes created by block application rather than by a user transaction (coinbase, karma mints,
+decay, epoch post-locks, genesis) derive a **synthetic transaction id**, so there is exactly
+one derivation path:
+
+```
+mintTxId = blake2b512( MINT_ID_DOMAIN ‖ u32BE(height) ‖ reason ‖ subject )[0:32]
+```
+
+`reason` is an ASCII tag from a closed set; `subject` is a canonical byte encoding defined per
+reason. The discriminant is **semantic, never positional** — deriving it from journal position
+would make identity order-dependent, the failure class M-12 closed for the AVL feed. Full
+reason/subject table in `NODE_INTERFACE.md`.
+
+> **Injectivity is only half-guaranteed here, and the other half is `NODE_INTERFACE.md`'s.**
+> *Across* reasons it holds unconditionally, because no `MintReason` is a prefix of another
+> (verified and test-pinned). *Within* one reason it does **not** hold automatically: `subject`
+> carries no length prefix, so two different subjects could concatenate identically. Every
+> per-reason subject encoding MUST therefore be **fixed-length or self-delimiting**. This
+> package cannot enforce it — the caller owns the bytes.
+
+#### Pinned byte forms
+
+Protocol-visible: a mirror implementation (demo UI, light client) that chooses differently
+computes different ids.
+
+- **`txId` enters a preimage as the UTF-8 bytes of its 64-character hex string**, not as the 32
+  decoded bytes. Consistent with how every other id already enters a preimage here
+  (`computeTxId` hashes input `BoxId`s as text, `postFieldBytes` encodes `parentRefs` as text);
+  keeps derivation **total** on untrusted input, since a hex decode throws on a malformed
+  `txId` and light clients derive ids from attacker-supplied fields; and is strictly more
+  injective, as decoding would collapse `AB…` and `ab…` onto one id. `reason` likewise enters
+  as ASCII.
+- **`u32BE` is total, never throwing.** Input outside `[0, 2³²−1)` writes the all-ones
+  sentinel, following `post.ts`'s numeric-writer discipline for the M-5 no-panic contract. The
+  encodable domain excludes the sentinel, so a well-formed index or height never collides with
+  a malformed one. A mirror that throws instead would diverge.
+
+#### Domain tags
+
+| Constant | Preimage it separates |
+|---|---|
+| `BOX_ID_DOMAIN` | box id |
+| `TX_ID_DOMAIN` | transaction id |
+| `MINT_ID_DOMAIN` | synthetic mint transaction id |
+| `IDENTITY_KEY_DOMAIN` | per-identity record key in the AVL tree |
+
+Box ids, tx ids and identity-record keys share one 32-byte keyspace and the AVL tree now holds
+two entity kinds, so the separation must be in the preimage. (`computePostId` already works
+this way via `POST_ID_DOMAIN`; box ids previously had no tag.)
+
+#### Canonical encoding
+
+Exactly one encoder defines `canonicalCbor` for identity: the `cbor-x` `Encoder` in `utxo.ts`
+(`{ tagUint8Array: false, useRecords: false, mapsAsObjects: true }`), exported as
+`canonicalBoxBytes(candidate)` so tests and mirror implementations assert against the encoder
+that actually computes ids. Node's AVL value encoder (`state/serialize-box.ts`) is a
+**separate, tagged** encoding for tree values and is not interchangeable with it.
+`serialization.ts` must not export a third — it previously did, using cbor-x's *default*
+`encode`, which is neither. `computeTxId` hashes its outputs through `canonicalBoxBytes` for
+the same reason: one strip rule, so tx and box derivation cannot drift.
+
+⚠ **`canonicalBoxBytes` is cbor-x framing, NOT RFC 8949 canonical CBOR.** It emits the fixed
+two-byte map header (`b9 00NN`), not the minimal-length form (`a7`). The name invites the wrong
+assumption — a mirror written to the CBOR canonicalisation rules computes different ids. The
+demo UI already encodes this way; full bytes are pinned as golden vectors in
+`test/utxo.test.ts`.
+
+#### Key ordering is canonical (Spec G phase G3b)
+
+`canonicalBoxBytes` **imposes** a total key order — a lexicographic sort of the candidate's own
+keys — rather than inheriting the caller's insertion order. Node's `serializeBox` and the demo
+UI's mirror apply the identical rule.
+
+This retires contract hazards **1b and 1c** in `NODE_INTERFACE.md`. cbor-x emits map keys in JS
+insertion order, so before this a producer's field order was consensus-visible: the same box
+built two ways hashed to two ids, and `post_lock` genuinely diverged between its producer and
+`rowToBox`. The fix is at the single encode site, **not** at the diverging producer — a producer
+can no longer get key order wrong because it no longer chooses it, and the "make every producer
+match `rowToBox`" discipline is retired with it.
+
+`Array.prototype.sort` with no comparator compares UTF-16 code units and is **not** locale-aware
+(that is `localeCompare`), so it is deterministic across platforms. Every box field name is
+ASCII, so the order is plain byte order. The sort is **shallow**: box fields are primitives,
+strings and `Uint8Array`s, and a nested object added later would need it applied recursively.
+
+> A mirror implementation that sorts differently — or not at all — computes different ids for
+> every box. This sits alongside the cbor-x-framing warning above as the second thing a mirror
+> must get right.
 
 #### Value denomination (P0 — Spec B, 8-decimal BigInt)
 
@@ -196,8 +325,11 @@ See `docs/specs/2026-08-01-node-consensus-determinism.md` P0.
   unversioned format break ⇒ **fresh chain / DB reset, coordinated all-node
   cutover.** No in-place migration.
 - The demo-UI CBOR encoder MUST emit the identical `0x1b`+uint64 form for
-  `value` and minimal-int for the remaining `number` fields — this folds in the
-  L-5 `cborEncodeInt` cap fix (`createdAtBlock` crosses 65536).
+  `value` and minimal-int for the remaining `number` fields. Spec G removes
+  `createdAtBlock` from the box, so box encoding no longer carries a block
+  height — but L-5's `cborEncodeInt` cap (integers to 65535, string/byte
+  lengths to 255) still binds every other height-bearing structure the UI
+  builds, and remains Spec F P1's to fix.
 
 ### KarmaBox
 
@@ -207,15 +339,23 @@ KarmaBox extends BoxBase {
   owner: Uint8Array            // 32 raw bytes — Ed25519 public key
   guard: "owner_signature"     // Only owner may spend
   proofSource: string          // PostId | StumpHash | InviteTxId
-  lastTouchBlock: number       // = createdAtBlock on creation
 }
 ```
 
 Karma boxes are non-tradeable. They can only be consumed by the owner to:
 - Create invite boxes
 - Create like boxes
-- Create a new karma box for the same owner (balance change, resets activity clock)
+- Create a new karma box for the same owner (balance change)
 - Create a post lock box (when posting)
+
+`lastTouchBlock` was removed by Spec G — it had no reader anywhere in `src`, and the activity
+clock it nominally represented now lives in the committed per-identity record
+(`NODE_INTERFACE.md`), not on a box.
+
+> **Known defect, out of Spec G's scope:** `proofSource` is not trustworthy on a karma box.
+> Forced consolidation in `mintKarma` inherits the *first* consumed box's `proofSource`
+> arbitrarily, so provenance is lost after the first merge, and nothing reads the field. Fixed
+> by the consolidation-removal follow-up, which the karma track owns.
 
 ### CreditBox
 
@@ -314,15 +454,24 @@ type BoxGuard = "owner_signature" | "epoch_tally" | "hash_preimage" | "inviter_s
 
 ```
 UtxoTransaction {
-  inputs: BoxId[]               // Boxes consumed
-  outputs: AnyBox[]             // Boxes created (AnyBox = KarmaBox | CreditBox | LikeBox | InviteBox | BondBox | PostLockBox)
-  signatures: Record<string, Uint8Array>  // publicKey (hex) → Ed25519 sig (64 bytes)
-  protocolVersion: number       // 1
+  inputs: BoxId[]                          // Boxes consumed
+  outputs: BoxCandidate[]                  // Boxes created — candidates: no id, no txId, no index
+  signatures: Record<string, Uint8Array>   // publicKey (hex) → Ed25519 sig (64 bytes) over TxId
+  preimages?: Record<string, Uint8Array>   // boxId → hash preimage, for hash_preimage guards
+  protocolVersion: number                  // 1
 }
 
-TxId = blake2b512(inputs || serializedOutputs || protocolVersion)
-       .subarray(0, 32).toString('hex')
+TxId = blake2b512( TX_ID_DOMAIN ‖ inputs ‖ canonicalCbor(outputs, in order)
+                   ‖ preimages (sorted by boxId) ‖ protocolVersion )[0:32]
 ```
+
+`outputs` carries **candidates**, not boxes. A transaction cannot name its own outputs' ids
+without circularity, so ids are derived once `TxId` is known; the ledger materializes candidate
+`i` into a `BoxBase` with `txId` and `index: i` at apply. (Pre-Spec-G this was `AnyBox[]` whose
+per-output `id` was excluded from the hash — the same exclusion, now expressed in the type.)
+
+> `preimages` was already present in the code (`types/src/utxo.ts:133`) and hashed into `TxId`
+> (`:153-159`) but missing from this contract. Documented here, not introduced.
 
 Transaction signatures are over the transaction hash (`computeTxId`), not over
 domain messages. The signer signs `TxId` with their Ed25519 key; verifiers
@@ -332,8 +481,11 @@ recompute the hash and check the signature.
 
 | Export | Signature | Description |
 |--------|-----------|-------------|
-| `computeBoxId(box)` | `(Omit<BoxBase, 'id'>) => BoxId` | Deterministic box ID from canonical CBOR |
-| `computeTxId(tx)` | `(UtxoTransaction) => TxId` | Deterministic transaction ID |
+| `computeBoxId(box)` | `(BoxBase) => BoxId` | Box id from `candidate ‖ txId ‖ index`. Total function of a stored box — no second argument, so `stored.id === computeBoxId(stored)` is checkable anywhere |
+| `computeCandidateBoxId(candidate, txId, index)` | `(BoxCandidate, TxId, number) => BoxId` | Same derivation, for a candidate not yet materialized. Used by creators and by clients predicting an id at signing time |
+| `computeTxId(tx)` | `(UtxoTransaction) => TxId` | Transaction id over candidates |
+| `computeMintTxId(height, reason, subject)` | `(number, MintReason, Uint8Array) => TxId` | Synthetic transaction id for boxes created by block application. `subject` encoding is defined per reason — see `NODE_INTERFACE.md` |
+| `canonicalBoxBytes(candidate)` | `(BoxCandidate) => Uint8Array` | The single canonical identity encoding. Exported so tests and mirror implementations (demo UI, light client) assert against the encoder that computes ids, not a lookalike |
 
 ---
 
@@ -502,9 +654,16 @@ LikeReward {
 All wire format is CBOR via `cbor-x`. HTTP API is JSON. Signatures and public
 keys are hex-encoded on wire (HTTP JSON); raw bytes in CBOR.
 
+`serializeBox` was removed here by Spec G phase 0. No `src` caller existed — box serialization
+goes through node's tagged `state/serialize-box.ts` (AVL values) or the identity encoder in
+`utxo.ts` (ids) — but **two test files did call it, and it was the wrong encoder for what they
+asserted**: `serialization.ts` used cbor-x's default `encode`, not the configured `hashEncoder`
+that computes identity, so the P0 golden test pinning the `0x1b` uint64 value form was pinning
+bytes no production path produces. Those assertions were re-pointed at the identity encoder,
+which is now exported as `canonicalBoxBytes` — see "Canonical encoding" under BoxId.
+
 | Export | Signature | Description |
 |--------|-----------|-------------|
-| `serializeBox(box)` | `(BoxBase) => Uint8Array` | Canonical CBOR encode for box identity |
 | `serializeTx(tx)` | `(UtxoTransaction) => Uint8Array` | Canonical CBOR encode for tx identity |
 | `encodePost(post)` | `(Post) => Uint8Array` | CBOR encode |
 | `decodePost(bytes)` | `(Uint8Array) => Post` | CBOR decode |
@@ -726,7 +885,17 @@ export const ORDERING_BLOCK_POW_TARGET_FLOOR = 4;        // Sanity floor
 - CBOR is the canonical wire format; JSON for HTTP API
 - `protocolVersion` field present on all wire types
 - Secret keys never in any exported type or serialized output
-- Box identity is deterministic: `blake2b512(canonicalCbor(box)).subarray(0,32)`
+- Box identity is deterministic **and provenance-derived**:
+  `blake2b512(BOX_ID_DOMAIN ‖ canonicalCbor(candidate) ‖ txId ‖ u32BE(index)).subarray(0,32)`
+- `computeBoxId` takes **one argument**. Any need for a second means the box is missing
+  provenance, which the `BoxCandidate`/`BoxBase` split is there to prevent
+- `stored.id === computeBoxId(stored)` for every box in the UTXO set — no exceptions, no
+  apply-time field mutation that the id does not cover
+- Every id preimage carries a domain tag; box ids, tx ids and identity-record keys share one
+  32-byte keyspace and must not be forgeable across it
+- A box carries **no block height**. Consensus-relevant time lives in explicit named fields
+  (`lockedUntilBlock`, `probationStartBlock`, `probationEndBlock`) or in committed per-identity
+  state — never in an implicit creation stamp
 - Box `value` is `bigint` integer base units (uniform across box types), `< 2⁶⁴`
   so it CBOR-encodes as a uint64 (`0x1b`); no float math anywhere in consensus
   value arithmetic

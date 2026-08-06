@@ -1,12 +1,11 @@
 import { Router, Response } from 'express';
 import {
   selectBoxes,
-  computeBoxId,
   computeTxId,
   PROTOCOL_VERSION,
   MEMPOOL_EXPIRY_BLOCKS,
 } from '@dagsocial/types';
-import type { KarmaBox, CreditBox, InviteBox, BondBox, UtxoTransaction } from '@dagsocial/types';
+import type { CandidateOf, KarmaBox, CreditBox, InviteBox, BondBox, UtxoTransaction } from '@dagsocial/types';
 import { sendCredits } from '../services/credits.js';
 import { validateTx } from '../services/utxo-engine.js';
 import type { UtxoEngineDeps } from '../services/utxo-engine.js';
@@ -258,10 +257,13 @@ export function createRouter(deps: UtxoDeps): Router {
         const totalSelected = selected.reduce((s, b) => s + b.value, 0n);
         const change = totalSelected - FAUCET_AMOUNT;
 
-        const outputs: CreditBox[] = [{
+        // Candidates: this builder inserts no box and returns no predicted id,
+        // so it deliberately attaches no provenance. The precomputed output
+        // `id`s are gone with the type — nothing read them, and `computeTxId`
+        // strips them before hashing, so the signed id is unchanged.
+        const outputs: CandidateOf<CreditBox>[] = [{
           boxType: 'credit',
           value: FAUCET_AMOUNT,
-          createdAtBlock: currentHeight,
           owner: toBytes,
           guard: 'owner_signature',
           proofSource: -1,
@@ -270,8 +272,7 @@ export function createRouter(deps: UtxoDeps): Router {
           outputs.push({
             boxType: 'credit',
             value: change,
-            createdAtBlock: currentHeight,
-            owner: sysKeypair.publicKey,
+              owner: sysKeypair.publicKey,
             guard: 'owner_signature',
             proofSource: -1,
           });
@@ -279,7 +280,7 @@ export function createRouter(deps: UtxoDeps): Router {
 
         const tx: UtxoTransaction = {
           inputs: selected.map(b => b.id!),
-          outputs: outputs.map(b => ({ ...b, id: computeBoxId(b) })),
+          outputs,
           signatures: {},
           protocolVersion: PROTOCOL_VERSION,
         };
@@ -348,7 +349,6 @@ export function createRouter(deps: UtxoDeps): Router {
       pending: pending.map((inv) => ({
         id: inv.id,
         value: inv.value.toString(),
-        createdAtBlock: inv.createdAtBlock,
         secretHash: Buffer.from(inv.secretHash).toString('hex'),
         inviterId: Buffer.from(inv.inviterId).toString('hex'),
         guard: inv.guard,
@@ -356,7 +356,6 @@ export function createRouter(deps: UtxoDeps): Router {
       bonds: bonds.map((b) => ({
         id: b.id,
         value: b.value.toString(),
-        createdAtBlock: b.createdAtBlock,
         inviterId: Buffer.from(b.inviterId).toString('hex'),
         inviteePublicKey:
           b.inviteePublicKey.length > 0
