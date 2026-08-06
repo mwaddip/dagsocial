@@ -5,8 +5,6 @@ import { ReaderError } from './errors.js';
 export type HashFn = (data: Uint8Array) => Uint8Array;
 
 export const FRAME_VERSION = 1;
-export const MAGIC_MAINNET = 0x4D444147;  // "MDAG"
-export const MAGIC_TESTNET = 0x54444147;  // "TDAG"
 
 /** Encode body into a framed envelope. Checksum = first 4 bytes of hashFn(body). */
 export function encodeFrame(

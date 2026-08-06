@@ -7,5 +7,5 @@ export {
   encodeVlqZigZag,
   decodeVlqZigZag,
 } from './vlq.js';
-export { encodeFrame, decodeFrame, FRAME_VERSION, MAGIC_MAINNET, MAGIC_TESTNET } from './frame.js';
+export { encodeFrame, decodeFrame, FRAME_VERSION } from './frame.js';
 export type { HashFn } from './frame.js';

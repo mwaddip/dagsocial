@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import {
   NETWORK_PROFILES,
@@ -59,22 +58,6 @@ describe('network magics', () => {
     expect(Object.isFrozen(KNOWN_FRAME_MAGICS)).toBe(true);
   });
 
-  it('mainnet and testnet magics are byte-identical to the wire copies (until P2-A phase 5)', () => {
-    // Deliberate duplication: wire keeps its copies until phase 5 deletes them. This
-    // test pins the two literals to each other across packages; phase 5 removes it
-    // together with wire's constants.
-    const wireSrc = readFileSync(
-      new URL('../../wire/src/frame.ts', import.meta.url),
-      'utf8',
-    );
-    const wireMagic = (name: string): number => {
-      const m = wireSrc.match(new RegExp(`export const ${name} = (0x[0-9a-fA-F]{8});`));
-      if (!m) throw new Error(`${name} not found in wire/src/frame.ts — phase 5 landed? Remove this test with wire's copies.`);
-      return Number(m[1]);
-    };
-    expect(MAGIC_MAINNET).toBe(wireMagic('MAGIC_MAINNET'));
-    expect(MAGIC_TESTNET).toBe(wireMagic('MAGIC_TESTNET'));
-  });
 });
 
 describe('NETWORK_PROFILES', () => {
