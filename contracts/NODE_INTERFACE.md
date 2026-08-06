@@ -612,11 +612,12 @@ forms, so a mirror implementation derives the same ids:
 | `prune-refund-author` | `(rootPostHash, owner)` | `utf8(hex)` ‖ raw | 96 | `settlePruneUtxo`, author leg |
 | `prune-refund-liker` | `(rootPostHash, likerId)` | `utf8(hex)` ‖ raw | 96 | `settlePruneUtxo`, liker leg |
 
-⚠ **The two `prune-refund-*` reasons are not yet in `MintReason`** — both
-`settlePruneUtxo` call sites pass `null`. Adding them is a `@dagsocial/types`
-change and therefore **phase G's first piece of work**, before item 4 of the
-checklist makes the provenance columns `NOT NULL` and turns the `null` into a
-hard failure.
+✅ **Landed in phase G1/G2.** The two tags are in `MintReason`, the encoders are
+in `mint-provenance.ts`, and `settlePruneUtxo` takes `rootPostHash` and passes
+real contexts. `mintKarma`/`mintCredits` now take a **required** `MintContext` —
+the `| null` escape hatch is gone, so a producer emitting no provenance is a
+**compile error** (`TS2345`) rather than a runtime constraint failure at apply
+time. That is the whole point of removing it: the defect class left the runtime.
 
 Three things about them that are decided, not open:
 
@@ -691,11 +692,12 @@ A box gets provenance **where it is stored**, not where it is first constructed.
   would ride the wire for no consumer, have to be undone at phase G, and widen
   the attacker-controlled-key surface (1c) to paths that currently have none.
 
-`u32BE` is **module-private in `@dagsocial/types`**, so `mint-provenance.ts`
-mirrors it, sentinel behaviour included. A silent divergence would move mint
-txIds with nothing to catch it, and this contract's own subject table mandates
-the encoding — **types should export it** (phase G, with the other types work).
-The demo UI mirror must reproduce the sentinel too, and must not throw.
+`u32BE` is **exported from `@dagsocial/types`** (phase G1) and
+`mint-provenance.ts` imports it; it previously kept a local mirror, and a silent
+divergence between the two would have moved mint txIds — and therefore box ids —
+with nothing to catch it, while this contract's own subject table mandates the
+encoding. One implementation feeds both derivations. The demo UI cannot import
+it and so must still reproduce the sentinel behaviour, and must not throw.
 
 ### The demo UI mirror carries the same strip defect (phase E)
 
