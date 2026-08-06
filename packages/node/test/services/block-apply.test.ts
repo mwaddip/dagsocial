@@ -61,7 +61,7 @@ import {
 const testConfig = {
   port: 3000,
   dbPath: ':memory:',
-  networkMode: 'testnet' as const,
+  networkType: 'testnet' as const,
   nodeRole: 'miner' as const,
   postPowTargetBits: 20,
   challengeWindowBlocks: 10,
@@ -1402,15 +1402,26 @@ describe('block-apply mint provenance', () => {
     // would be a `UNIQUE(tx_id, output_index)` violation and the block would be
     // rejected outright.
     //
-    // Thresholds are shrunk through the documented env overrides (config.ts:
-    // "overridable for testing") so a 4-block chain crosses the staleness
-    // window. No src seams involved.
-    const origThreshold = process.env['KARMA_STALE_THRESHOLD_BLOCKS'];
-    const origInterval = process.env['KARMA_DECAY_INTERVAL_BLOCKS'];
+    // Thresholds are shrunk through a test-local mock of the config module so
+    // a 4-block chain crosses the staleness window. The env overrides this
+    // test used before P2-A were the consensus violation the network profile
+    // removed; a module mock is a seam only a test can reach — a running node
+    // has no equivalent.
     try {
-      process.env['KARMA_STALE_THRESHOLD_BLOCKS'] = '3';
-      process.env['KARMA_DECAY_INTERVAL_BLOCKS'] = '1';
-      vi.resetModules(); // re-evaluate config with the overrides
+      vi.doMock('../../src/config.js', async () => {
+        const actual = await vi.importActual<typeof import('../../src/config.js')>(
+          '../../src/config.js',
+        );
+        return {
+          ...actual,
+          config: Object.freeze({
+            ...actual.config,
+            karmaStaleThresholdBlocks: 3,
+            karmaDecayIntervalBlocks: 1,
+          }),
+        };
+      });
+      vi.resetModules(); // re-import the module graph against the mocked config
 
       const db = await importDb();
       db.initDb(':memory:');
@@ -1466,10 +1477,7 @@ describe('block-apply mint provenance', () => {
       expect(utxo.getBox(decayed!.id!)).toBeNull();
       expect(utxo.getKarmaBox(idle.userId)!.id).toBe(settled!.id);
     } finally {
-      if (origThreshold === undefined) delete process.env['KARMA_STALE_THRESHOLD_BLOCKS'];
-      else process.env['KARMA_STALE_THRESHOLD_BLOCKS'] = origThreshold;
-      if (origInterval === undefined) delete process.env['KARMA_DECAY_INTERVAL_BLOCKS'];
-      else process.env['KARMA_DECAY_INTERVAL_BLOCKS'] = origInterval;
+      vi.doUnmock('../../src/config.js');
     }
   });
 
@@ -1494,11 +1502,22 @@ describe('block-apply mint provenance', () => {
     // Had the activity bump reset `lastDecayBlock`, or had decay overwritten
     // `lastActivityBlock`, the arithmetic would still look right at height 4
     // and diverge later. Hence the assertions at 5 and 7.
-    const origThreshold = process.env['KARMA_STALE_THRESHOLD_BLOCKS'];
-    const origInterval = process.env['KARMA_DECAY_INTERVAL_BLOCKS'];
+    // Thresholds shrunk through a test-local config mock — see the sibling
+    // decay test above for why this replaced the env overrides.
     try {
-      process.env['KARMA_STALE_THRESHOLD_BLOCKS'] = '3';
-      process.env['KARMA_DECAY_INTERVAL_BLOCKS'] = '1';
+      vi.doMock('../../src/config.js', async () => {
+        const actual = await vi.importActual<typeof import('../../src/config.js')>(
+          '../../src/config.js',
+        );
+        return {
+          ...actual,
+          config: Object.freeze({
+            ...actual.config,
+            karmaStaleThresholdBlocks: 3,
+            karmaDecayIntervalBlocks: 1,
+          }),
+        };
+      });
       vi.resetModules();
 
       const db = await importDb();
@@ -1546,10 +1565,7 @@ describe('block-apply mint provenance', () => {
         lastDecayBlock: 7,
       });
     } finally {
-      if (origThreshold === undefined) delete process.env['KARMA_STALE_THRESHOLD_BLOCKS'];
-      else process.env['KARMA_STALE_THRESHOLD_BLOCKS'] = origThreshold;
-      if (origInterval === undefined) delete process.env['KARMA_DECAY_INTERVAL_BLOCKS'];
-      else process.env['KARMA_DECAY_INTERVAL_BLOCKS'] = origInterval;
+      vi.doUnmock('../../src/config.js');
     }
   });
 });

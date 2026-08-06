@@ -48,7 +48,7 @@ const startTime = Date.now();
 
 // 0. Journal
 initJournal();
-emitServerStarting('1.0.0', config.networkMode);
+emitServerStarting('1.0.0', config.networkType);
 
 // 1. Init DB
 initDb(config.dbPath);
@@ -102,7 +102,7 @@ validateProtocolConstants();
 // 1c. Init system keypair (testnet faucet source). Must happen after DB init,
 //     before any route that might need the system box.
 const systemKeypair = initSystemKeypair();
-if (config.networkMode === 'testnet') {
+if (config.networkType === 'testnet') {
   const height = getCurrentHeight();
   ensureSystemKarmaBox(systemKeypair.publicKey, height);
   ensureFaucetCreditBox(systemKeypair.publicKey, height);
@@ -146,6 +146,11 @@ if (currentHeight > 0 && avlHandle.storage.version() === null) {
 // internal fallbacks silently govern instead.
 const net = new NetNode(
   {
+    // The profile's wire magic. Without it, net's `?? MAGIC_MAINNET` fallbacks
+    // govern and every node frames as mainnet on every network (NET_INTERFACE
+    // §Magic Bytes). Phase 3 makes the field required in NetConfig — until
+    // then no test imports index.ts, so dropping this line fails nothing.
+    magic: config.profile.magic,
     bootstrapPeers: config.bootstrapPeers,
     listenAddrs: config.listenAddrs,
     maxPeers: config.maxPeers,

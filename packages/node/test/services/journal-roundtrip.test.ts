@@ -65,7 +65,7 @@ import {
 const plainConfig = {
   port: 3000,
   dbPath: ':memory:',
-  networkMode: 'testnet' as const,
+  networkType: 'testnet' as const,
   nodeRole: 'miner' as const,
   postPowTargetBits: 20,
   challengeWindowBlocks: 10,
@@ -717,18 +717,29 @@ describe('journal round-trip per mutation class (P1 acceptance)', () => {
   });
 
   // -----------------------------------------------------------------------
-  // Decay — block-level, reached by shrinking the thresholds through the
-  // documented env overrides (config.ts: "overridable for testing") so a
-  // 4-block chain crosses the staleness window. No src seams involved.
+  // Decay — block-level, reached by shrinking the thresholds through a
+  // test-local mock of the config module so a 4-block chain crosses the
+  // staleness window. The env overrides these tests used before P2-A were
+  // the consensus violation the network profile removed; a module mock is a
+  // seam only a test can reach — a running node has no equivalent.
   // -----------------------------------------------------------------------
 
   it('decay: consumed karma boxes and the decay-burn box round-trip', async () => {
-    const origThreshold = process.env['KARMA_STALE_THRESHOLD_BLOCKS'];
-    const origInterval = process.env['KARMA_DECAY_INTERVAL_BLOCKS'];
     try {
-      process.env['KARMA_STALE_THRESHOLD_BLOCKS'] = '3';
-      process.env['KARMA_DECAY_INTERVAL_BLOCKS'] = '1';
-      vi.resetModules(); // re-evaluate config with the overrides
+      vi.doMock('../../src/config.js', async () => {
+        const actual = await vi.importActual<typeof import('../../src/config.js')>(
+          '../../src/config.js',
+        );
+        return {
+          ...actual,
+          config: Object.freeze({
+            ...actual.config,
+            karmaStaleThresholdBlocks: 3,
+            karmaDecayIntervalBlocks: 1,
+          }),
+        };
+      });
+      vi.resetModules(); // re-import the module graph against the mocked config
 
       const db = await importDb();
       db.initDb(':memory:');
@@ -762,10 +773,7 @@ describe('journal round-trip per mutation class (P1 acceptance)', () => {
 
       await assertRoundTrip(db, handle, pre, classBlock!);
     } finally {
-      if (origThreshold === undefined) delete process.env['KARMA_STALE_THRESHOLD_BLOCKS'];
-      else process.env['KARMA_STALE_THRESHOLD_BLOCKS'] = origThreshold;
-      if (origInterval === undefined) delete process.env['KARMA_DECAY_INTERVAL_BLOCKS'];
-      else process.env['KARMA_DECAY_INTERVAL_BLOCKS'] = origInterval;
+      vi.doUnmock('../../src/config.js');
     }
   });
 
@@ -785,11 +793,22 @@ describe('journal round-trip per mutation class (P1 acceptance)', () => {
     // `lastActivityBlock`. Journal order carries which came last; a sort by key
     // cannot, which is why the collapse lives in the feed and not in
     // `applyBlockMutations`.
-    const origThreshold = process.env['KARMA_STALE_THRESHOLD_BLOCKS'];
-    const origInterval = process.env['KARMA_DECAY_INTERVAL_BLOCKS'];
+    // Thresholds shrunk through a test-local config mock — see the section
+    // comment above for why this replaced the env overrides.
     try {
-      process.env['KARMA_STALE_THRESHOLD_BLOCKS'] = '3';
-      process.env['KARMA_DECAY_INTERVAL_BLOCKS'] = '1';
+      vi.doMock('../../src/config.js', async () => {
+        const actual = await vi.importActual<typeof import('../../src/config.js')>(
+          '../../src/config.js',
+        );
+        return {
+          ...actual,
+          config: Object.freeze({
+            ...actual.config,
+            karmaStaleThresholdBlocks: 3,
+            karmaDecayIntervalBlocks: 1,
+          }),
+        };
+      });
       vi.resetModules();
 
       const db = await importDb();
@@ -858,10 +877,7 @@ describe('journal round-trip per mutation class (P1 acceptance)', () => {
         lastDecayBlock: 4,
       });
     } finally {
-      if (origThreshold === undefined) delete process.env['KARMA_STALE_THRESHOLD_BLOCKS'];
-      else process.env['KARMA_STALE_THRESHOLD_BLOCKS'] = origThreshold;
-      if (origInterval === undefined) delete process.env['KARMA_DECAY_INTERVAL_BLOCKS'];
-      else process.env['KARMA_DECAY_INTERVAL_BLOCKS'] = origInterval;
+      vi.doUnmock('../../src/config.js');
     }
   });
 });

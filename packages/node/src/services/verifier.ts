@@ -1,9 +1,7 @@
-import { createHash, createPublicKey, verify as cryptoVerify } from 'node:crypto';
 import {
   PROTOCOL_VERSION,
   MAX_CONTENT_BYTES,
   MAX_PARENT_REFS,
-  POST_POW_TARGET_BITS,
   POST_LOCK_THREAD_COST,
   POST_LOCK_REPLY_COST,
   computePostId,
@@ -12,6 +10,12 @@ import {
 } from '@dagsocial/types';
 import type { Post } from '@dagsocial/types';
 import { verifyPoW, verifyPostSignature, verifyContentCharacters } from '@dagsocial/validation';
+// The post PoW target comes from the shared config singleton — the same field
+// the challenge endpoint advertises — so the node cannot claim one difficulty
+// and enforce another (audit A6). Same pattern as difficulty.ts. Deliberately
+// not a parameter: an override argument would be the environment read the
+// network profile removed, reached by another door.
+import { config } from '../config.js';
 
 // ---------------------------------------------------------------------------
 // Parent hash verification
@@ -135,7 +139,7 @@ export function verifyPost(
   //    canonical encoder (audit M-1). Rebuilding it here would be a third copy
   //    that silently drifts from the miner's.
   const powInput = postPowPreimage(post);
-  if (!verifyPoW(powInput, post.powNonce, POST_POW_TARGET_BITS)) {
+  if (!verifyPoW(powInput, post.powNonce, config.postPowTargetBits)) {
     return { valid: false, error: 'Proof of Work invalid' };
   }
 
@@ -217,7 +221,7 @@ export function verifyPostForRelay(
   // 5. PoW: re-verify (stateless, cheap). Canonical preimage from
   //    @dagsocial/types — see verifyPost above.
   const powInput = postPowPreimage(post);
-  if (!verifyPoW(powInput, post.powNonce, POST_POW_TARGET_BITS)) {
+  if (!verifyPoW(powInput, post.powNonce, config.postPowTargetBits)) {
     return { valid: false, error: 'Proof of Work invalid' };
   }
 

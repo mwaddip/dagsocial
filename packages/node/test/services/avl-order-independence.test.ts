@@ -42,7 +42,7 @@ import { uid, makePost, makeLikeBox } from '../helpers.js';
 const epochConfig = {
   port: 3000,
   dbPath: ':memory:',
-  networkMode: 'testnet' as const,
+  networkType: 'testnet' as const,
   nodeRole: 'miner' as const,
   postPowTargetBits: 20,
   challengeWindowBlocks: 10,

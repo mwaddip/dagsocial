@@ -272,7 +272,7 @@ export function createApp(config: Config): express.Express {
   );
 
   // Faucet — /faucet (testnet only)
-  if (config.networkMode === 'testnet') {
+  if (config.networkType === 'testnet') {
     app.use(
       '/faucet',
       faucetRoutes({
@@ -370,7 +370,9 @@ export function createApp(config: Config): express.Express {
           .get() as { s: bigint };
         return row.s;
       },
-      networkMode: config.networkMode,
+      // Deps field and /status response field stay `networkMode` until phase 4
+      // renames the API surface together with the demo UI.
+      networkMode: config.networkType,
     }),
   );
 

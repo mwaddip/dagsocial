@@ -5,6 +5,7 @@ import type { AddressInfo } from 'net';
 import { initDb, closeDb } from '../src/store/db.js';
 import { createApp } from '../src/server.js';
 import type { Config } from '../src/config.js';
+import { profileFor } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -14,7 +15,8 @@ function makeConfig(overrides?: Partial<Config>): Config {
   return {
     port: 0,
     dbPath: ':memory:',
-    networkMode: 'testnet',
+    networkType: 'testnet',
+    profile: profileFor('testnet'),
     nodeRole: 'server',
     postPowTargetBits: 20,
     challengeWindowBlocks: 10,

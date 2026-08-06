@@ -196,7 +196,7 @@ export function createRouter(deps: UtxoDeps): Router {
 
   // POST /credits/faucet — testnet-only credit faucet
   router.post('/credits/faucet', (req, res) => {
-    if (config.networkMode !== 'testnet') {
+    if (config.networkType !== 'testnet') {
       res.status(403).json({ error: 'faucet disabled in production mode' });
       return;
     }
