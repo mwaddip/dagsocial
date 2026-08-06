@@ -147,6 +147,17 @@ export function loadConfig(): Readonly<Config> {
 }
 
 /**
+ * Allow-list of faucet-bearing networks (NODE_INTERFACE §Faucet). Fail-closed:
+ * a network added later mints nothing until someone names it here. All three
+ * faucet gates — the system-box provisioning (index.ts), the /faucet mount
+ * (server.ts) and the /credits/faucet handler guard (routes/utxo.ts) — call
+ * this one predicate so they cannot drift.
+ */
+export function isFaucetNetwork(networkType: NetworkType): boolean {
+  return networkType === 'testnet' || networkType === 'devnet';
+}
+
+/**
  * External mining serves the coinbase payout override (`?miner=`) over HTTP, so
  * the bearer secret is load-bearing — there is no unauthenticated mode. A miner
  * configured for external mining without a secret fails at startup rather than

@@ -92,10 +92,11 @@ describe('server', () => {
     });
   });
 
-  // The mount gate is `networkType !== 'mainnet'` (NODE_INTERFACE §Faucet), so
-  // devnet must get the real router and mainnet the 403 stub. An empty POST
-  // discriminates the two without touching the store: the real router answers
-  // 400 (userId required) before any db access, the stub answers 403.
+  // The mount gate is the isFaucetNetwork allow-list — testnet/devnet only
+  // (NODE_INTERFACE §Faucet) — so devnet must get the real router and mainnet
+  // the 403 stub. An empty POST discriminates the two without touching the
+  // store: the real router answers 400 (userId required) before any db access,
+  // the stub answers 403.
   describe('faucet mount gate', () => {
     async function postFaucet(networkType: 'mainnet' | 'testnet' | 'devnet') {
       const app = createApp(

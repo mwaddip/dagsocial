@@ -26,6 +26,7 @@ import { validateTx } from './services/utxo-engine.js';
 import { createAdminRouter } from './routes/admin.js';
 import { registerProofEndpoint } from './state/avl-endpoint.js';
 import { tryGetAvlProver } from './state/avl-prover.js';
+import { isFaucetNetwork } from './config.js';
 import type { Config } from './config.js';
 import type { Server } from 'http';
 
@@ -271,10 +272,10 @@ export function createApp(config: Config): express.Express {
     }),
   );
 
-  // Faucet — /faucet (every network but mainnet; NODE_INTERFACE §Faucet).
-  // Gate matches the system-box provisioning in index.ts and the
-  // /credits/faucet handler in routes/utxo.ts — the three move together.
-  if (config.networkType !== 'mainnet') {
+  // Faucet — /faucet (allow-listed networks only; NODE_INTERFACE §Faucet).
+  // Gate shares isFaucetNetwork with the system-box provisioning in index.ts
+  // and the /credits/faucet handler in routes/utxo.ts — the three move together.
+  if (isFaucetNetwork(config.networkType)) {
     app.use(
       '/faucet',
       faucetRoutes({

@@ -1,4 +1,4 @@
-import { loadConfig } from './config.js';
+import { loadConfig, isFaucetNetwork } from './config.js';
 import { initDb, closeDb } from './store/db.js';
 import { schemaVersion, writeSchemaVersion, CURRENT_SCHEMA_VERSION } from './store/meta.js';
 import { getSystemKeypair, initSystemKeypair, ensureSystemKarmaBox, ensureFaucetCreditBox } from './store/system.js';
@@ -99,13 +99,14 @@ function validateProtocolConstants(): void {
 // 1b. Protocol constant sanity checks
 validateProtocolConstants();
 
-// 1c. Init system keypair (faucet source on every network but mainnet). Must
+// 1c. Init system keypair (faucet source on the faucet-bearing networks). Must
 //     happen after DB init, before any route that might need the system box.
-//     The gate matches the /faucet mount and the /credits/faucet handler —
-//     the three move together (NODE_INTERFACE §Faucet): mounting without
-//     provisioning gives a faucet with nothing to mint from.
+//     The gate shares isFaucetNetwork with the /faucet mount and the
+//     /credits/faucet handler — the three move together (NODE_INTERFACE
+//     §Faucet): mounting without provisioning gives a faucet with nothing to
+//     mint from.
 const systemKeypair = initSystemKeypair();
-if (config.networkType !== 'mainnet') {
+if (isFaucetNetwork(config.networkType)) {
   const height = getCurrentHeight();
   ensureSystemKarmaBox(systemKeypair.publicKey, height);
   ensureFaucetCreditBox(systemKeypair.publicKey, height);
