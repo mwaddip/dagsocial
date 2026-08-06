@@ -142,14 +142,36 @@ uniqueness. `signature` is excluded from both.
 |--------|-------------|
 | `leafHash(domain, data)` | `blake2b512(utf8(domain ‖ "\0") ‖ data)[:32]` — domain-separated leaf so a leaf in one tree can't collide with a leaf in another. |
 | `nodeHash(left, right)` | `blake2b512(NODE_TAG ‖ left ‖ right)[:32]` — internal-node hash of two children. |
-| `buildMerkleRoot(leaves)` | Binary Merkle root over ordered leaf hashes. Empty → 32 zero bytes; single leaf → that leaf. |
+| `buildMerkleRoot(leaves)` | Binary Merkle root over ordered leaf hashes. Empty → 32 zero bytes; single leaf → that leaf. **Odd levels PROMOTE the unpaired last node unchanged — they do NOT duplicate it** (see below). |
 
-**Leaf/node domain separation (L-9).** `nodeHash` carries a fixed `NODE_TAG`
-(one reserved byte that is not a valid `leafHash` domain prefix — leaves begin
-with a domain string, so e.g. `0x00` works) so an internal node can never be
+**Odd-level rule — NORMATIVE, and it is not the Bitcoin default.** When a level has an
+odd number of nodes the unpaired last node is **promoted to the next level unchanged**;
+it is **not** duplicated and paired with itself. This is why the tree is not vulnerable
+to CVE-2012-2459: under promotion `[A,B,C]` → `H(0x00‖H(0x00‖A‖B)‖C)` while `[A,B,C,C]`
+→ `H(0x00‖H(0x00‖A‖B)‖H(0x00‖C‖C))`, which are distinct. **Duplicate-last-node is what an
+independent implementer reaches for first, and it yields a different root for every
+odd-sized level — roughly half of all blocks.**
+
+**`NODE_TAG` is `0x00`. Exactly that byte — this is a pinned constant, not an example.**
+A mirror choosing a different reserved byte computes different roots everywhere.
+
+**Leaf/node domain separation (L-9).** `nodeHash` carries `NODE_TAG` (a reserved byte that
+is not a valid `leafHash` domain prefix — leaves begin
+with a domain string) so an internal node can never be
 reinterpreted as a leaf, and vice versa. Without it, a 64-byte leaf preimage
 could be presented as `nodeHash(left,right)` for a forged inclusion proof
-(second-preimage). This is **protocol-breaking** — it changes every Merkle root
+(second-preimage).
+
+> **Forward constraint — this is a consensus rule with no test behind it.** The scheme is
+> sound only while **every** leaf domain is a non-empty printable ASCII string, so that no
+> leaf preimage can ever begin with `0x00`. The seven live domains are `stump`, `subblock`,
+> `prune`, `utxotx`, `likebox`, `coinbase`, `epoch` — all printable, none a prefix of
+> another, so the NUL delimiter suffices. **Adding a leaf domain that begins with a
+> non-printable byte silently reopens leaf/internal-node confusion.** No test enforces
+> this; it is a contract and review rule, recorded here because it previously existed only
+> as a comment in `merkle.ts`.
+
+This is **protocol-breaking** — it changes every Merkle root
 (`subBlockRoot`, `utxoTxRoot`), unversioned, devnet DBs wiped on deploy. No demo-UI
 mirror (the UI computes no roots). Node re-derives all roots through `types`, so
 producer and verifier stay consistent automatically.
@@ -448,6 +470,13 @@ VouchBox extends BoxBase {
 
 ```
 type BoxGuard = "owner_signature" | "epoch_tally" | "hash_preimage" | "inviter_signature" | "bond_dual" | "hash_preimage_with_bond"
+// ⚠ "hash_preimage" and "inviter_signature" are UNREACHABLE — no box type can carry them.
+//   Every box fixes its guard to a literal (InviteBox → 'hash_preimage_with_bond',
+//   BondBox → 'bond_dual', rest → 'owner_signature' | 'epoch_tally'). The engine switches
+//   only on the live names, the store writes only the live names, and db.ts carries a
+//   migration that DELETES rows still holding the old ones.
+//   Low severity, but it is why stale test fixtures using them look plausible, and it
+//   invites a new box type to be given a guard the engine has no case for.
 ```
 
 ### UtxoTransaction
@@ -664,7 +693,7 @@ which is now exported as `canonicalBoxBytes` — see "Canonical encoding" under 
 
 | Export | Signature | Description |
 |--------|-----------|-------------|
-| `serializeTx(tx)` | `(UtxoTransaction) => Uint8Array` | Canonical CBOR encode for tx identity |
+| ~~`serializeTx(tx)`~~ | — | ⚠ **DELETED (G3b) — and the description was never true.** It was built on cbor-x's default `encode`, which is neither of the two encoders that matter, so its bytes were consumed by no identity path. Transaction identity comes from `computeTxId`. Doubly wrong: the function is gone *and* "canonical CBOR encode for tx identity" never described it |
 | `encodePost(post)` | `(Post) => Uint8Array` | CBOR encode |
 | `decodePost(bytes)` | `(Uint8Array) => Post` | CBOR decode |
 | `encodeStump(stump)` | `(Stump) => Uint8Array` | CBOR encode |
@@ -685,6 +714,20 @@ which is now exported as `canonicalBoxBytes` — see "Canonical encoding" under 
 ---
 
 ## Base58 (`base58.ts`)
+
+> ⚠ **No consumer anywhere in the repo, and the round-trip is broken for zero-valued input.**
+> Nothing in node, net, validation, wire or the demo UI imports either function — the only
+> references are the barrel export and its own test. Meanwhile `base58Encode(Uint8Array([0]))`
+> → `"11"` and `base58Decode("11")` → `[0,0,0]`; a 32-byte zero buffer encodes to 33 `'1'`s
+> and decodes to 34 bytes. Empty input is asymmetric too (`""` encodes from empty, decodes to
+> one zero byte). Non-zero inputs, including those with leading zero bytes, round-trip fine —
+> the defect is confined to buffers whose numeric value is zero, which the existing test does
+> not cover.
+>
+> Inert today because nothing calls it. **It becomes real the moment base58 is adopted for
+> what it exists for — rendering a key or an address — where an all-zero value is exactly
+> the case a fuzzer reaches first.** Fix the round-trip before adopting, or delete the
+> module.
 
 | Export | Signature | Description |
 |--------|-----------|-------------|
@@ -736,12 +779,31 @@ export const CHALLENGE_WINDOW_BLOCKS = 10;     // Blocks before challenge expire
 ### Karma
 
 ```typescript
-export const KARMA_POSTING_MINIMUM = 1;              // Minimum karma to post
-export const KARMA_STALE_THRESHOLD_BLOCKS = 20160;   // 28d grace period at 2m blocks
-export const KARMA_DECAY_INTERVAL_BLOCKS = 720;      // 24h decay period at 2m blocks
-export const KARMA_DECAY_AMOUNT = 5;                 // Karma burned per interval
-export const KARMA_MINIMUM = 10;                     // Floor — decay never reduces below
+export const KARMA_POSTING_MINIMUM = 1n;             // consensus — minimum karma to post
+export const KARMA_STALE_THRESHOLD_BLOCKS = 40320;   // consensus — 28d grace at 60s blocks
+export const KARMA_DECAY_INTERVAL_BLOCKS = 1440;     // consensus — 24h decay period at 60s blocks
+export const KARMA_DECAY_AMOUNT = 5n;                // consensus — karma burned per interval
+export const KARMA_MINIMUM = 10n;                    // consensus — floor, decay never reduces below
 ```
+
+> ⚠ **The two `*_BLOCKS` values above are CORRECTED and the code still holds the old ones**
+> (`20160` / `720`). Decision 2026-08-06: **the target block time is 60 seconds**, so these
+> are recomputed from a 2-minute basis. Phase 2 changes `constants.ts`.
+>
+> **This was a unit error, not a tuning question.** The constants were annotated "28 days"
+> and "24 hours" while `ORDERING_BLOCK_INTERVAL_MS` is `60000` and every other time-derived
+> constant is 60s-based — `CREDIT_MINER_REWARD_DELAY` and `MEMPOOL_EXPIRY_BLOCKS` are both
+> `720` for "~12h" (720 minutes ✓), `CREDIT_EPOCH_BLOCKS` is `129_600` for "~90 days" ✓,
+> and `CREDIT_FIXED_RATE_BLOCKS` says "at 60s blocks" outright. **The karma pair were the
+> only constants on a 2-minute basis**, so at the block time the node actually runs they
+> delivered **14 days and 12 hours — half their stated durations.** Decay bit twice as fast
+> and twice as often as documented.
+>
+> ⚠ **Separately, 28 days is itself probably the wrong duration.** The economics design
+> track calls for a **short, days-scale window — "e.g. ~5, not 28"** — so this correction
+> fixes the *unit* while leaving the *value* open. Do not read `40320` as a decided number;
+> it is the faithful translation of a figure that is itself pending the constants-pinning
+> session. **Two independent problems, and only one is fixed here.**
 
 ### Post lock
 
@@ -769,41 +831,64 @@ export const EPOCH_BLOCKS = 60;                // Like processing every N orderi
 ### Invites
 
 ```typescript
-export const MAX_PENDING_INVITES = 5;              // Max concurrent unclaimed invites per account
-export const INVITE_MIN_KARMA = KARMA_POSTING_MINIMUM;
-export const INVITE_BOND_KARMA = 10;               // Karma deposit locked during probation
-export const INVITE_PROBATION_BLOCKS = 1000;        // Probation window in blocks
-export const INVITE_KARMA_THRESHOLD = 20;          // Invitee karma target for early bond return
+export const MAX_PENDING_INVITES = 5;              // consensus — max concurrent unclaimed invites
+export const INVITE_MIN_KARMA = KARMA_POSTING_MINIMUM;  // consensus
+export const INVITE_KARMA_AMOUNT = 25n;            // consensus — karma carried by an InviteBox
+export const INVITE_BOND_KARMA = 25n;              // consensus — bond locked during probation (was 10)
+export const INVITE_PROBATION_BLOCKS = 1000;       // consensus — probation window in blocks
+export const INVITE_KARMA_THRESHOLD = 20n;         // consensus — invitee target for early bond return
 ```
 
 ### Vouch
 
 ```typescript
-export const VOUCH_KARMA_AMOUNT = 1;              // Karma escrowed per vouch
-export const VOUCH_MIN_BALANCE = 11;               // Minimum karma balance to cast a vouch
-export const VOUCH_COOLDOWN_BLOCKS = 60;           // Blocks before escrowed karma is released on unvouch
+export const VOUCH_KARMA_AMOUNT = 1n;              // consensus — karma escrowed per vouch
+export const VOUCH_MIN_BALANCE = 11n;              // consensus — minimum balance to cast a vouch
+export const VOUCH_COOLDOWN_BLOCKS = 60;           // consensus — blocks before escrow is released
 ```
 
 ### Genesis
 
 ```typescript
-export const GENESIS_COMMITTEE_KEYS: string[] = [];  // TBD at genesis
-export const GENESIS_KARMA_PER_MEMBER = 1000;
-export const GENESIS_CREDITS_PER_MEMBER = 10000;
-export const BOOTSTRAP_PERIOD_BLOCKS = 10000;         // Blocks before committee dissolution
+export const GENESIS_COMMITTEE_KEYS: string[] = [];        // consensus — TBD at genesis
+export const GENESIS_KARMA_PER_MEMBER = 1000n;             // consensus
+export const GENESIS_CREDITS_PER_MEMBER = 10000n * 10n ** 8n;  // consensus — 10000 credits in base units
+export const BOOTSTRAP_PERIOD_BLOCKS = 10000;              // consensus — blocks before committee dissolution
+```
+
+### Mempool and encoding
+
+```typescript
+export const MEMPOOL_EXPIRY_BLOCKS = 720;          // local — blocks before mempool entries expire (~12h)
+export const ED25519_SPKI_PREFIX = '302a300506032b6570032100';  // SPKI wrapper stripped from raw keys
 ```
 
 ### Credit emission (Ergo-style linear decay)
 
 ```typescript
-export const CREDIT_FIXED_RATE_BLOCKS = 1_051_200;    // ~2 years at 60s blocks
-export const CREDIT_INITIAL_REWARD = 100;              // Credits per block in fixed-rate period
-export const CREDIT_EPOCH_BLOCKS = 129_600;            // ~90 days — reward reduction interval
-export const CREDIT_REWARD_REDUCTION = 2;               // Credits reduced per epoch
-export const CREDIT_TAIL_REWARD = 2;                   // Flat reward after emission ends
-export const CREDIT_MINER_REWARD_DELAY = 720;           // Blocks before coinbase is spendable (~12h)
-export const CREDIT_TREASURY_PCT = 10;                  // Percent of each reward to treasury
+export const CREDIT_FIXED_RATE_BLOCKS = 1_051_200;     // consensus — ~2 years at 60s blocks
+export const CREDIT_INITIAL_REWARD = 100n * 10n ** 8n; // consensus — 100 credits/block, base units
+export const CREDIT_EPOCH_BLOCKS = 129_600;            // consensus — ~90 days, reduction interval
+export const CREDIT_REWARD_REDUCTION = 2n * 10n ** 8n; // consensus — 2 credits reduced per epoch
+export const CREDIT_TAIL_REWARD = 2n * 10n ** 8n;      // ⚠ TO BE DELETED — see below
+export const CREDIT_MINER_REWARD_DELAY = 720;          // consensus — blocks before coinbase spendable
+export const CREDIT_TREASURY_PCT = 10;                 // consensus — percent of each reward to treasury
 ```
+
+> ⚠ **Every value in this block was shown pre-P0 until 2026-08-06.** The BigInt rescale
+> updated the Denomination prose above and left these literals at their unscaled values
+> (`100`, `2`, `2`) — and the literals are what people copy. Same defect in the Invite,
+> Vouch and Genesis blocks, now corrected.
+
+> ⚠ **`CREDIT_TAIL_REWARD` is being removed.** Emission **terminates** — the authoritative
+> docs state credits are "issued on a schedule that tapers toward a fixed cap … instead of
+> inflating forever," with the perpetual security budget coming from **fees and storage
+> rent**, which are recycled rather than minted. The reward function must end
+> `return max(reward, 0)`; today it floors at `CREDIT_TAIL_REWARD` and mints 2 credits per
+> block indefinitely. Note the constant equals exactly what decay epoch 49 already pays, so
+> the "tail" was never a distinct phase — only a floor stopping the curve reaching zero.
+> **`MINING_INTERFACE.md`'s emission table and its total-supply figure both change; do not
+> copy any current total-supply number.**
 
 ### Ordering block PoW
 

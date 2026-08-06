@@ -209,7 +209,8 @@
     <section>
       <h2>Identity</h2>
       <p>An account is just an <strong>Ed25519 keypair</strong> — there's no registration step and no account table. You come into existence the first time your key appears in a committed box on the ledger. Notis is <strong>invite-only</strong>: an existing account has to bring in each newcomer (the mechanics of that live on the <a class="inline" href="/economy/">Economy</a> page).</p>
-      <p>Usernames and profiles are <strong>DAG-native</strong> — they're just posts. A username is claimed first-come-first-served and can be released by pruning the claim; a profile (display name, bio, avatar) is a set of small posts under a profile anchor. Your identity is something you <em>publish</em>, not something a server grants you.</p>
+      <p>Your <strong>profile</strong> is DAG-native — it's just posts. Display name, bio, avatar are a set of small posts under a profile anchor, so your identity is something you <em>publish</em>, not something a server grants you.</p>
+      <p>A <strong>username</strong> works differently: it's an asset on the ledger rather than a post. Free to claim while unused, tradeable for credits, and burnable by whoever holds it. Being a ledger object rather than a document is what lets a name be transferred at all — you can hand over a name the way you'd hand over anything else you own.</p>
     </section>
 
     <section>

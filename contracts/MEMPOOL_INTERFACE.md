@@ -38,6 +38,13 @@ entries.
 ### PoolEntry (in-memory representation)
 
 ```typescript
+> ⚠ **This declaration is the correct one. Elsewhere in this file — and in
+> `SUBBLOCK_INTERFACE.md` — the mempool is described as storing sub-block CBOR. It does
+> not.** The column is `subblock_id TEXT` and always has been; sub-block content lives in
+> the DAG store. Where those descriptions conflict with this interface, **this wins.**
+> Note the same file states both versions in different sections, so quoting one section is
+> not sufficient evidence of the schema.
+
 interface PoolEntry {
   rowid: number;
   entryType: 'subblock' | 'utxo_tx' | 'prune';
@@ -198,6 +205,13 @@ Deletes all entries with the given `batch_id`. Used to remove linked
 sub-block + UTXO payload pairs atomically after block finalization. The
 block creator prefers `removeEntry` per-rowid; `removeBatch` is available
 for cleanup of partially-included batches.
+
+> ⚠ **NEVER BUILT — NOT PLANNED.** The function does not exist. The signature, the use
+> case and the "is available for" clause were all written for something that was never
+> implemented — note the sentence describes the block creator *preferring* an alternative
+> to it, which is why the gap reads as a design choice rather than an absence.
+> Batch cleanup happens via `removeEntry` per-rowid. Kept so this is not re-added as an
+> apparent oversight.
 
 ---
 

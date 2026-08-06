@@ -91,6 +91,19 @@ Codes 6-7 replace the old ad-hoc `/dagsocial/sync/1` stream protocol.
 Codes 2-5 replace the old `/dagsocial/headers/1` protocol. The old protocols
 are deleted.
 
+> ⚠ **VIOLATED — "The old protocols are deleted" is false, and the replacement is the part
+> that does not exist.** `/dagsocial/headers/1` is **live, and is the only path fork
+> resolution uses.** Framed **codes 6–7 have never carried a byte.** So the sentence has it
+> exactly backwards: the protocol described as deleted is the one in production, and the
+> one described as its replacement is unused.
+>
+> This matters beyond bookkeeping: the legacy path is where peer headers arrive as a bare
+> `decode()` plus a cast with no shape check, feeding `cumulativeWork` unbounded. Anyone
+> hardening "the sync path" from this document would harden the wrong one.
+>
+> `ARCHITECTURE.md` also describes header-first sync as implemented. Both are wrong; fix
+> together.
+
 ---
 
 ## Gossip Topics
@@ -140,6 +153,16 @@ Session magic: each side generates a random `uint32`. The outbound side
 sends its magic; the inbound side echoes it back. Both sides verify the
 magic matches their own network's magic bytes in the frame. Anti-replay,
 validates both sides agree on network.
+
+> ⚠ **NOT IMPLEMENTED — the anti-replay check does not exist.** Both sides generate a
+> `sessionMagic` and **neither ever echoes or compares it.** The field is populated and
+> discarded, so the handshake provides no replay protection whatsoever. Network agreement
+> is established by the **frame magic** (`MAGIC_MAINNET`/`MAGIC_TESTNET`), which is a
+> separate mechanism and does work — so the second half of this paragraph holds while the
+> first does not.
+>
+> This is design worth building: the field is already on the wire, so implementing the
+> echo-and-compare costs no format change.
 
 ### Validation (and untrusted-input safety)
 
@@ -191,6 +214,18 @@ Handshake specifics:
 
 Sync uses four framed messages multiplexed over `/dagsocial/sync/1`.
 All messages are CBOR-encoded bodies wrapped in frames.
+
+> ⚠ **PARTIAL — the section title itself is not accurate.** Sync is **not header-first**
+> and has **no body-download phase**; the watermark and durability protocol described
+> below is unimplemented. Two specific mechanisms documented here do not exist:
+>
+> - **Common-ancestor discovery.** `anchors` are built, sent, validated and capped — and
+>   **never read** by the receiver. There is no ancestor search.
+> - **The framed protocol is not the live path.** `/dagsocial/headers/1` — documented
+>   elsewhere in this file as *deleted* — is live and is the **only** path fork resolution
+>   uses. Framed codes 6–7 have never carried a byte.
+>
+> Per-mechanism status is marked below. Inventory: `prompts/audit-net.report.md`.
 
 ### SyncInfo (code 2)
 

@@ -227,17 +227,26 @@ validator key), stores it, broadcasts it, and applies coinbase mints.
 
 ## Config
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `MINING_MODE` | `internal` | `internal` (mine in-process, no mining HTTP surface) or `external` (expose the authenticated template API) |
-| `MINING_SECRET` | — | Bearer token for the mining API. **Required non-empty when `MINING_MODE=external` on a miner node — startup fails otherwise.** Ignored (routes unmounted) in internal mode. There is no unauthenticated mode. |
-| `ORDERING_BLOCK_POW_TARGET_BITS` | `12` | Initial PoW difficulty (12 bits = fast on CPU, ~4K hashes) |
-| `CREDIT_INITIAL_REWARD` | `100` | Credits per block in fixed-rate period |
-| `CREDIT_TREASURY_PCT` | `10` | Percent to treasury |
-| `TREASURY_PUBKEY` | `""` | Hex-encoded 32-byte Ed25519 public key (empty = no treasury) |
+| Variable | Class | Default | Purpose |
+|----------|-------|---------|---------|
+| `MINING_MODE` | operational | `internal` | `internal` (mine in-process, no mining HTTP surface) or `external` (expose the authenticated template API) |
+| `MINING_SECRET` | operational | — | Bearer token for the mining API. **Required non-empty when `MINING_MODE=external` on a miner node — startup fails otherwise.** Ignored (routes unmounted) in internal mode. There is no unauthenticated mode. |
+| `ORDERING_BLOCK_POW_TARGET_BITS` | **consensus** | `12` | Initial PoW difficulty (12 bits = fast on CPU, ~4K hashes) |
+| `CREDIT_INITIAL_REWARD` | **consensus** | `10000000000` | Credits per block in fixed-rate period, in **base units of 10⁻⁸** (= 100 credits) |
+| `CREDIT_TREASURY_PCT` | **consensus** | `10` | Percent to treasury |
+| `TREASURY_PUBKEY` | **consensus** | `""` | Hex-encoded 32-byte Ed25519 public key (empty = no treasury) |
 
-Default targetBits of 12 is intentionally low for development (expected ~2K
-hashes, sub-second on modern CPU). Production would use 30+.
+Classes are defined in `NODE_INTERFACE.md → Configuration`. A `consensus` variable
+**MUST NOT be readable from the environment** — two nodes differing on one of these
+partition permanently.
+
+> ⚠ **`ORDERING_BLOCK_POW_TARGET_BITS` is currently environment-readable, and this
+> section previously told operators to change it.** The removed sentence read
+> *"Production would use 30+"* — an operator following it while the network ran the
+> default would have forked themselves off at the first block. The default of 12 is
+> intentionally low for development (~2K hashes, sub-second on a modern CPU); raising
+> it for production is a **network-wide coordinated change**, not a deployment
+> setting. See invariant 7.
 
 ## Invariants
 
@@ -255,6 +264,23 @@ hashes, sub-second on modern CPU). Production would use 30+.
 7. Old blocks verify against the scheduled difficulty for their height; since the
    schedule is a pure function of height, that is the same value on every node and
    for all time.
+
+> ⚠ **VIOLATED — invariants 4, 5 and 7. The rules are correct; the implementation is not.**
+> `expectedTarget(_height)` **discards its height argument** and returns
+> `config.orderingBlockPowTargetBits`, a per-process environment value. Two consequences,
+> and the second is the worse one:
+>
+> 1. **Cross-node.** Two nodes with different `ORDERING_BLOCK_POW_TARGET_BITS` reject each
+>    other's blocks on *every* block — a permanent partition from the first block after
+>    divergence, not a reorg.
+> 2. **Retroactive.** Because height is ignored, changing the value re-targets *history*:
+>    on the next resync, reorg, or restart-and-revalidate, every previously-accepted block
+>    is re-checked against the new value and rejected. Invariant 7's "the same value on
+>    every node and for all time" is precisely what does not hold. A schedule keyed to
+>    height would have that property; a constant read from the environment cannot.
+>
+> These invariants are **kept as written** — they state the intended rule, and Phase 2
+> makes them true. Do not weaken them to match the code.
 8. The mining API is never served unauthenticated: external mode requires a
    configured `MINING_SECRET` (enforced at startup, not per-request), every
    request is bearer-authenticated with a constant-time comparison, and the

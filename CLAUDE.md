@@ -98,6 +98,13 @@ The main session owns contracts and prompts. It never edits component source cod
 
 All posts and blocks carry a `protocolVersion` field. Validation rules are keyed to this version. Old posts are validated against their declared version forever. A node rejects posts with an unsupported version.
 
+> ⚠ **NOT IMPLEMENTED — this describes the intended design, not the running code.**
+> There is no version-keyed rule table. Validation is a **strict equality check against
+> `PROTOCOL_VERSION`**, so nothing is "validated against its declared version forever" and
+> the first version bump makes existing history un-resyncable. The design stands (it is
+> stated on docs.notis.fun as how the protocol evolves) — the mechanism is Phase 2 work.
+> **Do not write code or contract text that assumes version-keyed dispatch exists.**
+
 ## Platform constraint
 
 Node.js v22 does not support `createHash('blake2b256')`. All hashing uses `createHash('blake2b512')` with `.subarray(0, 32)`. The demo UI uses `blakejs` from CDN (`blake2b(data, null, 64).slice(0, 32)`). These must produce identical output — both are standard BLAKE2b-512.

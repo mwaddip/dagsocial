@@ -2,6 +2,26 @@
 
 **Version:** 1.0
 **Stability:** stable
+**Last verified against code:** 2026-08-06
+
+> ⚠ **PARTIAL — and the shortfall is most of the document.**
+> **17 of the 22 events declared "stable" below are never emitted, and 8 have no emitter
+> anywhere in the codebase.** This file was written 2026-07-26 and **not one line was
+> changed** through Specs A–G; the Peer and Sync families predate the net package's peer
+> discovery and sync work, and the Migration family predates the schema-version guard.
+> Treat every event here as unimplemented unless you have found its emitter. "Stability:
+> stable" refers to the *format contract* for events that are emitted — it is not a claim
+> that the events exist.
+>
+> Per-family status is marked at each heading. Full inventory:
+> `prompts/audit-node-store.report.md`.
+
+> ⚠ **Two different things share the word "journal" and this document covers only one.**
+> **This file** = the JSON-line **observability event log**. **`BlockJournal` / `BoxMutation`**
+> (Spec B P1) = the **record-once consensus mutation log** at the store choke point, which
+> feeds the AVL prover and the `stateRoot`. They are unrelated. `BlockJournal` is specified
+> in `NODE_INTERFACE.md → Store Interface → Block Journal`, **not here.** Do not reason from
+> one to the other.
 
 ## Format
 
