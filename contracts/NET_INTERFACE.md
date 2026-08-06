@@ -42,6 +42,73 @@ framed — they carry raw CBOR directly on the wire as before.
 |---------|-------|-------|
 | mainnet | "MDAG" | `0x4D 0x44 0x41 0x47` |
 | testnet | "TDAG" | `0x54 0x44 0x41 0x47` |
+| devnet | "DDAG" | `0x44 0x44 0x41 0x47` — ⚠ NOT IMPLEMENTED |
+
+**The magic is a field of the network profile** (`TYPES_INTERFACE §Network profiles`),
+resolved once at startup from `NETWORK_TYPE`. It is never a per-call-site default.
+
+> ⚠ **VIOLATED — the magic is not a fallback, it is the only path. Every node frames as
+> mainnet, on every network, unconditionally.** Measured 2026-08-06, four links:
+>
+> 1. **This contract declares `magic: number`** (required). **The code declared
+>    `magic?: number`** (`net/src/types.ts:131`) — a pre-existing contract/code drift.
+>    ✅ **Closed by P2-A phase 3b** — the field is required.
+> 2. **The only caller never passed it.** `node/src/index.ts:147-160` constructed `NetConfig`
+>    with eleven fields; `magic` was not among them. ✅ **Closed by P2-A phase 2b** — node
+>    resolves the profile and passes `config.profile.magic`.
+> 3. Ten sites therefore always took `?? MAGIC_MAINNET` — nine in `node.ts`, one in
+>    `sync-machine.ts:160`. ✅ **Closed by P2-A phase 3b** — all ten deleted; a missing `magic`
+>    is now a compile error at the single construction site.
+> 4. `NETWORK_MODE` fed none of them. ✅ **Closed by P2-A phase 2b** — `NETWORK_TYPE` selects
+>    the profile, and the profile carries the magic.
+>
+> ⚠ **The guarantee in link 3 covers production callers only.** `net`'s `typecheck` is
+> `tsc --noEmit` with `"include": ["src"]`, and vitest does not check types — so **no test-side
+> `NetConfig` literal is statically enforced.** One omitting `magic` would frame with
+> `(undefined << 24 | …) === 0` silently. Extending the guarantee needs a test-covering
+> tsconfig in net's typecheck script; that is the workspace-wide `include: ["src"]` gap, not a
+> net-specific one.
+>
+> So the transport separation this table describes **does not exist at all**. `MAGIC_TESTNET`
+> has no production consumer; its only reference outside the table is a classifier
+> (`bogus-addr.ts:85`). Testnet and mainnet peers assemble each other's frames today.
+>
+> **`NetConfig.magic` becomes required, with no fallback.** A default is the wrong shape
+> here — an unset network is not a mainnet node, it is a misconfigured one, and defaulting
+> silently resolves it toward the network where being wrong costs the most. Making it
+> required turns link 2 into a compile error at the single construction site.
+>
+> `node/src/index.ts:145-146` already carries a comment about exactly this failure mode for
+> the peer parameters — *"their defaults as binding only when node supplies them — unset,
+> net's internal fallbacks silently govern instead."* The observation was written down and
+> `magic` was not fixed.
+
+> ⚠ **The canonical magic set must be imported from `@dagsocial/types`, never re-declared.**
+> It was a local literal `[MAGIC_MAINNET, MAGIC_TESTNET]` in `net/src/node.ts` until P2-A
+> phase 3a.
+>
+> **The precise failure mode, because the obvious reading is wrong.** `KNOWN_FRAME_MAGICS` is
+> consulted **only for frames that fail the own-magic compare** — it distinguishes *a frame
+> from another network* from *a payload that is not a frame at all*. So a stale set does
+> **not** break same-network peering: devnet↔devnet frames share `MAGIC_DEVNET`, match on the
+> own-magic compare, and never reach the set.
+>
+> The damage is **cross-network**. A devnet peer reaching a mainnet or testnet node fails the
+> own-magic compare, is not found in the stale set, is therefore classified as not-a-frame,
+> falls through to the legacy raw-CBOR path, decodes as malformed, and is **permanently
+> banned** — where the correct outcome is a polite wrong-network close. A stale set converts
+> a routine misconfiguration into a ban.
+>
+> Note this is **latent until per-profile magics are actually supplied** (P2-A phase 3b).
+> While every node frames as mainnet, no devnet magic ever reaches the wire.
+>
+> ⚠ **Both the magics and the canonical set come from `@dagsocial/types`, not
+> `@dagsocial/wire`.** They move there in P2-A phase 5, beside `NetworkProfile` — wire's
+> frame functions take `magic` as a parameter and never read the constants, and wire keeps
+> its zero runtime dependencies, so the table cannot live there. Net's imports of
+> `MAGIC_MAINNET` / `MAGIC_TESTNET` from `./frame.js` re-point to `@dagsocial/types`.
+> **This reverses the pre-audit follow-up that said wire should own the canonical set** —
+> that note predates the profile table.
 
 ### Version Negotiation
 
@@ -805,8 +872,10 @@ interface NetConfig {
   listenAddrs: string
   maxPeers: number
 
-  // Magic bytes
-  magic: number                    // 0x4D444147 (mainnet) or 0x54444147 (testnet)
+  // Network — both REQUIRED, both supplied by the node from its resolved profile.
+  // No defaults; see §Magic Bytes and §Consensus parameters net enforces.
+  magic: number                    // mainnet 0x4D444147 · testnet 0x54444147 · devnet 0x44444147
+  postPowTargetBits: number        // ⚠ NOT IMPLEMENTED — field does not exist yet
 
   // Peer discovery
   minPeers: number                 // floor for fill phase (default 3)
@@ -823,6 +892,47 @@ interface NetConfig {
   penaltySafeIntervalMs: number
 }
 ```
+
+### Consensus parameters net enforces
+
+Stage-1 relay validation checks proof-of-work before forwarding, so **net enforces a
+consensus parameter** and must be told which network it is on. It receives values; it does
+not resolve them, does not import `NetworkProfile`, and reads no environment variable for
+them.
+
+| Value | Why net needs it | Today |
+|---|---|---|
+| `magic` | Frame assembly and the frame-magic check | ⚠ VIOLATED — see §Magic Bytes |
+| `postPowTargetBits` | `gossip.ts:242` verifies post PoW before relay | ⚠ VIOLATED — imports the constant from `@dagsocial/types` |
+
+> ⚠ **`gossip.ts:242` has the same defect node closed as audit A6.** It calls
+> `v.verifyPoW(powInput, post.powNonce, POST_POW_TARGET_BITS)` against the compile-time
+> constant, so post difficulty is network-invariant at the relay boundary even though it is a
+> profile field. **A devnet node would reject its own network's posts** — mined at devnet's
+> target, checked against mainnet's — before they ever reach the node. It must read
+> `config.postPowTargetBits`, supplied by the node.
+
+> ⚠ **VIOLATED — `NETWORK_MAGIC`, an undocumented `network-identity` environment read.**
+> `net/src/config.ts:5`:
+> ```ts
+> magic: parseInt(process.env['NETWORK_MAGIC'] ?? '0x54444147', 16), // default testnet
+> ```
+> Found 2026-08-06 by an exhaustive `process.env` sweep across all five packages. It appears
+> in **no contract** — not here, not in `NODE_INTERFACE §Configuration` — and the ten-unit
+> audit did not surface it. Three problems, in ascending order:
+>
+> 1. **It is a second network selector.** `NETWORK_TYPE` is supposed to be the only
+>    environment variable that can change a consensus parameter.
+> 2. **Its default contradicts the live path.** This says testnet (`0x54444147`); the ten
+>    `?? MAGIC_MAINNET` sites say mainnet. The two disagree about which network an
+>    unconfigured node joins.
+> 3. **It is dead, which is why nobody noticed.** `loadNetConfig` has no production caller
+>    and is not exported from net's barrel — only its own test file calls it. The node builds
+>    its `NetConfig` literal by hand instead. Dead code carrying a live escape hatch is worse
+>    than live code carrying one: it reads as the intended path and invites being wired up.
+>
+> **Resolution: delete `loadNetConfig` and its test.** Net does not resolve configuration —
+> it receives it.
 
 ---
 

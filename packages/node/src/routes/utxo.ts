@@ -23,7 +23,7 @@ import {
 } from '../store/system.js';
 import { getNet } from '../services/net-instance.js';
 import { respondError } from './respond-error.js';
-import { config } from '../config.js';
+import { config, isFaucetNetwork } from '../config.js';
 
 // ---------------------------------------------------------------------------
 // Dependency types
@@ -194,9 +194,12 @@ export function createRouter(deps: UtxoDeps): Router {
     }
   });
 
-  // POST /credits/faucet — testnet-only credit faucet
+  // POST /credits/faucet — credit faucet, allow-listed networks only. The
+  // reject-guard is the negation of the isFaucetNetwork allow-list shared
+  // with the /faucet mount and the system-box provisioning — the three move
+  // together.
   router.post('/credits/faucet', (req, res) => {
-    if (config.networkMode !== 'testnet') {
+    if (!isFaucetNetwork(config.networkType)) {
       res.status(403).json({ error: 'faucet disabled in production mode' });
       return;
     }

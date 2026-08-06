@@ -6,6 +6,7 @@ import { initDb, closeDb } from '../../src/store/db.js';
 import { createApp } from '../../src/server.js';
 import type { Config } from '../../src/config.js';
 import type { OrderingBlock } from '@dagsocial/types';
+import { profileFor } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -197,7 +198,8 @@ function makeConfig(overrides?: Partial<Config>): Config {
   return {
     port: 0,
     dbPath: ':memory:',
-    networkMode: 'testnet',
+    networkType: 'testnet',
+    profile: profileFor('testnet'),
     nodeRole: 'miner',
     publicUrl: '/',
     postPowTargetBits: 20,

@@ -33,6 +33,7 @@ import type { NetConfig, PeerRecord, PeersMsg } from '../src/types.js';
 function makeConfig(): NetConfig {
   return {
     magic: MAGIC_TESTNET,
+    postPowTargetBits: 8,
     bootstrapPeers: [],
     listenAddrs: '/ip4/127.0.0.1/tcp/0',
     maxPeers: 8,

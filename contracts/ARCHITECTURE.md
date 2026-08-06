@@ -939,6 +939,116 @@ Stream messages are framed: `[magic:4][version:1][code:VLQ][length:VLQ][checksum
 
 ---
 
+## Network Identity
+
+> ⚠ **NOT IMPLEMENTED — decided 2026-08-06, nothing below is built.** Today the three
+> mechanisms this section unifies exist separately and none of them are connected:
+> `NETWORK_MODE` is read into config and only gates the faucet route and a UI banner;
+> `net` defaults to `MAGIC_MAINNET` at **ten call sites** (nine in `node.ts`, one in
+> `sync-machine.ts`) regardless of it; and the consensus parameters are per-process
+> environment reads. **A node started as testnet frames as mainnet and may be running one
+> operator's private decay schedule.**
+
+A network is the pairing of a **parameter profile** with a **genesis block**. Three exist:
+
+| Network | Purpose | Wiped on |
+|---|---|---|
+| `mainnet` | The real chain | Never |
+| `testnet` | Public, used, non-breaking changes | Deliberate relaunch only |
+| `devnet` | Local and disposable; protocol-breaking changes | Freely |
+
+The taxonomy and the purpose split are Ergo's (`ergo.networkType`, with testnet for
+non-breaking and devnet for protocol-breaking testing). The third network is **not** called
+`regtest` — that is Bitcoin's word for a different thing.
+
+### Selection
+
+One setting, `NETWORK_TYPE`, class `network-identity`, names the whole profile. It is the
+only environment variable that may change a consensus parameter, and it does so by selecting
+a table rather than by setting a value. **Two operators who differ on it are on different
+networks; two operators who agree on it cannot differ on anything below it.** That is the
+property the class exists to guarantee, and it is why individual consensus parameters must
+not be independently readable — nine of them are today, marked `⚠ VIOLATED` in
+`NODE_INTERFACE §Configuration`.
+
+### What varies per network, and what must not
+
+**Per-network — the timescale, difficulty and genesis axes:**
+`ORDERING_BLOCK_POW_TARGET_BITS` · `POST_POW_TARGET_BITS` · `KARMA_DECAY_INTERVAL_BLOCKS` ·
+`KARMA_STALE_THRESHOLD_BLOCKS` · `VOUCH_COOLDOWN_BLOCKS` · `INVITE_PROBATION_BLOCKS` ·
+`CREDIT_MINER_REWARD_DELAY` · `BOOTSTRAP_PERIOD_BLOCKS` · `CREDIT_FIXED_RATE_BLOCKS` ·
+`CREDIT_EPOCH_BLOCKS` · `GENESIS_COMMITTEE_KEYS` · `GENESIS_KARMA_PER_MEMBER` ·
+`GENESIS_CREDITS_PER_MEMBER` · `TREASURY_PUBKEY`
+
+**Universal — every other constant, including consensus ones:** the format limits
+(`MAX_CONTENT_BYTES`, `MAX_PARENT_REFS`, `PROTOCOL_VERSION`, `AVL_KEY_LENGTH`) and **every
+karma and credit cost** (`LIKE_COST`, `POST_LOCK_*`, `VOUCH_KARMA_AMOUNT`, `INVITE_*`,
+`KARMA_MINIMUM`, `KARMA_DECAY_AMOUNT`, `CREDIT_TREASURY_PCT`, `CREDIT_INITIAL_REWARD`).
+
+**The split is normative: compress time, never economics.** Every per-network parameter is a
+place where devnet and mainnet behave differently, which is precisely where a defect hides
+from the test written to catch it. A test chain needs a 3-block decay interval; it does not
+need cheaper likes. **Adding a parameter to the per-network set weakens every test that runs
+on devnet** — the burden is on the addition, not on keeping the set small.
+
+### How the network is committed
+
+Three mechanisms, which fail differently and are listed in the order a foreign object meets
+them.
+
+| Layer | Mechanism | What a cross-network object does |
+|---|---|---|
+| **Transport** | Wire magic selected by the profile | Never assembles as a frame; peers do not connect |
+| **Block** | `networkType` field in the ordering block header | Rejected at the structure gate with a legible reason |
+| **Chain** | Distinct genesis per network | Cannot link; its input boxes do not exist here |
+
+**The chain layer is what makes the networks genuinely separate**, and it is doing more work
+than it appears to. A transaction's inputs are boxes whose id chains root at genesis, so a
+mainnet transaction replayed against testnet names inputs that **do not exist** — replay
+fails on the UTXO graph, without any network check. The header field and the magic are the
+early, legible rejections; genesis is the one that cannot be circumvented.
+
+> **Id derivation is deliberately NOT network-scoped.** An earlier draft of this section
+> scoped the five domain tags (`BOX_ID_DOMAIN`, `TX_ID_DOMAIN`, `MINT_ID_DOMAIN`,
+> `IDENTITY_KEY_DOMAIN`, `POST_ID_DOMAIN`) by network. **Dropped 2026-08-06**, for two
+> reasons.
+>
+> **It conflicts with a load-bearing invariant.** `@dagsocial/types` is contractually pure —
+> "no side effects, no module-level state" — and five packages derive consensus bytes from
+> it. Network-scoped tags force either module-level state in that package or a network
+> argument on every derivation. Module-level state is the config-read-at-a-distance defect
+> this whole section exists to remove, wearing a different hat.
+>
+> **The analogy that motivated it was wrong.** It was argued as the structural equivalent of
+> **Ergo's address prefix** (`0x00` mainnet, `0x10` testnet). It is not: an address prefix is
+> a *serialization* concern — how a pubkey is rendered and parsed by a wallet — and **Ergo's
+> own box ids and transaction ids are network-agnostic content hashes.** Scoping id
+> derivation would have gone beyond Ergo, not matched it.
+>
+> **What this concedes:** cross-network **post** replay. Posts are DAG objects, so a mainnet
+> post carries a valid signature and valid PoW onto devnet unchanged. Transaction replay is
+> already impossible via the chain layer above; the accompanying karma-lock transaction fails
+> regardless. This is a spam and confusion vector, not a value defect, and it is accepted.
+
+> **Divergence from Ergo, stated deliberately.** Ergo's block header has **no** network
+> field: `version`, `parentId`, `ADProofsRoot`, `stateRoot`, `transactionsRoot`, `timestamp`,
+> `nBits`, `height`, `extensionRoot`, `powSolution`, `votes`. Notis adds one. With id
+> derivation left network-agnostic this is the **only** consensus-visible network
+> commitment short of genesis, so unlike the earlier draft it is not redundant — it is what
+> turns a wrong-network block into a stated rejection rather than a chain-link failure.
+
+### Sequencing
+
+Adding `networkType` to the header changes `blockHash` and the PoW preimage, so it lands
+**inside the P2-C consensus-format break bundle** with `computeTxId` length-prefixing (C1),
+the Merkle leaf preimage replacement (C7) and post typing (H5) — one coordinated break, one
+update to every id-asserting test. It must **not** land separately.
+
+Everything else in P2-A — the profile table, the environment reads, the magic selection — is
+**not** format-breaking and does not need to wait for that bundle.
+
+---
+
 ## Protocol Versioning
 
 Every post, stump, ordering block, sub-block, and UTXO transaction carries a
@@ -1137,6 +1247,26 @@ See `SUBBLOCK_INTERFACE.md` for the full contract.
 - Ordering blocks anchor sub-blocks via Merkle digest
 - Like deduplication happens at ordering time
 - Epoch transitions (like tally) happen at ordering block boundaries
+
+### Network identity
+
+> ⚠ **NOT IMPLEMENTED — added 2026-08-06, after the audit. These four are NOT part of the
+> 48 verified above and carry no audit verdict**, because nothing they describe exists yet.
+> They are the rules P2-A and P2-C build to. See §Network Identity for the mechanism.
+
+- **`NETWORK_TYPE` is the only environment variable that may change a consensus parameter,
+  and it changes all of them together.** No individual consensus parameter is
+  environment-readable. Two nodes agreeing on `NETWORK_TYPE` cannot differ on any value it
+  selects.
+- **Id derivation is network-agnostic.** No domain tag, box id, transaction id, post id or
+  identity record key carries the network. `@dagsocial/types` stays pure — no module-level
+  state, no network argument on a derivation function. Network separation is carried by
+  genesis, the header field and the wire magic instead.
+- **The per-network parameter set covers timescale, difficulty and genesis only.** Costs and
+  format limits are universal across networks. Adding a parameter to the per-network set
+  requires justifying why devnet may behave differently from mainnet in that respect.
+- **The wire magic is a function of the network profile**, not a per-call-site default. A
+  node cannot frame for one network while validating for another.
 
 ---
 

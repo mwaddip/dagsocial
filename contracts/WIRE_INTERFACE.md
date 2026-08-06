@@ -30,8 +30,23 @@ BigInt paths for u64 wire values are deferred to a future version.
 | `encodeFrame(magic, code, body, hashFn)` | Encode a framed message |
 | `decodeFrame(magic, data, hashFn)` | Decode and validate a framed message |
 | `FRAME_VERSION` | `1` — current framing protocol version |
-| `MAGIC_MAINNET` | `0x4D444147` ("MDAG") |
-| `MAGIC_TESTNET` | `0x54444147` ("TDAG") |
+
+**This package exports no network magic.** `MAGIC_MAINNET`, `MAGIC_TESTNET` and
+`MAGIC_DEVNET` live in `@dagsocial/types` beside `NetworkProfile`, together with the
+canonical `KNOWN_FRAME_MAGICS` set. Callers pass `magic` in.
+
+**Why here is the wrong home.** `encodeFrame` and `decodeFrame` take `magic` as a
+**parameter**; `frame.ts` reads no magic constant. The codec is magic-agnostic by
+construction and should not own network identity. **This package keeps zero runtime
+dependencies**, which is why the constants moved *out* rather than `NetworkType` moving
+*in* — `@dagsocial/types` cannot import from here and this package must not import from
+there. The codec stays the lowest layer.
+
+> **Reverses a pre-audit follow-up, deliberately.** A queued note read *"wire should export
+> the canonical magic set,"* motivated by `net` hardcoding `KNOWN_FRAME_MAGICS` as a local
+> literal that would go stale when a third magic was added. **That defect was real and is
+> fixed** — but the canonical set belongs in `@dagsocial/types` beside the profile table.
+> The note predates the profile table. Recorded so the reversal is not itself reversed.
 
 ---
 
@@ -309,7 +324,8 @@ Encodes a framed message.
 - **body:** raw bytes (unchanged)
 
 **Preconditions:**
-- `magic` is a valid network magic (`MAGIC_MAINNET` or `MAGIC_TESTNET`)
+- `magic` is a valid network magic — supplied by the caller from the network profile
+  (`@dagsocial/types`). This package does not know the set and does not validate against it
 - `code` is a non-negative safe integer
 - `body` is a `Uint8Array` (empty body is valid: `new Uint8Array(0)`)
 
@@ -390,8 +406,8 @@ See "ReaderError codes (audit L-15)" above for the normative meanings.
 |----------|-------|-------------|
 | `MAX_ARRAY_LENGTH` | `1 << 24` (16,777,216) | Hard cap on VLQ-length-prefixed array reads |
 | `FRAME_VERSION` | `1` | Current framing protocol version |
-| `MAGIC_MAINNET` | `0x4D444147` | Mainnet magic bytes ("MDAG") |
-| `MAGIC_TESTNET` | `0x54444147` | Testnet magic bytes ("TDAG") |
+
+The network magics are **not** constants of this package — see §Exports.
 
 ---
 

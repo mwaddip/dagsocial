@@ -51,6 +51,8 @@ const validators: NetValidators = {
 
 function makeConfig(): NetConfig {
   return {
+    magic: 0x54444147,
+    postPowTargetBits: POST_POW_TARGET_BITS,
     bootstrapPeers: [],
     listenAddrs: '/ip4/0.0.0.0/tcp/0',
     maxPeers: 10,
@@ -66,7 +68,7 @@ type CapturedValidator = (
   msg: { data: Uint8Array },
 ) => TopicValidatorResult;
 
-function makeHarness() {
+function makeHarness(postPowTargetBits: number = POST_POW_TARGET_BITS) {
   const topicValidators = new Map<string, CapturedValidator>();
   const stub = {
     services: {
@@ -84,7 +86,7 @@ function makeHarness() {
     onOrderingBlock: () => {},
     onTx: () => {},
     onStump: () => {},
-  });
+  }, postPowTargetBits);
 
   const penaltySpy = vi.spyOn(peerMgr, 'recordPenalty');
   return { topicValidators, peerMgr, penaltySpy };
@@ -362,5 +364,77 @@ describe('sub-block topic validator (Stage 1)', () => {
     const { result, penaltySpy } = validateSubBlock(sb);
     expect(result).toBe(TopicValidatorResult.Reject);
     expect(penaltySpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Sub-block topic validator — per-network post difficulty (the A6 twin)
+// ---------------------------------------------------------------------------
+
+describe('sub-block topic validator (per-network post difficulty)', () => {
+  const DEVNET_TARGET_BITS = 8;
+
+  let devnetSubBlock: SubBlock;
+
+  beforeAll(() => {
+    const kp = generateKeyPair();
+    const basePost: Post = {
+      content: 'devnet-difficulty fixture',
+      author: kp.publicKey,
+      parentRefs: [],
+      challenge: new Uint8Array(32).fill(3),
+      powNonce: 0,
+      protocolVersion: 1,
+      timestamp: 1_722_470_400_000,
+      signature: new Uint8Array(64),
+    };
+
+    // Find a nonce that meets the devnet target but provably NOT the mainnet
+    // POST_POW_TARGET_BITS — the fixture a devnet user actually mines (~256
+    // tries at 8 bits; skipping the rare nonce that also clears the mainnet
+    // target keeps the fixture's property explicit, not probabilistic).
+    const powInput = postPowPreimage(basePost);
+    let nonce = -1;
+    for (let n = 0; n < 10_000_000; n++) {
+      if (verifyPoW(powInput, n, DEVNET_TARGET_BITS) && !verifyPoW(powInput, n, POST_POW_TARGET_BITS)) {
+        nonce = n;
+        break;
+      }
+    }
+    if (nonce < 0) throw new Error('devnet PoW search exhausted');
+
+    const post: Post = { ...basePost, powNonce: nonce };
+    post.signature = new Uint8Array(
+      sign(null, signingHash(post), createPrivateKey({
+        key: Buffer.from(kp.secretKey), format: 'der', type: 'pkcs8',
+      })),
+    );
+    devnetSubBlock = subBlockFromPost(post, computePostId(post));
+  });
+
+  it('accepts a post mined at the configured non-mainnet target (devnet relays its own posts)', () => {
+    // Pre-fix, runStage1SubBlock verified against the imported
+    // POST_POW_TARGET_BITS, so a devnet relay rejected every post its own
+    // network mined. The fixture meets 8 bits and provably not the mainnet
+    // target — this Accept holds only if the gate reads the configured value.
+    const { topicValidators, peerMgr, penaltySpy } = makeHarness(DEVNET_TARGET_BITS);
+    const validate = topicValidators.get(TOPICS.subblock)!;
+    const peer = newPeer(peerMgr);
+
+    const result = validate(peer, { data: encodeSubBlock(devnetSubBlock) });
+
+    expect(result).toBe(TopicValidatorResult.Accept);
+    expect(penaltySpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects the same post at the mainnet target (difficulty still gates relay)', () => {
+    const { topicValidators, peerMgr, penaltySpy } = makeHarness(POST_POW_TARGET_BITS);
+    const validate = topicValidators.get(TOPICS.subblock)!;
+    const peer = newPeer(peerMgr);
+
+    const result = validate(peer, { data: encodeSubBlock(devnetSubBlock) });
+
+    expect(result).toBe(TopicValidatorResult.Reject);
+    expect(penaltySpy).toHaveBeenCalledWith('misbehavior', peer.id, 100, 'Proof of Work invalid');
   });
 });

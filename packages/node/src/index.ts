@@ -1,4 +1,4 @@
-import { loadConfig } from './config.js';
+import { loadConfig, isFaucetNetwork } from './config.js';
 import { initDb, closeDb } from './store/db.js';
 import { schemaVersion, writeSchemaVersion, CURRENT_SCHEMA_VERSION } from './store/meta.js';
 import { getSystemKeypair, initSystemKeypair, ensureSystemKarmaBox, ensureFaucetCreditBox } from './store/system.js';
@@ -48,7 +48,7 @@ const startTime = Date.now();
 
 // 0. Journal
 initJournal();
-emitServerStarting('1.0.0', config.networkMode);
+emitServerStarting('1.0.0', config.networkType);
 
 // 1. Init DB
 initDb(config.dbPath);
@@ -99,10 +99,14 @@ function validateProtocolConstants(): void {
 // 1b. Protocol constant sanity checks
 validateProtocolConstants();
 
-// 1c. Init system keypair (testnet faucet source). Must happen after DB init,
-//     before any route that might need the system box.
+// 1c. Init system keypair (faucet source on the faucet-bearing networks). Must
+//     happen after DB init, before any route that might need the system box.
+//     The gate shares isFaucetNetwork with the /faucet mount and the
+//     /credits/faucet handler — the three move together (NODE_INTERFACE
+//     §Faucet): mounting without provisioning gives a faucet with nothing to
+//     mint from.
 const systemKeypair = initSystemKeypair();
-if (config.networkMode === 'testnet') {
+if (isFaucetNetwork(config.networkType)) {
   const height = getCurrentHeight();
   ensureSystemKarmaBox(systemKeypair.publicKey, height);
   ensureFaucetCreditBox(systemKeypair.publicKey, height);
@@ -146,6 +150,12 @@ if (currentHeight > 0 && avlHandle.storage.version() === null) {
 // internal fallbacks silently govern instead.
 const net = new NetNode(
   {
+    // The profile's wire magic and post-PoW difficulty. Both are required in
+    // NetConfig since P2-A phase 3b deleted net's `?? MAGIC_MAINNET` fallbacks
+    // (NET_INTERFACE §Magic Bytes); net checks inbound gossip PoW against the
+    // same profile difficulty the verifier enforces.
+    magic: config.profile.magic,
+    postPowTargetBits: config.postPowTargetBits,
     bootstrapPeers: config.bootstrapPeers,
     listenAddrs: config.listenAddrs,
     maxPeers: config.maxPeers,

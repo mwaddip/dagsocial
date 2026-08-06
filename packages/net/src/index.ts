@@ -15,6 +15,8 @@ export {
   createBlake2b256Hash,
   MAGIC_MAINNET,
   MAGIC_TESTNET,
+  MAGIC_DEVNET,
+  KNOWN_FRAME_MAGICS,
 } from './frame.js';
 export {
   MSG_HANDSHAKE,

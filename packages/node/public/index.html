@@ -329,7 +329,7 @@ const STORAGE_KEY = 'dagsocial-identities';
 let identities = [];
 let activeIndex = -1;
 let userId, pubKeyRaw, privKey;
-let networkMode = 'mainnet';
+let networkType = 'mainnet';
 /** Feed filter: 'all' or the hex userId to show only that author's posts. */
 let feedFilter = 'all';
 /** Set of post IDs with a pending like/unlike tx (spinner shown). */
@@ -2069,20 +2069,23 @@ async function loadStatus() {
     const res = await fetch(API + '/status');
     if (!res.ok) { bar.innerHTML = 'Status unavailable'; return; }
     const s = await res.json();
-    networkMode = s.networkMode || 'mainnet';
+    // Defaulting the UI to mainnet is deliberate and stays: on a missing field
+    // it hides the debug surfaces, which is the safe failure direction.
+    networkType = s.networkType || 'mainnet';
     currentBlockHeight = s.blockHeight || 0;
 
     bar.innerHTML = `
-      <div><span>Network:</span> <strong style="color:${networkMode === 'testnet' ? 'var(--amber)' : 'var(--p)'}">${esc(networkMode)}</strong></div>
+      <div><span>Network:</span> <strong style="color:${networkType === 'testnet' ? 'var(--amber)' : networkType === 'devnet' ? 'var(--red)' : 'var(--p)'}">${esc(networkType)}</strong></div>
       <div><span>Block height:</span> <strong>${s.blockHeight}</strong></div>
       <div><span>Posts (confirmed / pending):</span> <strong>${s.postCount} / ${s.pendingPosts}</strong></div>
       <div><span>Identities:</span> <strong>${s.identityCount}</strong></div>
       <div><span>Total karma:</span> <strong>${s.totalKarma}</strong> &nbsp; <span>Total credits:</span> <strong>${formatCredits(BigInt(s.totalCredits))}</strong></div>
     `;
 
-    // Show/hide admin section based on network mode
+    // Show the admin section on every network but mainnet — same gate
+    // direction as the node's three faucet gates (NODE_INTERFACE §Faucet).
     const admin = document.getElementById('adminSection');
-    admin.style.display = networkMode === 'testnet' ? '' : 'none';
+    admin.style.display = networkType !== 'mainnet' ? '' : 'none';
   } catch (e) {
     bar.innerHTML = 'Status unavailable';
   }

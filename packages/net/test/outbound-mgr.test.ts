@@ -4,6 +4,7 @@ import type { NetConfig } from '@dagsocial/net';
 
 const testConfig: NetConfig = {
   magic: 0x54444147,
+  postPowTargetBits: 8,
   bootstrapPeers: ['/ip4/10.0.0.1/tcp/9000'],
   listenAddrs: '/ip4/0.0.0.0/tcp/0',
   maxPeers: 10,

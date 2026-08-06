@@ -40,7 +40,7 @@ import type Database from 'better-sqlite3';
 const testConfig = {
   port: 3000,
   dbPath: ':memory:',
-  networkMode: 'testnet' as const,
+  networkType: 'testnet' as const,
   nodeRole: 'miner' as const,
   postPowTargetBits: 20,
   challengeWindowBlocks: 10,

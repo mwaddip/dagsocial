@@ -581,6 +581,7 @@ identity — they are the same object.
 ```
 BlockHeader {
   protocolVersion: number        // 1
+  networkType: NetworkType       // ⚠ NOT IMPLEMENTED — 'mainnet' | 'testnet' | 'devnet'
   height: number                 // Monotonically increasing, starting from 1
   prevBlockHash: string          // hex(32) — hash of the previous block's header
   subBlockRoot: string           // hex(32) — Merkle root over the sub-block tree (DAG content)
@@ -592,6 +593,22 @@ BlockHeader {
   createdAt: number              // Unix ms
 }
 ```
+
+> ⚠ **NOT IMPLEMENTED — `networkType` is new, decided 2026-08-06.** It sits beside
+> `protocolVersion` because it answers the sibling question: `protocolVersion` is *which
+> rules*, `networkType` is *which chain*. Rejected at the structure gate when it does not
+> match the node's own profile.
+>
+> **It is not redundant.** Id derivation is network-agnostic by decision (§Domain tags are
+> network-agnostic), so this field is the **only** consensus-visible network commitment
+> short of genesis. Without it a wrong-network block is rejected as a chain-link failure —
+> true, but opaque.
+>
+> This is a **divergence from Ergo**, whose header carries no network field. Recorded so it
+> is not later "corrected" by someone checking Ergo and finding no such field. Ergo can omit
+> it because its network separation rides in address serialization and genesis; Notis has no
+> address layer, since a box `owner` is a raw pubkey. ⚠ **Adding a header field changes
+> `blockHash` and the PoW preimage** — it is part of the P2-C break bundle.
 
 The header is what gets hashed. `blockHash(header) = blake2b512(encodeHeader(header))[:32]`
 (hex) is both the block's canonical hash — the next block's `prevBlockHash` — and the
@@ -737,6 +754,113 @@ which is now exported as `canonicalBoxBytes` — see "Canonical encoding" under 
 ---
 
 ## Protocol Constants (`constants.ts`)
+
+### Network profiles
+
+> ⚠ **NOT IMPLEMENTED — decided 2026-08-06.** No profile type, table or selector exists.
+> Today the values marked per-network below are plain module constants, and nine of them
+> are additionally overridable per-process from the environment in the node
+> (`⚠ VIOLATED`, `NODE_INTERFACE §Configuration`). See `ARCHITECTURE §Network Identity`
+> for the mechanism and the reasoning; this section is the type surface only.
+
+```typescript
+export type NetworkType = 'mainnet' | 'testnet' | 'devnet';
+
+export interface NetworkProfile {
+  readonly networkType: NetworkType;
+  readonly magic: number;              // wire frame magic — one per network
+
+  // Difficulty
+  readonly orderingBlockPowTargetBits: number;
+  readonly postPowTargetBits: number;
+
+  // Block-denominated durations
+  readonly karmaDecayIntervalBlocks: number;
+  readonly karmaStaleThresholdBlocks: number;
+  readonly vouchCooldownBlocks: number;
+  readonly inviteProbationBlocks: number;
+  readonly creditMinerRewardDelay: number;
+  readonly bootstrapPeriodBlocks: number;
+
+  // Emission schedule
+  readonly creditFixedRateBlocks: number;
+  readonly creditEpochBlocks: number;
+
+  // Genesis
+  readonly genesisCommitteeKeys: readonly string[];
+  readonly genesisKarmaPerMember: bigint;
+  readonly genesisCreditsPerMember: bigint;
+  readonly treasuryPubKey: string;
+}
+
+export const NETWORK_PROFILES: Readonly<Record<NetworkType, NetworkProfile>>;
+export function profileFor(network: NetworkType): NetworkProfile;
+
+// The network magics live here, not in @dagsocial/wire — see below
+export const MAGIC_MAINNET = 0x4D444147;  // "MDAG"
+export const MAGIC_TESTNET = 0x54444147;  // "TDAG"
+export const MAGIC_DEVNET  = 0x44444147;  // "DDAG"
+/** The canonical set. `net` must derive its frame-magic check from this, never a local literal. */
+export const KNOWN_FRAME_MAGICS: readonly number[];
+```
+
+**This is the sole definition of the network magics.** `@dagsocial/wire` exported duplicates
+until P2-A phase 5 deleted them. They live here rather than `NetworkType` living in wire
+because **wire has zero runtime dependencies and keeps them**: `@dagsocial/types` cannot
+import from wire, and wire must not import from types. Wire's `encodeFrame` / `decodeFrame`
+take `magic` as a parameter and read no magic constant — the codec is magic-agnostic by
+construction and does not own network identity.
+
+⚠ **`KNOWN_FRAME_MAGICS` must be imported, never re-declared.** `net/src/node.ts` held it as
+a local literal until phase 3a. A magic missing from the set is classified as not-a-frame,
+falls through to the legacy raw-CBOR path, decodes as malformed, and **permanently bans the
+peer** — so a stale copy turns a routine cross-network misconnection into a ban. Note the set
+is consulted *only* for frames that fail the own-magic compare, so a stale copy does not
+break same-network peering; the damage is entirely cross-network.
+
+**Every constant not listed in `NetworkProfile` is universal across networks**, including
+consensus ones — the format limits (`MAX_CONTENT_BYTES`, `MAX_PARENT_REFS`,
+`PROTOCOL_VERSION`, `AVL_KEY_LENGTH`) and every karma and credit cost. The split is
+normative and stated in `ARCHITECTURE §Network Identity`: **compress time, never
+economics.** A constant moved into `NetworkProfile` is a place devnet may behave unlike
+mainnet, which is where a defect hides from the test meant to catch it.
+
+The profile is resolved **once at startup** from `NETWORK_TYPE` and frozen. Nothing
+downstream re-reads the environment, and no function takes a profile override argument —
+an override parameter is the same defect as the environment read, reached by a different
+door.
+
+⚠ **Values are not pinned here.** `devnet`'s compressed timings and both public networks'
+difficulty belong to the constants-pinning session, together with the two figures already
+flagged open below (`KARMA_STALE_THRESHOLD_BLOCKS`'s duration, and `CREDIT_TAIL_REWARD`'s
+removal). **Do not read any number in this contract as decided.**
+
+### Domain tags are network-agnostic — deliberately
+
+The five id-derivation domain tags — `BOX_ID_DOMAIN`, `TX_ID_DOMAIN`, `MINT_ID_DOMAIN`,
+`IDENTITY_KEY_DOMAIN`, `POST_ID_DOMAIN` — **do not carry the network, and must not be
+changed to.** No derivation function takes a network argument, and this package holds no
+module-level network state.
+
+This was proposed and **rejected on 2026-08-06**. Recorded here because the proposal is
+attractive and will recur:
+
+- **It breaks this contract's own Postcondition** — *"All functions are pure — no side
+  effects, no module-level state"* — and its `computeBoxId` one-argument invariant. Five
+  packages derive consensus bytes from these functions; a module-level network resolved at
+  import time is the config-read-at-a-distance defect that `ARCHITECTURE §Network Identity`
+  exists to remove.
+- **The motivating analogy was false.** It was argued as the equivalent of Ergo's address
+  prefix. An address prefix is a *serialization* concern, and **Ergo's own box and
+  transaction ids are network-agnostic content hashes.** Scoping derivation would exceed
+  Ergo, not match it.
+- **It buys little.** Cross-network transaction replay is already impossible: input box id
+  chains root at a genesis that differs per network, so a foreign transaction names inputs
+  that do not exist. The only gap left open is cross-network **post** replay, accepted as a
+  spam vector rather than a value defect.
+
+Network separation lives in genesis, the header `networkType`, and the wire magic. See
+`ARCHITECTURE §Network Identity → How the network is committed`.
 
 ### Denomination (P0 — Spec B)
 

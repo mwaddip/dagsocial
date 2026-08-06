@@ -1,22 +1,37 @@
 import {
-  POST_POW_TARGET_BITS,
   CHALLENGE_WINDOW_BLOCKS,
   EPOCH_BLOCKS,
-  ORDERING_BLOCK_POW_TARGET_BITS,
   CREDIT_INITIAL_REWARD,
   CREDIT_TREASURY_PCT,
-  KARMA_STALE_THRESHOLD_BLOCKS,
-  KARMA_DECAY_INTERVAL_BLOCKS,
   KARMA_DECAY_AMOUNT,
   KARMA_MINIMUM,
+  profileFor,
 } from '@dagsocial/types';
+import type { NetworkProfile, NetworkType } from '@dagsocial/types';
+
+// AVL tree key length in bytes — a universal format constant, not a per-network
+// value (NODE_INTERFACE §Configuration: "Format. No network has a reason to
+// differ"). TYPES_INTERFACE lists it with the format limits, but @dagsocial/types
+// does not export it yet; until that lands this is the single definition.
+const AVL_KEY_LENGTH = 32;
 
 export interface Config {
   port: number;
   adminPort: number;
   adminBindAddress: string;
   dbPath: string;
-  networkMode: string;
+  /**
+   * The network this node is on. Class `network-identity` — the only environment
+   * variable that may change a consensus parameter, and it changes every one of
+   * them together by selecting `profile` (ARCHITECTURE §Network Identity).
+   */
+  networkType: NetworkType;
+  /**
+   * The parameter table `networkType` selects, resolved once at load and frozen.
+   * The consensus fields below are copied from it so consumers keep one flat
+   * config surface; `index.ts` reads `magic` off it for the wire layer.
+   */
+  profile: NetworkProfile;
   nodeRole: 'server' | 'miner';
   /** Base path where the demo UI is served (e.g., "/testnet/" or "/"). */
   publicUrl: string;
@@ -51,18 +66,24 @@ export interface Config {
 }
 
 export function loadConfig(): Readonly<Config> {
+  // Resolve the network profile first. `profileFor` throws on an unknown value:
+  // a misconfigured node must fail at startup, loudly — it must never default
+  // onto a network it was not pointed at.
+  const profile = profileFor((process.env['NETWORK_TYPE'] ?? 'testnet') as NetworkType);
+
   const cfg: Config = {
     port: parseInt(process.env['PORT'] ?? '3000', 10),
     adminPort: parseInt(process.env['ADMIN_PORT'] ?? '3001', 10),
     adminBindAddress: process.env['ADMIN_BIND_ADDRESS'] ?? '127.0.0.1',
     dbPath: process.env['DB_PATH'] ?? 'dagsocial.db',
-    networkMode: process.env['NETWORK_MODE'] ?? 'testnet',
+    networkType: profile.networkType,
+    profile,
     nodeRole: parseNodeRole(process.env['NODE_ROLE'] ?? 'server'),
     publicUrl: process.env['PUBLIC_URL'] ?? '/',
-    postPowTargetBits: parseInt(
-      process.env['POST_POW_TARGET_BITS'] ?? String(POST_POW_TARGET_BITS),
-      10,
-    ),
+    // The challenge endpoint advertises this and the verifier enforces it — both
+    // read this one field, so a node can no longer claim a difficulty it does
+    // not check (audit A6).
+    postPowTargetBits: profile.postPowTargetBits,
     challengeWindowBlocks: parseInt(
       process.env['CHALLENGE_WINDOW_BLOCKS'] ?? String(CHALLENGE_WINDOW_BLOCKS),
       10,
@@ -90,33 +111,19 @@ export function loadConfig(): Readonly<Config> {
     // Mining
     miningMode: parseMiningMode(process.env['MINING_MODE'] ?? 'internal'),
     miningSecret: process.env['MINING_SECRET'] ?? '',
-    orderingBlockPowTargetBits: parseInt(
-      process.env['ORDERING_BLOCK_POW_TARGET_BITS'] ?? String(ORDERING_BLOCK_POW_TARGET_BITS),
-      10,
-    ),
-    creditInitialReward: BigInt(
-      process.env['CREDIT_INITIAL_REWARD'] ?? String(CREDIT_INITIAL_REWARD),
-    ),
-    creditTreasuryPct: parseInt(
-      process.env['CREDIT_TREASURY_PCT'] ?? String(CREDIT_TREASURY_PCT),
-      10,
-    ),
-    treasuryPubKey: process.env['TREASURY_PUBKEY'] ?? '',
-    // Karma decay (overridable for testing)
-    karmaStaleThresholdBlocks: parseInt(
-      process.env['KARMA_STALE_THRESHOLD_BLOCKS'] ?? String(KARMA_STALE_THRESHOLD_BLOCKS),
-      10,
-    ),
-    karmaDecayIntervalBlocks: parseInt(
-      process.env['KARMA_DECAY_INTERVAL_BLOCKS'] ?? String(KARMA_DECAY_INTERVAL_BLOCKS),
-      10,
-    ),
-    karmaDecayAmount: BigInt(
-      process.env['KARMA_DECAY_AMOUNT'] ?? String(KARMA_DECAY_AMOUNT),
-    ),
-    karmaMinimum: BigInt(
-      process.env['KARMA_MINIMUM'] ?? String(KARMA_MINIMUM),
-    ),
+    orderingBlockPowTargetBits: profile.orderingBlockPowTargetBits,
+    // Dead in src — block-creator.ts uses the imported constant directly; the
+    // field survives only for test fixtures until audit A5 prunes it.
+    creditInitialReward: CREDIT_INITIAL_REWARD,
+    creditTreasuryPct: CREDIT_TREASURY_PCT,
+    treasuryPubKey: profile.treasuryPubKey,
+    // Karma decay — per-network timescale from the profile, universal economics
+    // from the constants (ARCHITECTURE §Network Identity: "compress time, never
+    // economics"). None of these is readable from the environment.
+    karmaStaleThresholdBlocks: profile.karmaStaleThresholdBlocks,
+    karmaDecayIntervalBlocks: profile.karmaDecayIntervalBlocks,
+    karmaDecayAmount: KARMA_DECAY_AMOUNT,
+    karmaMinimum: KARMA_MINIMUM,
     // AVL state root. On by default since Spec B P3: producer and verifier now
     // agree by construction — the header carries the POST-block digest (H-6),
     // both feeds are canonically ordered (M-12), and the mutation set is
@@ -127,10 +134,7 @@ export function loadConfig(): Readonly<Config> {
       process.env['MAX_PROOF_HISTORY'] ?? '1440',
       10,
     ),
-    avlKeyLength: parseInt(
-      process.env['AVL_KEY_LENGTH'] ?? '32',
-      10,
-    ),
+    avlKeyLength: AVL_KEY_LENGTH,
     // Net settings
     bootstrapPeers: parseBootstrapPeers(process.env['BOOTSTRAP_PEERS'] ?? ''),
     listenAddrs: process.env['LISTEN_ADDRS'] ?? '/ip4/0.0.0.0/tcp/0',
@@ -140,6 +144,17 @@ export function loadConfig(): Readonly<Config> {
   assertMiningAuthConfigured(cfg);
 
   return Object.freeze(cfg);
+}
+
+/**
+ * Allow-list of faucet-bearing networks (NODE_INTERFACE §Faucet). Fail-closed:
+ * a network added later mints nothing until someone names it here. All three
+ * faucet gates — the system-box provisioning (index.ts), the /faucet mount
+ * (server.ts) and the /credits/faucet handler guard (routes/utxo.ts) — call
+ * this one predicate so they cannot drift.
+ */
+export function isFaucetNetwork(networkType: NetworkType): boolean {
+  return networkType === 'testnet' || networkType === 'devnet';
 }
 
 /**

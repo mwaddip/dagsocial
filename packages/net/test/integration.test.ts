@@ -18,6 +18,11 @@ import type { NetConfig, NetValidators } from '../src/types.js';
 
 function makeConfig(bootstrapPeers: string[] = []): NetConfig {
   return {
+    // Testnet magic — both nodes must agree; also proves the wire path does
+    // not silently frame as mainnet (P2-A phase 3b).
+    magic: 0x54444147,
+    // Matches the 20-bit target the fixtures below are mined at.
+    postPowTargetBits: 20,
     bootstrapPeers,
     listenAddrs: '/ip4/0.0.0.0/tcp/0',
     maxPeers: 10,

@@ -105,11 +105,23 @@ clock. On-chain time is block height (ARCHITECTURE invariant), so the difficulty
 target may not depend on `Date.now()` or a header timestamp, and every node must
 compute the same expected target for a given height, for all time.
 
-Phase 1 uses a **fixed target**:
+Phase 1 uses a **fixed target**, sourced from the network profile:
 
 ```ts
-expectedTarget(height) = ORDERING_BLOCK_POW_TARGET_BITS   // constant, Phase 1
+expectedTarget(height) = profile.orderingBlockPowTargetBits   // constant in height, Phase 1
 ```
+
+> ⚠ **NOT IMPLEMENTED — the profile does not exist yet** (`TYPES_INTERFACE §Network
+> profiles`). Today this reads `config.orderingBlockPowTargetBits`, a per-process
+> environment value; see the VIOLATED note under invariants 4/5/7.
+>
+> **Precision about what the defect actually is, because the obvious reading sends you
+> the wrong way.** A constant *is* a function of height — a valid one. The defect was
+> never that `expectedTarget` ignores its argument; it is that the value it returns comes
+> from the environment, which makes it a function of *the operator* as well. Sourcing it
+> from the profile closes invariants 4, 5 and 7 **without introducing any height
+> schedule.** Do not build a retarget here. The unused `height` parameter stays as the
+> seam a real schedule will need, and it stays unused until that schedule is designed.
 
 There is no wall-clock retargeting. Rationale: the previous scheme
 (`prevTarget × actualDuration / expectedDuration`, clamped ±50%) fired only every
@@ -231,22 +243,40 @@ validator key), stores it, broadcasts it, and applies coinbase mints.
 |----------|-------|---------|---------|
 | `MINING_MODE` | operational | `internal` | `internal` (mine in-process, no mining HTTP surface) or `external` (expose the authenticated template API) |
 | `MINING_SECRET` | operational | — | Bearer token for the mining API. **Required non-empty when `MINING_MODE=external` on a miner node — startup fails otherwise.** Ignored (routes unmounted) in internal mode. There is no unauthenticated mode. |
-| `ORDERING_BLOCK_POW_TARGET_BITS` | **consensus** | `12` | Initial PoW difficulty (12 bits = fast on CPU, ~4K hashes) |
-| `CREDIT_INITIAL_REWARD` | **consensus** | `10000000000` | Credits per block in fixed-rate period, in **base units of 10⁻⁸** (= 100 credits) |
-| `CREDIT_TREASURY_PCT` | **consensus** | `10` | Percent to treasury |
-| `TREASURY_PUBKEY` | **consensus** | `""` | Hex-encoded 32-byte Ed25519 public key (empty = no treasury) |
+| `NETWORK_TYPE` | network-identity | `testnet` | Selects the network profile — and with it every value in the table below. The **only** environment variable that may change a consensus parameter |
 
 Classes are defined in `NODE_INTERFACE.md → Configuration`. A `consensus` variable
 **MUST NOT be readable from the environment** — two nodes differing on one of these
 partition permanently.
 
-> ⚠ **`ORDERING_BLOCK_POW_TARGET_BITS` is currently environment-readable, and this
-> section previously told operators to change it.** The removed sentence read
-> *"Production would use 30+"* — an operator following it while the network ran the
-> default would have forked themselves off at the first block. The default of 12 is
-> intentionally low for development (~2K hashes, sub-second on a modern CPU); raising
-> it for production is a **network-wide coordinated change**, not a deployment
-> setting. See invariant 7.
+**The four `consensus` rows that were here are no longer configuration.** They and two
+further values this contract depends on resolve as follows — the first five are fields of
+the network profile (`TYPES_INTERFACE §Network profiles`), selected together by
+`NETWORK_TYPE`:
+
+| Value | Source | Per-network? | Purpose |
+|---|---|---|---|
+| `orderingBlockPowTargetBits` | profile | **yes** | Ordering block PoW difficulty |
+| `creditFixedRateBlocks` / `creditEpochBlocks` | profile | **yes** | Emission schedule shape |
+| `creditMinerRewardDelay` | profile | **yes** | Blocks before a coinbase output is spendable |
+| `treasuryPubKey` | profile | **yes** | Treasury key — genesis data, differs per chain |
+| `CREDIT_INITIAL_REWARD` | constant | no | Credits per block in the fixed-rate period, base units of 10⁻⁸ |
+| `CREDIT_TREASURY_PCT` | constant | no | Percent to treasury |
+
+> ⚠ **NOT IMPLEMENTED.** All four profile values and both constants are environment-readable
+> today (`⚠ VIOLATED`, `NODE_INTERFACE §Configuration`).
+>
+> **Note which two did *not* become per-network.** `CREDIT_INITIAL_REWARD` and
+> `CREDIT_TREASURY_PCT` are *economics*, and the split in `ARCHITECTURE §Network Identity`
+> is normative: compress time, never economics. Devnet mines fast; it does not mine rich.
+> A test chain that pays a different reward is a test chain that cannot catch a reward bug.
+
+> ⚠ **This section previously told operators to change the difficulty.** The removed
+> sentence read *"Production would use 30+"* — an operator following it while the network
+> ran the default would have forked themselves off at the first block. The default of 12 is
+> intentionally low for development (~2K hashes, sub-second on a modern CPU); raising it for
+> production is a **network-wide coordinated change**, and under the profile model it is not
+> even expressible as a deployment setting. See invariant 7.
 
 ## Invariants
 
@@ -281,6 +311,11 @@ partition permanently.
 >
 > These invariants are **kept as written** — they state the intended rule, and Phase 2
 > makes them true. Do not weaken them to match the code.
+>
+> **Resolution (P2-A):** sourcing the target from the network profile closes all three.
+> Consequence 1 goes because the value is no longer per-operator; consequence 2 goes
+> because it is fixed for the life of the chain. **No height schedule is required or
+> wanted** — see the note under §Difficulty Schedule.
 8. The mining API is never served unauthenticated: external mode requires a
    configured `MINING_SECRET` (enforced at startup, not per-request), every
    request is bearer-authenticated with a constant-time comparison, and the

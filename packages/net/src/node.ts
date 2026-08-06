@@ -47,7 +47,7 @@ import { PeerDb, type PeerStorage } from './peerdb.js';
 import { SyncMachine } from './sync-machine.js';
 import type { SyncStore } from './sync-machine.js';
 import { OutboundManager } from './outbound-mgr.js';
-import { encodeFrame, decodeFrame, MAGIC_MAINNET, MAGIC_TESTNET } from './frame.js';
+import { encodeFrame, decodeFrame, KNOWN_FRAME_MAGICS } from './frame.js';
 import {
   buildHandshakeFrame,
   handshakePenalty,
@@ -79,14 +79,6 @@ type TxCallback = (tx: UtxoTransaction) => void;
 function asGossip(libp2p: Libp2p): Libp2pGossip {
   return libp2p as unknown as Libp2pGossip;
 }
-
-/**
- * Every frame magic this protocol has ever shipped. Used to tell a frame from
- * the wrong network apart from a payload that is not a frame at all: both
- * fail the magic compare with `wrong-magic`, but only the former starts with
- * a magic we recognize.
- */
-const KNOWN_FRAME_MAGICS: readonly number[] = [MAGIC_MAINNET, MAGIC_TESTNET];
 
 /** First 4 bytes as a big-endian u32 (unsigned — see decodeFrame), or null if shorter. */
 function leadingMagic(data: Uint8Array): number | null {
@@ -480,7 +472,7 @@ export class NetNode {
     this.peerDb = new PeerDb(this.peerStorage, this.config.peerDbCap ?? 1000, selfAddrs);
 
     // Create SyncMachine with lazy store bridge
-    const magic = this.config.magic ?? MAGIC_MAINNET;
+    const magic = this.config.magic;
     this.syncMachine = new SyncMachine(
       this.config,
       this.syncStore,
@@ -574,7 +566,13 @@ export class NetNode {
       },
     };
 
-    await subscribeTopics(asGossip(this.libp2p), this.validators, this.peerMgr, handlers);
+    await subscribeTopics(
+      asGossip(this.libp2p),
+      this.validators,
+      this.peerMgr,
+      handlers,
+      this.config.postPowTargetBits,
+    );
 
     // Log listen addresses
     console.log(`[net] listening on: ${listenAddrs.map(a => a.toString()).join(', ')}`);
@@ -706,7 +704,7 @@ export class NetNode {
   private registerHandshakeHandler(): void {
     if (this.handshakeHandlerRegistered || !this.libp2p) return;
     const libp2p = this.libp2p;
-    const magic = this.config.magic ?? MAGIC_MAINNET;
+    const magic = this.config.magic;
 
     libp2p.handle('/dagsocial/handshake/1', async ({ stream, connection }) => {
       const peerId = connection.remotePeer.toString();
@@ -795,7 +793,7 @@ export class NetNode {
   private registerSyncStreamHandler(): void {
     if (this.syncHandlerRegistered || !this.libp2p) return;
     const libp2p = this.libp2p;
-    const magic = this.config.magic ?? MAGIC_MAINNET;
+    const magic = this.config.magic;
 
     libp2p.handle(SYNC_PROTOCOL, async ({ stream, connection }) => {
       const peerId = connection.remotePeer.toString();
@@ -893,7 +891,7 @@ export class NetNode {
             return;
           }
           const entries = this.postsHandler(request.postIds);
-          const response = encodePosts(this.config.magic ?? MAGIC_MAINNET, { entries });
+          const response = encodePosts(this.config.magic, { entries });
           await stream.sink([response]);
           return;
         }
@@ -915,7 +913,7 @@ export class NetNode {
             return;
           }
           const entries = this.stumpsHandler(request.stumpIds);
-          const response = encodeStumps(this.config.magic ?? MAGIC_MAINNET, { entries });
+          const response = encodeStumps(this.config.magic, { entries });
           await stream.sink([response]);
           return;
         }
@@ -953,7 +951,7 @@ export class NetNode {
     const peer = this.libp2p.getPeers().find(p => p.toString() === peerId);
     if (!peer) throw new Error(`Peer ${peerId} not connected`);
 
-    const magic = this.config.magic ?? MAGIC_MAINNET;
+    const magic = this.config.magic;
 
     let stream: import('@libp2p/interface').Stream | undefined;
     try {
@@ -1170,7 +1168,7 @@ export class NetNode {
       console.warn(`[net] requestPosts: peer ${peerId} not found`);
       return { entries: [] };
     }
-    const magic = this.config.magic ?? MAGIC_MAINNET;
+    const magic = this.config.magic;
     const clamped = postIds.slice(0, 100);
     const request = encodeGetPosts(magic, { postIds: clamped });
     let stream: import('@libp2p/interface').Stream | undefined;
@@ -1215,7 +1213,7 @@ export class NetNode {
       console.warn(`[net] requestStumps: peer ${peerId} not found`);
       return { entries: [] };
     }
-    const magic = this.config.magic ?? MAGIC_MAINNET;
+    const magic = this.config.magic;
     const clamped = stumpIds.slice(0, 100);
     const request = encodeGetStumps(magic, { stumpIds: clamped });
     let stream: import('@libp2p/interface').Stream | undefined;
@@ -1262,7 +1260,7 @@ export class NetNode {
       console.warn(`[net] requestPeers: peer ${peerId} not found`);
       return;
     }
-    const magic = this.config.magic ?? MAGIC_MAINNET;
+    const magic = this.config.magic;
     const request = encodeGetPeers(magic);
     let stream: import('@libp2p/interface').Stream | undefined;
     try {

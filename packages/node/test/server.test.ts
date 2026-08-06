@@ -5,6 +5,7 @@ import type { AddressInfo } from 'net';
 import { initDb, closeDb } from '../src/store/db.js';
 import { createApp } from '../src/server.js';
 import type { Config } from '../src/config.js';
+import { profileFor } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -14,7 +15,8 @@ function makeConfig(overrides?: Partial<Config>): Config {
   return {
     port: 0,
     dbPath: ':memory:',
-    networkMode: 'testnet',
+    networkType: 'testnet',
+    profile: profileFor('testnet'),
     nodeRole: 'server',
     postPowTargetBits: 20,
     challengeWindowBlocks: 10,
@@ -87,6 +89,45 @@ describe('server', () => {
     it('returns 404 for a nonexistent path', async () => {
       const res = await fetch(`${baseUrl}/nonexistent-route-xyz`);
       expect(res.status).toBe(404);
+    });
+  });
+
+  // The mount gate is the isFaucetNetwork allow-list — testnet/devnet only
+  // (NODE_INTERFACE §Faucet) — so devnet must get the real router and mainnet
+  // the 403 stub. An empty POST discriminates the two without touching the
+  // store: the real router answers 400 (userId required) before any db access,
+  // the stub answers 403.
+  describe('faucet mount gate', () => {
+    async function postFaucet(networkType: 'mainnet' | 'testnet' | 'devnet') {
+      const app = createApp(
+        makeConfig({ networkType, profile: profileFor(networkType) }),
+      );
+      const gateServer = app.listen(0);
+      try {
+        const addr = gateServer.address() as AddressInfo;
+        return await fetch(`http://localhost:${addr.port}/faucet`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+        });
+      } finally {
+        gateServer.close();
+      }
+    }
+
+    it('mounts the real faucet router on devnet', async () => {
+      const res = await postFaucet('devnet');
+      expect(res.status).toBe(400);
+    });
+
+    it('mounts the real faucet router on testnet', async () => {
+      const res = await postFaucet('testnet');
+      expect(res.status).toBe(400);
+    });
+
+    it('serves the 403 stub on mainnet', async () => {
+      const res = await postFaucet('mainnet');
+      expect(res.status).toBe(403);
     });
   });
 });

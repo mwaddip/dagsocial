@@ -13,6 +13,7 @@ import {
   PROTOCOL_VERSION,
   INVITE_KARMA_AMOUNT,
   INVITE_BOND_KARMA,
+  MEMPOOL_EXPIRY_BLOCKS,
 } from '@dagsocial/types';
 import type { KarmaBox, InviteBox, BondBox, UtxoTransaction, AnyBox } from '@dagsocial/types';
 import Database from 'better-sqlite3';
@@ -223,7 +224,7 @@ describe('invites service', () => {
     expect(result.status).toBe('pending');
     expect(result.txId).toBeDefined();
     expect(typeof result.txId).toBe('string');
-    expect(result.expiresAtHeight).toBe(1 + 720);
+    expect(result.expiresAtHeight).toBe(1 + MEMPOOL_EXPIRY_BLOCKS);
     expect(result.inviteBox.id).toBeDefined();
     expect(result.bondBox.id).toBeDefined();
 
@@ -379,7 +380,7 @@ describe('invites service', () => {
     expect(result.status).toBe('pending');
     expect(result.txId).toBeDefined();
     expect(typeof result.txId).toBe('string');
-    expect(result.expiresAtHeight).toBe(5 + 720);
+    expect(result.expiresAtHeight).toBe(5 + MEMPOOL_EXPIRY_BLOCKS);
     expect(result.bondBoxId).toBe(bondBox.id);
 
     // Verify mempool has the commit entry
@@ -625,7 +626,7 @@ describe('invites service', () => {
     expect(result.status).toBe('pending');
     expect(result.txId).toBeDefined();
     expect(typeof result.txId).toBe('string');
-    expect(result.expiresAtHeight).toBe(5 + 720);
+    expect(result.expiresAtHeight).toBe(5 + MEMPOOL_EXPIRY_BLOCKS);
 
     // Karma unchanged (pending)
     const inviterKarma = getKarmaBox(inviterPubKey);
