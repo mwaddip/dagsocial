@@ -1213,13 +1213,24 @@ These invariants are adopted from production-grade Ergo Rust node practices:
 - **Sort-order determinism** — any operation feeding a Merkle tree or
   content hash MUST have a documented, identical sort order across all
   implementations.
-  > ⚠ **FALSE on "documented".** The sort orders are correct and deterministic; what does
-  > not exist is the documentation the invariant requires. Three consensus Merkle leaf
-  > preimages are specified **only in JavaScript** — `JSON.stringify` output, whose key
-  > order, string escaping, `Array.from` on byte arrays and bigint rendering a
-  > reimplementer would have to infer from V8 semantics. See the deferred item in the
-  > Phase 1 plan: these get byte specs once the like/epoch removal settles which leaves
-  > survive.
+  > ⚠ **FALSE on "documented" — and the fix is to change the format, not to document it.**
+  > Two consensus Merkle leaf preimages (`subblock`, `coinbase`) are `JSON.stringify` output
+  > feeding `subBlockRoot` and `utxoTxRoot` under PoW. Documenting them would commit every
+  > future implementation to replicating **ECMAScript JSON semantics** — key order equal to
+  > object-literal insertion order, ES2019 escaping, `Array.from` on byte arrays (else
+  > `{"0":1,…}`), bigint pre-rendered as decimal because `JSON.stringify` throws on it. A
+  > non-JS light client would have to reimplement V8 string escaping to compute a block root.
+  >
+  > **Decision 2026-08-06: replace, do not specify.** Move to a length-prefixed canonical
+  > encoding — the pattern `postFieldBytes` already uses, which is the M-1 fix and is
+  > verified injective. Two supporting reasons: the format is **already straining**
+  > (`canonicalEpochTallyJson` exists precisely because JSON insertion order was not
+  > deterministic enough for one leaf), and it is protocol-breaking either way, so it costs
+  > nothing extra folded into the id-moving bundle (`computeTxId` length-prefixing, post
+  > typing) rather than as a second coordinated break later.
+  >
+  > `stump`, `prune` and `utxotx` are simple byte forms and are unaffected — they get written
+  > specs as-is. `epoch` and `likebox` are deleted with the like/epoch removal.
 
 ### Package boundaries
 - **No dependencies above the package's abstraction level** — the storage
