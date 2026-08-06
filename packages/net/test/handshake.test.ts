@@ -7,7 +7,14 @@ import {
   parseHandshakeBody,
   validateHandshake,
 } from '@dagsocial/net';
-import { MAGIC_TESTNET, MAGIC_MAINNET, decodeFrame, MAX_ADVERTISED_HEIGHT } from '@dagsocial/net';
+import {
+  MAGIC_TESTNET,
+  MAGIC_MAINNET,
+  MAGIC_DEVNET,
+  KNOWN_FRAME_MAGICS,
+  decodeFrame,
+  MAX_ADVERTISED_HEIGHT,
+} from '@dagsocial/net';
 import { FRAME_VERSION } from '@dagsocial/wire';
 import { PeerManager, PenaltyKind } from '@dagsocial/net';
 import type { HandshakeMsg, NetConfig } from '@dagsocial/net';
@@ -54,6 +61,19 @@ describe('handshake', () => {
       const frame = buildHandshakeFrame(MAGIC_MAINNET, testMsg);
       expect(decodeHandshakePayload(MAGIC_TESTNET, frame))
         .toEqual({ kind: 'reject', code: 'wrong-magic' });
+    });
+
+    it('recognizes every canonical magic as a foreign network — none falls through to legacy', () => {
+      // A canonical magic the classifier does not recognize falls through to
+      // the raw-CBOR parser, decodes as malformed, and permanently bans the
+      // peer. The devnet entry is the one a stale local literal would miss.
+      expect(KNOWN_FRAME_MAGICS).toContain(MAGIC_DEVNET);
+      for (const magic of KNOWN_FRAME_MAGICS) {
+        if (magic === MAGIC_TESTNET) continue; // our own network — accepted, not rejected
+        const frame = buildHandshakeFrame(magic, testMsg);
+        expect(decodeHandshakePayload(MAGIC_TESTNET, frame))
+          .toEqual({ kind: 'reject', code: 'wrong-magic' });
+      }
     });
 
     it('rejects a checksum-mismatched frame (pre-fix: retried as raw CBOR)', () => {

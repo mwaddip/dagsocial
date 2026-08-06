@@ -2,12 +2,13 @@ import { createHash } from 'crypto';
 import {
   encodeFrame as wireEncodeFrame,
   decodeFrame as wireDecodeFrame,
-  MAGIC_MAINNET,
-  MAGIC_TESTNET,
   type HashFn,
 } from '@dagsocial/wire';
 
-export { MAGIC_MAINNET, MAGIC_TESTNET };
+// The magics and the canonical set come from @dagsocial/types, never @dagsocial/wire —
+// wire still exports identically-named copies until P2-A phase 5 deletes them
+// (NET_INTERFACE §Magic Bytes).
+export { MAGIC_MAINNET, MAGIC_TESTNET, MAGIC_DEVNET, KNOWN_FRAME_MAGICS } from '@dagsocial/types';
 
 /** Create the standard blake2b256 hasher for frame checksums. */
 export function createBlake2b256Hash(): HashFn {

@@ -47,7 +47,7 @@ import { PeerDb, type PeerStorage } from './peerdb.js';
 import { SyncMachine } from './sync-machine.js';
 import type { SyncStore } from './sync-machine.js';
 import { OutboundManager } from './outbound-mgr.js';
-import { encodeFrame, decodeFrame, MAGIC_MAINNET, MAGIC_TESTNET } from './frame.js';
+import { encodeFrame, decodeFrame, MAGIC_MAINNET, KNOWN_FRAME_MAGICS } from './frame.js';
 import {
   buildHandshakeFrame,
   handshakePenalty,
@@ -79,14 +79,6 @@ type TxCallback = (tx: UtxoTransaction) => void;
 function asGossip(libp2p: Libp2p): Libp2pGossip {
   return libp2p as unknown as Libp2pGossip;
 }
-
-/**
- * Every frame magic this protocol has ever shipped. Used to tell a frame from
- * the wrong network apart from a payload that is not a frame at all: both
- * fail the magic compare with `wrong-magic`, but only the former starts with
- * a magic we recognize.
- */
-const KNOWN_FRAME_MAGICS: readonly number[] = [MAGIC_MAINNET, MAGIC_TESTNET];
 
 /** First 4 bytes as a big-endian u32 (unsigned — see decodeFrame), or null if shorter. */
 function leadingMagic(data: Uint8Array): number | null {
