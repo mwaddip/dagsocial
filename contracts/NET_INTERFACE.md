@@ -50,13 +50,24 @@ resolved once at startup from `NETWORK_TYPE`. It is never a per-call-site defaul
 > ⚠ **VIOLATED — the magic is not a fallback, it is the only path. Every node frames as
 > mainnet, on every network, unconditionally.** Measured 2026-08-06, four links:
 >
-> 1. **This contract declares `magic: number`** (required). **The code declares
+> 1. **This contract declares `magic: number`** (required). **The code declared
 >    `magic?: number`** (`net/src/types.ts:131`) — a pre-existing contract/code drift.
-> 2. **The only caller never passes it.** `node/src/index.ts:147-160` constructs `NetConfig`
->    with eleven fields; `magic` is not among them.
-> 3. Ten sites therefore always take `?? MAGIC_MAINNET` — nine in `node.ts`, one in
->    `sync-machine.ts:160`.
-> 4. `NETWORK_MODE` feeds none of them.
+>    ✅ **Closed by P2-A phase 3b** — the field is required.
+> 2. **The only caller never passed it.** `node/src/index.ts:147-160` constructed `NetConfig`
+>    with eleven fields; `magic` was not among them. ✅ **Closed by P2-A phase 2b** — node
+>    resolves the profile and passes `config.profile.magic`.
+> 3. Ten sites therefore always took `?? MAGIC_MAINNET` — nine in `node.ts`, one in
+>    `sync-machine.ts:160`. ✅ **Closed by P2-A phase 3b** — all ten deleted; a missing `magic`
+>    is now a compile error at the single construction site.
+> 4. `NETWORK_MODE` fed none of them. ✅ **Closed by P2-A phase 2b** — `NETWORK_TYPE` selects
+>    the profile, and the profile carries the magic.
+>
+> ⚠ **The guarantee in link 3 covers production callers only.** `net`'s `typecheck` is
+> `tsc --noEmit` with `"include": ["src"]`, and vitest does not check types — so **no test-side
+> `NetConfig` literal is statically enforced.** One omitting `magic` would frame with
+> `(undefined << 24 | …) === 0` silently. Extending the guarantee needs a test-covering
+> tsconfig in net's typecheck script; that is the workspace-wide `include: ["src"]` gap, not a
+> net-specific one.
 >
 > So the transport separation this table describes **does not exist at all**. `MAGIC_TESTNET`
 > has no production consumer; its only reference outside the table is a classifier
