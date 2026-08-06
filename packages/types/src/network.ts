@@ -58,8 +58,8 @@ export interface NetworkProfile {
 
 // The network magics live here, not in @dagsocial/wire: wire has zero runtime dependencies
 // and keeps them, so types cannot import from wire and wire must not import from types.
-// Until P2-A phase 5 deletes wire's copies, MAGIC_MAINNET and MAGIC_TESTNET are deliberate
-// duplicates of packages/wire/src/frame.ts and MUST stay byte-identical to them.
+// This is the sole definition — wire's duplicates were deleted in P2-A phase 5. The frame
+// codec takes `magic` as a parameter and is magic-agnostic by construction.
 export const MAGIC_MAINNET = 0x4d444147; // "MDAG"
 export const MAGIC_TESTNET = 0x54444147; // "TDAG"
 export const MAGIC_DEVNET = 0x44444147; // "DDAG"

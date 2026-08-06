@@ -30,28 +30,23 @@ BigInt paths for u64 wire values are deferred to a future version.
 | `encodeFrame(magic, code, body, hashFn)` | Encode a framed message |
 | `decodeFrame(magic, data, hashFn)` | Decode and validate a framed message |
 | `FRAME_VERSION` | `1` — current framing protocol version |
-| ~~`MAGIC_MAINNET`~~ | ⚠ **MOVING to `@dagsocial/types`** — see below |
-| ~~`MAGIC_TESTNET`~~ | ⚠ **MOVING to `@dagsocial/types`** — see below |
 
-> ⚠ **NOT IMPLEMENTED — the network magics leave this package** (decided 2026-08-06, P2-A
-> phase 5). They become fields of `NetworkProfile` in `@dagsocial/types`, alongside
-> `MAGIC_DEVNET`, so that network identity lives in one table rather than split across two
-> packages.
->
-> **Nothing here uses them.** `encodeFrame` and `decodeFrame` both take `magic` as a
-> **parameter** and `frame.ts` never reads either constant — they are pure re-exports
-> sitting in a codec that is magic-agnostic by construction. The move is therefore
-> functionally inert for this package: it deletes two lines and changes no behaviour.
->
-> **This package keeps zero runtime dependencies.** That is why the constants move *out*
-> rather than `NetworkType` moving *in* — `@dagsocial/types` cannot import from here and
-> this package must not import from there. The codec stays the lowest layer.
->
-> ⚠ **Reverses a queued follow-up.** A pre-audit note read *"wire should export the
-> canonical magic set,"* motivated by `net`'s hardcoded `KNOWN_FRAME_MAGICS` going stale
-> when a third magic is added. The defect is real and still must be fixed — but the
-> canonical set now belongs to `@dagsocial/types` beside the profile table, not here. The
-> note was written before there was a profile to hold it.
+**This package exports no network magic.** `MAGIC_MAINNET`, `MAGIC_TESTNET` and
+`MAGIC_DEVNET` live in `@dagsocial/types` beside `NetworkProfile`, together with the
+canonical `KNOWN_FRAME_MAGICS` set. Callers pass `magic` in.
+
+**Why here is the wrong home.** `encodeFrame` and `decodeFrame` take `magic` as a
+**parameter**; `frame.ts` reads no magic constant. The codec is magic-agnostic by
+construction and should not own network identity. **This package keeps zero runtime
+dependencies**, which is why the constants moved *out* rather than `NetworkType` moving
+*in* — `@dagsocial/types` cannot import from here and this package must not import from
+there. The codec stays the lowest layer.
+
+> **Reverses a pre-audit follow-up, deliberately.** A queued note read *"wire should export
+> the canonical magic set,"* motivated by `net` hardcoding `KNOWN_FRAME_MAGICS` as a local
+> literal that would go stale when a third magic was added. **That defect was real and is
+> fixed** — but the canonical set belongs in `@dagsocial/types` beside the profile table.
+> The note predates the profile table. Recorded so the reversal is not itself reversed.
 
 ---
 
@@ -411,8 +406,8 @@ See "ReaderError codes (audit L-15)" above for the normative meanings.
 |----------|-------|-------------|
 | `MAX_ARRAY_LENGTH` | `1 << 24` (16,777,216) | Hard cap on VLQ-length-prefixed array reads |
 | `FRAME_VERSION` | `1` | Current framing protocol version |
-| ~~`MAGIC_MAINNET`~~ | ~~`0x4D444147`~~ | ⚠ **MOVING to `@dagsocial/types`** — see §Exports |
-| ~~`MAGIC_TESTNET`~~ | ~~`0x54444147`~~ | ⚠ **MOVING to `@dagsocial/types`** — see §Exports |
+
+The network magics are **not** constants of this package — see §Exports.
 
 ---
 

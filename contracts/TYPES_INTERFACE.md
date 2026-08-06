@@ -804,17 +804,19 @@ export const MAGIC_DEVNET  = 0x44444147;  // "DDAG"
 export const KNOWN_FRAME_MAGICS: readonly number[];
 ```
 
-> ⚠ **The magics move here from `@dagsocial/wire`** (P2-A phase 5). `encodeFrame` and
-> `decodeFrame` take `magic` as a **parameter** and `wire/src/frame.ts` reads neither
-> constant, so they are pure re-exports in a codec that is magic-agnostic by construction —
-> the move is functionally inert there. They come here rather than `NetworkType` going there
-> because **wire has zero runtime dependencies and keeps them**: `@dagsocial/types` cannot
-> import from wire, and wire must not import from types.
->
-> `KNOWN_FRAME_MAGICS` exists because `net/src/node.ts` currently hardcodes
-> `[MAGIC_MAINNET, MAGIC_TESTNET]`. Adding a third magic without updating that literal makes
-> devnet frames fail the magic check, fall through to the legacy unframed path, decode as
-> malformed, and **permanently ban the peer**.
+**This is the sole definition of the network magics.** `@dagsocial/wire` exported duplicates
+until P2-A phase 5 deleted them. They live here rather than `NetworkType` living in wire
+because **wire has zero runtime dependencies and keeps them**: `@dagsocial/types` cannot
+import from wire, and wire must not import from types. Wire's `encodeFrame` / `decodeFrame`
+take `magic` as a parameter and read no magic constant — the codec is magic-agnostic by
+construction and does not own network identity.
+
+⚠ **`KNOWN_FRAME_MAGICS` must be imported, never re-declared.** `net/src/node.ts` held it as
+a local literal until phase 3a. A magic missing from the set is classified as not-a-frame,
+falls through to the legacy raw-CBOR path, decodes as malformed, and **permanently bans the
+peer** — so a stale copy turns a routine cross-network misconnection into a ban. Note the set
+is consulted *only* for frames that fail the own-magic compare, so a stale copy does not
+break same-network peering; the damage is entirely cross-network.
 
 **Every constant not listed in `NetworkProfile` is universal across networks**, including
 consensus ones — the format limits (`MAX_CONTENT_BYTES`, `MAX_PARENT_REFS`,

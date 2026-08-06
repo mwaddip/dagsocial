@@ -5,9 +5,10 @@ import {
   type HashFn,
 } from '@dagsocial/wire';
 
-// The magics and the canonical set come from @dagsocial/types, never @dagsocial/wire —
-// wire still exports identically-named copies until P2-A phase 5 deletes them
-// (NET_INTERFACE §Magic Bytes).
+// The magics and the canonical set come from @dagsocial/types — wire owns the codec, not
+// network identity (NET_INTERFACE §Magic Bytes). Never re-declare KNOWN_FRAME_MAGICS as a
+// local literal: a magic missing from it is classified as not-a-frame, falls through to the
+// legacy raw-CBOR path, and permanently bans the peer.
 export { MAGIC_MAINNET, MAGIC_TESTNET, MAGIC_DEVNET, KNOWN_FRAME_MAGICS } from '@dagsocial/types';
 
 /** Create the standard blake2b256 hasher for frame checksums. */
