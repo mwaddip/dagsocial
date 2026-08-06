@@ -747,9 +747,11 @@ describe('block-apply journal recording', () => {
     const utxo = await importUtxo();
     const ids = await importIdentities();
 
-    // Create an identity with a karma box at block 0 (ancient)
+    // Create an identity with a karma box at block 0 (ancient). The value is
+    // large enough that the value-over-minimum cap cannot bind — see the
+    // owed-burn derivation below.
     const identity = makeTestIdentity();
-    const oldBox = makeKarmaBox(100n, identity.userId, 0);
+    const oldBox = makeKarmaBox(1000n, identity.userId, 0);
     utxo.insertBox(oldBox);
 
     // Import decay module directly — applyOrderingBlock delegates to it,
@@ -770,8 +772,8 @@ describe('block-apply journal recording', () => {
 
     // Spec G phase D: the decay clock is committed state. `oldBox` was inserted
     // with no journal open, so the identity has no record and reads as never
-    // active — which is the same clock its `so
-    // the burn below is unchanged.
+    // active — the same clock its `createdAtBlock` of 0 gave the old box-age
+    // reading, so the burn below is unchanged by the swap.
     const records = await import('../../src/store/identity-records.js');
 
     const deps = {
@@ -790,15 +792,22 @@ describe('block-apply journal recording', () => {
     const staleHeight = KARMA_STALE_THRESHOLD_BLOCKS + 100;
     const entries: DecayJournalEntry[] = applyKarmaDecay(deps, staleHeight, decayCfg);
 
-    // owedPeriods = floor((staleHeight - 0) / 720) = 28
-    // maxBurn = min(28 * 5, 100 - 10) = min(140, 90) = 90
-    const owed = BigInt(Math.floor(staleHeight / 720)) * KARMA_DECAY_AMOUNT;
-    const maxBurn = 100n - 10n;
-    const expectedBurn = owed < maxBurn ? owed : maxBurn;
+    // Never-active clock ⇒ periods count from height 0:
+    // owed = floor(staleHeight / interval) × amount.
+    //
+    // The box value (1000n) keeps the value-over-minimum cap from binding, so
+    // the assertion measures the period arithmetic itself. A clamped assertion
+    // can hide an unbounded error in its input — the pre-P2A version of this
+    // test hardcoded a 720 divisor and the cap swallowed the resulting 2×
+    // error. The premise is asserted so a future constant change cannot
+    // silently turn this back into a cap test.
+    const owed =
+      BigInt(Math.floor(staleHeight / KARMA_DECAY_INTERVAL_BLOCKS)) * KARMA_DECAY_AMOUNT;
+    expect(owed < 1000n - KARMA_MINIMUM).toBe(true);
 
     expect(entries.length).toBe(1);
     expect(entries[0]!.owner).toEqual(identity.userId);
-    expect(entries[0]!.burnAmount).toBe(expectedBurn);
+    expect(entries[0]!.burnAmount).toBe(owed);
     expect(entries[0]!.consumedBoxIds).toEqual([oldBox.id!]);
     expect(entries[0]!.newBoxId).toBeTruthy();
     expect(entries[0]!.newBoxId).not.toBe('');
@@ -811,7 +820,7 @@ describe('block-apply journal recording', () => {
 
     // New decay-burn box exists with reduced value
     expect(karmaBox!.boxType).toBe('karma');
-    expect(karmaBox!.value).toBe(100n - expectedBurn);
+    expect(karmaBox!.value).toBe(1000n - owed);
   });
 
   // -----------------------------------------------------------------------
@@ -1619,8 +1628,8 @@ describe('block-apply consensus schedules', () => {
     db.initDb(':memory:');
 
     // lockedUntilBlock 0 — spendable the moment it is minted, bypassing the
-    // 720-block maturity delay. The value is correct, so the emission check
-    // above waves it through.
+    // CREDIT_MINER_REWARD_DELAY maturity. The value is correct, so the
+    // emission check above waves it through.
     const block = await makeApplicableBlock({ lockedUntilBlock: 0 });
 
     const blockApply = await importBlockApply();

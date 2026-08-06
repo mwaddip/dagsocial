@@ -12,6 +12,7 @@ import {
   LIKE_COST,
   LIKE_THRESHOLD,
   LIKE_FREE_THRESHOLD,
+  MEMPOOL_EXPIRY_BLOCKS,
   PROTOCOL_VERSION,
 } from '@dagsocial/types';
 import type { KarmaBox, LikeBox, Post, UtxoTransaction, AnyBox } from '@dagsocial/types';
@@ -196,7 +197,7 @@ describe('likes service', () => {
     expect(result.castLikeResult).toBe('pending');
     expect(result.txId).toBeDefined();
     expect(typeof result.txId).toBe('string');
-    expect(result.expiresAtHeight).toBe(5 + 720);
+    expect(result.expiresAtHeight).toBe(5 + MEMPOOL_EXPIRY_BLOCKS);
   });
 
   // -----------------------------------------------------------------------
