@@ -944,9 +944,10 @@ Stream messages are framed: `[magic:4][version:1][code:VLQ][length:VLQ][checksum
 > ⚠ **NOT IMPLEMENTED — decided 2026-08-06, nothing below is built.** Today the three
 > mechanisms this section unifies exist separately and none of them are connected:
 > `NETWORK_MODE` is read into config and only gates the faucet route and a UI banner;
-> `net` defaults to `MAGIC_MAINNET` at **nine call sites** regardless of it; and the
-> consensus parameters are per-process environment reads. **A node started as testnet
-> frames as mainnet and may be running one operator's private decay schedule.**
+> `net` defaults to `MAGIC_MAINNET` at **ten call sites** (nine in `node.ts`, one in
+> `sync-machine.ts`) regardless of it; and the consensus parameters are per-process
+> environment reads. **A node started as testnet frames as mainnet and may be running one
+> operator's private decay schedule.**
 
 A network is the pairing of a **parameter profile** with a **genesis block**. Three exist:
 
@@ -992,39 +993,59 @@ on devnet** — the burden is on the addition, not on keeping the set small.
 
 ### How the network is committed
 
-Three layers, deliberately redundant, because they fail differently.
+Three mechanisms, which fail differently and are listed in the order a foreign object meets
+them.
 
 | Layer | Mechanism | What a cross-network object does |
 |---|---|---|
-| **Identity** | Domain tags are network-scoped | Its ids do not exist on the other network |
-| **Block** | Network id field in the ordering block header | Rejected at the structure gate with a legible reason |
 | **Transport** | Wire magic selected by the profile | Never assembles as a frame; peers do not connect |
+| **Block** | `networkType` field in the ordering block header | Rejected at the structure gate with a legible reason |
+| **Chain** | Distinct genesis per network | Cannot link; its input boxes do not exist here |
 
-**The identity layer is the load-bearing one.** The five domain tags — `BOX_ID_DOMAIN`,
-`TX_ID_DOMAIN`, `MINT_ID_DOMAIN`, `IDENTITY_KEY_DOMAIN`, `POST_ID_DOMAIN` — become
-network-scoped, so every box id, transaction id, post id and identity record key is
-network-specific by construction. A mainnet transaction replayed on testnet does not fail a
-check; **its identifiers are not expressible there.** This is the same strengthening as the
-Spec G bond pairing: make the invalid state unrepresentable rather than detected.
+**The chain layer is what makes the networks genuinely separate**, and it is doing more work
+than it appears to. A transaction's inputs are boxes whose id chains root at genesis, so a
+mainnet transaction replayed against testnet names inputs that **do not exist** — replay
+fails on the UTXO graph, without any network check. The header field and the magic are the
+early, legible rejections; genesis is the one that cannot be circumvented.
 
-This is the structural analogue of **Ergo's address prefix** (`0x00` mainnet, `0x10`
-testnet), which rides inside every address and is Ergo's actual consensus-level network
-commitment. Notis has no addresses — a box `owner` is a raw 32-byte pubkey with no prefix —
-so the domain tags are where the same property has to live.
+> **Id derivation is deliberately NOT network-scoped.** An earlier draft of this section
+> scoped the five domain tags (`BOX_ID_DOMAIN`, `TX_ID_DOMAIN`, `MINT_ID_DOMAIN`,
+> `IDENTITY_KEY_DOMAIN`, `POST_ID_DOMAIN`) by network. **Dropped 2026-08-06**, for two
+> reasons.
+>
+> **It conflicts with a load-bearing invariant.** `@dagsocial/types` is contractually pure —
+> "no side effects, no module-level state" — and five packages derive consensus bytes from
+> it. Network-scoped tags force either module-level state in that package or a network
+> argument on every derivation. Module-level state is the config-read-at-a-distance defect
+> this whole section exists to remove, wearing a different hat.
+>
+> **The analogy that motivated it was wrong.** It was argued as the structural equivalent of
+> **Ergo's address prefix** (`0x00` mainnet, `0x10` testnet). It is not: an address prefix is
+> a *serialization* concern — how a pubkey is rendered and parsed by a wallet — and **Ergo's
+> own box ids and transaction ids are network-agnostic content hashes.** Scoping id
+> derivation would have gone beyond Ergo, not matched it.
+>
+> **What this concedes:** cross-network **post** replay. Posts are DAG objects, so a mainnet
+> post carries a valid signature and valid PoW onto devnet unchanged. Transaction replay is
+> already impossible via the chain layer above; the accompanying karma-lock transaction fails
+> regardless. This is a spam and confusion vector, not a value defect, and it is accepted.
 
 > **Divergence from Ergo, stated deliberately.** Ergo's block header has **no** network
 > field: `version`, `parentId`, `ADProofsRoot`, `stateRoot`, `transactionsRoot`, `timestamp`,
-> `nBits`, `height`, `extensionRoot`, `powSolution`, `votes`. Notis adds one anyway. It is
-> redundant for *protection* once the domain tags are scoped — it earns its bytes on
-> *diagnosis*, so a wrong-network block is rejected as "wrong network" rather than as an
-> unexplained id mismatch.
+> `nBits`, `height`, `extensionRoot`, `powSolution`, `votes`. Notis adds one. With id
+> derivation left network-agnostic this is the **only** consensus-visible network
+> commitment short of genesis, so unlike the earlier draft it is not redundant — it is what
+> turns a wrong-network block into a stated rejection rather than a chain-link failure.
 
 ### Sequencing
 
-Network-scoped domain tags move every id, so this lands **inside the P2-C consensus-format
-break bundle** with `computeTxId` length-prefixing (C1), the Merkle leaf preimage
-replacement (C7) and post typing (H5) — one coordinated break, one update to every
-id-asserting test. It must **not** land separately.
+Adding `networkType` to the header changes `blockHash` and the PoW preimage, so it lands
+**inside the P2-C consensus-format break bundle** with `computeTxId` length-prefixing (C1),
+the Merkle leaf preimage replacement (C7) and post typing (H5) — one coordinated break, one
+update to every id-asserting test. It must **not** land separately.
+
+Everything else in P2-A — the profile table, the environment reads, the magic selection — is
+**not** format-breaking and does not need to wait for that bundle.
 
 ---
 
@@ -1237,9 +1258,10 @@ See `SUBBLOCK_INTERFACE.md` for the full contract.
   and it changes all of them together.** No individual consensus parameter is
   environment-readable. Two nodes agreeing on `NETWORK_TYPE` cannot differ on any value it
   selects.
-- **Network identity is committed at the identity layer, not merely checked.** Every domain
-  tag is network-scoped, so a cross-network box id, transaction id, post id or identity
-  record key is unrepresentable rather than rejected.
+- **Id derivation is network-agnostic.** No domain tag, box id, transaction id, post id or
+  identity record key carries the network. `@dagsocial/types` stays pure — no module-level
+  state, no network argument on a derivation function. Network separation is carried by
+  genesis, the header field and the wire magic instead.
 - **The per-network parameter set covers timescale, difficulty and genesis only.** Costs and
   format limits are universal across networks. Adding a parameter to the per-network set
   requires justifying why devnet may behave differently from mainnet in that respect.

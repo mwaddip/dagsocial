@@ -1953,7 +1953,7 @@ All config via environment variables with defaults.
 | `consensus` | Changing it diverges committed state or block validity | **MUST NOT be readable from the environment.** Two nodes differing on any one of these partition permanently. These belong in `@dagsocial/types` as constants |
 | `consensus-check` | Does not change what is *valid*; disables a node's own verification of it | May be configurable, but the contract must state what stops being checked |
 | `advertised` | Reported to clients; the verifier enforces a compile-time constant instead | Changing it changes what the node *claims*, not what it *accepts* |
-| `network-identity` | Selects the network — **and with it every consensus parameter, the wire magic, the genesis, and the id-derivation domain tags** | Not a within-network parameter; nodes on different values are different networks. **Exactly one variable carries this class** |
+| `network-identity` | Selects the network — **and with it every consensus parameter, the wire magic, and the genesis** | Not a within-network parameter; nodes on different values are different networks. **Exactly one variable carries this class** |
 | `local` | Genuinely a node's own choice — producer behaviour, resource ceilings | Free to vary |
 | `operational` | Paths, ports, keys, addresses | Free to vary |
 

@@ -249,8 +249,10 @@ Classes are defined in `NODE_INTERFACE.md → Configuration`. A `consensus` vari
 **MUST NOT be readable from the environment** — two nodes differing on one of these
 partition permanently.
 
-**These four are no longer configuration.** They are fields of the network profile
-(`TYPES_INTERFACE §Network profiles`), selected together by `NETWORK_TYPE`:
+**The four `consensus` rows that were here are no longer configuration.** They and two
+further values this contract depends on resolve as follows — the first five are fields of
+the network profile (`TYPES_INTERFACE §Network profiles`), selected together by
+`NETWORK_TYPE`:
 
 | Value | Source | Per-network? | Purpose |
 |---|---|---|---|

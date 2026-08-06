@@ -599,16 +599,16 @@ BlockHeader {
 > rules*, `networkType` is *which chain*. Rejected at the structure gate when it does not
 > match the node's own profile.
 >
-> **It is deliberately redundant.** Once the domain tags are network-scoped
-> (§Network-scoped domain tags), a foreign block's ids already fail to recompute, so this
-> field protects nothing the identity layer does not. **It earns its place on diagnosis** —
-> without it a wrong-network block is rejected as an unexplained id mismatch.
+> **It is not redundant.** Id derivation is network-agnostic by decision (§Domain tags are
+> network-agnostic), so this field is the **only** consensus-visible network commitment
+> short of genesis. Without it a wrong-network block is rejected as a chain-link failure —
+> true, but opaque.
 >
-> This is a **divergence from Ergo**, whose header carries no network field and which
-> commits network identity through the address prefix instead — a surface Notis lacks,
-> since a box `owner` is a raw pubkey. Recorded so the divergence is not later "corrected"
-> by someone checking Ergo. ⚠ **Adding a header field changes `blockHash` and the PoW
-> preimage** — it is part of the P2-C break bundle.
+> This is a **divergence from Ergo**, whose header carries no network field. Recorded so it
+> is not later "corrected" by someone checking Ergo and finding no such field. Ergo can omit
+> it because its network separation rides in address serialization and genesis; Notis has no
+> address layer, since a box `owner` is a raw pubkey. ⚠ **Adding a header field changes
+> `blockHash` and the PoW preimage** — it is part of the P2-C break bundle.
 
 The header is what gets hashed. `blockHash(header) = blake2b512(encodeHeader(header))[:32]`
 (hex) is both the block's canonical hash — the next block's `prevBlockHash` — and the
@@ -814,32 +814,32 @@ difficulty belong to the constants-pinning session, together with the two figure
 flagged open below (`KARMA_STALE_THRESHOLD_BLOCKS`'s duration, and `CREDIT_TAIL_REWARD`'s
 removal). **Do not read any number in this contract as decided.**
 
-### Network-scoped domain tags
+### Domain tags are network-agnostic — deliberately
 
-> ⚠ **NOT IMPLEMENTED.** The five tags below are currently network-agnostic literals.
+The five id-derivation domain tags — `BOX_ID_DOMAIN`, `TX_ID_DOMAIN`, `MINT_ID_DOMAIN`,
+`IDENTITY_KEY_DOMAIN`, `POST_ID_DOMAIN` — **do not carry the network, and must not be
+changed to.** No derivation function takes a network argument, and this package holds no
+module-level network state.
 
-The five id-derivation domain tags become network-scoped, which is what makes a
-cross-network identifier unrepresentable rather than merely invalid:
+This was proposed and **rejected on 2026-08-06**. Recorded here because the proposal is
+attractive and will recur:
 
-```typescript
-// Today                            // Becomes
-'dagsocial/box-id/1'                'dagsocial/<network>/box-id/1'
-'dagsocial/tx-id/1'                 'dagsocial/<network>/tx-id/1'
-'dagsocial/mint-tx-id/1'            'dagsocial/<network>/mint-tx-id/1'
-'dagsocial/identity-key/1'          'dagsocial/<network>/identity-key/1'
-'dagsocial/post-id/1'               'dagsocial/<network>/post-id/1'
-```
+- **It breaks this contract's own Postcondition** — *"All functions are pure — no side
+  effects, no module-level state"* — and its `computeBoxId` one-argument invariant. Five
+  packages derive consensus bytes from these functions; a module-level network resolved at
+  import time is the config-read-at-a-distance defect that `ARCHITECTURE §Network Identity`
+  exists to remove.
+- **The motivating analogy was false.** It was argued as the equivalent of Ergo's address
+  prefix. An address prefix is a *serialization* concern, and **Ergo's own box and
+  transaction ids are network-agnostic content hashes.** Scoping derivation would exceed
+  Ergo, not match it.
+- **It buys little.** Cross-network transaction replay is already impossible: input box id
+  chains root at a genesis that differs per network, so a foreign transaction names inputs
+  that do not exist. The only gap left open is cross-network **post** replay, accepted as a
+  spam vector rather than a value defect.
 
-**The tag set must stay prefix-free.** Each tag is hashed first, followed by
-variable-length content, so if one tag were a prefix of another the two preimages could
-collide across derivations. `mainnet` / `testnet` / `devnet` are mutually non-prefix and
-the `/` separators preserve this, but the property must be **test-pinned**, not assumed —
-the same rule already carried by mint reasons (`MintReason` prefix-freeness, verified and
-pinned during Spec G).
-
-⚠ **This moves every box id, transaction id, post id and identity record key.** It lands
-**inside the P2-C consensus-format break bundle** — with `computeTxId` length-prefixing
-(C1), the Merkle leaf preimage replacement (C7) and post typing (H5) — never on its own.
+Network separation lives in genesis, the header `networkType`, and the wire magic. See
+`ARCHITECTURE §Network Identity → How the network is committed`.
 
 ### Denomination (P0 — Spec B)
 
