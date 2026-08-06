@@ -44,6 +44,17 @@ export {
   ED25519_SPKI_PREFIX,
 } from './constants.js';
 
+// Network profiles (P2-A)
+export {
+  NETWORK_PROFILES,
+  profileFor,
+  MAGIC_MAINNET,
+  MAGIC_TESTNET,
+  MAGIC_DEVNET,
+  KNOWN_FRAME_MAGICS,
+} from './network.js';
+export type { NetworkType, NetworkProfile } from './network.js';
+
 // Identity
 export { generateKeyPair } from './identity.js';
 export type { KeyPair, UserId } from './identity.js';
