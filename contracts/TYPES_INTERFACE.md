@@ -795,7 +795,26 @@ export interface NetworkProfile {
 
 export const NETWORK_PROFILES: Readonly<Record<NetworkType, NetworkProfile>>;
 export function profileFor(network: NetworkType): NetworkProfile;
+
+// The network magics live here, not in @dagsocial/wire — see below
+export const MAGIC_MAINNET = 0x4D444147;  // "MDAG"
+export const MAGIC_TESTNET = 0x54444147;  // "TDAG"
+export const MAGIC_DEVNET  = 0x44444147;  // "DDAG"
+/** The canonical set. `net` must derive its frame-magic check from this, never a local literal. */
+export const KNOWN_FRAME_MAGICS: readonly number[];
 ```
+
+> ⚠ **The magics move here from `@dagsocial/wire`** (P2-A phase 5). `encodeFrame` and
+> `decodeFrame` take `magic` as a **parameter** and `wire/src/frame.ts` reads neither
+> constant, so they are pure re-exports in a codec that is magic-agnostic by construction —
+> the move is functionally inert there. They come here rather than `NetworkType` going there
+> because **wire has zero runtime dependencies and keeps them**: `@dagsocial/types` cannot
+> import from wire, and wire must not import from types.
+>
+> `KNOWN_FRAME_MAGICS` exists because `net/src/node.ts` currently hardcodes
+> `[MAGIC_MAINNET, MAGIC_TESTNET]`. Adding a third magic without updating that literal makes
+> devnet frames fail the magic check, fall through to the legacy unframed path, decode as
+> malformed, and **permanently ban the peer**.
 
 **Every constant not listed in `NetworkProfile` is universal across networks**, including
 consensus ones — the format limits (`MAX_CONTENT_BYTES`, `MAX_PARENT_REFS`,

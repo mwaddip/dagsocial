@@ -30,8 +30,28 @@ BigInt paths for u64 wire values are deferred to a future version.
 | `encodeFrame(magic, code, body, hashFn)` | Encode a framed message |
 | `decodeFrame(magic, data, hashFn)` | Decode and validate a framed message |
 | `FRAME_VERSION` | `1` — current framing protocol version |
-| `MAGIC_MAINNET` | `0x4D444147` ("MDAG") |
-| `MAGIC_TESTNET` | `0x54444147` ("TDAG") |
+| ~~`MAGIC_MAINNET`~~ | ⚠ **MOVING to `@dagsocial/types`** — see below |
+| ~~`MAGIC_TESTNET`~~ | ⚠ **MOVING to `@dagsocial/types`** — see below |
+
+> ⚠ **NOT IMPLEMENTED — the network magics leave this package** (decided 2026-08-06, P2-A
+> phase 5). They become fields of `NetworkProfile` in `@dagsocial/types`, alongside
+> `MAGIC_DEVNET`, so that network identity lives in one table rather than split across two
+> packages.
+>
+> **Nothing here uses them.** `encodeFrame` and `decodeFrame` both take `magic` as a
+> **parameter** and `frame.ts` never reads either constant — they are pure re-exports
+> sitting in a codec that is magic-agnostic by construction. The move is therefore
+> functionally inert for this package: it deletes two lines and changes no behaviour.
+>
+> **This package keeps zero runtime dependencies.** That is why the constants move *out*
+> rather than `NetworkType` moving *in* — `@dagsocial/types` cannot import from here and
+> this package must not import from there. The codec stays the lowest layer.
+>
+> ⚠ **Reverses a queued follow-up.** A pre-audit note read *"wire should export the
+> canonical magic set,"* motivated by `net`'s hardcoded `KNOWN_FRAME_MAGICS` going stale
+> when a third magic is added. The defect is real and still must be fixed — but the
+> canonical set now belongs to `@dagsocial/types` beside the profile table, not here. The
+> note was written before there was a profile to hold it.
 
 ---
 
@@ -309,7 +329,8 @@ Encodes a framed message.
 - **body:** raw bytes (unchanged)
 
 **Preconditions:**
-- `magic` is a valid network magic (`MAGIC_MAINNET` or `MAGIC_TESTNET`)
+- `magic` is a valid network magic — supplied by the caller from the network profile
+  (`@dagsocial/types`). This package does not know the set and does not validate against it
 - `code` is a non-negative safe integer
 - `body` is a `Uint8Array` (empty body is valid: `new Uint8Array(0)`)
 
@@ -390,8 +411,8 @@ See "ReaderError codes (audit L-15)" above for the normative meanings.
 |----------|-------|-------------|
 | `MAX_ARRAY_LENGTH` | `1 << 24` (16,777,216) | Hard cap on VLQ-length-prefixed array reads |
 | `FRAME_VERSION` | `1` | Current framing protocol version |
-| `MAGIC_MAINNET` | `0x4D444147` | Mainnet magic bytes ("MDAG") |
-| `MAGIC_TESTNET` | `0x54444147` | Testnet magic bytes ("TDAG") |
+| ~~`MAGIC_MAINNET`~~ | ~~`0x4D444147`~~ | ⚠ **MOVING to `@dagsocial/types`** — see §Exports |
+| ~~`MAGIC_TESTNET`~~ | ~~`0x54444147`~~ | ⚠ **MOVING to `@dagsocial/types`** — see §Exports |
 
 ---
 

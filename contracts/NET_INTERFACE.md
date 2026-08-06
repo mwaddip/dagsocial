@@ -73,10 +73,17 @@ resolved once at startup from `NETWORK_TYPE`. It is never a per-call-site defaul
 > `magic` was not fixed.
 
 > ⚠ **`KNOWN_FRAME_MAGICS` is hardcoded in `net/src/node.ts` as `[MAGIC_MAINNET,
-> MAGIC_TESTNET]`.** Adding `MAGIC_DEVNET` to wire without updating that list makes devnet
-> frames fail the magic check, fall through to the legacy unframed path, decode as malformed,
-> and **permanently ban the peer**. The canonical set must be exported by `@dagsocial/wire`
-> and consumed by net — a pre-existing follow-up that this change makes load-bearing.
+> MAGIC_TESTNET]`.** Adding a third magic without updating that literal makes devnet frames
+> fail the magic check, fall through to the legacy unframed path, decode as malformed, and
+> **permanently ban the peer**. The canonical set must be **imported**, never re-declared.
+>
+> ⚠ **Both the magics and the canonical set come from `@dagsocial/types`, not
+> `@dagsocial/wire`.** They move there in P2-A phase 5, beside `NetworkProfile` — wire's
+> frame functions take `magic` as a parameter and never read the constants, and wire keeps
+> its zero runtime dependencies, so the table cannot live there. Net's imports of
+> `MAGIC_MAINNET` / `MAGIC_TESTNET` from `./frame.js` re-point to `@dagsocial/types`.
+> **This reverses the pre-audit follow-up that said wire should own the canonical set** —
+> that note predates the profile table.
 
 ### Version Negotiation
 
