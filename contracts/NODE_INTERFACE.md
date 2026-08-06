@@ -772,7 +772,27 @@ found, which is right for context and wrong for not missing any. Consolidated:
    becomes `BoxCandidate[]`.
 3. `createdAtBlock` and `lastTouchBlock` are deleted from the box protocol. The
    `created_at_block` **column** stays (store-only, never a consensus input).
-4. `utxo_boxes.tx_id` / `output_index` become `NOT NULL`.
+4. `utxo_boxes.tx_id` / `output_index` become `NOT NULL` — **and this belongs in
+   the same commit as the box-field deletions, not earlier.** Tightening the
+   columns invalidates ~190 test fixtures across 28 files that seed pre-block
+   boxes without provenance; those same fixtures must be edited again when
+   `createdAtBlock`/`lastTouchBlock` leave the box. Doing it in two passes means
+   touching all of them twice, for the same reason the id-moving changes are one
+   atomic commit. *(Production is unaffected either way: all eight `insertBox`
+   sites set both fields — verified during G2, and note the literal grep
+   `insertBox(` misses the point-free `credits.ts` `.forEach(insertBox)`.)*
+   `test/store/box-provenance.test.ts`'s nullable-pinning cases are **deleted**
+   rather than repaired: they pin a state that ceases to exist.
+
+4b. **Bump `CURRENT_SCHEMA_VERSION`.** `CREATE TABLE IF NOT EXISTS` does not
+   tighten an existing database, so an old `dagsocial.db` would silently keep
+   nullable columns — the one outcome `db.ts`'s own precedent rules out ("a DB
+   predating a schema change should fail loudly at startup; pre-stable, reset
+   acceptable"). The guard for this already exists and has **never fired**:
+   `CURRENT_SCHEMA_VERSION` in `store/meta.ts` is still `0` and was not bumped
+   across P0–P3, so `index.ts` reads it, compares it, and can never act. Phase G
+   is where an existing DB genuinely becomes invalid, so it is where the counter
+   finally earns its keep. Do not add a bespoke guard alongside it.
 
 **Correctness debts that only become enforceable here**
 
