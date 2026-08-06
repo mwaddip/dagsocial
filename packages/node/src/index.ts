@@ -146,11 +146,12 @@ if (currentHeight > 0 && avlHandle.storage.version() === null) {
 // internal fallbacks silently govern instead.
 const net = new NetNode(
   {
-    // The profile's wire magic. Without it, net's `?? MAGIC_MAINNET` fallbacks
-    // govern and every node frames as mainnet on every network (NET_INTERFACE
-    // §Magic Bytes). Phase 3 makes the field required in NetConfig — until
-    // then no test imports index.ts, so dropping this line fails nothing.
+    // The profile's wire magic and post-PoW difficulty. Both are required in
+    // NetConfig since P2-A phase 3b deleted net's `?? MAGIC_MAINNET` fallbacks
+    // (NET_INTERFACE §Magic Bytes); net checks inbound gossip PoW against the
+    // same profile difficulty the verifier enforces.
     magic: config.profile.magic,
+    postPowTargetBits: config.postPowTargetBits,
     bootstrapPeers: config.bootstrapPeers,
     listenAddrs: config.listenAddrs,
     maxPeers: config.maxPeers,
