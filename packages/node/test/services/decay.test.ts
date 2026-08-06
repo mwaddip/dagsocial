@@ -59,12 +59,12 @@ describe('isIdentityStale', () => {
   });
 
   it('returns false when activity is within the threshold', () => {
-    // threshold = 20160, current = 100000, age = 1000 < threshold
+    // current = 100000, age = 1000 — well inside the threshold
     expect(isIdentityStale(clock(99000), 100000, KARMA_STALE_THRESHOLD_BLOCKS)).toBe(false);
   });
 
   it('returns true when activity is older than the threshold', () => {
-    // threshold = 20160, current = 100000, age = 99000 > threshold
+    // current = 100000, age = 99000 — beyond the threshold
     expect(isIdentityStale(clock(1000), 100000, KARMA_STALE_THRESHOLD_BLOCKS)).toBe(true);
   });
 
@@ -117,32 +117,47 @@ describe('owedPeriods', () => {
   });
 
   it('counts periods since activity', () => {
-    // (3160 - 1000) / 720 = 3
-    expect(owedPeriods(clock(1000), 3160, KARMA_DECAY_INTERVAL_BLOCKS)).toBe(3);
+    // Three whole intervals since the activity height.
+    expect(
+      owedPeriods(clock(1000), 1000 + 3 * KARMA_DECAY_INTERVAL_BLOCKS, KARMA_DECAY_INTERVAL_BLOCKS),
+    ).toBe(3);
   });
 
   it('uses the decay height when it is later than the activity height', () => {
     // The `max(...)` fallback: after a decay the only karma box is the
     // decay-burn box, whose height is exactly `lastDecayBlock`.
-    // (3160 - 2000) / 720 = 1, not (3160 - 1000) / 720 = 3.
-    expect(owedPeriods(clock(1000, 2000), 3160, KARMA_DECAY_INTERVAL_BLOCKS)).toBe(1);
+    // One interval past the decay — not three past the activity.
+    const activityAt = 1000;
+    const decayAt = activityAt + 2 * KARMA_DECAY_INTERVAL_BLOCKS;
+    expect(
+      owedPeriods(
+        clock(activityAt, decayAt),
+        decayAt + KARMA_DECAY_INTERVAL_BLOCKS,
+        KARMA_DECAY_INTERVAL_BLOCKS,
+      ),
+    ).toBe(1);
   });
 
   it('uses the activity height when it is later than the decay height', () => {
-    // (3160 - 1000) / 720 = 3, not (3160 - 500) / 720 = 3 — checked with a
-    // decay far enough back that reading it would change the answer.
-    expect(owedPeriods(clock(1000, 100), 3160, KARMA_DECAY_INTERVAL_BLOCKS)).toBe(3);
-    expect(owedPeriods(clock(2500, 100), 3160, KARMA_DECAY_INTERVAL_BLOCKS)).toBe(0);
+    // The decay sits more than one whole interval before the activity, so
+    // reading the decay height instead would change the answer.
+    const decayAt = 100;
+    const activityAt = decayAt + KARMA_DECAY_INTERVAL_BLOCKS;
+    const height = activityAt + 3 * KARMA_DECAY_INTERVAL_BLOCKS;
+    expect(owedPeriods(clock(activityAt, decayAt), height, KARMA_DECAY_INTERVAL_BLOCKS)).toBe(3);
+    expect(owedPeriods(clock(height - 1, decayAt), height, KARMA_DECAY_INTERVAL_BLOCKS)).toBe(0);
   });
 
   it('activity and decay at the same height count once', () => {
     // The intra-block adjacency: decay fires, then a vouch settlement mints for
     // the same owner in the same block.
-    expect(owedPeriods(clock(2000, 2000), 3160, KARMA_DECAY_INTERVAL_BLOCKS)).toBe(1);
+    expect(
+      owedPeriods(clock(2000, 2000), 2000 + KARMA_DECAY_INTERVAL_BLOCKS, KARMA_DECAY_INTERVAL_BLOCKS),
+    ).toBe(1);
   });
 
   it('a missing record counts from height 0', () => {
-    expect(owedPeriods(null, 1440, KARMA_DECAY_INTERVAL_BLOCKS)).toBe(2);
+    expect(owedPeriods(null, 2 * KARMA_DECAY_INTERVAL_BLOCKS, KARMA_DECAY_INTERVAL_BLOCKS)).toBe(2);
   });
 });
 
@@ -189,6 +204,16 @@ describe('applyKarmaDecay', () => {
     return makeDeps(boxesMap, recordMap);
   }
 
+  // The stale-family heights, derived from the constants so the tests survive
+  // the next constant change. Activity at ACTIVITY_AT, decay evaluated at
+  // STALE_AT: past the staleness threshold, with enough whole intervals owed
+  // (CAP_INTERVALS × KARMA_DECAY_AMOUNT > 100n − KARMA_MINIMUM) that the
+  // value-over-minimum cap, not the per-period rate, sets every asserted burn.
+  const ACTIVITY_AT = 1000;
+  const CAP_INTERVALS = Number((100n - KARMA_MINIMUM) / KARMA_DECAY_AMOUNT) + 1;
+  const STALE_AT =
+    ACTIVITY_AT + KARMA_STALE_THRESHOLD_BLOCKS + CAP_INTERVALS * KARMA_DECAY_INTERVAL_BLOCKS;
+
   it('does nothing for a non-stale identity', () => {
     const { deps, consumed, inserted } = oneOwner(
       [makeKarmaBox({ value: 100n })],
@@ -203,39 +228,42 @@ describe('applyKarmaDecay', () => {
   });
 
   it('burns karma for a stale identity', () => {
-    // Activity at 1000, current 25000, threshold 20160 -> stale (age 24000)
-    // periods = floor((25000-1000)/720) = 33, burn = min(33*5=165, 100-10=90) = 90
+    // Stale by construction of STALE_AT, and owed more than the box holds over
+    // the floor — so the burn is the value-over-minimum cap.
     const { deps } = oneOwner(
       [makeKarmaBox({ id: 'old-box-1', value: 100n })],
-      clock(1000),
+      clock(ACTIVITY_AT),
     );
 
-    const journal = applyKarmaDecay(deps, 25000, TEST_CFG);
+    const journal = applyKarmaDecay(deps, STALE_AT, TEST_CFG);
 
     expect(journal).toHaveLength(1);
     const entry = journal[0]!;
-    expect(entry.burnAmount).toBe(90n);
+    expect(entry.burnAmount).toBe(100n - KARMA_MINIMUM);
     expect(entry.consumedBoxIds).toEqual(['old-box-1']);
     expect(entry.newBoxId).toBeTruthy();
   });
 
   it('caps burn at the KARMA_MINIMUM floor', () => {
-    // burn = min(33*5=165, 12-10=2) = 2
-    const { deps } = oneOwner([makeKarmaBox({ id: 'old-box-1', value: 12n })], clock(1000));
+    // Owed far more than the box holds over the floor; only the excess burns.
+    const { deps } = oneOwner(
+      [makeKarmaBox({ id: 'old-box-1', value: 12n })],
+      clock(ACTIVITY_AT),
+    );
 
-    const journal = applyKarmaDecay(deps, 25000, TEST_CFG);
+    const journal = applyKarmaDecay(deps, STALE_AT, TEST_CFG);
 
     expect(journal).toHaveLength(1);
-    expect(journal[0]!.burnAmount).toBe(2n);
+    expect(journal[0]!.burnAmount).toBe(12n - KARMA_MINIMUM);
   });
 
   it('does nothing when already at or below the minimum', () => {
     const { deps, consumed, inserted } = oneOwner(
       [makeKarmaBox({ id: 'old-box-1', value: 8n })],
-      clock(1000),
+      clock(ACTIVITY_AT),
     );
 
-    const journal = applyKarmaDecay(deps, 25000, TEST_CFG);
+    const journal = applyKarmaDecay(deps, STALE_AT, TEST_CFG);
 
     expect(journal).toHaveLength(0);
     expect(consumed).toHaveLength(0);
@@ -247,12 +275,12 @@ describe('applyKarmaDecay', () => {
     // writing `lastDecayBlock` on a zero burn would silently forgive them.
     const { deps, recordMap } = oneOwner(
       [makeKarmaBox({ id: 'old-box-1', value: 8n })],
-      clock(1000),
+      clock(ACTIVITY_AT),
     );
 
-    applyKarmaDecay(deps, 25000, TEST_CFG);
+    applyKarmaDecay(deps, STALE_AT, TEST_CFG);
 
-    expect(recordMap.get(ownerKey)).toEqual(clock(1000));
+    expect(recordMap.get(ownerKey)).toEqual(clock(ACTIVITY_AT));
   });
 
   it('consolidates multiple boxes into one', () => {
@@ -261,10 +289,10 @@ describe('applyKarmaDecay', () => {
         makeKarmaBox({ id: 'box-a', value: 50n }),
         makeKarmaBox({ id: 'box-b', value: 60n }),
       ],
-      clock(1000),
+      clock(ACTIVITY_AT),
     );
 
-    const journal = applyKarmaDecay(deps, 25000, TEST_CFG);
+    const journal = applyKarmaDecay(deps, STALE_AT, TEST_CFG);
 
     expect(journal).toHaveLength(1);
     expect(consumed.length).toBe(2);
@@ -272,49 +300,57 @@ describe('applyKarmaDecay', () => {
   });
 
   it('the new box has decayBurn: true', () => {
-    const { deps, inserted } = oneOwner([makeKarmaBox({ id: 'old-box', value: 100n })], clock(1000));
+    const { deps, inserted } = oneOwner(
+      [makeKarmaBox({ id: 'old-box', value: 100n })],
+      clock(ACTIVITY_AT),
+    );
 
-    applyKarmaDecay(deps, 25000, TEST_CFG);
+    applyKarmaDecay(deps, STALE_AT, TEST_CFG);
 
     expect(inserted).toHaveLength(1);
     expect(inserted[0]!.decayBurn).toBe(true);
   });
 
   it('advances lastDecayBlock and preserves lastActivityBlock', () => {
-    const { deps, recordMap } = oneOwner([makeKarmaBox({ id: 'old-box', value: 100n })], clock(1000));
+    const { deps, recordMap } = oneOwner(
+      [makeKarmaBox({ id: 'old-box', value: 100n })],
+      clock(ACTIVITY_AT),
+    );
 
-    applyKarmaDecay(deps, 25000, TEST_CFG);
+    applyKarmaDecay(deps, STALE_AT, TEST_CFG);
 
-    expect(recordMap.get(ownerKey)).toEqual(clock(1000, 25000));
+    expect(recordMap.get(ownerKey)).toEqual(clock(ACTIVITY_AT, STALE_AT));
   });
 
   it('a second cycle charges from the first decay, not from the activity', () => {
-    // Without `max(...)` this would re-bill every interval since height 1000.
+    // Without `max(...)` this would re-bill every interval since ACTIVITY_AT
+    // and burn down to the floor instead of one period's worth.
+    const firstDecayAt = ACTIVITY_AT + KARMA_STALE_THRESHOLD_BLOCKS;
     const { deps } = oneOwner(
       [makeKarmaBox({ id: 'decay-box', value: 100n, decayBurn: true })],
-      clock(1000, 25000),
+      clock(ACTIVITY_AT, firstDecayAt),
     );
 
-    const journal = applyKarmaDecay(deps, 25720, TEST_CFG);
+    const journal = applyKarmaDecay(deps, firstDecayAt + KARMA_DECAY_INTERVAL_BLOCKS, TEST_CFG);
 
     expect(journal).toHaveLength(1);
-    // floor((25720 - 25000) / 720) = 1 period -> 5 karma
-    expect(journal[0]!.burnAmount).toBe(5n);
+    // One whole interval past the first decay -> exactly one period's burn.
+    expect(journal[0]!.burnAmount).toBe(KARMA_DECAY_AMOUNT);
   });
 
   it('creates a record for an owner that had none', () => {
     const { deps, recordMap } = oneOwner([makeKarmaBox({ id: 'old-box', value: 100n })]);
 
-    const journal = applyKarmaDecay(deps, 25000, TEST_CFG);
+    const journal = applyKarmaDecay(deps, STALE_AT, TEST_CFG);
 
     expect(journal).toHaveLength(1);
-    expect(recordMap.get(ownerKey)).toEqual(clock(0, 25000));
+    expect(recordMap.get(ownerKey)).toEqual(clock(0, STALE_AT));
   });
 
   it('skips an owner with no karma boxes without touching its clock', () => {
-    const { deps, recordMap } = oneOwner([], clock(1000));
+    const { deps, recordMap } = oneOwner([], clock(ACTIVITY_AT));
 
-    expect(applyKarmaDecay(deps, 25000, TEST_CFG)).toHaveLength(0);
-    expect(recordMap.get(ownerKey)).toEqual(clock(1000));
+    expect(applyKarmaDecay(deps, STALE_AT, TEST_CFG)).toHaveLength(0);
+    expect(recordMap.get(ownerKey)).toEqual(clock(ACTIVITY_AT));
   });
 });

@@ -1,9 +1,3 @@
-import {
-  KARMA_STALE_THRESHOLD_BLOCKS,
-  KARMA_DECAY_INTERVAL_BLOCKS,
-  KARMA_DECAY_AMOUNT,
-  KARMA_MINIMUM,
-} from '@dagsocial/types';
 import type { DecayCfg, Scenario } from './decay-timeline.js';
 
 /**
@@ -36,12 +30,25 @@ export const FAST: DecayCfg = {
   karmaMinimum: 10n,
 };
 
-/** The shipped constants, so at least one timeline runs at production scale. */
+/**
+ * The production constants **as they stood when the golden fixture was
+ * captured** (pre-P2A, 2-minute-block basis), frozen as literals on purpose.
+ *
+ * The fixture exists to prove the box-age → identity-record swap
+ * behaviour-identical, so the constants' *live* values are irrelevant to the
+ * property under test — "production scale" means production at capture time.
+ * Reading the live constants here pinned the golden's outputs while letting
+ * its inputs float, which is how the P2-A unit correction (20160→40320,
+ * 720→1440) broke the capture without any behaviour changing. All four fields
+ * are frozen, not just the two P2-A moved: all four are inputs of the frozen
+ * outputs, and two of them staying equal to the live constants would be luck,
+ * not construction.
+ */
 export const PROD: DecayCfg = {
-  staleThresholdBlocks: KARMA_STALE_THRESHOLD_BLOCKS,
-  decayIntervalBlocks: KARMA_DECAY_INTERVAL_BLOCKS,
-  decayAmount: KARMA_DECAY_AMOUNT,
-  karmaMinimum: KARMA_MINIMUM,
+  staleThresholdBlocks: 20160,
+  decayIntervalBlocks: 720,
+  decayAmount: 5n,
+  karmaMinimum: 10n,
 };
 
 export const EQUIVALENT_SCENARIOS: Scenario[] = [
@@ -173,8 +180,8 @@ export const EQUIVALENT_SCENARIOS: Scenario[] = [
     ],
   },
   {
-    // One timeline at the shipped constants, so the fixtures are not entirely
-    // a compressed-config artifact.
+    // One timeline at capture-time production constants (see PROD), so the
+    // fixtures are not entirely a compressed-config artifact.
     name: 'production-constants',
     cfg: PROD,
     owners: ['alice'],
