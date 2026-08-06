@@ -258,6 +258,13 @@ gate (see `NODE_INTERFACE.md`, "Structure validation in the apply funnel").
 
 ### verifyBlockChainLink
 
+> ⚠ **NEVER BUILT as described, and it has no production caller.** The function exists but
+> nothing in `packages/node/src` calls it — the chain-link check on the live path is done
+> elsewhere. It also documents fields that **stopped existing on 2026-07-24**, and the same
+> refactor left a phantom `hash` check in the structure list below. Kept so it is not
+> re-adopted on the assumption that it is the sanctioned chain-link check; **verify what
+> the apply path actually does before relying on this signature.**
+
 ```
 verifyBlockChainLink(block: OrderingBlock, prevBlock: OrderingBlock): boolean
 ```
@@ -300,6 +307,16 @@ rejected before phase N+1 executes.
 Invariant: `post_validated_height <= post_indexed_height <= dag_tip_height`.
 External queries serve only up to `post_validated_height`.
 
+> ⚠ **NEVER BUILT — NOT PLANNED.** Neither identifier exists anywhere in `packages/`.
+> The invariant has nothing to hold between, and **"External queries serve only up to
+> `post_validated_height`" is false — every query serves the DAG tip.** The two
+> similarly-named values that do exist in `dag_meta` are **write-only `+1` counters**:
+> nothing reads them, nothing resets them on reorg, and they are not heights.
+>
+> Kept rather than deleted so this is not re-added as an apparent oversight. The same
+> claim also appears in `NODE_INTERFACE.md → Service Layer Architecture` — **if this is
+> ever built, both must change together.**
+
 **Protocol vs. local-policy rules:**
 - Phases 1-3 are protocol rules — all nodes must enforce identically
 - Phase 4 may include local-policy rules — configurable, non-consensus
@@ -320,10 +337,30 @@ Stage 1 (@dagsocial/net — topic validators, before mesh forwarding)
   └── (signature deferred to Stage 2 — requires DB lookup for public key)
 
 Stage 2 (@dagsocial/node — on* callbacks, after gossip receipt)
-  ├── All Stage 1 checks re-run (defense in depth)
+  ├── All Stage 1 checks re-run (defense in depth)   [⚠ FALSE — see below]
   ├── verifyPostSignature (now with public key from identity store)
   ├── Parent ref existence (DB lookup)
   └── Karma sufficiency (UTXO state)
+```
+
+> ⚠ **"All Stage 1 checks re-run" is FALSE, and the way it is false is the dangerous part.**
+> Stage 2 does not call the Stage 1 functions. It **reimplements three of the six inline**,
+> at inconsistent strictness — including a content-length check measured in **UTF-16 code
+> units against a byte constant** (`MAX_CONTENT_BYTES` is 300 **UTF-8 bytes**), so any
+> non-ASCII post is measured wrongly at the API boundary.
+>
+> The defect is not the missing re-run — it is that a reimplementation looks like defence in
+> depth while being a **second implementation of a validity rule**, i.e. a mirror. Two
+> copies of a rule diverge; that is what mirrors do. **Stage 2 must call the same exported
+> functions Stage 1 calls**, so there is one implementation of each check.
+>
+> Related and unresolved: every numeric bound in `verifyOrderingBlockStructure` is
+> `typeof === 'number'` plus a comparison, so `NaN`, `±Infinity` and floats pass the
+> structure gate. `@dagsocial/net` already compensates for this **at its call site rather
+> than at the gate**, and neither contract records that arrangement — so "fixing" either
+> side in isolation breaks the other.
+
+```
 
 Block receipt (@dagsocial/node)
   ├── verifyOrderingBlockStructure

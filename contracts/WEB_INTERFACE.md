@@ -4,6 +4,27 @@
 **Status:** Phase 2 (not implemented)
 **Protocol version:** 1
 
+> **This file is correct as written — it is a forward contract for a package that has not
+> been built yet, and it says so.** Recorded explicitly because a 2026-08-06 audit
+> initially mis-filed it as fiction to be deleted.
+>
+> **The demo UI (`packages/node/public/index.html`) is deliberately undocumented and is not
+> this contract's subject.** It is a throwaway debug interface that exists only during
+> development, until the real web client above is a reality. Do not write an interface
+> contract for it, and do not treat it as a product surface.
+>
+> **One thing about the demo UI IS binding, despite it being throwaway:** it hand-rolls
+> CBOR, `computeBoxId`, `computeTxId` and `postFieldBytes`, so it is a third implementation
+> of consensus-critical encodings and **must stay byte-identical to `@dagsocial/types`**.
+> That is pinned by `ui-crypto-mirror.test.ts`, and the mirror was verified sound in the
+> audit. Throwaway applies to its *flows and UX*, not to its encoders.
+
+> **Worth noting for the whole `contracts/` directory:** this file is 100% original text
+> from the 2026-07-20 bulk-write, and it is one of the few that was never wrong — because
+> it carried a `Status:` line from the first day. That is the evidence behind the status
+> marker convention in `ARCHITECTURE.md`: aspirational text is not the problem, *unmarked*
+> aspirational text is.
+
 ## Scope
 
 Browser-based client for DAGsocial. Owns: UI (compose, feed, identity), client-side Ed25519 key management, PoW solving, post construction and signing. Depends on a running `@dagsocial/node` HTTP API and `@dagsocial/types` for shared structures and constants.

@@ -77,7 +77,13 @@ finalized. See `MEMPOOL_INTERFACE.md` for the full contract.
 - Batch linking: sub-blocks and their linked UTXO payloads share a `batch_id`
 - Expired entries purged at block assembly time
 - Confirmed entries removed after block finalization
-- No size cap, no replacement semantics (no fees yet)
+- No replacement semantics (no fees yet)
+  > ⚠ **"No size cap" was wrong and has been removed.** A cap exists, is documented in
+  > detail in `MEMPOOL_INTERFACE.md`, and is **enforced at all three insert sites**
+  > (`MAX_MEMPOOL_ENTRIES`, default `10000`). `MEMPOOL_INTERFACE.md` is authoritative for
+  > mempool behaviour; this section is a summary and must not restate its rules. Two
+  > documents disagreeing about whether a bound exists is worse than either being wrong
+  > alone — a reader here would size a DoS assumption on a cap that is actually present.
 
 ---
 
@@ -1577,10 +1583,28 @@ Measured: identical length, different bytes (`…6d6f726967696e616c56616c7565…
 > must impose an order rather than inherit the caller's — lexicographic key sort
 > is the simplest total rule. Phase G is already the one phase where ids
 > legitimately move and every id-asserting test updates together, so folding it
-> in costs no extra churn; doing it earlier moves ids twice. Until then,
-> **producers and `rowToBox` MUST agree on field order**, and `post_lock` is a
-> known outstanding violation — do not "fix" it by reordering one site, which
-> treats the instance and leaves the class.
+> in costs no extra churn; doing it earlier moves ids twice.
+
+> ✅ **LANDED — phase G3b, 2026-08-06. This hazard is CLOSED.** Both encoders now sort
+> keys (`canonicalBoxBytes` → `encodeForHash(sortKeys(rest))`; `serialize-box.ts` →
+> `cborEncode(sortKeys(fields))`), so a producer no longer chooses key order and cannot
+> get it wrong. **`post_lock`'s producer-vs-`rowToBox` divergence is fixed by the sort,
+> not by reordering that site.**
+>
+> ⚠ **The paragraph above previously ended with an interim rule that is now actively
+> harmful and has been removed:** *"Until then, producers and `rowToBox` MUST agree on
+> field order, and `post_lock` is a known outstanding violation."* That mandated a
+> hand-maintained coupling between distant call sites which the sort exists to make
+> unnecessary — following it would re-introduce exactly what G3b removed. It survived
+> because G3b landed **one day after** this section was written, and the phase-G checklist
+> elsewhere in this file was ticked while this section was not. **A reader consulting the
+> detailed hazard section got "live fork, apply this discipline"; a reader consulting the
+> checklist got "done."** Both read as authoritative.
+>
+> **Header key order is a separate matter and is NOT closed by this** — `encodeHeader` is
+> still an unsorted `toBuffer(h)`. It holds today only because the store persists the
+> producer's exact bytes and `decodeHeader` preserves their order on the way back. See
+> §Ordering Block Creator.
 
 **1c. Key order is attacker-controlled on transaction outputs.** Found by the
 phase C3 session, and it is 1b's hazard weaponised rather than accidental.
@@ -1713,6 +1737,20 @@ The store layer is backend-agnostic. All storage access goes through the
 `PostStore` interface. The SQLite implementation (`SqlitePostStore`) is the
 default.
 
+> ⚠ **NEVER BUILT — NOT PLANNED, and this one is actively dangerous.**
+> **"All storage access goes through the `PostStore` interface" is false.** Nothing routes
+> through it. Every real write path is a module function in `store/*`, and the abstraction
+> is wired but never called.
+>
+> **Its `put()` would corrupt `dag_posts` if used.** A future session that reads this
+> section, believes the abstraction is the sanctioned path, and writes through it will
+> damage the posts table — which is why this is marked rather than deleted. Use the
+> `store/*` module functions.
+>
+> The opaque `(typeId, id, sequence, data)` design principle below describes the intended
+> shape of an abstraction that was never adopted. Treat it as a design sketch, not as a
+> description of the store.
+
 **Design principle:** The store sees opaque `(typeId, id, sequence, data)`
 tuples. It does NOT parse post content, verify signatures, or validate the
 DAG structure. Domain semantics live in the service layer above.
@@ -1802,6 +1840,12 @@ A post failing Phase N is rejected before Phase N+1 runs.
 Invariant: `post_validated_height <= post_indexed_height <= dag_tip_height`.
 External queries serve only up to `post_validated_height`.
 
+> ⚠ **NEVER BUILT — NOT PLANNED.** Neither identifier exists in `packages/`. Queries serve
+> the DAG tip, not a validated watermark. The `dag_meta` values with similar names are
+> write-only `+1` counters — not heights, never read, not reset on reorg. Duplicated in
+> `VALIDATION_INTERFACE.md → Phased Validation Pipeline`; **change both together or
+> neither.**
+
 ---
 
 ## Canonical DAG (Best DAG as a View)
@@ -1888,31 +1932,63 @@ Always returns 200. Response shape:
 
 ## Configuration
 
-All config via environment variables with defaults:
+All config via environment variables with defaults.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `3000` | HTTP listen port |
-| `DB_PATH` | `dagsocial.db` | SQLite database path |
-| `NETWORK_MODE` | `testnet` | Network mode — `testnet` enables debug endpoints (faucet) |
-| `NODE_ROLE` | `server` | Role: `server` (applies peer blocks, no mining) or `miner` (produces blocks) |
-| `POST_POW_TARGET_BITS` | `20` | Post PoW difficulty |
-| `CHALLENGE_WINDOW_BLOCKS` | `10` | Challenge expiry in blocks |
-| `ORDERING_BLOCK_INTERVAL_MS` | `60000` | Max time between ordering blocks |
-| `ORDERING_BLOCK_MIN_SUB_BLOCKS` | `1` | Sub-blocks to trigger immediate block |
-| `MAX_SUB_BLOCKS_PER_BLOCK` | `1000` | Max sub-blocks per ordering block |
-| `EPOCH_BLOCKS` | `60` | Like processing every N ordering blocks |
-| `MINING_MODE` | `internal` | `internal` (node mines) or `external` (template endpoint) |
-| `ORDERING_BLOCK_POW_TARGET_BITS` | `12` | Initial ordering block PoW difficulty |
-| `CREDIT_INITIAL_REWARD` | `100` | Credits per block reward |
-| `CREDIT_TREASURY_PCT` | `10` | Percent of block reward to treasury |
-| `TREASURY_PUBKEY` | `""` | Hex-encoded 32-byte treasury key (empty = no treasury) |
-| `BOOTSTRAP_PEERS` | `[]` | Comma-separated libp2p multiaddrs |
-| `LISTEN_ADDRS` | `/ip4/0.0.0.0/tcp/0` | libp2p listen addresses |
-| `MAX_PEERS` | `50` | Max connected libp2p peers |
-| `PUBLIC_URL` | `/` | Base path where the demo UI is served (e.g. `/testnet/`) |
-| `VERIFY_STATE_ROOT` | `true` | Verify `header.stateRoot` at block apply (Spec B P3). Set `false` to disable |
-| `MAX_PROOF_HISTORY` | `1440` | AVL versions retained for proof serving |
+**Every variable carries a `Class`. The class is normative, not descriptive.**
+
+| Class | Meaning | Rule |
+|---|---|---|
+| `consensus` | Changing it diverges committed state or block validity | **MUST NOT be readable from the environment.** Two nodes differing on any one of these partition permanently. These belong in `@dagsocial/types` as constants |
+| `consensus-check` | Does not change what is *valid*; disables a node's own verification of it | May be configurable, but the contract must state what stops being checked |
+| `advertised` | Reported to clients; the verifier enforces a compile-time constant instead | Changing it changes what the node *claims*, not what it *accepts* |
+| `network-identity` | Selects the network (magic, testnet-only routes) | Not a within-network parameter; nodes on different values are different networks |
+| `local` | Genuinely a node's own choice — producer behaviour, resource ceilings | Free to vary |
+| `operational` | Paths, ports, keys, addresses | Free to vary |
+
+⚠ **Nine of these were undocumented until 2026-08-06, and five of those are `consensus`.** The
+convention exists because the absence of one is a live defect class: nothing marked which variables an
+operator may safely change, and four consensus parameters were environment-tunable.
+
+| Variable | Class | Default | Description |
+|----------|-------|---------|-------------|
+| `AVL_KEY_LENGTH` | **consensus** | `32` | AVL tree key length. **Sets the shape of every `stateRoot`** (`avl-prover.ts`). ⚠ VIOLATED — must not be env-readable |
+| `KARMA_DECAY_AMOUNT` | **consensus** | `5` | Karma burned per decay interval. Mutates committed state ⚠ VIOLATED |
+| `KARMA_DECAY_INTERVAL_BLOCKS` | **consensus** | `720` | Blocks between decay applications ⚠ VIOLATED |
+| `KARMA_STALE_THRESHOLD_BLOCKS` | **consensus** | `20160` | Inactivity before decay begins ⚠ VIOLATED |
+| `KARMA_MINIMUM` | **consensus** | `10` | Floor below which decay never reduces ⚠ VIOLATED |
+| `ORDERING_BLOCK_POW_TARGET_BITS` | **consensus** | `12` | Ordering block PoW difficulty. Every block is rejected by a node holding a different value ⚠ VIOLATED — see MINING_INTERFACE invariant 7 |
+| `CREDIT_TREASURY_PCT` | **consensus** | `10` | Percent of block reward to treasury ⚠ VIOLATED |
+| `TREASURY_PUBKEY` | **consensus** | `""` | Hex 32-byte treasury key (empty = no treasury output) ⚠ VIOLATED |
+| `CREDIT_INITIAL_REWARD` | **consensus** | `10000000000` | Credits per block in the fixed-rate period, in **base units of 10⁻⁸** (= 100 credits). Read into config and **never used** ⚠ VIOLATED |
+| `VERIFY_STATE_ROOT` | `consensus-check` | `true` | Verify `header.stateRoot` at apply (Spec B P3). ⚠ Setting `false` removes the **sole backstop** against the `computeTxId`-collision class, where two distinct block bodies share a header |
+| `POST_POW_TARGET_BITS` | `advertised` | `20` | Post PoW difficulty **as reported to clients**. The verifier enforces the compile-time constant; changing this does not change what the node accepts |
+| `NETWORK_MODE` | `network-identity` | `testnet` | `testnet` enables debug endpoints (faucet) |
+| `MAX_SUB_BLOCKS_PER_BLOCK` | `local` | `1000` | Sub-blocks this node puts in blocks **it produces**. ⚠ NO BOUND — CONSENSUS GAP: no maximum is enforced at apply, so this is local only because the consensus cap does not exist |
+| `ORDERING_BLOCK_MIN_SUB_BLOCKS` | `local` | `1` | Sub-blocks that trigger immediate block production |
+| `ORDERING_BLOCK_INTERVAL_MS` | `local` | `60000` | Producer cadence (wall clock — producer-side only, never a validity input) |
+| `CHALLENGE_WINDOW_BLOCKS` | `local` | `10` | Expiry of challenges this node issues |
+| `MAX_MEMPOOL_ENTRIES` | `local` | `10000` | Mempool capacity |
+| `MAX_PEERS` | `local` | `50` | Max connected libp2p peers |
+| `MAX_PROOF_HISTORY` | `local` | `1440` | AVL versions retained for proof serving |
+| `PORT` | `operational` | `3000` | HTTP listen port |
+| `ADMIN_PORT` | `operational` | `3001` | Admin listener port |
+| `ADMIN_BIND_ADDRESS` | `operational` | `127.0.0.1` | Admin listener bind address. ⚠ The admin listener is **unauthenticated**; binding it off loopback exposes it |
+| `DB_PATH` | `operational` | `dagsocial.db` | SQLite database path |
+| `NODE_ROLE` | `operational` | `server` | `server` (applies peer blocks) or `miner` (produces blocks) |
+| `MINING_MODE` | `operational` | `internal` | `internal` (node mines) or `external` (template endpoint) |
+| `MINING_SECRET` | `operational` | `""` | Mining auth secret — **required**; startup asserts it is set |
+| `BOOTSTRAP_PEERS` | `operational` | `[]` | Comma-separated libp2p multiaddrs |
+| `LISTEN_ADDRS` | `operational` | `/ip4/0.0.0.0/tcp/0` | libp2p listen addresses |
+| `PUBLIC_URL` | `operational` | `/` | Base path where the demo UI is served |
+| ~~`EPOCH_BLOCKS`~~ | **removed** | ~~`60`~~ | Epoch interval — **the epoch is deleted**; accrual and settlement are per-block |
+
+> ⚠ **The karma decay constants are documented for a block time the node does not use.**
+> `constants.ts` annotates `KARMA_STALE_THRESHOLD_BLOCKS = 20160` as "28 days at 2m blocks" and
+> `KARMA_DECAY_INTERVAL_BLOCKS = 720` as "24 hours at 2m blocks", while `ORDERING_BLOCK_INTERVAL_MS`
+> defaults to **60000** and MINING_INTERFACE's emission schedule is computed "at 60-second blocks".
+> At 60s the real durations are **14 days and 12 hours** — half the documented values. Either the
+> annotations are stale or the block interval is. These are consensus parameters and the discrepancy
+> must be resolved before launch, not after.
 
 ---
 

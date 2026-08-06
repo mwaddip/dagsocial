@@ -26,7 +26,7 @@ BigInt paths for u64 wire values are deferred to a future version.
 | `encodeVlqU` / `decodeVlqU` | Standalone unsigned VLQ |
 | `encodeVlqZigZag` / `decodeVlqZigZag` | Standalone signed VLQ (ZigZag) |
 | `ReaderError` | Typed error class with code taxonomy |
-| `MAX_ARRAY_LENGTH` | `1 << 24` — hard cap on VLQ-length-prefixed arrays |
+| `MAX_ARRAY_LENGTH` | `1 << 24` — cap on VLQ-length-prefixed array **counts**. ⚠ Not a resource bound — see below |
 | `encodeFrame(magic, code, body, hashFn)` | Encode a framed message |
 | `decodeFrame(magic, data, hashFn)` | Decode and validate a framed message |
 | `FRAME_VERSION` | `1` — current framing protocol version |
@@ -237,6 +237,18 @@ Concatenates all accumulated chunks into a single `Uint8Array` and returns it.
 
 ## VLQ Standalone Functions
 
+> ⚠ **VLQ decoding accepts non-minimal encodings, and no canonicality rule is stated or
+> enforced.** A value has multiple valid byte forms — redundant continuation bytes decode to
+> the same number — so wire bytes are **malleable**: the same message can be re-encoded to
+> different bytes that decode identically.
+>
+> **Why this is `trap` and not `fork-risk` today: no frame bytes are ever hashed.** Frame
+> and VLQ encodings sit outside every consensus preimage — ids and roots are computed over
+> CBOR structures, never over wire framing. **If that ever stops being true — if any framed
+> byte enters a hash, a signature, or a Merkle leaf — VLQ malleability becomes a consensus
+> fork and this must be fixed first.** Recorded as a premise so the dependency is visible
+> rather than rediscovered.
+
 ### `encodeVlqU(value: number): Uint8Array`
 
 Encodes a non-negative integer as VLQ bytes.
@@ -247,6 +259,17 @@ Encodes a non-negative integer as VLQ bytes.
 ### `decodeVlqU(reader: ByteReader): number`
 
 Thin wrapper: returns `reader.readVlqU()`.
+
+> ⚠ **`MAX_ARRAY_LENGTH` bounds the count, not the memory, and the two differ by ~128 MB.**
+> `readArray` checks `length > MAX_ARRAY_LENGTH` and then does `new Array(length)` — a
+> pre-allocation of up to 16,777,216 slots (~128 MB on 64-bit V8) **before reading a single
+> element.** So a 4-byte VLQ inside the cap buys 128 MB of heap from any peer.
+>
+> **A declared length must be cross-checked against the bytes actually remaining.** An
+> `N`-element array cannot decode from fewer than `N` bytes, so `length > remaining()` is a
+> tighter bound than `MAX_ARRAY_LENGTH`, costs nothing, and makes the declared-vs-available
+> mismatch unrepresentable. The current cap is a value-space limit doing a resource-limit's
+> job. (Currently unreachable — `readArray` has no callers — which is why this is latent.)
 
 ### `encodeVlqZigZag(value: number): Uint8Array`
 

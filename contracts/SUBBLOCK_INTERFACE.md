@@ -26,6 +26,15 @@ The mempool is purely local staging for the miner.
 
 ## Relationship to Ergo Sub-Blocks
 
+> ⚠ **Analogy section — check the premise before reasoning from it.** 100% original
+> 2026-07-26 text. The repo has one recorded case of an Ergo analogy that **did not
+> transfer**: Ergo leaves `creationHeight` client-declared because nothing
+> consensus-critical reads it, whereas here `createdAtBlock` *was* the decay clock, so the
+> field had to leave the box protocol entirely (Spec G). An invariant that is correct for
+> Ergo and wrong here, retained because the analogy sounded right, is the failure mode to
+> watch for. **Do not import an Ergo property without checking what reads it in this
+> system.**
+
 Ergo's sub-blocks (EIP-15, kushti, 2023) are **miner-produced weak blocks**
 generated at T/64 difficulty, forming a linear chain between ordering blocks.
 DAGsocial's sub-blocks are **user-produced post bundles** — each carries one
@@ -88,6 +97,16 @@ decodeSubBlock(bytes: Uint8Array): SubBlock
 ---
 
 ## Sub-Block Lifecycle
+
+> ⚠ **PARTIAL — 63 lines written 2026-07-26 and never revised, while the code beneath them
+> was reworked by Specs B, C, D and G.** This predates the journal unification (Spec B P1),
+> prune authorship binding (Spec C P3) and the decay-clock move (Spec G phase D). Walk each
+> state against the code before relying on it; several transitions and fields no longer
+> exist in the form shown.
+>
+> **One invariant elsewhere in this file is outright violated:** "unreferenced sub-blocks
+> survive in the mempool" is broken by the block creator's own cleanup — and that survival
+> is the premise the §Relationship to Ergo Sub-Blocks comparison rests on.
 
 ```
                    ┌──────────┐
@@ -163,6 +182,18 @@ of posting against stale UTXO state, not a protocol defect.
    karma sufficiency. On pass: insert post into DAG store, insert sub-block
    CBOR into mempool (`insertMempoolSubBlock`)
 5. On failure: penalize source peer (MisbehaviorPenalty, score 100)
+
+> ⚠ **VIOLATED — two claims in the sentence below are false, and they compound.**
+>
+> 1. **The mempool does not store sub-block CBOR — it stores sub-block *ids*.** The column
+>    is `subblock_id TEXT` and always was. `MEMPOOL_INTERFACE.md` states both versions in
+>    the same file, in different sections; the id version is the correct one.
+> 2. **The insert is NOT idempotent, and "sub-block ID is the primary key" is not true** —
+>    there is no primary key, no unique index and no dedup on that column. So the stated
+>    reason for idempotency does not exist, and neither does the property.
+>
+> Loopback is therefore **not** harmless by the mechanism claimed here. Whether it is
+> harmless by some other route is untested. Do not rely on this paragraph.
 
 The gossip path carries the **full sub-block CBOR**. Loopback is harmless —
 the mempool insert is idempotent (sub-block ID is the primary key), and

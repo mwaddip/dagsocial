@@ -1,7 +1,34 @@
 # DAGsocial Architecture
 
 **Protocol version:** 1
-**Last updated:** 2026-08-01
+**Last updated:** 2026-08-06
+
+## Status markers — the convention for every contract in this directory
+
+A contract section describes one of several different things, and until 2026-08-06 nothing
+distinguished them: text describing running code, text describing intended design, and text
+describing a mechanism that was documented and never built all read with identical authority.
+A repo-wide audit found **41 `never-true` claims against 25 genuine drift** — the dominant
+failure was not documentation falling behind code, it was documentation that was never true.
+
+**Every section that is not plainly describing running code MUST carry one of these:**
+
+| Marker | Meaning |
+|---|---|
+| `> ⚠ NOT IMPLEMENTED` | Intended design. Not built. **Is** meant to be built |
+| `> ⚠ PARTIAL` | Some of it runs. The marker must say which part |
+| `> ⚠ NEVER BUILT — NOT PLANNED` | Was documented, never built, and there is no intent to build it. Kept so nobody re-adds it believing it was an oversight |
+| `> ⚠ VIOLATED` | The rule is **correct** and the code breaks it. **Never weaken the rule to match the code** |
+| `> ⚠ SUPERSEDED` | Replaced by a later decision; points at it |
+
+**The markers are mandatory, not optional.** An optional marker reproduces the exact defect
+this convention exists to fix — a reader cannot tell whether its absence means "verified" or
+"nobody looked."
+
+**Why this works:** the one section of this document with no false invariant
+(§Block Application Journal) is also the only one written *after* its implementation existed.
+The failure mode is timing, not care. These markers make timing visible at read time instead
+of requiring `git blame`.
 
 ## Overview
 
@@ -86,7 +113,7 @@ closure of `parentRefs` that trace back to this root.
 ```
 Post {
   content: string              // 1–MAX_CONTENT_BYTES UTF-8
-  author: UserId               // hex(publicKey) — 64 chars, raw Ed25519 key
+  author: UserId               // 32 raw bytes — see the representation rule below
   parentRefs: PostId[]         // 0–MAX_PARENT_REFS per post
   challenge: bytes             // Random nonce issued by node (anti-precomputation)
   powNonce: number             // PoW solution — proves work against challenge
@@ -95,13 +122,37 @@ Post {
   signature: bytes             // Ed25519 over signingHash(post)
 }
 
-PostId = blake2b512(content || author || parentRefs || challenge || powNonce || protocolVersion || timestamp)
-         .subarray(0, 32).toString('hex')
+PostId = blake2b512(POST_ID_DOMAIN ‖ postFieldBytes(post) ‖ u64LE(powNonce))[0:32], hex
 ```
+
+> **The byte-exact preimage is specified in `TYPES_INTERFACE.md` (§Core Types) and nowhere
+> else.** Every field is length-prefixed and the ref array carries an explicit `u32LE`
+> count (audit M-1); the domain tag keeps a post id from ever colliding with the PoW hash
+> over the same post. **Do not restate the formula here.** This document previously carried
+> it twice, in two different field orders, both in the pre-M-1 unprefixed form — a
+> restatement of a byte format is a mirror implementation in prose, and it diverged exactly
+> the way mirrors do.
 
 A post's `parentRefs` may reference either live posts or stumps. The hash is
 the same either way — the DAG's cryptographic integrity doesn't depend on
 content availability.
+
+#### Public-key representation — the rule, and where the boundary is
+
+**`UserId` is `Uint8Array` — 32 raw bytes — everywhere it appears as `UserId`.** This
+document previously said `hex(publicKey) — 64 chars`, which was never true of `Post.author`.
+
+A public key is rendered as a **hex `string`** in exactly three places, each explicitly
+typed `string` rather than `UserId`: `SubBlockEntry.author`, the `signatures` map keys,
+and `proofSource`. That is deliberate, not drift — those structures are JSON-oriented and
+JSON has no byte type. `SubBlockEntry` in particular is serialized through
+`JSON.stringify` into a consensus Merkle leaf, so a byte array there would encode as
+`{"0":1,"1":2,…}`.
+
+**The rule: if the field is typed `UserId`, it is raw bytes. If it is typed `string`, it
+is lowercase hex.** The type is the boundary marker; there is no third form. Both
+representations are genuinely live, so this is a convention to state and hold, not drift
+to eliminate.
 
 #### Post-level PoW (sub-block mechanism)
 
@@ -109,9 +160,10 @@ PoW is a single challenge-response pass, collapsed from the Phase 1 two-phase
 model. The post's PoW solution IS the sub-block proof:
 
 1. Author requests a challenge from a node → node returns random nonce
-2. Author constructs the post, iterates `powNonce` until:
-   `blake2b512(content || author || parentRefs || challenge || protocolVersion || timestamp || powNonce)`
-   meets the target difficulty
+2. Author constructs the post and iterates `powNonce` until `postPowPreimage(post)`
+   hashes below the target difficulty — **preimage specified in `TYPES_INTERFACE.md`,
+   not here** (see the note above; the formula previously restated at this line
+   disagreed with the one four lines earlier on field order)
 3. Author submits the completed post → it becomes a sub-block (likeBoxes are
    collected separately at ordering block assembly, not attached as sidecars)
 4. Validators verify the PoW when anchoring sub-blocks in an ordering block
@@ -217,12 +269,30 @@ time:
   creates boxes without this flag, resetting the clock.
 - **Rollback:** Decay burns are journaled and reversed during fork rollback
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `KARMA_STALE_THRESHOLD_BLOCKS` | 20160 | Grace period (~28 days at 2m blocks) |
-| `KARMA_DECAY_INTERVAL_BLOCKS` | 720 | Decay period (~24 hours) |
-| `KARMA_DECAY_AMOUNT` | 5 | Karma burned per period |
-| `KARMA_MINIMUM` | 10 | Floor — decay never reduces below this |
+All four are **consensus parameters** — decay mutates committed state, so two nodes
+holding different values compute different `stateRoot`s and partition permanently.
+Classes are defined in `NODE_INTERFACE.md → Configuration`.
+
+| Parameter | Class | Default | Description |
+|-----------|-------|---------|-------------|
+| `KARMA_STALE_THRESHOLD_BLOCKS` | **consensus** | 20160 | Grace period before decay begins |
+| `KARMA_DECAY_INTERVAL_BLOCKS` | **consensus** | 720 | Decay period |
+| `KARMA_DECAY_AMOUNT` | **consensus** | 5 | Karma burned per period |
+| `KARMA_MINIMUM` | **consensus** | 10 | Floor — decay never reduces below this |
+
+> ⚠ **VIOLATED — all four are environment-readable** (`config.ts:106-119`), and none of
+> them appeared in `NODE_INTERFACE.md`'s Configuration table until 2026-08-06. This
+> section is **right** that they are fixed protocol parameters; the code ignores it.
+> Phase 2 promotes them to `@dagsocial/types` constants and removes the `process.env`
+> reads.
+
+> ⚠ **The durations these values encode are ambiguous, and it is a consensus question.**
+> `constants.ts` annotates them "at 2m blocks" (28 days / 24 hours), but
+> `ORDERING_BLOCK_INTERVAL_MS` defaults to **60000** and `MINING_INTERFACE.md`'s emission
+> schedule is computed "at 60-second blocks". At 60s these are **14 days and 12 hours** —
+> half the intended values, so decay bites twice as fast and twice as often. Either the
+> annotations are stale or the target block time is. **Resolve before launch:** these are
+> consensus parameters, so the discrepancy cannot be corrected afterwards without a fork.
 
 #### Credit boxes
 
@@ -289,11 +359,18 @@ to verify box existence or absence without storing the full UTXO set.
 - **Module:** `packages/node/src/state/` (avl-storage, avl-prover, avl-endpoint)
 - **Proof endpoint:** `GET /api/v1/proof/:boxId?atHeight=N` — returns an
   inclusion or exclusion proof for a box at a given block height
-- **Config flags:** `VERIFY_STATE_ROOT` (validate stateRoot at block apply,
-  **default on** since Spec B P3) and
-  `MAX_PROOF_HISTORY` (prune old proof versions)
+- **Config flags:** `VERIFY_STATE_ROOT` (`consensus-check` — validate stateRoot at
+  block apply, **default on** since Spec B P3), `MAX_PROOF_HISTORY` (`local` — prune
+  old proof versions), and **`AVL_KEY_LENGTH`** (**`consensus`**, default `32`) — the
+  tree's key width, which determines the **shape** of every `stateRoot`
+  > ⚠ **VIOLATED — `AVL_KEY_LENGTH` is environment-readable** (`config.ts:130` →
+  > `avl-prover.ts:41`) and appeared in no contract until 2026-08-06. Two nodes with
+  > different values produce different `stateRoot`s for identical state. The
+  > determinism claim below is **conditional on this variable matching**, which nothing
+  > currently enforces. Phase 2 removes the env read.
 - **Deterministic:** Every node computing the AVL+ over the same UTXO set at
-  the same height produces the identical stateRoot. Box `value` serializes as a
+  the same height **and holding the same `AVL_KEY_LENGTH`** produces the identical
+  stateRoot. Box `value` serializes as a
   `bigint` (CBOR uint64), so the AVL leaf bytes — hence the stateRoot — are
   stable across implementations (the demo UI mirrors the encoding)
 - **Journal-fed:** The per-block mutation set fed to the prover is derived from
@@ -385,6 +462,29 @@ on the ledger.
 
 ### Username claims
 
+> ⚠ **SUPERSEDED (user decision, 2026-08-06) — usernames are NOT claim posts.**
+> The first-claim-wins, post-based, prune-to-release model described below is replaced by a
+> **UTXO asset**: a username is **tradeable for credits**, **free to claim while unused**,
+> and **burnable by its owner**. Nothing in this section survives that change — the claim
+> post, the DAG walk, and prune-to-release are all artefacts of the post-based model.
+>
+> **Deferred — "way down the line."** Do not build, and do not design it further here; it
+> lands in the economics track when it is picked up, since a credit-denominated asset class
+> is an economic mechanism rather than a DAG one.
+>
+> Two consequences worth recording now:
+> - **The `Post.type` dependency is void.** A previous version of this marker said username
+>   claims required a post discriminator that does not exist. Under a UTXO asset they are
+>   not posts at all, so no post-typing change is implied and no post ids move.
+> - **`docs/site/architecture` still publishes the old model** ("Usernames and profiles are
+>   DAG-native — they're just posts. A username is claimed first-come-first-served and can
+>   be released by pruning the claim"). That page is normally authoritative; here it is
+>   stale and needs correcting. See the Phase 1 plan's `docs/site/` disclosure item.
+> - **Profiles are NOT superseded — they stay DAG-native** (user, 2026-08-06: "a profile
+>   would indeed be a *self post*"). Only usernames leave the post model. **The `Post.type`
+>   dependency therefore does not disappear, it relocates:** see §Profile root below, which
+>   keys on `type: "profile"`.
+
 Usernames are DAG-native objects using a **first-claim-wins** model:
 
 1. An account posts a claim: `{ claim: "username", name: "@alice" }`, signed
@@ -399,6 +499,20 @@ No expiry. No renewal. The name claim is a post like any other — it can be
 pruned by its author, and pruning it releases the name.
 
 ### Profile root
+
+> ⚠ **NOT IMPLEMENTED — intended design, zero code.** Profiles **stay DAG-native**: a
+> profile is a *self post* (user, 2026-08-06), unlike usernames, which became a UTXO asset.
+>
+> **Blocking dependency, live here:** the marker post below carries `type: "profile"`, and
+> **`Post` has no `type` field** — nor any other discriminator. So profiles cannot be built
+> until post typing exists, and adding a field to `Post` enters `postFieldBytes`, which
+> **moves every post id**. That makes it a protocol-breaking change that should ride with
+> another id-moving change rather than go alone.
+>
+> This dependency was originally recorded against usernames and is void there — a UTXO asset
+> is not a post. It applies to profiles instead. **Any alternative discriminator (a reserved
+> parent ref, a content convention) would avoid the id move and is worth considering before
+> committing to a `type` field.**
 
 An account may post a **profile root** — a special marker post:
 
@@ -796,7 +910,22 @@ forever. A node rejects objects with an unsupported protocol version.
 ### Cryptographic
 
 - Hashing: `blake2b512` truncated to 32 bytes for all 32-byte outputs
-- Signatures: raw Ed25519 (64 bytes), base64-encoded on wire
+- Signatures: raw Ed25519 (64 bytes). **On the wire the encoding depends on the
+  carrier, and "base64" — as this line previously read — is the rarest of the three:**
+  raw bytes inside CBOR (all consensus structures), **lowercase hex** at the HTTP
+  boundary (`json-to-tx.ts`) and in the demo UI, and base64 at exactly one endpoint
+  (`routes/utxo.ts`). Verification is `crypto.verify(null, …)` with a KeyObject in
+  every case
+  > ⚠ **Non-malleability is relied upon and stated nowhere.** Measured on node v22.19.0 /
+  > openssl 3.0.17: `crypto.verify` rejects the classic `S + L` malleation and the
+  > high-bit variant, enforcing RFC 8032's `0 ≤ S < L`. This matters because
+  > `serializePruneEntry` puts `authorSignature` **inside** the `prune` Merkle leaf, hence
+  > inside `subBlockRoot` — every other signature in the system is excluded from every
+  > preimage. A second verifier (light client, a pure-JS Ed25519 library) that is
+  > cofactored or skips the range check would accept a second valid signature, and there
+  > it would mean two valid *blocks*. **Any mirror implementation MUST enforce
+  > `0 ≤ S < L`.** Untested: non-canonical `R` encodings, small-order points,
+  > cofactored-vs-cofactorless verification
 - Public keys: 32 raw bytes, hex-encoded on wire
 - Secret keys never in API responses, DTOs, or committed data structures
 - Post PoW acts as sub-block proof — verified by validators at ordering time
@@ -948,7 +1077,9 @@ fresh. Namespacing keeps the option open to split into separate stores later
 - Internal + external mining modes
 - Unified mempool: all state mutations queued, applied atomically at block
   finalization
-- Framed p2p stream protocol with magic bytes, VLQ length prefixing, 32-byte blake2b checksum
+- Framed p2p stream protocol with magic bytes, VLQ length prefixing, and a **4-byte**
+  checksum (the first 4 bytes of a blake2b digest — the frame layout at the top of this
+  document says `[checksum:4]`, and `WIRE_INTERFACE.md` agrees; "32-byte" here was wrong)
 - Header-first historical sync with SyncInfo/Inv/Modifier protocol
 - Peer discovery via GetPeers/Peers gossip + PeerDb
 
