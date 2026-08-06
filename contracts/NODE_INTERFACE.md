@@ -341,6 +341,12 @@ from the system keypair — not a transfer. Builds a UTXO transaction creating a
 new karma box and inserts it into the mempool. Gated behind
 `networkMode === "testnet"`.
 
+> ⚠ **NOT IMPLEMENTED — the gate becomes `networkType !== 'mainnet'`.** With three
+> networks, an equality test against `"testnet"` would leave devnet — the network whose
+> entire purpose is disposable local testing — **without a faucet**. Gate on the negative,
+> so a network added later is faucet-less by default rather than faucet-enabled by default:
+> the failure direction matters, and only one of them mints karma on mainnet.
+
 **Idempotency (required):** a given `userId` may be funded at most once, ever. A repeat
 request is rejected (409). Enforced by a durable per-`(userId, asset)` grant ledger
 (`faucet_grants`) written in the **same transaction** as the mempool insert, so two
@@ -369,6 +375,12 @@ endpoint semantics in `MINING_INTERFACE.md`.
 | Method | Path | Response |
 |--------|------|----------|
 | `GET` | `/status` | `{ networkMode, blockHeight, postCount, pendingPosts, totalKarma, totalCredits }` |
+
+> ⚠ **NOT IMPLEMENTED — `networkMode` becomes `networkType`, and this one is
+> client-visible.** The demo UI and the e2e harness's `waitForReady` both read `/status`.
+> Renaming a response field is a breaking API change, so it lands **in the same commit as
+> the UI change**, not ahead of it. The harness is parked (`test/e2e/README.md`) and its
+> rewrite picks up the new name.
 
 ### Link previews
 
@@ -1941,7 +1953,7 @@ All config via environment variables with defaults.
 | `consensus` | Changing it diverges committed state or block validity | **MUST NOT be readable from the environment.** Two nodes differing on any one of these partition permanently. These belong in `@dagsocial/types` as constants |
 | `consensus-check` | Does not change what is *valid*; disables a node's own verification of it | May be configurable, but the contract must state what stops being checked |
 | `advertised` | Reported to clients; the verifier enforces a compile-time constant instead | Changing it changes what the node *claims*, not what it *accepts* |
-| `network-identity` | Selects the network (magic, testnet-only routes) | Not a within-network parameter; nodes on different values are different networks |
+| `network-identity` | Selects the network — **and with it every consensus parameter, the wire magic, the genesis, and the id-derivation domain tags** | Not a within-network parameter; nodes on different values are different networks. **Exactly one variable carries this class** |
 | `local` | Genuinely a node's own choice — producer behaviour, resource ceilings | Free to vary |
 | `operational` | Paths, ports, keys, addresses | Free to vary |
 
@@ -1949,8 +1961,44 @@ All config via environment variables with defaults.
 convention exists because the absence of one is a live defect class: nothing marked which variables an
 operator may safely change, and four consensus parameters were environment-tunable.
 
+> ⚠ **NOT IMPLEMENTED — the nine `consensus` rows below are being removed from this table
+> entirely** (decided 2026-08-06). They do not become better-documented environment
+> variables; they stop being configuration. **Four** become fields of the **network
+> profile**, **five** become plain universal constants — and `POST_POW_TARGET_BITS`, which
+> is classed `advertised` rather than `consensus`, joins the profile as a tenth. See
+> `ARCHITECTURE §Network Identity` and `TYPES_INTERFACE §Network profiles`. Until P2-A
+> lands, every row marked `⚠ VIOLATED` below is still live and still readable from the
+> environment.
+
+**Where each consensus value goes:**
+
+| Value | Destination | Why |
+|---|---|---|
+| `ORDERING_BLOCK_POW_TARGET_BITS` | **profile** | Difficulty differs per network |
+| `POST_POW_TARGET_BITS` | **profile** | Difficulty differs per network |
+| `KARMA_DECAY_INTERVAL_BLOCKS` | **profile** | Timescale differs per network |
+| `KARMA_STALE_THRESHOLD_BLOCKS` | **profile** | Timescale differs per network |
+| `TREASURY_PUBKEY` | **profile** | Genesis data — a different chain has a different treasury |
+| `KARMA_DECAY_AMOUNT` | universal constant | Economics. Devnet decays *often*, not *harder* |
+| `KARMA_MINIMUM` | universal constant | Economics |
+| `CREDIT_TREASURY_PCT` | universal constant | Economics |
+| `CREDIT_INITIAL_REWARD` | universal constant | Economics — separately, it is read and never used (A5) |
+| `AVL_KEY_LENGTH` | universal constant | Format. No network has a reason to differ |
+
+> **`POST_POW_TARGET_BITS` — A6 resolved: make it real, do not stop exposing it.** It is
+> classed `advertised` today because the challenge endpoint reports it while the verifier
+> enforces the compile-time constant, so a node can tell clients a difficulty it does not
+> enforce. Under the profile both sides read the same field and the class becomes moot.
+>
+> The evidence that this is the right direction is already in the repo:
+> `test/harness/node-manager.ts:47-50` carries a comment explaining that the harness
+> **deliberately does not override** `POST_POW_TARGET_BITS`, because doing so makes the
+> challenge endpoint and the verifier disagree. That comment is a workaround for exactly
+> this defect — and it is why the harness could never get cheap post PoW.
+
 | Variable | Class | Default | Description |
 |----------|-------|---------|-------------|
+| `NETWORK_TYPE` | `network-identity` | `testnet` | **The profile selector — `mainnet` \| `testnet` \| `devnet`.** The only environment variable that may change a consensus parameter, and it changes every one of them together. Also gates debug endpoints (faucet: testnet and devnet only). ⚠ NOT IMPLEMENTED — today this is `NETWORK_MODE` and selects nothing but the faucet and a UI banner |
 | `AVL_KEY_LENGTH` | **consensus** | `32` | AVL tree key length. **Sets the shape of every `stateRoot`** (`avl-prover.ts`). ⚠ VIOLATED — must not be env-readable |
 | `KARMA_DECAY_AMOUNT` | **consensus** | `5` | Karma burned per decay interval. Mutates committed state ⚠ VIOLATED |
 | `KARMA_DECAY_INTERVAL_BLOCKS` | **consensus** | `720` | Blocks between decay applications ⚠ VIOLATED |
@@ -1961,8 +2009,8 @@ operator may safely change, and four consensus parameters were environment-tunab
 | `TREASURY_PUBKEY` | **consensus** | `""` | Hex 32-byte treasury key (empty = no treasury output) ⚠ VIOLATED |
 | `CREDIT_INITIAL_REWARD` | **consensus** | `10000000000` | Credits per block in the fixed-rate period, in **base units of 10⁻⁸** (= 100 credits). Read into config and **never used** ⚠ VIOLATED |
 | `VERIFY_STATE_ROOT` | `consensus-check` | `true` | Verify `header.stateRoot` at apply (Spec B P3). ⚠ Setting `false` removes the **sole backstop** against the `computeTxId`-collision class, where two distinct block bodies share a header |
-| `POST_POW_TARGET_BITS` | `advertised` | `20` | Post PoW difficulty **as reported to clients**. The verifier enforces the compile-time constant; changing this does not change what the node accepts |
-| `NETWORK_MODE` | `network-identity` | `testnet` | `testnet` enables debug endpoints (faucet) |
+| `POST_POW_TARGET_BITS` | `advertised` | `20` | Post PoW difficulty **as reported to clients**. The verifier enforces the compile-time constant; changing this does not change what the node accepts. ⚠ SUPERSEDED — becomes a profile field, see above |
+| ~~`NETWORK_MODE`~~ | **renamed** | ~~`testnet`~~ | → `NETWORK_TYPE`. The name changes because the meaning does: it selected a faucet flag, it now selects the whole consensus parameter table |
 | `MAX_SUB_BLOCKS_PER_BLOCK` | `local` | `1000` | Sub-blocks this node puts in blocks **it produces**. ⚠ NO BOUND — CONSENSUS GAP: no maximum is enforced at apply, so this is local only because the consensus cap does not exist |
 | `ORDERING_BLOCK_MIN_SUB_BLOCKS` | `local` | `1` | Sub-blocks that trigger immediate block production |
 | `ORDERING_BLOCK_INTERVAL_MS` | `local` | `60000` | Producer cadence (wall clock — producer-side only, never a validity input) |

@@ -42,6 +42,27 @@ framed — they carry raw CBOR directly on the wire as before.
 |---------|-------|-------|
 | mainnet | "MDAG" | `0x4D 0x44 0x41 0x47` |
 | testnet | "TDAG" | `0x54 0x44 0x41 0x47` |
+| devnet | "DDAG" | `0x44 0x44 0x41 0x47` — ⚠ NOT IMPLEMENTED |
+
+**The magic is a field of the network profile** (`TYPES_INTERFACE §Network profiles`),
+resolved once at startup from `NETWORK_TYPE`. It is never a per-call-site default.
+
+> ⚠ **VIOLATED — `magic` defaults to `MAGIC_MAINNET` at nine call sites in `net/src/node.ts`
+> plus one in `sync-machine.ts`, independently of the node's configured network.** The node's
+> `NETWORK_MODE` selects no magic at all, so **a node started as testnet frames as mainnet.**
+> The transport separation this table describes does not currently exist; testnet and mainnet
+> peers assemble each other's frames.
+>
+> The `?? MAGIC_MAINNET` fallback is the mechanism. A default is the wrong shape here — an
+> unset network is not a mainnet node, it is a misconfigured one, and defaulting silently
+> resolves it toward the network where being wrong costs the most. `NetConfig.magic` becomes
+> **required**, with no fallback, so the omission is a type error rather than a mainnet frame.
+
+> ⚠ **`KNOWN_FRAME_MAGICS` is hardcoded in `net/src/node.ts` as `[MAGIC_MAINNET,
+> MAGIC_TESTNET]`.** Adding `MAGIC_DEVNET` to wire without updating that list makes devnet
+> frames fail the magic check, fall through to the legacy unframed path, decode as malformed,
+> and **permanently ban the peer**. The canonical set must be exported by `@dagsocial/wire`
+> and consumed by net — a pre-existing follow-up that this change makes load-bearing.
 
 ### Version Negotiation
 
@@ -805,8 +826,8 @@ interface NetConfig {
   listenAddrs: string
   maxPeers: number
 
-  // Magic bytes
-  magic: number                    // 0x4D444147 (mainnet) or 0x54444147 (testnet)
+  // Magic bytes — REQUIRED, from the network profile. No default; see §Magic Bytes
+  magic: number                    // mainnet 0x4D444147 · testnet 0x54444147 · devnet 0x44444147
 
   // Peer discovery
   minPeers: number                 // floor for fill phase (default 3)
