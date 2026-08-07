@@ -14,14 +14,7 @@ export interface LikesDeps extends UtxoEngineDeps {
     deps: UtxoEngineDeps,
     tx: UtxoTransaction,
     currentBlockHeight: number,
-  ):
-    | { castLikeResult: 'pending'; txId: string; expiresAtHeight: number; tx: UtxoTransaction }
-    | { castLikeResult: 'free'; likeId: string };
-  removeLike(
-    deps: UtxoEngineDeps,
-    tx: UtxoTransaction,
-    currentBlockHeight: number,
-  ): { removeLikeResult: 'pending'; txId: string; expiresAtHeight: number; tx: UtxoTransaction };
+  ): { castLikeResult: 'pending'; txId: string; expiresAtHeight: number; tx: UtxoTransaction };
   getCurrentHeight(): number;
 }
 
@@ -32,7 +25,9 @@ export interface LikesDeps extends UtxoEngineDeps {
 export function createRouter(deps: LikesDeps): Router {
   const router = Router();
 
-  // POST /likes — cast a like on a post
+  // POST /likes — cast a like on a post (P2-D: a client-signed burn tx with
+  // `likeTarget` set). This is the router's only route: unlike is not a
+  // feature, so no removal endpoint exists.
   router.post('/', (req, res) => {
     const body = req.body as { tx?: Record<string, unknown> };
 
@@ -53,56 +48,11 @@ export function createRouter(deps: LikesDeps): Router {
       const currentHeight = deps.getCurrentHeight();
       const result = deps.castLike(deps, tx, currentHeight);
 
-      if (result.castLikeResult === 'free') {
-        res.status(200).json({ status: 'free', likeId: result.likeId });
-        return;
-      }
-
-      // Broadcast locked-like transaction to peers (fire-and-forget)
+      // Broadcast the like transaction to peers (fire-and-forget)
       const net = getNet();
       if (net) {
         net.broadcastTx(result.tx).catch((err: Error) => {
           console.warn(`Failed to broadcast like tx: ${err.message}`);
-        });
-      }
-
-      const { tx: _tx, ...response } = result;
-      res.status(200).json({
-        status: 'pending',
-        txId: response.txId,
-        expiresAtHeight: response.expiresAtHeight,
-      });
-    } catch (err) {
-      respondError(res, err, 'POST /likes');
-    }
-  });
-
-  // POST /likes/remove — remove a previously cast like
-  router.post('/remove', (req, res) => {
-    const body = req.body as { tx?: Record<string, unknown> };
-
-    if (!body.tx) {
-      res.status(400).json({ error: 400, reason: 'tx required' });
-      return;
-    }
-
-    let tx: UtxoTransaction;
-    try {
-      tx = jsonToTx(body.tx);
-    } catch (err) {
-      respondError(res, err, 'POST /likes/remove (tx decode)');
-      return;
-    }
-
-    try {
-      const currentHeight = deps.getCurrentHeight();
-      const result = deps.removeLike(deps, tx, currentHeight);
-
-      // Broadcast transaction to peers (fire-and-forget)
-      const net = getNet();
-      if (net) {
-        net.broadcastTx(result.tx).catch((err: Error) => {
-          console.warn(`Failed to broadcast unlike tx: ${err.message}`);
         });
       }
 
@@ -112,7 +62,7 @@ export function createRouter(deps: LikesDeps): Router {
         expiresAtHeight: result.expiresAtHeight,
       });
     } catch (err) {
-      respondError(res, err, 'POST /likes/remove');
+      respondError(res, err, 'POST /likes');
     }
   });
 

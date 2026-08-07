@@ -8,7 +8,7 @@ import {
   buildMerkleRoot,
   hexToBuf,
   PROTOCOL_VERSION,
-  LIKE_COST,
+  LIKE_KARMA_COST,
   CREDIT_MINER_REWARD_DELAY,
   EMPTY_STATE_ROOT,
 } from '@dagsocial/types';
@@ -208,13 +208,14 @@ export function makeKarmaBox(
 }
 
 /**
- * Build a signed, value-conserving like transaction — the shape a real client
- * submits: the liker's karma box is consumed and split into a karma change box
- * and the LikeBox.
+ * Build a signed like transaction — the P2-D burn shape a real client submits:
+ * the liker's karma box is consumed into a single karma change box at
+ * `−LIKE_KARMA_COST`, with `likeTarget` naming the post inside the signed
+ * bytes. No LikeBox exists.
  *
  * Block application re-validates every embedded tx in full, so a fixture that
- * omitted the signature or the change output would be indistinguishable from a
- * forgery and would take the whole block down with it.
+ * omitted the signature or mis-stated the deficit would be indistinguishable
+ * from a forgery and would take the whole block down with it.
  */
 export function makeLikeTx(
   liker: TestIdentity,
@@ -226,21 +227,15 @@ export function makeLikeTx(
     outputs: [
       {
         boxType: 'karma',
-        value: karmaBox.value - LIKE_COST,
+        value: karmaBox.value - LIKE_KARMA_COST,
         owner: liker.userId,
         guard: 'owner_signature',
         proofSource: 'like_op',
       },
-      {
-        boxType: 'like',
-        value: LIKE_COST,
-        likerId: liker.userId,
-        targetPostId,
-        guard: 'epoch_tally',
-      },
     ],
     signatures: {},
     protocolVersion: PROTOCOL_VERSION,
+    likeTarget: targetPostId,
   };
   signTransaction(tx, liker.privateKey, Buffer.from(liker.userId).toString('hex'));
   return tx;
@@ -458,5 +453,8 @@ export function txToJson(tx: UtxoTransaction): Record<string, unknown> {
         )
       : undefined,
     protocolVersion: tx.protocolVersion,
+    // Present ⟺ the tx is a like (P2-D) — the JSON edge must not drop it,
+    // since it sits inside the signed bytes.
+    ...(tx.likeTarget !== undefined ? { likeTarget: tx.likeTarget } : {}),
   };
 }

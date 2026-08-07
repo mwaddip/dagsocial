@@ -3,7 +3,6 @@ import { config } from '../config.js';
 import type {
   UtxoTransaction,
   PruneEntry,
-  LikeBox,
   InviteBox,
   VouchBox,
 } from '@dagsocial/types';
@@ -76,11 +75,19 @@ interface GateMetadata {
 }
 
 /**
- * Walk a transaction's outputs once and lift the fields the correctness gates
- * query on. This is the single chokepoint every insertion path (HTTP routes and
- * gossip relay alike) passes through, which is what makes the gates unable to
- * miss an entry. First output of each kind wins — the gate columns are singular
- * per the contract, matching the services' own `outputs.find(...)` semantics.
+ * Lift the fields the correctness gates query on. This is the single chokepoint
+ * every insertion path (HTTP routes and gossip relay alike) passes through,
+ * which is what makes the gates unable to miss an entry. First output of each
+ * kind wins for the output-derived columns — the gate columns are singular per
+ * the contract, matching the services' own `outputs.find(...)` semantics.
+ *
+ * The like columns derive from the tx-level `likeTarget` field (P2-D): a like
+ * is a burn transaction, not a box. The liker is the karma inputs' owner — the
+ * single signing key. The store cannot resolve input boxes, so the signature
+ * map is where the transaction itself names that key; `castLike` enforces
+ * exactly one signature on entry, and a multi-key map derives no liker (the
+ * unpaired row matches no `hasPendingLike` query, and a spare signature cannot
+ * pin someone else's `(liker, target)` pair).
  */
 function gateMetadata(tx: UtxoTransaction): GateMetadata {
   const meta: GateMetadata = {
@@ -90,12 +97,14 @@ function gateMetadata(tx: UtxoTransaction): GateMetadata {
     vouchVoucher: null,
   };
 
+  if (tx.likeTarget !== undefined) {
+    meta.likeTarget = tx.likeTarget;
+    const signers = Object.keys(tx.signatures ?? {});
+    meta.likeLiker = signers.length === 1 ? signers[0]! : null;
+  }
+
   for (const output of tx.outputs ?? []) {
-    if (output.boxType === 'like' && meta.likeTarget === null) {
-      const like = output as LikeBox;
-      meta.likeTarget = like.targetPostId;
-      meta.likeLiker = Buffer.from(like.likerId).toString('hex');
-    } else if (output.boxType === 'invite' && meta.inviteInviter === null) {
+    if (output.boxType === 'invite' && meta.inviteInviter === null) {
       meta.inviteInviter = Buffer.from((output as InviteBox).inviterId).toString('hex');
     } else if (output.boxType === 'vouch' && meta.vouchVoucher === null) {
       meta.vouchVoucher = Buffer.from((output as VouchBox).voucherId).toString('hex');

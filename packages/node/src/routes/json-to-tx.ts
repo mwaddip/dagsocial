@@ -46,12 +46,23 @@ export function jsonToTx(raw: Record<string, unknown>): UtxoTransaction {
   // ---- protocolVersion ----
   const protocolVersion = (raw.protocolVersion as number) ?? 1;
 
+  // ---- likeTarget (P2-D) ----
+  // Carried through only when present — presence is `!== undefined`, matching
+  // the `computeTxId` tail rule. The JSON edge must neither drop nor invent
+  // the field: it sits inside the signed bytes, so dropping it breaks every
+  // like signature, and `castLike` owns the 64-hex shape check.
+  const likeTarget = raw.likeTarget;
+  if (likeTarget !== undefined && typeof likeTarget !== 'string') {
+    throw new ClientError('likeTarget must be a string post id');
+  }
+
   return {
     inputs: (raw.inputs ?? []) as string[],
     outputs,
     signatures,
     preimages: Object.keys(preimages).length > 0 ? preimages : undefined,
     protocolVersion,
+    ...(likeTarget !== undefined ? { likeTarget } : {}),
   };
 }
 

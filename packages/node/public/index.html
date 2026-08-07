@@ -301,7 +301,7 @@ const encoder = new TextEncoder();
 const PROTOCOL_VERSION = 1;
 // Amount constants are bigint (box values are bigint — Spec B P0); block
 // counts stay plain numbers. Mirrors @dagsocial/types constants.ts.
-const LIKE_COST = 2n;
+const LIKE_KARMA_COST = 1n;
 const POST_LOCK_THREAD_COST = 5n;
 const POST_LOCK_REPLY_COST = 3n;
 const INVITE_KARMA_AMOUNT = 25n;
@@ -332,10 +332,8 @@ let userId, pubKeyRaw, privKey;
 let networkType = 'mainnet';
 /** Feed filter: 'all' or the hex userId to show only that author's posts. */
 let feedFilter = 'all';
-/** Set of post IDs with a pending like/unlike tx (spinner shown). */
+/** Set of post IDs with a pending like tx (spinner shown). */
 const pendingLikes = new Set();
-/** Map of targetPostId → { likeBoxId, isFree } for unlike */
-const likeBoxes = new Map();
 /** Current block height from /status */
 let currentBlockHeight = 0;
 
@@ -592,9 +590,8 @@ function cborEncode(value) {
  * remains. The provenance strip is the fix Spec G phase C0 made in types: with
  * an id-only strip, the first *server-returned* box the UI hashes — those carry
  * `txId`/`index` from phase C on — would hash provenance into the id and
- * silently disagree with the node. Both flows that predict an id (the invite
- * flow's predicted invite id, the unlike path's cached LikeBox id) would surface
- * that as a dangling reference or an unspendable box, never as an error.
+ * silently disagree with the node, surfacing as a dangling reference or an
+ * unspendable box, never as an error.
  * Inert on client-built boxes: destructuring absent keys yields the same rest.
  *
  * One rule with two callers, so box and tx derivation cannot drift — the same
@@ -642,7 +639,8 @@ const TX_ID_DOMAIN = encoder.encode('dagsocial/tx-id/1');
 /**
  * Deterministic transaction ID.
  * Hashes TX_ID_DOMAIN, inputs (hex strings), canonical output bytes (id +
- * provenance stripped), preimages (sorted by boxId), and protocolVersion.
+ * provenance stripped), preimages (sorted by boxId), protocolVersion, and —
+ * only when present — `likeTarget` behind an ASCII `like:` marker at the tail.
  *
  * The domain tag is applied as of Spec G phase G3b, in the same commit as the
  * node's. Box ids, transaction ids and identity-record keys share one 32-byte
@@ -674,7 +672,16 @@ function computeTxId(tx) {
   // 4. Protocol version as UTF-8 string
   parts.push(encoder.encode(String(tx.protocolVersion)));
 
-  // 5. Blake2b-512 → first 32 bytes → hex
+  // 5. likeTarget tail (P2-D) — only when the field is present. Presence is
+  //    `!== undefined`, NOT truthiness: an empty-string target still appends
+  //    the marker, mirroring @dagsocial/types byte for byte. The target is
+  //    hashed as the UTF-8 text of its hex string, like the inputs above.
+  if (tx.likeTarget !== undefined) {
+    parts.push(encoder.encode('like:'));
+    parts.push(encoder.encode(tx.likeTarget));
+  }
+
+  // 6. Blake2b-512 → first 32 bytes → hex
   const combined = concatUint8Arrays(parts);
   const hash = blake2b(combined, null, 64).slice(0, 32);
   return buf2hex(hash);
@@ -849,12 +856,16 @@ function buildKarmaLockTx(karmaBox, lockAmount, targetPostId, pubKeyHex) {
   };
 }
 
-/** Build a like tx: consumes karma boxes, produces karma (total - 2) + LikeBox. */
+/**
+ * Build a like tx (P2-D): karma boxes in, ONE karma box out at
+ * `total − LIKE_KARMA_COST`, `likeTarget` naming the post. The burn is the
+ * deficit — there is no LikeBox, and the target sits inside the signed bytes
+ * (the `like:` tail in computeTxId), so a relay cannot re-point the like.
+ */
 function buildLikeTx(karmaBox, targetPostId, pubKeyHex) {
-  const now = currentBlockHeight;
-  const selected = selectBoxes(karmaBox.boxes, LIKE_COST);
+  const selected = selectBoxes(karmaBox.boxes, LIKE_KARMA_COST);
   const selectedTotal = selected.reduce((sum, b) => sum + b.value, 0n);
-  const newKarmaValue = selectedTotal - LIKE_COST;
+  const newKarmaValue = selectedTotal - LIKE_KARMA_COST;
 
   const karmaOutput = {
     boxType: 'karma',
@@ -864,46 +875,12 @@ function buildLikeTx(karmaBox, targetPostId, pubKeyHex) {
     proofSource: targetPostId,
   };
 
-  const likeOutput = {
-    boxType: 'like',
-    value: LIKE_COST,
-    likerId: pubKeyHex,
-    targetPostId,
-    guard: 'epoch_tally',
-  };
-
   return {
     inputs: selected.map(b => b.boxId),
-    outputs: [karmaOutput, likeOutput],
-    signatures: {},
-    protocolVersion: PROTOCOL_VERSION,
-  };
-}
-
-/**
- * Build an unlike tx: consumes a LikeBox, returns the locked karma in full.
- *
- * The node enforces sum(inputs) == sum(outputs), so the refund must equal the
- * LikeBox value. (This used to burn 1 karma as a "penalty" — audit L-6 — which
- * both contradicted "locked karma is never burned" and is now rejected.)
- */
-function buildUnlikeTx(likeBoxId, pubKeyHex) {
-  const now = currentBlockHeight;
-  const refundValue = LIKE_COST;
-
-  const karmaOutput = {
-    boxType: 'karma',
-    value: refundValue,
-    owner: pubKeyHex,
-    guard: 'owner_signature',
-    proofSource: 'unlike',
-  };
-
-  return {
-    inputs: [likeBoxId],
     outputs: [karmaOutput],
     signatures: {},
     protocolVersion: PROTOCOL_VERSION,
+    likeTarget: targetPostId,
   };
 }
 
@@ -1092,11 +1069,10 @@ function computeBoxId(box) {
  *   blake2b512( BOX_ID_DOMAIN ‖ canonicalBoxBytes(candidate)
  *               ‖ utf8(txId) ‖ u32BE(index) )[0:32]
  *
- * This is now the live derivation — `computeBoxId` above delegates to it, and
- * the unlike path's cached LikeBox id flows through it, and prediction there is
- * **exact** rather than guessed: the signer knows the txId and picks the index.
- * The invite flow no longer predicts at all — its bond names an output index
- * instead of a box id (user decision, 2026-08-06).
+ * This is now the live derivation — `computeBoxId` above delegates to it. No
+ * flow predicts a box id anymore: the invite flow's bond names an output index
+ * instead of a box id (user decision, 2026-08-06), and the unlike path died
+ * with P2-D (a like is a one-way burn transaction, not a box).
  *
  * `txId` enters as the **UTF-8 bytes of its 64-char hex string**, not decoded:
  * consistent with how every other id enters a preimage here (`computeTxId`
@@ -1185,7 +1161,6 @@ async function activateIdentity(index) {
 
   // Clear per-session tracking for this identity
   pendingLikes.clear();
-  likeBoxes.clear();
 
   // Load per-identity balances
   loadIdentityStatus();
@@ -1544,7 +1519,7 @@ document.getElementById('profileBackBtn').addEventListener('click', () => {
 });
 
 // ===========================================================================
-// Like / Unlike flow (tx-based)
+// Like flow (tx-based; P2-D — a like is a one-way burn, there is no unlike)
 // ===========================================================================
 
 async function doLike(targetPostId) {
@@ -1554,14 +1529,14 @@ async function doLike(targetPostId) {
       setStatus('No karma box — cannot like', 'error');
       return false;
     }
-    if (karmaBox.total < LIKE_COST) {
-      setStatus(`Insufficient karma to like: need ${LIKE_COST}, have ${karmaBox.total}`, 'error');
+    if (karmaBox.total < LIKE_KARMA_COST) {
+      setStatus(`Insufficient karma to like: need ${LIKE_KARMA_COST}, have ${karmaBox.total}`, 'error');
       return false;
     }
 
     const pubKeyHex = buf2hex(pubKeyRaw);
     const tx = buildLikeTx(karmaBox, targetPostId, pubKeyHex);
-    const { txId, signature } = await signTxId(tx);
+    const { signature } = await signTxId(tx);
     tx.signatures[pubKeyHex] = signature;
 
     const res = await fetch(API + '/likes', {
@@ -1574,102 +1549,9 @@ async function doLike(targetPostId) {
       return false;
     }
 
-    // Compute and store the LikeBox ID for later unlike.
-    //
-    // Spec G phase G3b: derived from the signed transaction's own id and the
-    // output's index, which is what makes this prediction **exact** rather than
-    // guessed — the signer knows the txId and picks the index, so the id it
-    // caches is the id block application will store. There is no circularity
-    // here: `computeTxId` hashes output *candidates*, and no output field
-    // carries a box id, so the txId is fully determined before the derivation
-    // runs. This is now the only flow that predicts a box id: the invite flow
-    // names an output index instead, so it needs no prediction.
-    if (data.status === 'pending') {
-      const likeBoxId = computeCandidateBoxId(tx.outputs[1], txId, 1); // second output is the LikeBox
-      likeBoxes.set(targetPostId, { likeBoxId, isFree: false });
-    } else if (data.status === 'free') {
-      likeBoxes.set(targetPostId, { likeBoxId: null, isFree: true, likeId: data.likeId });
-    }
-
     return true;
   } catch (e) {
     setStatus('like error: ' + e.message, 'error');
-    return false;
-  }
-}
-
-async function doUnlike(targetPostId) {
-  const stored = likeBoxes.get(targetPostId);
-  if (!stored) {
-    setStatus('No like record found for this post', 'error');
-    return false;
-  }
-
-  try {
-    const pubKeyHex = buf2hex(pubKeyRaw);
-
-    if (stored.isFree) {
-      // Free like — no LikeBox to consume, and a free like costs nothing, so
-      // the tx just re-anchors one karma box to carry the removal.
-      // It re-emits that box's own value: the old version paid out the
-      // *aggregate* balance minus a 1-karma "penalty" (audit L-6, L-7), which
-      // both minted karma when the account held more than one box and is now
-      // rejected by the conservation check.
-      const karmaBox = await fetchKarmaBox();
-      const sourceBox = karmaBox && karmaBox.boxes && karmaBox.boxes[0];
-      if (!sourceBox) {
-        setStatus('No karma box to anchor the unlike', 'error');
-        return false;
-      }
-      const now = currentBlockHeight;
-      const tx = {
-        inputs: [sourceBox.boxId],
-        outputs: [{
-          boxType: 'karma',
-          value: sourceBox.value,
-          owner: pubKeyHex,
-          guard: 'owner_signature',
-          proofSource: 'unlike-free',
-        }],
-        signatures: {},
-        protocolVersion: PROTOCOL_VERSION,
-      };
-      const { signature } = await signTxId(tx);
-      tx.signatures[pubKeyHex] = signature;
-
-      const res = await fetch(API + '/likes/remove', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tx }, jsonBigint),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setStatus(data.reason || data.error || 'unlike failed', 'error');
-        return false;
-      }
-      return true;
-    } else {
-      // Locked like — consume the LikeBox
-      if (!stored.likeBoxId) {
-        setStatus('No LikeBox ID stored for unlike', 'error');
-        return false;
-      }
-      const tx = buildUnlikeTx(stored.likeBoxId, pubKeyHex);
-      const { signature } = await signTxId(tx);
-      tx.signatures[pubKeyHex] = signature;
-
-      const res = await fetch(API + '/likes/remove', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tx }, jsonBigint),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setStatus(data.reason || data.error || 'unlike failed', 'error');
-        return false;
-      }
-      return true;
-    }
-  } catch (e) {
-    setStatus('unlike error: ' + e.message, 'error');
     return false;
   }
 }
@@ -1721,7 +1603,7 @@ function renderPost(p, id, depth, highlighted = false) {
         <span>${p.parentRefs.length ? p.parentRefs.length + ' parent(s)' : 'genesis'}</span>
         <span style="font-family:monospace;font-size:10px">${esc(shortId)}...</span>
         <button class="like-btn reply-btn" data-post-id="${id}">&#8617; Reply</button>
-        <button class="like-btn${liked ? ' liked' : ''}" data-post-id="${id}" data-liked="${liked ? '1' : '0'}"${pendingLikes.has(id) ? ' disabled' : ''}>
+        <button class="like-btn${liked ? ' liked' : ''}" data-post-id="${id}" data-liked="${liked ? '1' : '0'}"${liked || pendingLikes.has(id) ? ' disabled' : ''}>
           ${pendingLikes.has(id)
             ? '<span class="spinner"></span>Pending...'
             : (liked ? '&#10084;&#65039; Liked' : '&#10084;&#65039; Like') + ` (${likeCount})`}
@@ -1936,23 +1818,16 @@ function attachFeedHandlers(container) {
     btn.addEventListener('click', async () => {
       const postId = btn.dataset.postId;
       const isLiked = btn.dataset.liked === '1';
-      if (!postId) return;
+      // A like is a one-way burn (P2-D): once liked, the button is inert.
+      if (!postId || isLiked) return;
 
       btn.disabled = true;
       btn.innerHTML = '<span class="spinner"></span>Pending...';
       pendingLikes.add(postId);
 
-      if (isLiked) {
-        const ok = await doUnlike(postId);
-        if (ok) {
-          likeBoxes.delete(postId);
-          loadIdentityStatus();
-        }
-      } else {
-        const ok = await doLike(postId);
-        if (ok) {
-          loadIdentityStatus();
-        }
+      const ok = await doLike(postId);
+      if (ok) {
+        loadIdentityStatus();
       }
 
       pendingLikes.delete(postId);

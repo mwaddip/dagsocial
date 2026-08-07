@@ -753,3 +753,56 @@ describe('demo UI ↔ @dagsocial/types box identity mirror (Spec G phase E)', ()
     },
   );
 });
+
+// ---------------------------------------------------------------------------
+
+/**
+ * likeTarget tail mirror (P2-D). The like transaction's target sits inside the
+ * `computeTxId` preimage behind an ASCII `like:` marker, appended only when
+ * the field is present — presence is `!== undefined`, NOT truthiness. The UI
+ * signs what it builds, so a mirror that dropped the tail (or gated it on
+ * truthiness) would sign ids the node never computes, and every like from the
+ * demo UI would be rejected.
+ */
+describe('demo UI ↔ @dagsocial/types likeTarget tail mirror (P2-D)', () => {
+  const asUi = (tx: object): Record<string, unknown> => tx as unknown as Record<string, unknown>;
+
+  // Measured from @dagsocial/types computeTxId — both implementations pin to
+  // constants, not just to each other.
+  const GOLDEN_LIKE_TX_ID =
+    'a126fd5ef4e1ae9b7044d1e9685f2b8d5f99736027b31d51d7a2cf1d98307c72';
+  const GOLDEN_EMPTY_TARGET_TX_ID =
+    '42ff2ed25e1000a5334659d3084d230a4179af0563a635d7a28250cf6eba4bc0';
+
+  const GOLDEN_LIKE_TX: UtxoTransaction = {
+    ...GOLDEN_UTXO_TX,
+    likeTarget: GOLDEN_POST_ID,
+  };
+
+  it('the UI reproduces the frozen likeTarget-bearing txId', () => {
+    expect(ui.computeTxId(asUi(GOLDEN_LIKE_TX))).toBe(GOLDEN_LIKE_TX_ID);
+    expect(computeTxId(GOLDEN_LIKE_TX)).toBe(GOLDEN_LIKE_TX_ID);
+  });
+
+  it('absence appends nothing — the un-targeted tx keeps its pre-P2-D id', () => {
+    expect(ui.computeTxId(asUi(GOLDEN_UTXO_TX))).toBe(GOLDEN_UTXO_TX_ID);
+    expect(GOLDEN_LIKE_TX_ID).not.toBe(GOLDEN_UTXO_TX_ID);
+  });
+
+  it('presence is not truthiness — an empty-string target still appends the marker', () => {
+    const emptyTarget: UtxoTransaction = { ...GOLDEN_UTXO_TX, likeTarget: '' };
+    expect(ui.computeTxId(asUi(emptyTarget))).toBe(GOLDEN_EMPTY_TARGET_TX_ID);
+    expect(computeTxId(emptyTarget)).toBe(GOLDEN_EMPTY_TARGET_TX_ID);
+    expect(GOLDEN_EMPTY_TARGET_TX_ID).not.toBe(GOLDEN_UTXO_TX_ID);
+  });
+
+  it('the target binds — re-pointing the like moves the id identically on both sides', () => {
+    const repointed: UtxoTransaction = {
+      ...GOLDEN_UTXO_TX,
+      likeTarget: '2222222222222222222222222222222222222222222222222222222222222222',
+    };
+    const uiId = ui.computeTxId(asUi(repointed));
+    expect(uiId).not.toBe(GOLDEN_LIKE_TX_ID);
+    expect(uiId).toBe(computeTxId(repointed));
+  });
+});

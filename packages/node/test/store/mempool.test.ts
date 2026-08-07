@@ -56,20 +56,26 @@ const TARGET_ID = '11'.repeat(32);
 
 const bytes = (hex: string) => new Uint8Array(Buffer.from(hex, 'hex'));
 
+/**
+ * P2-D like tx: the gate columns derive from the tx-level `likeTarget` and the
+ * single signing key — never from an output. The karma output is shape-realism
+ * only; the store does not inspect it for the like gate.
+ */
 function likeTx(targetPostId: string, likerHex: string) {
   return {
     inputs: [],
     outputs: [
       {
-        boxType: 'like',
-        value: 2,
-        likerId: bytes(likerHex),
-        targetPostId,
-        guard: 'epoch_tally',
+        boxType: 'karma',
+        value: 99,
+        owner: bytes(likerHex),
+        guard: 'owner_signature',
+        proofSource: targetPostId,
       },
     ],
-    signatures: {},
+    signatures: { [likerHex]: new Uint8Array(64) },
     protocolVersion: 1,
+    likeTarget: targetPostId,
   };
 }
 
@@ -387,6 +393,45 @@ describe('mempool store', () => {
       expect(row.like_liker).toBeNull();
       expect(row.invite_inviter).toBeNull();
       expect(row.vouch_voucher).toBeNull();
+    });
+
+    it('populates like_target/like_liker from the tx field and the signer (P2-D)', async () => {
+      const { insertUtxoTx, getDbRow } = await importMempoolWithRow();
+      insertUtxoTx(likeTx(TARGET, LIKER_A) as any, null, 100);
+      const row = getDbRow();
+      expect(row.like_target).toBe(TARGET);
+      expect(row.like_liker).toBe(LIKER_A);
+    });
+
+    it('derives no liker from a multi-key signature map (no gate poisoning)', async () => {
+      // A spare signature must not let an attacker pin someone else's
+      // (liker, target) pair: with more than one key the row stays unpaired
+      // and matches no hasPendingLike query.
+      const { insertUtxoTx, getDbRow, hasPendingLike } = await importMempoolWithRow();
+      const tx = likeTx(TARGET, LIKER_A);
+      (tx.signatures as Record<string, Uint8Array>)[LIKER_B] = new Uint8Array(64);
+      insertUtxoTx(tx as any, null, 100);
+      const row = getDbRow();
+      expect(row.like_target).toBe(TARGET);
+      expect(row.like_liker).toBeNull();
+      expect(hasPendingLike(TARGET, LIKER_A)).toBe(false);
+      expect(hasPendingLike(TARGET, LIKER_B)).toBe(false);
+    });
+
+    it('ignores like-box outputs — the retired output-scan derivation stays dead', async () => {
+      const { insertUtxoTx, getDbRow } = await importMempoolWithRow();
+      insertUtxoTx({
+        inputs: [],
+        outputs: [{
+          boxType: 'like', value: 2, likerId: bytes(LIKER_A),
+          targetPostId: TARGET, guard: 'epoch_tally',
+        }],
+        signatures: {},
+        protocolVersion: 1,
+      } as any, null, 100);
+      const row = getDbRow();
+      expect(row.like_target).toBeNull();
+      expect(row.like_liker).toBeNull();
     });
   });
 

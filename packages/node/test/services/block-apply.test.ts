@@ -13,7 +13,7 @@ import {
   encodeOrderingBlock,
   decodeOrderingBlock,
   PROTOCOL_VERSION,
-  LIKE_COST,
+  LIKE_KARMA_COST,
   LIKE_THRESHOLD,
   LIKE_MAX_AUTHOR_REWARD,
   KARMA_STALE_THRESHOLD_BLOCKS,
@@ -507,7 +507,7 @@ describe('block-apply journal recording', () => {
     expect(computeTxId(decodeTx(applied.txCbor))).toBe(applied.txId);
 
     // The tx's box mutations live in the primitive log: input consumed,
-    // outputs (change karma + like box) created
+    // change karma created (the burn shape has no other output)
     expect(removedIds(saved!)).toContain(karmaBox.id);
     expect(insertedIds(saved!)).toContain(changeBoxOf(likeTx).id);
   });
@@ -962,9 +962,9 @@ describe('block-apply embedded tx re-validation', () => {
     const attackerBox = makeKarmaBox(100n, attacker.userId, 0);
     utxo.insertBox(attackerBox);
 
-    // Correctly signed by the owner and a legal karma → karma + like shape,
-    // but the outputs total 102 against a 100 karma input: the change box
-    // keeps the full balance and the LikeBox is conjured out of nothing.
+    // Correctly signed by the owner and a legal karma → karma + post_lock
+    // shape, but the outputs total 105 against a 100 karma input: the change
+    // box keeps the full balance and the PostLockBox is conjured from nothing.
     const inflating: UtxoTransaction = {
       inputs: [attackerBox.id!],
       outputs: [
@@ -973,15 +973,16 @@ describe('block-apply embedded tx re-validation', () => {
           value: 100n,
           owner: attacker.userId,
           guard: 'owner_signature',
-          proofSource: 'like_op',
+          proofSource: 'lock_op',
         } as KarmaBox,
         {
-          boxType: 'like',
-          value: LIKE_COST,
-          likerId: attacker.userId,
+          boxType: 'post_lock',
+          value: 5n,
+          originalValue: 5n,
+          owner: attacker.userId,
           targetPostId: 'target_post',
           guard: 'epoch_tally',
-        } as LikeBox,
+        } as PostLockBox,
       ],
       signatures: {},
       protocolVersion: PROTOCOL_VERSION,
@@ -1041,10 +1042,10 @@ describe('block-apply embedded tx re-validation', () => {
     expect(utxo.getBox(aliceBox.id!)).toBeNull();
     expect(utxo.getBox(bobBox.id!)).toBeNull();
     expect((utxo.getBox(changeBoxOf(aliceTx).id!) as KarmaBox).value).toBe(
-      100n - LIKE_COST,
+      100n - LIKE_KARMA_COST,
     );
     expect((utxo.getBox(changeBoxOf(bobTx).id!) as KarmaBox).value).toBe(
-      40n - LIKE_COST,
+      40n - LIKE_KARMA_COST,
     );
   });
 
@@ -1081,12 +1082,12 @@ describe('block-apply embedded tx re-validation', () => {
       computeTxId(txB),
     ]);
 
-    // 100 → 98 → 96, with both intermediate boxes spent.
+    // 100 → 99 → 98, with both intermediate boxes spent.
     expect(utxo.getBox(startBox.id!)).toBeNull();
     expect(utxo.getBox(changeBoxOf(txA).id!)).toBeNull();
     const finalBox = utxo.getBox(changeBoxOf(txB).id!) as KarmaBox | null;
     expect(finalBox).not.toBeNull();
-    expect(finalBox!.value).toBe(100n - 2n * LIKE_COST);
+    expect(finalBox!.value).toBe(100n - 2n * LIKE_KARMA_COST);
   });
 
   // -------------------------------------------------------------------------

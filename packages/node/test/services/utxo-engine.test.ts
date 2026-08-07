@@ -14,6 +14,7 @@ import {
   computeBoxId,
   computeTxId,
   LIKE_COST,
+  LIKE_KARMA_COST,
   POST_LOCK_THREAD_COST,
   VOUCH_KARMA_AMOUNT,
   INVITE_KARMA_AMOUNT,
@@ -168,6 +169,7 @@ describe('validateAndApplyTx', () => {
     privKey: KeyObject,
     pubKey: Uint8Array,
     protocolVersion = 1,
+    likeTarget?: string,
   ): UtxoTransaction {
     const hexKey = Buffer.from(pubKey).toString('hex');
     const tx: UtxoTransaction = {
@@ -175,6 +177,7 @@ describe('validateAndApplyTx', () => {
       outputs: rawOutputs,
       signatures: {},
       protocolVersion,
+      ...(likeTarget !== undefined ? { likeTarget } : {}),
     };
     const hash = computeTxHash(tx);
     tx.signatures[hexKey] = signHash(hash, privKey);
@@ -273,38 +276,37 @@ describe('validateAndApplyTx', () => {
   });
 
   // -------------------------------------------------------------------------
-  // 3. Valid karma→karma+like (like cast)
+  // 3. Valid like burn (P2-D): karma → karma at −LIKE_KARMA_COST, likeTarget
   // -------------------------------------------------------------------------
-  it('valid karma to karma+like (like cast)', () => {
+  it('valid like burn: karma → karma at −LIKE_KARMA_COST with likeTarget', () => {
     const karma = createAndInsertKarma(ownerPubKey, 100n, 1);
 
     const newKarma: KarmaBox = {
       boxType: 'karma',
-      value: 98n,
+      value: 100n - LIKE_KARMA_COST,
       owner: ownerPubKey,
       guard: 'owner_signature',
       proofSource: 'test',
     };
 
-    const likeBox: LikeBox = {
-      boxType: 'like',
-      value: LIKE_COST,
-      likerId: ownerUserId,
-      targetPostId: 'aa'.repeat(32),
-      guard: 'epoch_tally',
-    };
-
     const tx = buildSignedTx(
       [karma.id!],
-      [newKarma, likeBox],
+      [newKarma],
       ownerPrivKey,
       ownerPubKey,
+      1,
+      'aa'.repeat(32),
     );
     const result = validateAndApplyTx(deps, tx, 10);
 
     expect(result.valid).toBe(true);
     expect(result.error).toBeUndefined();
-    expect(deps.getBox(computeCandidateBoxId(likeBox, result.txId!, 1))).not.toBeNull();
+    // The input is spent, the change box exists, and no other box was minted —
+    // the burned karma is simply gone from the UTXO set.
+    expect(deps.getBox(karma.id!)).toBeNull();
+    const changeBox = deps.getBox(computeCandidateBoxId(newKarma, result.txId!, 0));
+    expect(changeBox).not.toBeNull();
+    expect((changeBox as KarmaBox).value).toBe(100n - LIKE_KARMA_COST);
   });
 
   // -------------------------------------------------------------------------
@@ -452,24 +454,26 @@ describe('validateAndApplyTx', () => {
   it('computeBoxId called for each output, IDs assigned', () => {
     const karma = createAndInsertKarma(ownerPubKey, 100n, 1);
 
-    const newKarma: KarmaBox = {
+    // A karma split — two same-owner outputs, so the per-output id derivation
+    // is exercised at more than one index.
+    const splitA: KarmaBox = {
       boxType: 'karma',
-      value: 100n - LIKE_COST,
+      value: 60n,
       owner: ownerPubKey,
       guard: 'owner_signature',
       proofSource: 'test',
     };
-    const likeBox: LikeBox = {
-      boxType: 'like',
-      value: LIKE_COST,
-      likerId: ownerUserId,
-      targetPostId: 'bb'.repeat(32),
-      guard: 'epoch_tally',
+    const splitB: KarmaBox = {
+      boxType: 'karma',
+      value: 40n,
+      owner: ownerPubKey,
+      guard: 'owner_signature',
+      proofSource: 'test-b',
     };
 
     const tx = buildSignedTx(
       [karma.id!],
-      [newKarma, likeBox],
+      [splitA, splitB],
       ownerPrivKey,
       ownerPubKey,
     );
@@ -479,7 +483,7 @@ describe('validateAndApplyTx', () => {
 
     // All output boxes should exist with their computed IDs, derived from the
     // transaction's own id and each output's position.
-    const expectedIds = [newKarma, likeBox].map((c, i) =>
+    const expectedIds = [splitA, splitB].map((c, i) =>
       computeCandidateBoxId(c, result.txId!, i),
     );
     for (const expectedId of expectedIds) {
@@ -931,35 +935,30 @@ describe('validateAndApplyTx', () => {
       expect(deps.getKarmaBox(ownerPubKey)!.value).toBe(100n);
     });
 
-    it('accepts the correct K(v) -> K(v-2) + Like(2)', () => {
+    it('accepts the correct like burn K(v) -> K(v-1) with likeTarget (P2-D)', () => {
       const karma = createAndInsertKarma(ownerPubKey, 100n, 1);
 
       const newKarma: KarmaBox = {
         boxType: 'karma',
-        value: 100n - LIKE_COST,
+        value: 100n - LIKE_KARMA_COST,
         owner: ownerPubKey,
         guard: 'owner_signature',
         proofSource: 'test',
       };
-      const likeBox: LikeBox = {
-        boxType: 'like',
-        value: LIKE_COST,
-        likerId: ownerUserId,
-        targetPostId: 'dd'.repeat(32),
-        guard: 'epoch_tally',
-      };
 
       const tx = buildSignedTx(
         [karma.id!],
-        [newKarma, likeBox],
+        [newKarma],
         ownerPrivKey,
         ownerPubKey,
+        1,
+        'dd'.repeat(32),
       );
       const result = validateAndApplyTx(deps, tx, 10);
 
       expect(result.valid).toBe(true);
       expect(result.error).toBeUndefined();
-      expect(deps.getKarmaBox(ownerPubKey)!.value).toBe(100n - LIKE_COST);
+      expect(deps.getKarmaBox(ownerPubKey)!.value).toBe(100n - LIKE_KARMA_COST);
     });
 
     // -----------------------------------------------------------------------
@@ -1423,6 +1422,233 @@ describe('validateAndApplyTx', () => {
 
       expect(result.valid).toBe(true);
       expect(result.error).toBeUndefined();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // 15. P2-D like biconditional: `likeTarget` present ⟺ deficit exactly
+  // LIKE_KARMA_COST — the only legal karma deficit in any user transaction —
+  // and the like shape is exactly one karma output, same owner as all inputs.
+  // ---------------------------------------------------------------------------
+  describe('P2-D like biconditional and shape', () => {
+    const TARGET = 'ab'.repeat(32);
+
+    function karmaOut(value: bigint, owner: Uint8Array): KarmaBox {
+      return {
+        boxType: 'karma',
+        value,
+        owner,
+        guard: 'owner_signature',
+        proofSource: 'like-quadrant',
+      } as KarmaBox;
+    }
+
+    // --- the four quadrants -------------------------------------------------
+
+    it('quadrant 1 — deficit of LIKE_KARMA_COST with likeTarget: valid', () => {
+      const karma = createAndInsertKarma(ownerPubKey, 100n, 1);
+      const tx = buildSignedTx(
+        [karma.id!], [karmaOut(99n, ownerPubKey)], ownerPrivKey, ownerPubKey, 1, TARGET,
+      );
+      const result = validateTx(deps, tx, 10);
+      expect(result.error).toBeUndefined();
+      expect(result.valid).toBe(true);
+    });
+
+    it('quadrant 2 — deficit without likeTarget: invalid (the before-leg invariant)', () => {
+      const karma = createAndInsertKarma(ownerPubKey, 100n, 1);
+      const tx = buildSignedTx(
+        [karma.id!], [karmaOut(100n - LIKE_KARMA_COST, ownerPubKey)], ownerPrivKey, ownerPubKey,
+      );
+      const result = validateTx(deps, tx, 10);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('Value non-conservation');
+    });
+
+    it('quadrant 3 — likeTarget on a conserving tx (zero deficit): invalid', () => {
+      const karma = createAndInsertKarma(ownerPubKey, 100n, 1);
+      const tx = buildSignedTx(
+        [karma.id!], [karmaOut(100n, ownerPubKey)], ownerPrivKey, ownerPubKey, 1, TARGET,
+      );
+      const result = validateTx(deps, tx, 10);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('Like non-conservation');
+    });
+
+    it('quadrant 4a — likeTarget with a deficit of 2: invalid', () => {
+      const karma = createAndInsertKarma(ownerPubKey, 100n, 1);
+      const tx = buildSignedTx(
+        [karma.id!], [karmaOut(98n, ownerPubKey)], ownerPrivKey, ownerPubKey, 1, TARGET,
+      );
+      const result = validateTx(deps, tx, 10);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('Like non-conservation');
+    });
+
+    it('quadrant 4b — likeTarget with a surplus: invalid', () => {
+      const karma = createAndInsertKarma(ownerPubKey, 100n, 1);
+      const tx = buildSignedTx(
+        [karma.id!], [karmaOut(101n, ownerPubKey)], ownerPrivKey, ownerPubKey, 1, TARGET,
+      );
+      const result = validateTx(deps, tx, 10);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('Like non-conservation');
+    });
+
+    // --- input rules --------------------------------------------------------
+
+    it('multi-input like: two karma boxes, one owner, one −1 output: valid', () => {
+      const karmaA = createAndInsertKarma(ownerPubKey, 60n, 1, 'box-a');
+      const karmaB = createAndInsertKarma(ownerPubKey, 40n, 2, 'box-b');
+      const tx = buildSignedTx(
+        [karmaA.id!, karmaB.id!],
+        [karmaOut(100n - LIKE_KARMA_COST, ownerPubKey)],
+        ownerPrivKey, ownerPubKey, 1, TARGET,
+      );
+      const result = validateTx(deps, tx, 10);
+      expect(result.error).toBeUndefined();
+      expect(result.valid).toBe(true);
+    });
+
+    it('foreign-owner karma input mixed into a like: invalid (same-owner rule)', () => {
+      const { publicKey: otherPub, privateKey: otherPriv } = generateKeyPairSync('ed25519');
+      const otherRaw = rawPublicKey(otherPub);
+      const karmaA = createAndInsertKarma(ownerPubKey, 60n, 1, 'own');
+      const karmaB = createAndInsertKarma(otherRaw, 40n, 2, 'foreign');
+
+      const tx = buildSignedTx(
+        [karmaA.id!, karmaB.id!],
+        [karmaOut(100n - LIKE_KARMA_COST, ownerPubKey)],
+        ownerPrivKey, ownerPubKey, 1, TARGET,
+      );
+      // Both owners co-sign — consensual, and still illegal.
+      tx.signatures[Buffer.from(otherRaw).toString('hex')] =
+        signHash(computeTxHash(tx), otherPriv);
+
+      const result = validateTx(deps, tx, 10);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('Karma cannot be transferred');
+    });
+
+    it('likeTarget on a non-karma (credit) spend: invalid', () => {
+      const creditBox = {
+        boxType: 'credit' as const,
+        value: 100n,
+        owner: ownerPubKey,
+        guard: 'owner_signature' as const,
+        proofSource: 1,
+      };
+      Object.assign(creditBox, fixtureProvenance(creditBox, 1));
+      const creditId = computeBoxId(creditBox as never);
+      storeInsertBox({ ...creditBox, id: creditId } as AnyBox);
+
+      const tx = buildSignedTx(
+        [creditId],
+        [{ ...creditBox, value: 99n } as AnyBox],
+        ownerPrivKey, ownerPubKey, 1, TARGET,
+      );
+      const result = validateTx(deps, tx, 10);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('likeTarget is only legal on an all-karma burn transaction');
+    });
+
+    it('likeTarget on a zero-output unvouch: invalid (no shelter under the vouch exemption)', () => {
+      const { publicKey: targetPub } = generateKeyPairSync('ed25519');
+      const vouchBox: VouchBox = {
+        boxType: 'vouch',
+        value: VOUCH_KARMA_AMOUNT,
+        voucherId: ownerPubKey,
+        targetId: rawPublicKey(targetPub),
+        guard: 'owner_signature',
+      };
+      Object.assign(vouchBox, fixtureProvenance(vouchBox, 1));
+      const vouchBoxId = computeBoxId(vouchBox);
+      storeInsertBox({ ...vouchBox, id: vouchBoxId });
+
+      const tx = buildSignedTx([vouchBoxId], [], ownerPrivKey, ownerPubKey, 1, TARGET);
+      const result = validateTx(deps, tx, 10);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('likeTarget is only legal on an all-karma burn transaction');
+    });
+
+    // --- output-shape violations -------------------------------------------
+
+    it('like with two karma outputs: invalid', () => {
+      const karma = createAndInsertKarma(ownerPubKey, 100n, 1);
+      const tx = buildSignedTx(
+        [karma.id!],
+        [karmaOut(60n, ownerPubKey), karmaOut(39n, ownerPubKey)],
+        ownerPrivKey, ownerPubKey, 1, TARGET,
+      );
+      const result = validateTx(deps, tx, 10);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('exactly one karma output');
+    });
+
+    it('like with karma + another box type: invalid', () => {
+      const karma = createAndInsertKarma(ownerPubKey, 100n, 1);
+      const postLock: PostLockBox = {
+        boxType: 'post_lock',
+        value: 5n,
+        originalValue: 5n,
+        owner: ownerPubKey,
+        targetPostId: TARGET,
+        guard: 'epoch_tally',
+      } as PostLockBox;
+      const tx = buildSignedTx(
+        [karma.id!],
+        [karmaOut(94n, ownerPubKey), postLock],
+        ownerPrivKey, ownerPubKey, 1, TARGET,
+      );
+      const result = validateTx(deps, tx, 10);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('exactly one karma output');
+    });
+
+    // --- the retired arms stay dead ----------------------------------------
+
+    it('a LikeBox-type output is an illegal karma transition (the old cast shape)', () => {
+      const karma = createAndInsertKarma(ownerPubKey, 100n, 1);
+      const likeBox: LikeBox = {
+        boxType: 'like',
+        value: 2n,
+        likerId: ownerUserId,
+        targetPostId: TARGET,
+        guard: 'epoch_tally',
+      };
+      const tx = buildSignedTx(
+        [karma.id!],
+        [karmaOut(98n, ownerPubKey), likeBox],
+        ownerPrivKey, ownerPubKey,
+      );
+      const result = validateTx(deps, tx, 10);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('Illegal karma transition');
+    });
+
+    it('spending a LikeBox (the old unlike shape) is rejected at the guard', () => {
+      const likeBox: LikeBox = {
+        boxType: 'like',
+        value: 2n,
+        likerId: ownerUserId,
+        targetPostId: TARGET,
+        guard: 'epoch_tally',
+      };
+      Object.assign(likeBox, fixtureProvenance(likeBox, 1));
+      const likeBoxId = computeBoxId(likeBox);
+      storeInsertBox({ ...likeBox, id: likeBoxId } as AnyBox);
+
+      // The liker's own signature no longer opens the box — the carve-out died
+      // with unlike. Conservation passes (2 in, 2 out), so what this pins is
+      // the guard rejection specifically.
+      const tx = buildSignedTx(
+        [likeBoxId],
+        [karmaOut(2n, ownerPubKey)],
+        ownerPrivKey, ownerPubKey,
+      );
+      const result = validateTx(deps, tx, 10);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('epoch tally');
     });
   });
 });

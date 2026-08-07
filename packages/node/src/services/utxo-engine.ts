@@ -4,9 +4,10 @@ import {
   computeTxId,
   INVITE_KARMA_THRESHOLD,
   INVITE_PROBATION_BLOCKS,
+  LIKE_KARMA_COST,
   VOUCH_KARMA_AMOUNT,
 } from '@dagsocial/types';
-import type { UtxoTransaction, AnyBox, AnyBoxCandidate, KarmaBox, BondBox, InviteBox, LikeBox, VouchBox } from '@dagsocial/types';
+import type { UtxoTransaction, AnyBox, AnyBoxCandidate, KarmaBox, BondBox, InviteBox, VouchBox } from '@dagsocial/types';
 
 // A local `computeTxIdLocal` lived here — a second implementation of
 // `computeTxId` with its own cbor-x `Encoder` — and was **deleted** by Spec G
@@ -121,7 +122,20 @@ function checkTransitions(
   outputs: AnyBoxCandidate[],
   currentBlockHeight: number,
   deps: UtxoEngineDeps,
+  likeTarget: string | undefined,
 ): { valid: boolean; error?: string } {
+  // P2-D: a like transaction (`likeTarget` present) has exactly one legal
+  // shape — the liker's karma boxes in, one karma box out (the arm in the
+  // karma case below). Gated here so the mixed-input shapes (invite claim,
+  // invite cancel) cannot carry a bolted-on `likeTarget` through their own
+  // handlers; the conservation carve independently requires all-karma inputs.
+  if (likeTarget !== undefined && inputs.some((b) => b.boxType !== 'karma')) {
+    return {
+      valid: false,
+      error: `likeTarget is only legal on an all-karma burn transaction`,
+    };
+  }
+
   // Handle invite cancel: KarmaBox + InviteBox + BondBox → KarmaBox
   if (inputs.length === 3) {
     const hasKarma = inputs.some((b) => b.boxType === 'karma');
@@ -208,25 +222,26 @@ function checkTransitions(
 
   switch (inputType) {
     // ------------------------------------------------------------------
-    // KarmaBox → KarmaBox (same owner, balance change)
+    // KarmaBox → KarmaBox (same owner, balance change; the P2-D like burn
+    //                      when `likeTarget` is present)
     // KarmaBox → KarmaBox + InviteBox + BondBox (invite creation)
-    // KarmaBox → KarmaBox + LikeBox (like cast)
     // ------------------------------------------------------------------
     case 'karma': {
       const karmaOutputs = outputs.filter((o) => o.boxType === 'karma');
       const inviteOutputs = outputs.filter((o) => o.boxType === 'invite');
       const bondOutputs = outputs.filter((o) => o.boxType === 'bond');
-      const likeOutputs = outputs.filter((o) => o.boxType === 'like');
       const postLockOutputs = outputs.filter((o) => o.boxType === 'post_lock');
       const vouchOutputs = outputs.filter((o) => o.boxType === 'vouch');
 
+      // A 'like'-type output is an illegal transition as of P2-D: a like is a
+      // burn transaction named by `likeTarget`, never a box.
       const totalOutputs =
-        karmaOutputs.length + inviteOutputs.length + bondOutputs.length + likeOutputs.length + postLockOutputs.length + vouchOutputs.length;
+        karmaOutputs.length + inviteOutputs.length + bondOutputs.length + postLockOutputs.length + vouchOutputs.length;
 
       if (totalOutputs !== outputs.length) {
         return {
           valid: false,
-          error: `Illegal karma transition: outputs contain non-karma/invite/bond/like/post_lock/vouch boxes`,
+          error: `Illegal karma transition: outputs contain non-karma/invite/bond/post_lock/vouch boxes`,
         };
       }
 
@@ -287,17 +302,30 @@ function checkTransitions(
         };
       }
 
-      if (likeOutputs.length > 0) {
-        // karma → karma + like
-        if (likeOutputs.length !== 1 || inviteOutputs.length > 0 || bondOutputs.length > 0 || postLockOutputs.length > 0 || vouchOutputs.length > 0) {
+      if (likeTarget !== undefined) {
+        // P2-D like arm: `likeTarget` present ⇒ this exact shape and nothing
+        // else. All inputs are karma boxes sharing one owner (pinned above),
+        // the single output is a karma box with that same owner (pinned
+        // above), and the transaction burns exactly LIKE_KARMA_COST. The
+        // conservation carve enforces the deficit independently — two layers,
+        // the same pattern as the bond-burn rejection.
+        if (outputs.length !== 1 || karmaOutputs.length !== 1) {
           return {
             valid: false,
-            error: `Invalid like transition: exactly 1 karma + 1 like output expected`,
+            error: `Invalid like transition: exactly one karma output and no other outputs expected`,
+          };
+        }
+        const totalIn = inputs.reduce((sum, b) => sum + b.value, 0n);
+        const deficit = totalIn - (karmaOutputs[0] as KarmaBox).value;
+        if (deficit !== LIKE_KARMA_COST) {
+          return {
+            valid: false,
+            error: `Like must burn exactly ${LIKE_KARMA_COST} karma, got a deficit of ${deficit}`,
           };
         }
       } else if (postLockOutputs.length > 0) {
         // karma → karma + post_lock (post creation lock)
-        if (postLockOutputs.length !== 1 || inviteOutputs.length > 0 || bondOutputs.length > 0 || likeOutputs.length > 0 || vouchOutputs.length > 0) {
+        if (postLockOutputs.length !== 1 || inviteOutputs.length > 0 || bondOutputs.length > 0 || vouchOutputs.length > 0) {
           return {
             valid: false,
             error: `Invalid post-lock transition: exactly 1 karma + 1 post_lock output expected`,
@@ -306,7 +334,7 @@ function checkTransitions(
       } else if (vouchOutputs.length > 0) {
         // karma → karma + vouch
         if (vouchOutputs.length !== 1 || inviteOutputs.length > 0 ||
-            bondOutputs.length > 0 || likeOutputs.length > 0 ||
+            bondOutputs.length > 0 ||
             postLockOutputs.length > 0) {
           return {
             valid: false,
@@ -529,18 +557,15 @@ function checkTransitions(
     }
 
     // ------------------------------------------------------------------
-    // LikeBox → KarmaBox (unlike by liker)
-    // LikeBox consumed by epoch tally (handled in epoch code)
+    // LikeBox — retired (P2-D). A like is a burn transaction named by
+    // `likeTarget`, never a box, and unlike is not a feature — so no user
+    // transaction consumes a LikeBox. Boxes left from the old system are
+    // unspendable relics until the store sweep (N4) removes them.
     // ------------------------------------------------------------------
     case 'like': {
-      const karmaOutputs = outputs.filter((o) => o.boxType === 'karma');
-      if (karmaOutputs.length >= 1 && karmaOutputs.length === outputs.length) {
-        // Unlike: liker consumes their LikeBox, gets karma back
-        return { valid: true };
-      }
       return {
         valid: false,
-        error: `LikeBox must produce karma outputs (unlike) or be consumed by epoch tally`,
+        error: `LikeBox transitions are retired (P2-D): likes are burn transactions, and unlike is not a feature`,
       };
     }
 
@@ -597,7 +622,7 @@ function checkTransitions(
  *
  * Outputs are attacker-controlled, so this is a security boundary rather than
  * input hygiene: a negative value lets a transaction balance its sums while
- * minting into a sibling box — `K(10) → K(15) + Like(-5)` sums to 10 == 10.
+ * minting into a sibling box — `K(10) → K(15) + PostLock(-5)` sums to 10 == 10.
  * `json-to-tx.ts` applies the same rule at the HTTP edge so clients get a
  * clear error; this check covers every other entry point (gossip, blocks).
  * This is the tight apply-side twin of validation's loose coinbase pre-filter.
@@ -620,9 +645,16 @@ function checkOutputValues(outputs: AnyBoxCandidate[]): UtxoResult {
  * **every** box type.
  *
  * Karma and credits are minted or burned only in block-application paths (like
- * rewards, decay, coinbase), never inside a user transaction, so no box type
- * gets a blanket exemption. **One** zero-output spend is the deliberate
- * exception:
+ * payouts, decay, coinbase), never inside a user transaction, so no box type
+ * gets a blanket exemption. Two deliberate carve-outs exist:
+ *
+ * - **The like burn (P2-D)** — `likeTarget` present ⟺ the transaction burns
+ *   exactly `LIKE_KARMA_COST` from karma inputs. This is the biconditional's
+ *   value half: `likeTarget` absent ⇒ zero deficit as always (strict equality
+ *   below), present ⇒ exactly that deficit — never more, never less, never a
+ *   surplus. The only karma-burning user transaction. Checked before the vouch
+ *   exemption so a zero-output unvouch with a bolted-on `likeTarget` cannot
+ *   shelter under it.
  *
  * - **VouchBox burn (unvouch)** — the staked karma is escrowed in the
  *   `vouch_cooldowns` table and re-minted to the voucher at maturity by
@@ -632,19 +664,43 @@ function checkOutputValues(outputs: AnyBoxCandidate[]): UtxoResult {
  *   UTXO set (and therefore outside the AVL+ state root) is a known wart —
  *   modelling it as a maturing box is tracked separately.
  *
- * The BondBox once shared that exemption and **lost it** in P2-B phase 1.
- * Forfeiture is not implemented and no legal transition destroys a bond, so an
- * exemption here bought nothing but a burn shape — one the *committed invitee*
- * could reach, since their signature satisfies `bond_dual`, letting them torch
- * the inviter's stake out of spite. The karma-econ vesting design owns
- * forfeiture and will define its burn path when it lands.
+ * The BondBox once shared the zero-output exemption and **lost it** in P2-B
+ * phase 1. Forfeiture is not implemented and no legal transition destroys a
+ * bond, so an exemption here bought nothing but a burn shape — one the
+ * *committed invitee* could reach, since their signature satisfies `bond_dual`,
+ * letting them torch the inviter's stake out of spite. The karma-econ vesting
+ * design owns forfeiture and will define its burn path when it lands.
  */
 function checkValueConservation(
   inputBoxes: AnyBox[],
   outputs: AnyBoxCandidate[],
+  likeTarget: string | undefined,
 ): UtxoResult {
   const outputValueCheck = checkOutputValues(outputs);
   if (!outputValueCheck.valid) return outputValueCheck;
+
+  // P2-D like carve. `likeTarget` names a like, and a like burns exactly
+  // LIKE_KARMA_COST from the liker's karma — any other deficit, a surplus, a
+  // conserving transaction, or non-karma inputs under this field are invalid.
+  if (likeTarget !== undefined) {
+    if (!inputBoxes.every((b) => b.boxType === 'karma')) {
+      return {
+        valid: false,
+        error: `likeTarget is only legal on an all-karma burn transaction`,
+      };
+    }
+    const totalIn = inputBoxes.reduce((sum, b) => sum + b.value, 0n);
+    const totalOut = outputs.reduce((sum, b) => sum + b.value, 0n);
+    if (totalIn - totalOut !== LIKE_KARMA_COST) {
+      return {
+        valid: false,
+        error:
+          `Like non-conservation: a like must burn exactly ${LIKE_KARMA_COST} ` +
+          `karma (inputs=${totalIn}, outputs=${totalOut})`,
+      };
+    }
+    return { valid: true };
+  }
 
   const inputType = inputBoxes[0]!.boxType;
   if (outputs.length === 0 && inputType === 'vouch') {
@@ -689,18 +745,10 @@ function checkGuards(
       }
 
       case 'epoch_tally': {
-        const likeBox = box as LikeBox;
-        // Allow liker to consume their own LikeBox (unlike)
-        if (likeBox.boxType === 'like' && likeBox.likerId) {
-          if (verifyGuardSignature(tx, txHash, likeBox.likerId)) {
-            break; // Liker-authorized unlike
-          }
-          return {
-            valid: false,
-            error: `LikeBox can only be consumed by its liker or epoch tally`,
-          };
-        }
-        // PostLockBox and other epoch_tally boxes: epoch only
+        // Boxes with this guard (PostLockBox; retired LikeBoxes) are
+        // consumable only by block application — no user transaction spends
+        // them. The liker-unlike carve-out died with P2-D: unlike is not a
+        // feature.
         return {
           valid: false,
           error: `Box with epoch_tally guard can only be consumed by epoch tally`,
@@ -846,10 +894,12 @@ function checkGuards(
  * 2. All inputs exist and are unspent
  * 3. All inputs have the same boxType
  * 4. Face-value conservation — sum(in) == sum(out) for every box type, plus
- *    non-negative integer output values (sole exception: the zero-output
- *    VouchBox spend)
+ *    non-negative integer output values (two carve-outs: the P2-D like burn —
+ *    `likeTarget` present ⟺ deficit exactly LIKE_KARMA_COST — and the
+ *    zero-output VouchBox spend)
  * 5. Guard satisfaction (signatures)
- * 6. Legal box transitions (height-aware — bond commit and settlement)
+ * 6. Legal box transitions (height-aware — bond commit and settlement;
+ *    `likeTarget`-aware — the like burn shape)
  *
  * Karma decay is handled by the periodic decay engine, not at transaction
  * validation time.
@@ -905,7 +955,7 @@ export function validateTx(
   }
 
   // ---- 4. Value conservation ----
-  const valueCheck = checkValueConservation(inputBoxes, tx.outputs);
+  const valueCheck = checkValueConservation(inputBoxes, tx.outputs, tx.likeTarget);
   if (!valueCheck.valid) return valueCheck;
 
   // ---- 5. Guard satisfaction ----
@@ -918,6 +968,7 @@ export function validateTx(
     tx.outputs,
     currentBlockHeight,
     deps,
+    tx.likeTarget,
   );
   if (!transitionCheck.valid) return transitionCheck;
 
