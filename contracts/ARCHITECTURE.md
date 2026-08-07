@@ -372,11 +372,37 @@ to verify box existence or absence without storing the full UTXO set.
   so two nodes differing on it compute different digests for identical state; P2-A removed
   its environment read and the types export gives a second implementation an authoritative
   definition to read.
-- **Deterministic:** Every node computing the AVL+ over the same UTXO set at
-  the same height **and holding the same `AVL_KEY_LENGTH`** produces the identical
-  stateRoot. Box `value` serializes as a
-  `bigint` (CBOR uint64), so the AVL leaf bytes — hence the stateRoot — are
-  stable across implementations (the demo UI mirrors the encoding)
+- **Deterministic across the same mutation *history*, not across the same
+  *content*.** Every node that applies the same blocks in the same order —
+  and holds the same `AVL_KEY_LENGTH` — produces the identical stateRoot. Box
+  `value` serializes as a `bigint` (CBOR uint64), so the AVL leaf bytes are
+  stable across implementations (the demo UI mirrors the encoding).
+
+  > ⚠ **This bullet used to read "every node computing the AVL+ over the same
+  > UTXO set … produces the identical stateRoot", and that is false.** An AVL+
+  > tree is balanced by insertion order: rotations happen at different moments,
+  > so two trees holding *identical content* can have different structures, and
+  > the digest commits to structure. Measured 2026-08-07: identical 7-box
+  > content, built incrementally versus rebuilt from the sorted set, agreed on
+  > the digest in **6 of 10** rounds (content lookups agreed 10/10).
+  >
+  > **This is a property of the data structure, not a bug in any function.**
+  > A Patricia/Merkle trie is canonical — its shape is fixed by the keys alone,
+  > which is what lets Ethereum reconstruct a state root from state. AVL+ buys
+  > cheap batch proofs and gives that up. The false sentence above is what made
+  > rebuilding the tree from `getUnspentBoxes()` look correct, and it shipped
+  > such a rebuild (now deleted — see NODE_INTERFACE → the `bootstrapAvlProver`
+  > SUPERSEDED note).
+  >
+  > **Binding rule: no code may reconstruct the state tree from box contents
+  > alone.** Consensus guarantees a shared *history*, which is what makes the
+  > digest agree; content alone does not. The sound ways to obtain a tree are:
+  > **load the persisted one** (every normal restart), **replay the mutations**
+  > in order (blocks or the journal — correct by construction, slowest), or
+  > **transfer the serialized tree** from a peer, which is what Ergo's UTXO-set
+  > snapshot bootstrap does. A future fast-sync must be designed as one of
+  > those; "rebuild from the box set" is not available and no amount of care
+  > makes it so.
 - **Journal-fed:** The per-block mutation set fed to the prover is derived from
   the block journal (see Invariants → Block application journal), with
   intra-block insert+remove pairs for the same boxId netted out
