@@ -14,7 +14,7 @@ import {
 import { NetNode, type PostsEntry } from '@dagsocial/net';
 import * as validation from '@dagsocial/validation';
 import { verifyPostForRelay, type VerifierDeps } from './services/verifier.js';
-import { sweepPlaceholders, hasPlaceholders, sweepStumps, hasMissingStumps } from './services/content-sweep.js';
+import { sweepPlaceholders, hasPlaceholders } from './services/content-sweep.js';
 import { validateTx } from './services/utxo-engine.js';
 import { setNet } from './services/net-instance.js';
 import { applyOrderingBlock } from './services/block-apply.js';
@@ -36,12 +36,10 @@ import {
   insertUtxoTx,
   MempoolFullError,
   getOrderingBlock,
-  insertStump,
-  getStump,
   peerStorage,
 } from './store/index.js';
 import { encodePost, cumulativeWork, MEMPOOL_EXPIRY_BLOCKS, subBlockFromPost, verifyPostId, VOUCH_COOLDOWN_BLOCKS } from '@dagsocial/types';
-import type { BlockHeader, Stump } from '@dagsocial/types';
+import type { BlockHeader } from '@dagsocial/types';
 
 const config = loadConfig();
 const startTime = Date.now();
@@ -359,12 +357,6 @@ net.onTx((tx) => {
   console.log(`Relayed tx queued in mempool: ${result.txId}`);
 });
 
-net.onStump((stump) => {
-  if (getStump(stump.rootPostHash)) return;
-  insertStump(stump);
-  console.log(`Relayed stump stored: ${stump.rootPostHash}`);
-});
-
   // Register blocks handler — bridges sync machine's pull path
   // (ModifierResponse) to the node's applyOrderingBlock pipeline.
   net.setBlocksHandler((block) => {
@@ -399,19 +391,6 @@ try {
     return entries;
   });
 
-  // Register stumps handler for GetStumps requests
-  net.setStumpsHandler((stumpIds: string[]) => {
-    const HEX64 = /^[0-9a-f]{64}$/;
-    const entries: Array<{ stumpId: string; stump: Stump }> = [];
-    for (const stumpId of stumpIds) {
-      if (!HEX64.test(stumpId)) continue;
-      const stump = getStump(stumpId);
-      if (!stump) continue;
-      entries.push({ stumpId, stump });
-    }
-    return entries;
-  });
-
 
 } catch (err) {
   console.warn(`Net startup failed (continuing without networking): ${String(err)}`);
@@ -432,18 +411,6 @@ function runContentSweep(net: NetNode, deps: VerifierDeps): void {
       console.error(`[content-sweep] Sweep failed: ${err.message}`);
     });
   }
-  if (hasMissingStumps()) {
-    console.log('[content-sweep] Sweeping missing stumps...');
-    sweepStumps(net).then((result) => {
-      if (result.success) {
-        console.log('[content-sweep] All stumps resolved.');
-      } else {
-        console.warn(`[content-sweep] Stump sweep incomplete: ${result.remaining} stumps remain.`);
-      }
-    }).catch((err: Error) => {
-      console.error(`[content-sweep] Stump sweep failed: ${err.message}`);
-    });
-  }
 }
 
 // Register content sweep on sync completion
@@ -459,7 +426,7 @@ runContentSweep(net, deps);
 // completed (race between sync finishing and handler registration).
 const SWEEP_INTERVAL_MS = 30_000;
 setInterval(() => {
-  if (hasPlaceholders() || hasMissingStumps()) {
+  if (hasPlaceholders()) {
     runContentSweep(net, deps);
   }
 }, SWEEP_INTERVAL_MS);
@@ -470,12 +437,6 @@ net.onPeerActive((_peerId: string) => {
     console.log('[content-sweep] New peer active, retrying placeholder sweep...');
     sweepPlaceholders(net, deps).catch((err: Error) => {
       console.error(`[content-sweep] Sweep failed: ${err.message}`);
-    });
-  }
-  if (hasMissingStumps()) {
-    console.log('[content-sweep] New peer active, retrying stump sweep...');
-    sweepStumps(net).catch((err: Error) => {
-      console.error(`[content-sweep] Stump sweep failed: ${err.message}`);
     });
   }
 });
