@@ -1,6 +1,6 @@
 import {
-  fixtureProvenance, uid } from '../helpers.js';
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+  fixtureProvenance, txToJson, uid } from '../helpers.js';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import express from 'express';
 import http from 'http';
 import { createPrivateKey, sign } from 'crypto';
@@ -14,8 +14,12 @@ import {
   getBondBoxes,
   insertBox,
   getBox,
+  getBoxByProvenance,
+  getKarmaValue,
   consumeBox,
 } from '../../src/store/utxo.js';
+import { hasActiveVouchCooldown } from '../../src/store/vouch-cooldowns.js';
+import { setNet } from '../../src/services/net-instance.js';
 import {
   initSystemKeypair,
   getSystemKeypair,
@@ -55,9 +59,12 @@ async function request(
       getCurrentHeight: () => 100,
       getUtxoEngineDeps: () => ({
         getBox,
+        getBoxByProvenance,
         insertBox,
         consumeBox,
         getKarmaBox,
+        getKarmaValue,
+        hasActiveVouchCooldown,
         getKarmaBoxes: (owner: Uint8Array) => [getKarmaBox(owner)].filter(Boolean) as KarmaBox[],
         runInTransaction: (fn: () => void) => fn(),
       }),
@@ -228,12 +235,12 @@ describe('UTXO routes', () => {
   // Credit transfer tests
   // ---------------------------------------------------------------------------
 
-  describe('POST /credits/transfer', () => {
+  describe('POST /credits/transfer (client-built tx — P2-B phase 3)', () => {
     let senderPubKey: Uint8Array;
     let senderPrivKey: Uint8Array;
     let senderHex: string;
     let receiverPubKey: Uint8Array;
-    let receiverHex: string;
+    let seededBoxId: string;
 
     beforeAll(() => {
       const sender = generateKeyPair();
@@ -243,7 +250,6 @@ describe('UTXO routes', () => {
 
       const receiver = generateKeyPair();
       receiverPubKey = receiver.publicKey;
-      receiverHex = Buffer.from(receiverPubKey).toString('hex');
 
       // Seed sender with 200 credits
       const box: CreditBox = {
@@ -254,85 +260,12 @@ describe('UTXO routes', () => {
         proofSource: 10,
       };
       Object.assign(box, fixtureProvenance(box, 1));
-      insertBox({ ...box, id: computeBoxId(box) });
+      seededBoxId = computeBoxId(box);
+      insertBox({ ...box, id: seededBoxId });
     });
 
-    it('rejects missing from', async () => {
-      const res = await request('/credits/transfer', 'POST', {
-        to: receiverHex,
-        amount: 50,
-        signature: 'AAAA',
-      });
-      expect(res.status).toBe(400);
-      expect((res.data as Record<string, unknown>).error).toContain('from');
-    });
-
-    it('rejects missing to', async () => {
-      const res = await request('/credits/transfer', 'POST', {
-        from: senderHex,
-        amount: 50,
-        signature: 'AAAA',
-      });
-      expect(res.status).toBe(400);
-      expect((res.data as Record<string, unknown>).error).toContain('to');
-    });
-
-    it('rejects missing amount', async () => {
-      const res = await request('/credits/transfer', 'POST', {
-        from: senderHex,
-        to: receiverHex,
-        signature: 'AAAA',
-      });
-      expect(res.status).toBe(400);
-      expect((res.data as Record<string, unknown>).error).toContain('amount');
-    });
-
-    it('rejects zero amount', async () => {
-      const res = await request('/credits/transfer', 'POST', {
-        from: senderHex,
-        to: receiverHex,
-        amount: 0,
-        signature: 'AAAA',
-      });
-      expect(res.status).toBe(400);
-    });
-
-    it('rejects missing signature', async () => {
-      const res = await request('/credits/transfer', 'POST', {
-        from: senderHex,
-        to: receiverHex,
-        amount: 50,
-      });
-      expect(res.status).toBe(400);
-      expect((res.data as Record<string, unknown>).error).toContain('signature');
-    });
-
-    it('rejects invalid signature', async () => {
-      const res = await request('/credits/transfer', 'POST', {
-        from: senderHex,
-        to: receiverHex,
-        amount: 50,
-        signature: Buffer.from(new Uint8Array(64).fill(0xaa)).toString('base64'),
-      });
-      expect(res.status).toBe(401);
-    });
-
-    it('rejects unknown sender', async () => {
-      const unknownHex = Buffer.from(new Uint8Array(32).fill(0xcc)).toString('hex');
-      const res = await request('/credits/transfer', 'POST', {
-        from: unknownHex,
-        to: receiverHex,
-        amount: 50,
-        signature: Buffer.from(new Uint8Array(64)).toString('base64'),
-      });
-      expect(res.status).toBe(404);
-    });
-
-    it('completes a valid transfer', async () => {
-      const amount = 50n;
-      const currentHeight = 100;
-
-      // Precompute txId the same way sendCredits does
+    /** Build and sign the transfer the way the demo UI does. */
+    function buildSignedTransfer(amount: bigint): UtxoTransaction {
       const unlocked = [getCreditBox(senderPubKey)!];
       const selected = selectBoxes(unlocked, amount);
       const totalSelected = selected.reduce((s, b) => s + b.value, 0n);
@@ -357,33 +290,68 @@ describe('UTXO routes', () => {
 
       const tx: UtxoTransaction = {
         inputs: selected.map(b => b.id!),
-        outputs: outputs.map(b => ({ ...b, id: computeBoxId(b) })),
+        outputs,
         signatures: {},
         protocolVersion: PROTOCOL_VERSION,
       };
 
-      const txId = computeTxId(tx);
-
-      // Sign with sender's private key (PKCS8 DER)
       const privKey = createPrivateKey({
         key: Buffer.from(senderPrivKey),
         format: 'der',
         type: 'pkcs8',
       });
-      const sig = sign(null, Buffer.from(txId, 'hex'), privKey);
-      const sigBase64 = Buffer.from(sig).toString('base64');
+      const sig = sign(null, Buffer.from(computeTxId(tx), 'hex'), privKey);
+      tx.signatures[senderHex] = new Uint8Array(sig);
+      return tx;
+    }
 
+    it('rejects a missing tx', async () => {
+      const res = await request('/credits/transfer', 'POST', {});
+      expect(res.status).toBe(400);
+      expect((res.data as Record<string, unknown>).error).toContain('tx');
+    });
+
+    it('rejects a malformed tx (decode failure)', async () => {
       const res = await request('/credits/transfer', 'POST', {
-        from: senderHex,
-        to: receiverHex,
-        amount: amount.toString(),
-        signature: sigBase64,
+        tx: { inputs: [], outputs: [{ boxType: 'credit', value: 'not-a-number' }] },
       });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects a forged signature with 400 — invalid tx, per the contract', async () => {
+      const tx = buildSignedTransfer(50n);
+      tx.signatures[senderHex] = new Uint8Array(64).fill(0xaa);
+      const res = await request('/credits/transfer', 'POST', { tx: txToJson(tx) });
+      expect(res.status).toBe(400);
+      expect(String((res.data as Record<string, unknown>).error)).toContain(
+        'Invalid credit transfer',
+      );
+    });
+
+    it('pools a valid transfer, answers pending, broadcasts — and settles nothing', async () => {
+      const broadcastTx = vi.fn(() => Promise.resolve());
+      setNet({ broadcastTx } as unknown as Parameters<typeof setNet>[0]);
+
+      const tx = buildSignedTransfer(50n);
+      const res = await request('/credits/transfer', 'POST', { tx: txToJson(tx) });
+
       expect(res.status).toBe(200);
       const body = res.data as Record<string, unknown>;
-      expect(body.sent).toBe(amount.toString());
-      expect(body.change).toBe(change.toString());
-      expect(typeof body.txId).toBe('string');
+      expect(body.status).toBe('pending');
+      expect(body.txId).toBe(computeTxId(tx));
+      expect(typeof body.expiresAtHeight).toBe('number');
+      // Settled fields are gone: credits move when the tx is mined.
+      expect(body.sent).toBeUndefined();
+      expect(body.change).toBeUndefined();
+
+      // The input box is still unspent — the HTTP call settles nothing.
+      expect(getBox(seededBoxId)).not.toBeNull();
+      expect(getCreditBoxes(receiverPubKey)).toHaveLength(0);
+
+      // The pooled tx went out to peers.
+      expect(broadcastTx).toHaveBeenCalledTimes(1);
+      const sent = broadcastTx.mock.calls[0]![0] as UtxoTransaction;
+      expect(computeTxId(sent)).toBe(computeTxId(tx));
     });
   });
 

@@ -184,16 +184,29 @@ function rowToBox(row: UtxoRow): AnyBox {
       return cb;
     }
 
-    case 'like':
+    case 'like': {
+      const e = extra as LikeExtra;
       return {
         id: row.id,
         boxType: 'like',
-        value: 2n,
-        likerId: hexToPubkey((extra as LikeExtra).likerId),
-        targetPostId: (extra as LikeExtra).targetPostId,
+        // The row's real value, NOT the literal 2n this used to fabricate.
+        // The box id hashes `canonicalBoxBytes` — value included — so a store
+        // that rewrites the value on read returns a box whose bytes no longer
+        // match its own id, and an AVL prover re-bootstrapped from SQLite
+        // would diverge from one fed at insert time. Unlike vouch there is no
+        // cast-time value pin (LIKE_COST is what every production builder
+        // uses, but outputs arrive as client CBOR, and P2-D deletes the box
+        // rather than pinning it); the store's job is to round-trip what is
+        // actually on disk. The `as` cast bridges LikeBox's literal `2n`
+        // value type, which documents the builders' constant rather than a
+        // storage guarantee.
+        value: row.value as LikeBox['value'],
+        likerId: hexToPubkey(e.likerId),
+        targetPostId: e.targetPostId,
         guard: 'epoch_tally',
         ...prov,
       };
+    }
 
     case 'invite':
       return {

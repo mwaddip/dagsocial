@@ -22,6 +22,7 @@ import {
   ensureFaucetCreditBox,
 } from '../store/system.js';
 import { getNet } from '../services/net-instance.js';
+import { jsonToTx } from './json-to-tx.js';
 import { respondError } from './respond-error.js';
 import { isFaucetNetwork } from '../config.js';
 
@@ -112,85 +113,44 @@ export function createRouter(deps: UtxoDeps): Router {
     });
   });
 
-  // Coerce an amount arriving in JSON (decimal string or safe-integer number)
-  // to bigint. Returns null for anything not cleanly convertible or < 1.
-  function parseAmount(raw: unknown): bigint | null {
-    let amount: bigint;
-    if (typeof raw === 'bigint') {
-      amount = raw;
-    } else if (typeof raw === 'number' && Number.isSafeInteger(raw)) {
-      amount = BigInt(raw);
-    } else if (typeof raw === 'string' && /^[0-9]+$/.test(raw)) {
-      amount = BigInt(raw);
-    } else {
-      return null;
-    }
-    return amount >= 1n ? amount : null;
-  }
-
-  // POST /credits/transfer — transfer credits to another identity
+  // POST /credits/transfer — pool a client-built, client-signed credit
+  // transfer (P2-B phase 3): jsonToTx → validateTx + insertUtxoTx in the
+  // service → broadcast → pending response, the path every other tx route
+  // takes. Credits move when the transaction is mined.
   router.post('/credits/transfer', (req, res) => {
-    const body = req.body as {
-      from?: string;
-      to?: string;
-      amount?: number | string;
-      signature?: string;
-      expectedHeight?: number;
-    };
+    const body = req.body as { tx?: Record<string, unknown> };
 
-    if (!body.from || typeof body.from !== 'string' || body.from.length !== 64) {
-      res.status(400).json({ error: 'from must be a 64-character hex string' });
-      return;
-    }
-    if (!body.to || typeof body.to !== 'string' || body.to.length !== 64) {
-      res.status(400).json({ error: 'to must be a 64-character hex string' });
-      return;
-    }
-    const amount = parseAmount(body.amount);
-    if (amount === null) {
-      res.status(400).json({ error: 'amount must be a positive integer' });
-      return;
-    }
-    if (!body.signature || typeof body.signature !== 'string') {
-      res.status(400).json({ error: 'signature required (base64)' });
+    if (!body.tx) {
+      res.status(400).json({ error: 'tx required' });
       return;
     }
 
-    const expectedHeight =
-      typeof body.expectedHeight === 'number' && body.expectedHeight >= 0
-        ? body.expectedHeight
-        : undefined;
-
-    let fromBytes: Uint8Array;
-    let toBytes: Uint8Array;
-    let sigBytes: Uint8Array;
+    let tx: UtxoTransaction;
     try {
-      fromBytes = new Uint8Array(Buffer.from(body.from, 'hex'));
-      toBytes = new Uint8Array(Buffer.from(body.to, 'hex'));
-      sigBytes = new Uint8Array(Buffer.from(body.signature, 'base64'));
-    } catch {
-      res.status(400).json({ error: 'invalid encoding' });
+      tx = jsonToTx(body.tx);
+    } catch (err) {
+      respondError(res, err, 'POST /credits/transfer (tx decode)', 'message');
       return;
     }
-
-    if (!deps.getKarmaBox(fromBytes) && !deps.getCreditBoxes(fromBytes).length) {
-      res.status(404).json({ error: 'Sender has no boxes' });
-      return;
-    }
-
-    const currentHeight = deps.getCurrentHeight();
 
     try {
-      const result = sendCredits(fromBytes, toBytes, amount, sigBytes, currentHeight, expectedHeight);
+      const currentHeight = deps.getCurrentHeight();
+      const result = sendCredits(deps.getUtxoEngineDeps(), tx, currentHeight);
+
+      // Broadcast to peers (fire-and-forget)
+      const net = getNet();
+      if (net) {
+        net.broadcastTx(result.tx).catch((err: Error) => {
+          console.warn(`Failed to broadcast credit transfer tx: ${err.message}`);
+        });
+      }
+
       res.json({
-        ...result,
-        sent: result.sent.toString(),
-        change: result.change.toString(),
+        status: 'pending',
+        txId: result.txId,
+        expiresAtHeight: result.expiresAtHeight,
       });
     } catch (err: unknown) {
-      // 401 for a bad signature now rides on the typed error's statusCode; the
-      // 'Insufficient' branch matched no thrown message and was already
-      // indistinguishable from the 400 fallback (audit L-12).
       respondError(res, err, 'POST /credits/transfer', 'message');
     }
   });

@@ -43,8 +43,9 @@ epoch tally, decay, invites/vouch, faucet, prune settlement, AVL+ state, and the
 
 ## Node-relevant invariants (full set in ARCHITECTURE.md)
 - **Value conservation** — user txs conserve value; karma/credits are minted or burned only in explicit
-  block-application paths, never inside a user tx. (Being *enforced* by the value-integrity spec — today the
-  node does not enforce it.)
+  block-application paths, never inside a user tx. Enforced since P2-B phase 3: `validateTx` checks
+  per-type face-value conservation, block application re-validates every embedded tx, and the last
+  direct-mutation HTTP path (`sendCredits`) is gone — every user-value mutation rides mempool → block.
 - **Hashing** — `blake2b512` truncated via `.subarray(0, 32)` for every 32-byte output; must match the demo
   UI's `blakejs`.
 - **Signatures** — raw Ed25519 (64 bytes), verified with `crypto.verify(null, …)` and a KeyObject.

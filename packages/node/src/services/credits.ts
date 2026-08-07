@@ -1,21 +1,15 @@
-import {
-  computeBoxId,
-  computeTxId,
-  selectBoxes,
-  PROTOCOL_VERSION,
-} from '@dagsocial/types';
-import type { CandidateOf, CreditBox, UtxoTransaction } from '@dagsocial/types';
-import { verify as cryptoVerify } from 'crypto';
+import { computeBoxId, MEMPOOL_EXPIRY_BLOCKS } from '@dagsocial/types';
+import type { CreditBox, UtxoTransaction } from '@dagsocial/types';
 import {
   getCreditBoxes,
-  getUnlockedCreditBoxes,
   insertBox,
   consumeBox,
+  insertUtxoTx,
 } from '../store/index.js';
 
-import { ed25519PublicKeyToKeyObject } from '@dagsocial/validation';
 import { ClientError } from './client-error.js';
-import { materializeOutput } from './utxo-engine.js';
+import { validateTx } from './utxo-engine.js';
+import type { UtxoEngineDeps } from './utxo-engine.js';
 import { MINT_OUTPUT_INDEX, mintTxIdFor } from '../mint-provenance.js';
 import type { MintContext } from '../mint-provenance.js';
 
@@ -87,103 +81,55 @@ export function mintCredits(
 // ---------------------------------------------------------------------------
 
 export interface CreditTransferResult {
+  status: 'pending';
   txId: string;
-  sent: bigint;
-  change: bigint;
-  boxesConsumed: number;
+  expiresAtHeight: number;
+  /** The pooled transaction, for the route's broadcast. */
+  tx: UtxoTransaction;
 }
 
 /**
- * Transfer credits from one identity to another. Bitcoin-style UTXO selection:
- * largest-first from unlocked boxes, remainder back as change.
+ * Pool a client-built, client-signed credit transfer.
  *
- * Verifies the provided Ed25519 signature over the transaction ID against the
- * sender's public key. Throws on insufficient balance or bad signature.
+ * Receives a pre-built, signed UtxoTransaction from the client and does what
+ * every other tx route does: `validateTx`, then `insertUtxoTx`. Credits move
+ * at block application on every node, not when the HTTP call returns —
+ * signature verification stays inside `validateTx`'s guard check.
+ *
+ * This replaced a builder that selected boxes server-side and applied the
+ * result with `consumeBox`/`insertBox` directly — no block, no open journal.
+ * That bypassed consensus entirely (audit F-consensus-7): the transfer
+ * entered no block, produced no journal entries, never reached the AVL feed,
+ * and the divergence detonated at the next restart-rebuild as a permanent
+ * `stateRoot` fork. It also mirrored the client's transaction construction
+ * byte-for-byte, which nothing tested; taking the client's own transaction
+ * deletes the second implementation instead of documenting it.
  */
 export function sendCredits(
-  from: Uint8Array,
-  to: Uint8Array,
-  amount: bigint,
-  signature: Uint8Array,
-  currentHeight: number,
-  expectedHeight?: number,
+  deps: UtxoEngineDeps,
+  tx: UtxoTransaction,
+  currentBlockHeight: number,
 ): CreditTransferResult {
-  if (amount <= 0n) {
-    throw new ClientError('amount must be positive');
+  // Shape gate for this route: every output is a CreditBox. Per-type value
+  // conservation then pins the inputs to credit boxes too. This routes other
+  // tx kinds to their own endpoints — it is not a consensus rule; those live
+  // in `validateTx` below.
+  if (tx.outputs.length === 0 || tx.outputs.some((o) => o.boxType !== 'credit')) {
+    throw new ClientError('credit transfer outputs must all be CreditBoxes');
   }
 
-  // 1. Select unlocked boxes
-  const unlocked = getUnlockedCreditBoxes(from, currentHeight);
-  const selected = selectBoxes(unlocked, amount);
-  const totalSelected = selected.reduce((sum, b) => sum + b.value, 0n);
-  const change = totalSelected - amount;
-
-  // 2. Build outputs — use expectedHeight for createdAtBlock so the txId
-  //    matches what the client signed. Falls back to currentHeight if
-  //    expectedHeight is not provided (backward compat for non-UI callers).
-  const buildHeight = expectedHeight ?? currentHeight;
-  const outputs: CandidateOf<CreditBox>[] = [];
-
-  const recipientBox: CandidateOf<CreditBox> = {
-    boxType: 'credit',
-    value: amount,
-    owner: to,
-    guard: 'owner_signature',
-    proofSource: -1, // transfer (not coinbase)
-  };
-  outputs.push(recipientBox);
-
-  if (change > 0n) {
-    const changeBox: CandidateOf<CreditBox> = {
-      boxType: 'credit',
-      value: change,
-        owner: from,
-      guard: 'owner_signature',
-      proofSource: -1,
-    };
-    outputs.push(changeBox);
+  const result = validateTx(deps, tx, currentBlockHeight);
+  if (!result.valid) {
+    throw new ClientError(`Invalid credit transfer: ${result.error}`);
   }
 
-  // 3. Build transaction
-  //
-  // The outputs no longer carry a precomputed `id`. It was vestigial: nothing
-  // reads an output id, and `computeTxId` strips it through `canonicalBoxBytes`
-  // before hashing — so the transaction id the client signed is unchanged.
-  const tx: UtxoTransaction = {
-    inputs: selected.map((b) => b.id!),
-    outputs,
-    signatures: {},
-    protocolVersion: PROTOCOL_VERSION,
-  };
-
-  const txId = computeTxId(tx);
-
-  // 4. Verify signature
-  const keyObj = ed25519PublicKeyToKeyObject(from);
-  const txIdBytes = Buffer.from(txId, 'hex');
-  const ok = cryptoVerify(null, txIdBytes, keyObj, Buffer.from(signature));
-  if (!ok) {
-    throw new ClientError('invalid signature', 401);
-  }
-
-  // 5. Apply to UTXO set
-  //
-  // Provenance is attached only now — after `computeTxId` above, which hashes
-  // the output *candidates*. Attaching first would feed provenance into the
-  // very transaction id it derives from, and because `computeTxId` routes
-  // outputs through `canonicalBoxBytes` it would not observe the difference:
-  // the mistake is silent, not an error.
-  for (const box of selected) {
-    consumeBox(box.id!, currentHeight);
-  }
-  tx.outputs
-    .map((box, index) => materializeOutput(box, txId, index))
-    .forEach(insertBox);
+  const expiresAtHeight = currentBlockHeight + MEMPOOL_EXPIRY_BLOCKS;
+  insertUtxoTx(tx, null, expiresAtHeight);
 
   return {
-    txId,
-    sent: amount,
-    change,
-    boxesConsumed: selected.length,
+    status: 'pending',
+    txId: result.txId!,
+    expiresAtHeight,
+    tx,
   };
 }

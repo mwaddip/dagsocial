@@ -2162,7 +2162,6 @@ document.getElementById('creditFaucetBtn').addEventListener('click', async () =>
 // ===========================================================================
 
 function buildCreditTransferTx(creditBoxes, recipientHex, amount) {
-  const now = currentBlockHeight;
   const unlocked = creditBoxes.boxes.filter(b =>
     !b.lockedUntilBlock || b.lockedUntilBlock <= currentBlockHeight
   );
@@ -2224,31 +2223,22 @@ document.getElementById('creditTransferBtn').addEventListener('click', async () 
       return;
     }
 
+    // The node takes the transaction we just built and signed — it validates
+    // and pools it; the credits move when the transaction is mined.
     const tx = buildCreditTransferTx(creditBoxes, recipient, amount);
     const { signature } = await signTxId(tx);
     const pubKeyHex = buf2hex(pubKeyRaw);
     tx.signatures[pubKeyHex] = signature;
 
-    // Convert hex signature to base64 for the API
-    const sigBytes = hex2buf(signature);
-    const sigBase64 = btoa(String.fromCharCode(...sigBytes));
-
     const res = await fetch(API + '/credits/transfer', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        from: userId,
-        to: recipient,
-        amount,
-        signature: sigBase64,
-        expectedHeight: currentBlockHeight,
-      }, jsonBigint),
+      body: JSON.stringify({ tx }, jsonBigint),
     });
 
     const data = await res.json();
     if (res.ok) {
-      const change = BigInt(data.change);
-      result.innerHTML = `<span class="result-msg ok">Sent ${formatCredits(BigInt(data.sent))} credits${change > 0n ? ' (change: ' + formatCredits(change) + ')' : ''}. TxId: ${(data.txId || '').slice(0, 16)}...</span>`;
+      result.innerHTML = `<span class="result-msg ok">Transfer of ${formatCredits(amount)} credits pending — settles at the next block. TxId: ${(data.txId || '').slice(0, 16)}...</span>`;
       loadIdentityStatus();
       loadStatus();
     } else {

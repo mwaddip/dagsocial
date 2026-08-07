@@ -229,6 +229,31 @@ describe('utxo store', () => {
     expect(result.guard).toBe('epoch_tally');
   });
 
+  it('insertBox + getBox round-trips a non-standard LikeBox value — no read fabrication', async () => {
+    const { initDb } = await importDbFresh();
+    const { insertBox, getBox } = await importUtxoFresh();
+    const { computeBoxId } = await importTypes();
+
+    initDb(':memory:');
+
+    // Nothing pins a LikeBox's value at validation time: LIKE_COST is what
+    // every production builder uses, but outputs arrive as client CBOR, so a
+    // conserving like at value 5 (karma 10 → karma 5 + like 5) validates and
+    // stores 5. The read used to fabricate 2n over it, returning a box whose
+    // bytes no longer hashed to its own id — the vouch arm's divergence,
+    // fixed the same way (P2-B phase 3, carrying phase 2's §7 residual).
+    const box = makeLikeBox({ value: 5n as LikeBox['value'], likerId: uid('user-liker-5') });
+    Object.assign(box, fixtureProvenance(box, 1));
+    box.id = computeBoxId(box);
+    insertBox(box);
+
+    const result = getBox(box.id!) as LikeBox;
+    expect(result).not.toBeNull();
+    expect(result.value).toBe(5n);
+    // Bytes match the id again: the reconstruction hashes to its own key.
+    expect(computeBoxId(result)).toBe(result.id);
+  });
+
   it('insertBox + getBox round-trip for InviteBox', async () => {
     const { initDb } = await importDbFresh();
     const { insertBox, getBox } = await importUtxoFresh();
