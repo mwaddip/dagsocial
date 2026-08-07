@@ -1,13 +1,22 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { computeBoxId, computeMintTxId } from '@dagsocial/types';
+import { computeBoxId, computeMintTxId, PROTOCOL_VERSION } from '@dagsocial/types';
 import type {
   PostLockBox,
   LikeBox,
   KarmaBox,
+  OrderingBlock,
+  Post,
+  Stump,
 } from '@dagsocial/types';
 import type { BlockJournal, BoxMutation } from '../../src/store/journal.js';
 import type Database from 'better-sqlite3';
-import { fixtureProvenance } from '../helpers.js';
+import {
+  fixtureProvenance,
+  makeApplicableBlock,
+  makePruneEntry,
+  makeTestIdentity,
+  hex,
+} from '../helpers.js';
 
 // ---------------------------------------------------------------------------
 // Dynamic import helpers (module-level DB state requires reset + fresh import)
@@ -738,5 +747,142 @@ describe('Full prune lifecycle (UTXO settlement path)', () => {
 
     // 10. Verify getUnspentLikeBoxes returns empty (like now spent)
     expect(utxo.getUnspentLikeBoxes(rootId)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: stump insert is structural at settlement (P2-F F1)
+// ---------------------------------------------------------------------------
+
+describe('prune settlement stump insert (P2-F F1)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    vi.doUnmock('../../src/store/posts.js');
+    vi.resetModules();
+  });
+
+  async function importBlockApply() {
+    return (await import('../../src/services/block-apply.js')) as {
+      applyOrderingBlock: (block: OrderingBlock) => boolean;
+    };
+  }
+
+  async function importStumps() {
+    return (await import('../../src/store/stumps.js')) as {
+      getStump: (id: string) => Stump | null;
+    };
+  }
+
+  async function importPostsStore() {
+    return (await import('../../src/store/posts.js')) as {
+      getPost: (id: string) => Post | Stump | null;
+    };
+  }
+
+  async function importOrderingStore() {
+    return (await import('../../src/store/ordering.js')) as {
+      getCurrentHeight: () => number;
+    };
+  }
+
+  // Pins the contract obligation (NODE_INTERFACE "Pruning" step 4;
+  // ARCHITECTURE §3 lifecycle step 7): a node holding no DAG content for the
+  // subtree records the same stump at settlement, every field derived from
+  // the verified entry or the carrying block's height. This passes before
+  // the P2-F F1 change too — the pre-change insert was unconditional only
+  // incidentally (pruneSubtree returns silently on zero rows) — so it pins
+  // the obligation rather than reproducing a bug.
+  it('records the stump at settlement on a node holding no DAG content', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    const author = makeTestIdentity();
+    const rootId = 'a1'.repeat(32);
+    const replyId = 'b2'.repeat(32);
+
+    const blockApply = await importBlockApply();
+
+    // Height 1 confirms root + reply as consensus entries. No post content is
+    // ever inserted — confirmation creates placeholders, which is all a
+    // content-less node holds.
+    const confirmBlock = await makeApplicableBlock({
+      subBlockEntries: [
+        { postId: rootId, parentRefs: [], author: hex(author.userId) },
+        { postId: replyId, parentRefs: [rootId], author: hex(author.userId) },
+      ],
+    });
+    expect(blockApply.applyOrderingBlock(confirmBlock)).toBe(true);
+
+    // Placeholder, not content — the content-less premise, pinned.
+    const posts = await importPostsStore();
+    const beforePrune = posts.getPost(rootId);
+    expect(beforePrune).not.toBeNull();
+    expect((beforePrune as Post).content).toBe('');
+
+    // Height 2 settles the prune.
+    const pruneBlock = await makeApplicableBlock({
+      height: 2,
+      pruneEntries: [makePruneEntry(rootId, [rootId, replyId], author)],
+    });
+    expect(blockApply.applyOrderingBlock(pruneBlock)).toBe(true);
+
+    const { getStump } = await importStumps();
+    const stump = getStump(rootId);
+    expect(stump).not.toBeNull();
+    expect(stump!.rootPostHash).toBe(rootId);
+    expect(hex(stump!.authorId)).toBe(hex(author.userId));
+    expect(stump!.replyCount).toBe(1); // subtreePostIds.length - 1
+    expect(stump!.trigger).toBe('author');
+    expect(stump!.protocolVersion).toBe(PROTOCOL_VERSION);
+    expect(stump!.compactedAtBlockHeight).toBe(2); // the carrying block's height
+  });
+
+  // The discriminating case for P2-F F1: the stump insert is structural —
+  // not behind the content prune. With pruneSubtree forced to throw, the
+  // block still applies (content-prune failure stays non-fatal) AND the
+  // stump row exists. Before the change (insertStump after pruneSubtree
+  // inside one try/catch) the throw skipped the insert: the block applied
+  // with the stump silently missing.
+  it('records the stump even when pruneSubtree throws (structural independence)', async () => {
+    vi.doMock('../../src/store/posts.js', async (importOriginal) => {
+      const orig = await importOriginal<typeof import('../../src/store/posts.js')>();
+      return {
+        ...orig,
+        pruneSubtree: (): void => {
+          throw new Error('forced pruneSubtree failure (test seam)');
+        },
+      };
+    });
+
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    const author = makeTestIdentity();
+    const rootId = 'c3'.repeat(32);
+
+    const blockApply = await importBlockApply();
+    const confirmBlock = await makeApplicableBlock({
+      subBlockEntries: [
+        { postId: rootId, parentRefs: [], author: hex(author.userId) },
+      ],
+    });
+    expect(blockApply.applyOrderingBlock(confirmBlock)).toBe(true);
+
+    const pruneBlock = await makeApplicableBlock({
+      height: 2,
+      pruneEntries: [makePruneEntry(rootId, [rootId], author)],
+    });
+    expect(blockApply.applyOrderingBlock(pruneBlock)).toBe(true);
+
+    const ordering = await importOrderingStore();
+    expect(ordering.getCurrentHeight()).toBe(2);
+
+    const { getStump } = await importStumps();
+    const stump = getStump(rootId);
+    expect(stump).not.toBeNull();
+    expect(stump!.compactedAtBlockHeight).toBe(2);
   });
 });
