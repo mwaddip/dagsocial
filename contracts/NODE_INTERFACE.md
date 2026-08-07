@@ -323,8 +323,36 @@ the JSON (box values are `bigint`; JSON cannot carry one) — clients parse them
 
 | Method | Path | Request | Response | Errors |
 |--------|------|---------|----------|--------|
-| `POST` | `/credits/transfer` | `{ from: hex, to: hex, amount, signature: base64, expectedHeight }` | `{ sent, change?, txId }` | 400 if insufficient |
+| `POST` | `/credits/transfer` | `{ tx: UtxoTransaction }` — client-built, client-signed | `{ status: "pending", txId, expiresAtHeight }` | 400 on invalid tx or signature |
 | `POST` | `/credits/faucet` | `{ to: hex }` | `{ amount, txId }` | 403 if not testnet, 409 if already funded |
+
+**A credit transfer is a transaction, and it settles when it is mined**
+(P2-B phase 3). The client builds and signs it; the node decodes it with
+`jsonToTx`, validates it with `validateTx`, pools it with `insertUtxoTx` and
+relays it with `net.broadcastTx` — the same path invites, vouches and likes
+already take. Credits move at block application on every node, not when the
+HTTP call returns.
+
+This replaced a handler that took `{ from, to, amount, signature }` and
+**rebuilt the transaction server-side**, which was wrong twice over:
+
+- **It bypassed consensus entirely** (audit F-consensus-7). `sendCredits`
+  called `consumeBox`/`insertBox` directly with no block and no open journal,
+  so the transfer entered no block, produced no journal entries, and never
+  reached the AVL feed. The node's digest kept matching its peers while its
+  box table did not, and the divergence surfaced at the next restart — when
+  the prover re-bootstraps from `getUnspentBoxes()` and every later block
+  fails its `stateRoot` check. A permanent self-fork with a cause hours old.
+- **It duplicated transaction construction.** The demo UI already built the
+  complete transaction and signed its id, then discarded it and sent the
+  parts; the node rebuilt it. Box-selection order, output shape and field
+  order had to agree byte-for-byte across two implementations or the
+  signature stopped verifying, and nothing tested that. The client-built
+  form deletes the second implementation rather than documenting it.
+
+`expectedHeight` is gone. Since Spec G no output carries a height, so the
+transaction and its id are height-independent and the parameter pinned
+nothing.
 
 ### Blocks
 
