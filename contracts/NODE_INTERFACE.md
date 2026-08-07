@@ -1996,8 +1996,8 @@ operator may safely change, and four consensus parameters were environment-tunab
 > silently ignored if set.** See `ARCHITECTURE §Network Identity` and
 > `TYPES_INTERFACE §Network profiles`.
 >
-> One remains half-done: `AVL_KEY_LENGTH` lost its env read but is still defined
-> module-locally in `config.ts` rather than exported from `@dagsocial/types`.
+> All ten are now fully closed: `AVL_KEY_LENGTH` was the last half-done one, and it is now a
+> `@dagsocial/types` export (TYPES_INTERFACE → State format) that `config.ts` imports.
 
 **Where each consensus value went:**
 
@@ -2028,7 +2028,7 @@ operator may safely change, and four consensus parameters were environment-tunab
 | Variable | Class | Default | Description |
 |----------|-------|---------|-------------|
 | `NETWORK_TYPE` | `network-identity` | `testnet` | **The profile selector — `mainnet` \| `testnet` \| `devnet`.** The only environment variable that may change a consensus parameter, and it changes every one of them together. Also gates debug endpoints (faucet: testnet and devnet only, via the shared `isFaucetNetwork` allow-list). An unrecognised value **throws at startup** rather than defaulting |
-| ~~`AVL_KEY_LENGTH`~~ | **removed** | ~~`32`~~ | AVL tree key length — **sets the shape of every `stateRoot`** (`avl-prover.ts`). Env read deleted by P2-A. Now a module-local const in `config.ts`; moving to a `@dagsocial/types` export (TYPES_INTERFACE → State format) |
+| ~~`AVL_KEY_LENGTH`~~ | **removed** | ~~`32`~~ | AVL tree key length — **sets the shape of every `stateRoot`** (`avl-prover.ts`). Env read deleted by P2-A; now a `@dagsocial/types` export (TYPES_INTERFACE → State format) that `config.ts` imports and plumbs through `Config.avlKeyLength` |
 | ~~`KARMA_DECAY_AMOUNT`~~ | **removed** | ~~`5`~~ | → universal constant `KARMA_DECAY_AMOUNT` (`@dagsocial/types`). Devnet decays *often*, not *harder* |
 | ~~`KARMA_DECAY_INTERVAL_BLOCKS`~~ | **removed** | ~~`720`~~ | → profile field `karmaDecayIntervalBlocks`. Value corrected to `1440` by P2-A (60s blocks) |
 | ~~`KARMA_STALE_THRESHOLD_BLOCKS`~~ | **removed** | ~~`20160`~~ | → profile field `karmaStaleThresholdBlocks`. Value corrected to `40320` by P2-A (60s blocks) |

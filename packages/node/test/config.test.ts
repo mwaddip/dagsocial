@@ -4,6 +4,7 @@ import {
   MAGIC_MAINNET,
   MAGIC_TESTNET,
   MAGIC_DEVNET,
+  AVL_KEY_LENGTH,
 } from '@dagsocial/types';
 
 const TEST_KEYS = [
@@ -287,6 +288,21 @@ describe('config', () => {
       expect(cfg.creditInitialReward).toBe(10_000_000_000n);
       expect(cfg.treasuryPubKey).toBe('');
       expect(cfg.avlKeyLength).toBe(32);
+    });
+  });
+
+  // AVL_KEY_LENGTH sets the shape of every stateRoot, so the authoritative
+  // definition lives in @dagsocial/types (TYPES_INTERFACE §State format) and
+  // config only plumbs it. Comparing the plumbed field against the import goes
+  // red if config.ts regrows a local definition that diverges — section 7's
+  // baked 32 cannot catch the converse drift (types moves, a stale local pin
+  // keeps node at 32 and 32 === 32 still passes).
+  describe('8. avlKeyLength originates in @dagsocial/types', () => {
+    it('plumbs the AVL_KEY_LENGTH export, not a local definition', async () => {
+      const { loadConfig } = await import('../src/config.js');
+      const cfg = loadConfig();
+
+      expect(cfg.avlKeyLength).toBe(AVL_KEY_LENGTH);
     });
   });
 });

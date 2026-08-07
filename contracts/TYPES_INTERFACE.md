@@ -905,12 +905,12 @@ different digests for identical state — which makes it a consensus constant, n
 knob. It is universal rather than per-network: a network has no reason to differ on a
 format width, so it does **not** belong in `NetworkProfile`.
 
-> ⚠ **NOT IMPLEMENTED — node holds the only definition.** `packages/node/src/config.ts`
-> defines it as a module-local `const` and exposes it as `Config.avlKeyLength`. P2-A removed
-> its environment read (so it can no longer diverge by configuration), but until this export
-> lands there is no authoritative definition for a second implementation to read. When it
-> lands, node imports it and deletes the local const; `Config.avlKeyLength` may stay as a
-> plumbing field, but its value must come from here.
+`packages/node/src/config.ts` imports it and plumbs it through `Config.avlKeyLength`, which
+`state/avl-prover.ts` reads. That plumbing field is permitted, but its value originates here —
+`node/test/config.test.ts` §8 compares the plumbed field against this export, which goes red if
+node ever regrows a divergent local definition. A value pin alone cannot catch that: if this
+constant moves while a stale local pin holds node at the old number, both remain self-consistent
+and only the origination comparison fails.
 
 ### PoW
 

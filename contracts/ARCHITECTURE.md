@@ -366,15 +366,12 @@ to verify box existence or absence without storing the full UTXO set.
   inclusion or exclusion proof for a box at a given block height
 - **Config flags:** `VERIFY_STATE_ROOT` (`consensus-check` — validate stateRoot at
   block apply, **default on** since Spec B P3), `MAX_PROOF_HISTORY` (`local` — prune
-  old proof versions), and **`AVL_KEY_LENGTH`** (**`consensus`**, default `32`) — the
-  tree's key width, which determines the **shape** of every `stateRoot`
-  > ⚠ **PARTIAL — the environment read is gone; the shared definition is not yet in place.**
-  > P2-A deleted the `AVL_KEY_LENGTH` env read, so an operator can no longer change the
-  > tree's key width and nodes can no longer diverge on it by configuration. What remains
-  > is that the constant is defined **module-locally in `packages/node/src/config.ts`**
-  > rather than exported from `@dagsocial/types` alongside the other format limits, so a
-  > second implementation has nothing authoritative to read it from. Closing that is the
-  > remaining half of this item.
+  old proof versions). **`AVL_KEY_LENGTH`** is no longer configuration at all — it is a
+  `@dagsocial/types` export (TYPES_INTERFACE → State format), imported by `config.ts` and
+  plumbed through `Config.avlKeyLength`. It determines the **shape** of every `stateRoot`,
+  so two nodes differing on it compute different digests for identical state; P2-A removed
+  its environment read and the types export gives a second implementation an authoritative
+  definition to read.
 - **Deterministic:** Every node computing the AVL+ over the same UTXO set at
   the same height **and holding the same `AVL_KEY_LENGTH`** produces the identical
   stateRoot. Box `value` serializes as a

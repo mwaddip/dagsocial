@@ -5,15 +5,10 @@ import {
   CREDIT_TREASURY_PCT,
   KARMA_DECAY_AMOUNT,
   KARMA_MINIMUM,
+  AVL_KEY_LENGTH,
   profileFor,
 } from '@dagsocial/types';
 import type { NetworkProfile, NetworkType } from '@dagsocial/types';
-
-// AVL tree key length in bytes — a universal format constant, not a per-network
-// value (NODE_INTERFACE §Configuration: "Format. No network has a reason to
-// differ"). TYPES_INTERFACE lists it with the format limits, but @dagsocial/types
-// does not export it yet; until that lands this is the single definition.
-const AVL_KEY_LENGTH = 32;
 
 export interface Config {
   port: number;
