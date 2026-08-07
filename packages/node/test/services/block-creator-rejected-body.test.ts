@@ -125,6 +125,7 @@ async function activateProver() {
 /** The engine deps every production validation path builds over the store. */
 async function storeBackedDeps() {
   const utxoStore = await import('../../src/store/utxo.js');
+  const vouchCooldowns = await import('../../src/store/vouch-cooldowns.js');
   const { getDb } = await import('../../src/store/db.js');
   return {
     getBox: utxoStore.getBox,
@@ -133,6 +134,7 @@ async function storeBackedDeps() {
     consumeBox: utxoStore.consumeBox,
     getKarmaBox: utxoStore.getKarmaBox,
     getKarmaValue: utxoStore.getKarmaValue,
+    hasActiveVouchCooldown: vouchCooldowns.hasActiveVouchCooldown,
     runInTransaction: (fn: () => void) => {
       getDb().transaction(fn)();
     },

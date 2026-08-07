@@ -11,6 +11,7 @@ import {
   getBox,
   getBoxByProvenance,
 } from '../../src/store/utxo.js';
+import { hasActiveVouchCooldown as storeHasActiveVouchCooldown } from '../../src/store/vouch-cooldowns.js';
 import { getPendingEntries } from '../../src/store/mempool.js';
 import { initSystemKeypair, ensureSystemKarmaBox, getSystemKeypair } from '../../src/store/system.js';
 import { generateKeyPair, computeBoxId, computeTxId } from '@dagsocial/types';
@@ -55,6 +56,7 @@ function buildDeps(): FaucetDeps {
     getKarmaBox,
     getKarmaValue: (owner: Uint8Array) =>
       getKarmaBoxes(owner).reduce((sum, b) => sum + b.value, 0n),
+    hasActiveVouchCooldown: storeHasActiveVouchCooldown,
     getCurrentHeight,
     getBox,
     getBoxByProvenance,

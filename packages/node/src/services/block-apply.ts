@@ -14,8 +14,9 @@ import {
   getMaturedVouchCooldowns,
   deleteVouchCooldown,
   insertVouchCooldown,
+  hasActiveVouchCooldown,
 } from '../store/vouch-cooldowns.js';
-import { VOUCH_COOLDOWN_BLOCKS, VOUCH_KARMA_AMOUNT } from '@dagsocial/types';
+import { VOUCH_COOLDOWN_BLOCKS } from '@dagsocial/types';
 import { settlePruneUtxo } from './settle-prune-utxo.js';
 import type { DecayDeps } from './decay.js';
 import { config } from '../config.js';
@@ -878,6 +879,9 @@ function applyMutationPhase(
     // implementation shared with the pool and relay paths — a different read
     // here would be a consensus split, not a style difference (phase 1b).
     getKarmaValue,
+    // The vouch cast's cooldown gate (P2-B phase 2) — same single-
+    // implementation rule as getKarmaValue.
+    hasActiveVouchCooldown,
     runInTransaction: (fn: () => void) => {
       getDb().transaction(fn)();
     },
@@ -973,11 +977,18 @@ function applyMutationPhase(
           if (item.tx.outputs.length === 0) {
             // The store hook records the insertion side-record (including any
             // replaced escrow row) — a second push here would double-record.
+            //
+            // The escrow records the ACTUAL staked value, never the constant
+            // (audit F-consensus-3): maturity re-mints exactly what the box
+            // held, so the round trip is conservation-structural rather than
+            // true by coincidence. With the cast pinned to VOUCH_KARMA_AMOUNT
+            // the two agree for every post-pin vouch; a pre-pin box still
+            // settles to what it actually locked.
             insertVouchCooldown(
               vb.voucherId,
               vb.targetId,
               height + VOUCH_COOLDOWN_BLOCKS,
-              VOUCH_KARMA_AMOUNT,
+              vb.value,
             );
           }
           break;

@@ -171,6 +171,7 @@ export function createApp(config: Config): express.Express {
     getKarmaBox: store.getKarmaBox,
     getKarmaBoxes: store.getKarmaBoxes,
     getKarmaValue: store.getKarmaValue,
+    hasActiveVouchCooldown: store.hasActiveVouchCooldown,
     runInTransaction: (fn: () => void) => getDb().transaction(fn)(),
     isSystemBox: (boxId: string) => {
       const sysKey = getSystemKeypair();
@@ -240,6 +241,7 @@ export function createApp(config: Config): express.Express {
       consumeBox: store.consumeBox,
       getKarmaBox: store.getKarmaBox,
       getKarmaValue: store.getKarmaValue,
+      hasActiveVouchCooldown: store.hasActiveVouchCooldown,
       runInTransaction: (fn: () => void) => getDb().transaction(fn)(),
     }),
   );
@@ -257,6 +259,7 @@ export function createApp(config: Config): express.Express {
       consumeBox: store.consumeBox,
       getKarmaBox: store.getKarmaBox,
       getKarmaValue: store.getKarmaValue,
+      hasActiveVouchCooldown: store.hasActiveVouchCooldown,
       runInTransaction: (fn: () => void) => getDb().transaction(fn)(),
     }),
   );
@@ -276,6 +279,7 @@ export function createApp(config: Config): express.Express {
       consumeBox: store.consumeBox,
       getKarmaBox: store.getKarmaBox,
       getKarmaValue: store.getKarmaValue,
+      hasActiveVouchCooldown: store.hasActiveVouchCooldown,
       runInTransaction: (fn: () => void) => getDb().transaction(fn)(),
     }),
   );
@@ -289,6 +293,7 @@ export function createApp(config: Config): express.Express {
       faucetRoutes({
         getKarmaBox: store.getKarmaBox,
         getKarmaValue: store.getKarmaValue,
+        hasActiveVouchCooldown: store.hasActiveVouchCooldown,
         getCurrentHeight: store.getCurrentHeight,
         getBox: store.getBox,
       getBoxByProvenance: store.getBoxByProvenance,

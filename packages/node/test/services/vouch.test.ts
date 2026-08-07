@@ -23,6 +23,7 @@ import {
   insertVouchCooldown,
   getBox as storeGetBox,
   getBoxByProvenance as storeGetBoxByProvenance,
+  hasActiveVouchCooldown as storeHasActiveVouchCooldown,
   getPendingEntries,
 } from '../../src/store/index.js';
 import { castVouch, initiateUnvouch } from '../../src/services/vouch.js';
@@ -129,6 +130,7 @@ describe('vouch service', () => {
       getKarmaBox: (owner: Uint8Array) => getKarmaBox(owner),
       getKarmaValue: (owner: Uint8Array) =>
         getKarmaBoxes(owner).reduce((sum, b) => sum + b.value, 0n),
+      hasActiveVouchCooldown: storeHasActiveVouchCooldown,
       runInTransaction: (fn: () => void) => {
         (db.transaction(fn) as () => void)();
       },

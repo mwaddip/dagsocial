@@ -9,6 +9,7 @@ import { createHash, generateKeyPairSync, createPrivateKey } from 'crypto';
 import { initDb, closeDb, getDb } from '../../src/store/db.js';
 import {
   getBoxByProvenance as storeGetBoxByProvenance, getKarmaBox, getKarmaBoxes, getBox as storeGetBox, insertBox as storeInsertBox } from '../../src/store/utxo.js';
+import { hasActiveVouchCooldown as storeHasActiveVouchCooldown } from '../../src/store/vouch-cooldowns.js';
 import { getCurrentHeight } from '../../src/store/ordering.js';
 import {
   createInvite,
@@ -57,6 +58,7 @@ async function request(
       getKarmaBox: (owner: Uint8Array) => getKarmaBox(owner),
       getKarmaValue: (owner: Uint8Array) =>
         getKarmaBoxes(owner).reduce((sum, b) => sum + b.value, 0n),
+      hasActiveVouchCooldown: storeHasActiveVouchCooldown,
       runInTransaction: (fn: () => void) => { (db.transaction(fn) as () => void)(); },
       createInvite,
       claimInvite,

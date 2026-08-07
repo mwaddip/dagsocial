@@ -41,6 +41,7 @@ import {
   getKarmaBoxes,
   insertBox as storeInsertBox,
   consumeBox as storeConsumeBox,
+  hasActiveVouchCooldown as storeHasActiveVouchCooldown,
 } from '../../src/store/index.js';
 import { validateTx, applyTx } from '../../src/services/utxo-engine.js';
 import type { UtxoEngineDeps, UtxoResult } from '../../src/services/utxo-engine.js';
@@ -111,6 +112,7 @@ describe('validateAndApplyTx', () => {
       getKarmaBox: (owner: Uint8Array) => getKarmaBox(owner),
       getKarmaValue: (owner: Uint8Array) =>
         getKarmaBoxes(owner).reduce((sum, b) => sum + b.value, 0n),
+      hasActiveVouchCooldown: storeHasActiveVouchCooldown,
       runInTransaction: (fn: () => void) => {
         (db.transaction(fn) as () => void)();
       },
@@ -244,7 +246,10 @@ describe('validateAndApplyTx', () => {
       value: 15n,
       inviterId: ownerUserId,
       inviteOutputIndex: 0,
-      inviteePublicKey: new Uint8Array(32),
+      // Length 0 is the uncommitted state. This fixture used 32 zero bytes,
+      // which is the *committed* shape — accepted only while invite creation
+      // never looked at the commitment fields (P2-B phase 2 pins them).
+      inviteePublicKey: new Uint8Array(0),
       probationStartBlock: 0,
       probationEndBlock: 0,
       guard: 'bond_dual',

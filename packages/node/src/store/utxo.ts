@@ -243,7 +243,17 @@ function rowToBox(row: UtxoRow): AnyBox {
       return {
         id: row.id,
         boxType: 'vouch',
-        value: 1n,
+        // The row's real value, NOT the literal 1n this used to fabricate.
+        // The box id hashes `canonicalBoxBytes` — value included — so a store
+        // that rewrites the value on read returns a box whose bytes no longer
+        // match its own id, and an AVL prover re-bootstrapped from SQLite
+        // would diverge from one fed at insert time. The cast pin
+        // (`vouch.value == VOUCH_KARMA_AMOUNT`, P2-B phase 2) is what makes
+        // every *new* vouch hold exactly 1; the store's job is to round-trip
+        // what is actually on disk. The `as` cast bridges VouchBox's literal
+        // `1n` value type, which documents the pinned constant rather than a
+        // storage guarantee.
+        value: row.value as VouchBox['value'],
         voucherId: hexToPubkey(e.voucherId),
         targetId: hexToPubkey(e.targetId),
         guard: 'owner_signature',

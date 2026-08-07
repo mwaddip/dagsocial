@@ -46,6 +46,7 @@ import {
   getKarmaBoxes,
   insertBox as storeInsertBox,
   consumeBox as storeConsumeBox,
+  hasActiveVouchCooldown as storeHasActiveVouchCooldown,
 } from '../../src/store/index.js';
 import { validateTx } from '../../src/services/utxo-engine.js';
 import { computeTxId } from '@dagsocial/types';
@@ -93,6 +94,7 @@ describe('P2-B bond tightening (audit F-consensus-1)', () => {
       // code; HEAD ignores it, the tightened engine requires it.
       getKarmaValue: (owner: Uint8Array): bigint =>
         getKarmaBoxes(owner).reduce((sum, b) => sum + b.value, 0n),
+      hasActiveVouchCooldown: storeHasActiveVouchCooldown,
       runInTransaction: (fn: () => void) => {
         (db.transaction(fn) as () => void)();
       },

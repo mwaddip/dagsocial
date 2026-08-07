@@ -26,6 +26,7 @@ import {
   getKarmaBox,
   getKarmaBoxes,
   getKarmaValue,
+  hasActiveVouchCooldown,
   getPost,
   insertPost,
   getBox,
@@ -332,6 +333,8 @@ net.onTx((tx) => {
     // to reach the same verdict the block path will — the store's getKarmaValue
     // is the single implementation all three paths share (phase 1b).
     getKarmaValue,
+    // The vouch cast's cooldown gate (P2-B phase 2) — same rule.
+    hasActiveVouchCooldown,
     runInTransaction: (fn: () => void) => fn(),
     isSystemBox: (boxId: string) => {
       const sysKey = getSystemKeypair();

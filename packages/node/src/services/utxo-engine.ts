@@ -4,8 +4,9 @@ import {
   computeTxId,
   INVITE_KARMA_THRESHOLD,
   INVITE_PROBATION_BLOCKS,
+  VOUCH_KARMA_AMOUNT,
 } from '@dagsocial/types';
-import type { UtxoTransaction, AnyBox, AnyBoxCandidate, KarmaBox, BondBox, InviteBox, LikeBox } from '@dagsocial/types';
+import type { UtxoTransaction, AnyBox, AnyBoxCandidate, KarmaBox, BondBox, InviteBox, LikeBox, VouchBox } from '@dagsocial/types';
 
 // A local `computeTxIdLocal` lived here — a second implementation of
 // `computeTxId` with its own cbor-x `Encoder` — and was **deleted** by Spec G
@@ -54,6 +55,18 @@ export interface UtxoEngineDeps {
    * their karma happens to be partitioned.
    */
   getKarmaValue: (owner: Uint8Array) => bigint;
+  /**
+   * True while a cooldown row exists for `(voucherId, targetId)`.
+   *
+   * Consensus input (P2-B phase 2): a vouch cast is invalid while the pair is
+   * cooling down. Without the gate a block-embedded vouch→unvouch pair for a
+   * pair with a live cooldown reaches `insertVouchCooldown`'s INSERT OR
+   * REPLACE and destroys the first escrow's pending re-mint on the forward
+   * path. Backed by the store's `hasActiveVouchCooldown` at every production
+   * site — row existence IS activity, since matured rows are deleted by
+   * `processVouchCooldowns` in the same block application that mints them.
+   */
+  hasActiveVouchCooldown: (voucherId: Uint8Array, targetId: Uint8Array) => boolean;
   /** Wrap fn in a better-sqlite3 transaction. */
   runInTransaction: (fn: () => void) => void;
   /** Return true if the box is the system karma box (faucet source). */
@@ -280,12 +293,72 @@ function checkTransitions(
             error: `Invalid vouch transition: exactly 1 karma + 1 vouch output expected`,
           };
         }
+        const vouchOut = vouchOutputs[0] as VouchBox;
+        // The stake is pinned at cast: a vouch is one vote and always stakes
+        // exactly VOUCH_KARMA_AMOUNT (audit F-consensus-3). Before the pin,
+        // value was bounded only by conservation and `checkOutputValues` —
+        // which permits 0n — while unvouch escrowed the constant: a 0-value
+        // vouch matured into 1 karma minted from nothing, and a 100-value
+        // vouch destroyed 99.
+        if (vouchOut.value !== VOUCH_KARMA_AMOUNT) {
+          return {
+            valid: false,
+            error:
+              `Vouch cast must stake exactly ${VOUCH_KARMA_AMOUNT} karma, ` +
+              `got ${vouchOut.value}`,
+          };
+        }
+        // voucherId is pinned to the karma input's owner. `checkGuards`
+        // resolves a VouchBox's signer as `owner ?? voucherId`, so a box
+        // carrying a foreign voucherId is guarded by that foreign key: A
+        // stakes their karma, B unvouches it, and the escrow matures to B — a
+        // karma transfer with no invite, the property the whole invite/bond
+        // mechanism protects.
+        if (Buffer.from(vouchOut.voucherId).toString('hex') !==
+            Buffer.from(inputKarma.owner).toString('hex')) {
+          return {
+            valid: false,
+            error: `Vouch voucherId must be the karma input's owner`,
+          };
+        }
+        // No re-vouch while the pair's escrow is cooling down (B6, promoted
+        // from mempool policy to a consensus rule). The overwrite this blocks
+        // is `insertVouchCooldown`'s INSERT OR REPLACE destroying a live
+        // escrow's pending re-mint.
+        if (deps.hasActiveVouchCooldown(vouchOut.voucherId, vouchOut.targetId)) {
+          return {
+            valid: false,
+            error:
+              `Vouch cast is locked: an active cooldown exists for this ` +
+              `voucher/target pair`,
+          };
+        }
       } else if (inviteOutputs.length > 0 || bondOutputs.length > 0) {
         // karma → karma + invite + bond
         if (inviteOutputs.length !== 1 || bondOutputs.length !== 1 || vouchOutputs.length > 0) {
           return {
             valid: false,
             error: `Invite creation requires exactly 1 invite + 1 bond output`,
+          };
+        }
+        // A bond is born uncommitted; committed state is reachable only
+        // through the commit transition (P2-B phase 2). Without this pin an
+        // inviter emits a bond *born committed* with a zeroed window, and the
+        // settlement rule accepts an immediate reclaim to themselves — every
+        // clause satisfied, the expiry leg vacuously true — while the
+        // InviteBox stays live and claimable. The bond, the network's only
+        // sybil cost, would cost nothing. This is what makes the commit-time
+        // window pin mean anything: with it, every committed bond has passed
+        // through the pinned commit path by construction.
+        const bondOut = bondOutputs[0] as BondBox;
+        if (bondOut.inviteePublicKey.length !== 0 ||
+            bondOut.probationStartBlock !== 0 ||
+            bondOut.probationEndBlock !== 0) {
+          return {
+            valid: false,
+            error:
+              `Invite creation must emit an uncommitted bond: ` +
+              `inviteePublicKey empty and both probation fields zero`,
           };
         }
       }
