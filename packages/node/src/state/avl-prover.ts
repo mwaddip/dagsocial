@@ -65,18 +65,25 @@ export interface RecordPut {
 }
 
 /**
- * Bootstrap the prover from committed state.
- * Called once on first AVL-aware startup if storage is empty but the chain DB
- * is populated — the documented "wipe the AVL store" deploy step.
+ * Build a prover's tree from a full set of committed state.
+ *
+ * **No production caller since P2-B phase 4.** The startup rebuild this
+ * existed for — empty AVL storage, populated chain DB — was deleted as both
+ * unreachable (under `@ergots/avltree` 0.4.0 the `PersistentBatchAVLProver`
+ * constructor writes the empty-tree version to empty storage, so the trigger
+ * was statically false) and unsound (AVL+ tree shape is history-dependent, so
+ * a rebuilt tree forks against one grown incrementally to the same content —
+ * NODE_INTERFACE → the SUPERSEDED note, 2026-08-07). AVL storage must never
+ * be wiped independently of the chain. The function remains as
+ * tree-construction tooling for the test suites (order-independence,
+ * restart-comparison, journal round-trip scaffolding).
  *
  * **`records` is required, and deliberately not defaulted** (Spec G phase D).
- * The tree holds two committed entity kinds; a rebuild that fed only boxes
- * would produce a tree missing every record and therefore a `stateRoot`
- * different from a node that never restarted — a restart-triggered consensus
- * fork, from nothing but a forgotten argument. `applyBlockMutations`' analogous
- * parameter *is* defaulted, for the ~20 pre-existing three-argument call sites;
- * this one has a single production caller, so requiring it costs nothing and
- * makes the omission a compile error at the only place it could matter.
+ * The tree holds two committed entity kinds; a feed of only boxes would
+ * produce a tree missing every record and therefore a different `stateRoot`.
+ * `applyBlockMutations`' analogous parameter *is* defaulted, for the ~20
+ * pre-existing three-argument call sites; requiring it here makes the
+ * omission a compile error.
  *
  * Both feeds are sorted by hex key, matching `applyBlockMutations`' canonical
  * order: all boxes, then all records. Boxes and records cannot collide — their

@@ -19,7 +19,6 @@ import {
   POST_LOCK_UNLOCK_PER_LIKES,
   EMPTY_STATE_ROOT,
   decodeTx,
-  encodeTx,
   computeBoxId,
   computeTxId,
   leafHash,
@@ -45,15 +44,11 @@ import type {
   LikeBox,
   PostLockBox,
   UtxoTransaction,
-  AnyBox,
-  PruneEntry,
-  UserId,
 } from '@dagsocial/types';
 import type { Config } from '../config.js';
 import { canonicalEpochTallyJson } from './epoch-canonical.js';
 import { expectedTarget } from './difficulty.js';
 import { getNet } from './net-instance.js';
-import { revalidateTxInContext, applyTx } from './utxo-engine.js';
 import { applyOrderingBlock, computePostBlockStateRoot } from './block-apply.js';
 import {
   getPendingEntries,
@@ -63,14 +58,10 @@ import {
   type PoolEntry,
 } from '../store/mempool.js';
 import {
-  createOrderingBlock as storeCreateOrderingBlock,
   getOrderingBlock,
   getCurrentHeight,
-  confirmPost,
   getUnprocessedLockedLikeBoxes,
   getUnprocessedFreeLikes,
-  getBox,
-  getKarmaBox,
   getPost,
   getUnspentPostLockBoxes,
   getPostTotalLikes,
@@ -539,8 +530,32 @@ export function createOrderingBlock(): OrderingBlock | null {
   // mining. A node with no prover falls back to EMPTY_STATE_ROOT — test-only,
   // since production initializes one at startup, and a peer running with
   // VERIFY_STATE_ROOT on rejects such a block, which is correct.
+  const speculation = computePostBlockStateRoot(candidate, newHeight);
+
+  // 19c. A body the mutation phase rejected must not be mined or templated
+  // (P2-B 1c): the PoW would be spent on a block this node's own apply — and
+  // every peer's — rejects. Reachable with unmutated code: a pooled tx whose
+  // validity reads third-party state (a bond settlement's threshold leg) goes
+  // stale in the pool while its inputs stay live. Evict what the body included
+  // — the same cleanup a rejected finalize runs — or the next interval
+  // rebuilds this exact body: purgeExpired cannot break that loop, because it
+  // keys on a chain height that stops advancing.
+  if (speculation.kind === 'body-rejected') {
+    console.warn(
+      `Not producing block at height ${newHeight}: its own mutation phase ` +
+      `rejected the body; evicting ${confirmedRowids.size} mempool entries`,
+    );
+    for (const rowid of confirmedRowids) {
+      removeEntry(rowid);
+    }
+    pendingSubBlockCounter = 0;
+    currentTemplate = null;
+    confirmedRowids = new Set();
+    return null;
+  }
+
   headerTemplate.stateRoot =
-    computePostBlockStateRoot(candidate, newHeight) ?? EMPTY_STATE_ROOT;
+    speculation.kind === 'computed' ? speculation.stateRoot : EMPTY_STATE_ROOT;
 
   // 21. Internal vs external mining
   if (config.miningMode === 'external') {

@@ -184,16 +184,29 @@ function rowToBox(row: UtxoRow): AnyBox {
       return cb;
     }
 
-    case 'like':
+    case 'like': {
+      const e = extra as LikeExtra;
       return {
         id: row.id,
         boxType: 'like',
-        value: 2n,
-        likerId: hexToPubkey((extra as LikeExtra).likerId),
-        targetPostId: (extra as LikeExtra).targetPostId,
+        // The row's real value, NOT the literal 2n this used to fabricate.
+        // The box id hashes `canonicalBoxBytes` — value included — so a store
+        // that rewrites the value on read returns a box whose bytes no longer
+        // match its own id, and an AVL prover re-bootstrapped from SQLite
+        // would diverge from one fed at insert time. Unlike vouch there is no
+        // cast-time value pin (LIKE_COST is what every production builder
+        // uses, but outputs arrive as client CBOR, and P2-D deletes the box
+        // rather than pinning it); the store's job is to round-trip what is
+        // actually on disk. The `as` cast bridges LikeBox's literal `2n`
+        // value type, which documents the builders' constant rather than a
+        // storage guarantee.
+        value: row.value as LikeBox['value'],
+        likerId: hexToPubkey(e.likerId),
+        targetPostId: e.targetPostId,
         guard: 'epoch_tally',
         ...prov,
       };
+    }
 
     case 'invite':
       return {
@@ -243,7 +256,17 @@ function rowToBox(row: UtxoRow): AnyBox {
       return {
         id: row.id,
         boxType: 'vouch',
-        value: 1n,
+        // The row's real value, NOT the literal 1n this used to fabricate.
+        // The box id hashes `canonicalBoxBytes` — value included — so a store
+        // that rewrites the value on read returns a box whose bytes no longer
+        // match its own id, and an AVL prover re-bootstrapped from SQLite
+        // would diverge from one fed at insert time. The cast pin
+        // (`vouch.value == VOUCH_KARMA_AMOUNT`, P2-B phase 2) is what makes
+        // every *new* vouch hold exactly 1; the store's job is to round-trip
+        // what is actually on disk. The `as` cast bridges VouchBox's literal
+        // `1n` value type, which documents the pinned constant rather than a
+        // storage guarantee.
+        value: row.value as VouchBox['value'],
         voucherId: hexToPubkey(e.voucherId),
         targetId: hexToPubkey(e.targetId),
         guard: 'owner_signature',
@@ -325,6 +348,27 @@ export function getKarmaBoxes(owner: Uint8Array): KarmaBox[] {
     .safeIntegers()
     .all(Buffer.from(owner)) as UtxoRow[];
   return rows.map(rowToBox) as KarmaBox[];
+}
+
+/**
+ * Summed value of every unspent KarmaBox owned by `owner`.
+ *
+ * Consensus input, not a convenience read: bond settlement's unlock predicate
+ * reads it at spend time (NODE_INTERFACE → "Bond transition rules"), so every
+ * validation path — pool entry, relay, block application — must compute it
+ * through this one function or nodes can split. It MUST sum all unspent boxes,
+ * never read a single one: multiple unspent karma boxes per owner is reachable
+ * (faucet grant + mint, or a karma split), and `getKarmaBox` above is `LIMIT 1`
+ * with no `ORDER BY` — an arbitrary row, so a single-box read would give two
+ * nodes with different physical row order different balances for the same
+ * owner, and different unlock verdicts on the same settlement.
+ *
+ * Implemented over `getKarmaBoxes` so exactly one query names the
+ * unspent-karma set — a second WHERE clause here would be a mirror
+ * implementation.
+ */
+export function getKarmaValue(owner: Uint8Array): bigint {
+  return getKarmaBoxes(owner).reduce((sum, b) => sum + b.value, 0n);
 }
 
 /**

@@ -19,12 +19,16 @@ import {
   KARMA_STALE_THRESHOLD_BLOCKS,
   CREDIT_MINER_REWARD_DELAY,
   EMPTY_STATE_ROOT,
+  INVITE_BOND_KARMA,
+  INVITE_KARMA_THRESHOLD,
+  INVITE_PROBATION_BLOCKS,
 } from '@dagsocial/types';
 import { verifyOrderingBlockPoW, blockHash } from '@dagsocial/validation';
 import type {
   Post,
   LikeBox,
   KarmaBox,
+  BondBox,
   PostLockBox,
   BlockHeader,
   OrderingBlock,
@@ -38,8 +42,10 @@ import type { BlockJournal, BoxMutation } from '../../src/store/journal.js';
 import type { AnyBox } from '@dagsocial/types';
 import type { DecayJournalEntry } from '../../src/services/decay.js';
 import type Database from 'better-sqlite3';
+import type { TestIdentity } from '../helpers.js';
 import {
   fixtureProvenance,
+  seedProvenance,
   signTransaction,
   makeTestIdentity,
   makePost,
@@ -1081,6 +1087,142 @@ describe('block-apply embedded tx re-validation', () => {
     const finalBox = utxo.getBox(changeBoxOf(txB).id!) as KarmaBox | null;
     expect(finalBox).not.toBeNull();
     expect(finalBox!.value).toBe(100n - 2n * LIKE_COST);
+  });
+
+  // -------------------------------------------------------------------------
+  // Bond settlement's threshold unlock at the block path (P2-B phase 1b).
+  //
+  // The unit suite exercises the unlock predicate only through a test-local
+  // deps stub, so the production `getKarmaValue` wiring was unpinned: mutating
+  // the block path's read from summed to single-box left all tests green.
+  // These two run the settlement through the real block pipeline, where deps
+  // come from the store. The fixture makes summed-vs-single observable: the
+  // invitee's karma sums past INVITE_KARMA_THRESHOLD only across boxes.
+  // -------------------------------------------------------------------------
+
+  /** Committed bond (inviter ← settlement) whose probation spans the window. */
+  function makeCommittedBond(
+    inviterId: Uint8Array,
+    inviteePublicKey: Uint8Array,
+    probationStartBlock: number,
+    probationEndBlock: number,
+  ): BondBox {
+    return seedProvenance<BondBox>(
+      {
+        boxType: 'bond' as const,
+        value: INVITE_BOND_KARMA,
+        inviterId,
+        inviteOutputIndex: 0,
+        inviteePublicKey,
+        probationStartBlock,
+        probationEndBlock,
+        guard: 'bond_dual' as const,
+      },
+      1,
+    );
+  }
+
+  /** Settlement of `bond` to its inviter, signed by the committed invitee. */
+  function makeSettlementTx(bond: BondBox, invitee: TestIdentity): UtxoTransaction {
+    const tx: UtxoTransaction = {
+      inputs: [bond.id!],
+      outputs: [
+        {
+          boxType: 'karma',
+          value: INVITE_BOND_KARMA,
+          owner: bond.inviterId,
+          guard: 'owner_signature',
+          proofSource: 'bond-settle',
+        } as KarmaBox,
+      ],
+      signatures: {},
+      protocolVersion: PROTOCOL_VERSION,
+    };
+    signTransaction(tx, invitee.privateKey, Buffer.from(invitee.userId).toString('hex'));
+    return tx;
+  }
+
+  it('bond settlement threshold sums the invitee karma across boxes at the block path', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    const utxo = await importUtxo();
+    const mempool = await importMempoolFresh();
+
+    const inviter = makeTestIdentity();
+    const invitee = makeTestIdentity();
+
+    // 12 + 12 = 24 ≥ INVITE_KARMA_THRESHOLD (20), but neither box alone
+    // reaches it — a single-box read (getKarmaBox is LIMIT 1 with no ORDER BY)
+    // sees 12 < 20 whichever row it lands on, and verdicts locked.
+    const splitA = makeKarmaBox(12n, invitee.userId, 0, 0);
+    const splitB = makeKarmaBox(12n, invitee.userId, 0, 1);
+    utxo.insertBox(splitA);
+    utxo.insertBox(splitB);
+
+    // Probation still running at the block's height (1): window (1, 1001) of
+    // the pinned length, ending far past the settle height. The threshold leg
+    // is therefore the ONLY way this settlement can unlock — an expired window
+    // would settle under either read and pin nothing.
+    const bond = makeCommittedBond(
+      inviter.userId,
+      invitee.userId,
+      1,
+      1 + INVITE_PROBATION_BLOCKS,
+    );
+    utxo.insertBox(bond);
+
+    mempool.insertUtxoTx(makeSettlementTx(bond, invitee), null, 1000);
+    const block = await mineBlockOverMempool();
+    expect(block).not.toBeNull();
+
+    // Settled state, not a rejection message: under a single-box read the
+    // creator's speculative mutation pass (Spec B P3) drops the settlement —
+    // or the verifier rejects the block — and either way the bond survives
+    // and the inviter is never paid.
+    expect(utxo.getBox(bond.id!)).toBeNull();
+    const inviterKarma = utxo.getKarmaBox(inviter.userId);
+    expect(inviterKarma).not.toBeNull();
+    expect(inviterKarma!.value).toBe(INVITE_BOND_KARMA);
+
+    // The predicate reads the invitee's boxes; the settlement must not spend
+    // them.
+    expect(utxo.getBox(splitA.id!)).not.toBeNull();
+    expect(utxo.getBox(splitB.id!)).not.toBeNull();
+  });
+
+  it('the same settlement settles with the invitee karma in one box (control)', async () => {
+    // Non-vacuity for the split fixture above: 24 in a single box clears the
+    // threshold under summed AND single-box reads, so this control passing
+    // while the split test fails is what isolates a mutation to partitioning
+    // rather than to the settlement flow being broken generally.
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    const utxo = await importUtxo();
+    const mempool = await importMempoolFresh();
+
+    const inviter = makeTestIdentity();
+    const invitee = makeTestIdentity();
+
+    utxo.insertBox(makeKarmaBox(24n, invitee.userId, 0));
+
+    const bond = makeCommittedBond(
+      inviter.userId,
+      invitee.userId,
+      1,
+      1 + INVITE_PROBATION_BLOCKS,
+    );
+    utxo.insertBox(bond);
+
+    mempool.insertUtxoTx(makeSettlementTx(bond, invitee), null, 1000);
+    const block = await mineBlockOverMempool();
+    expect(block).not.toBeNull();
+
+    expect(utxo.getBox(bond.id!)).toBeNull();
+    const inviterKarma = utxo.getKarmaBox(inviter.userId);
+    expect(inviterKarma).not.toBeNull();
+    expect(inviterKarma!.value).toBe(INVITE_BOND_KARMA);
   });
 });
 

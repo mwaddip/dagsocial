@@ -269,7 +269,10 @@ at a time (ARCHITECTURE invariant). `castVouch` rejects when the voucher has
 ANY active VouchBox — not merely one for the same target — or any pending
 vouch transaction in the mempool (`hasPendingVouch`). The pair-scoped
 cooldown check (no re-vouch of the same target during its cooldown) is
-unchanged.
+**also a consensus rule as of P2-B phase 2** — the service check is now the
+mempool-side mirror of the apply-time gate, not the only enforcement (see
+"Vouch transition rules"). The single-active-vouch and pending-vouch checks
+above remain service-layer policy.
 
 **Route error policy (L-12):** services signal intentional, client-safe
 rejections with a typed client-error class; route handlers return its message
@@ -320,8 +323,36 @@ the JSON (box values are `bigint`; JSON cannot carry one) — clients parse them
 
 | Method | Path | Request | Response | Errors |
 |--------|------|---------|----------|--------|
-| `POST` | `/credits/transfer` | `{ from: hex, to: hex, amount, signature: base64, expectedHeight }` | `{ sent, change?, txId }` | 400 if insufficient |
+| `POST` | `/credits/transfer` | `{ tx: UtxoTransaction }` — client-built, client-signed | `{ status: "pending", txId, expiresAtHeight }` | 400 on invalid tx or signature |
 | `POST` | `/credits/faucet` | `{ to: hex }` | `{ amount, txId }` | 403 if not testnet, 409 if already funded |
+
+**A credit transfer is a transaction, and it settles when it is mined**
+(P2-B phase 3). The client builds and signs it; the node decodes it with
+`jsonToTx`, validates it with `validateTx`, pools it with `insertUtxoTx` and
+relays it with `net.broadcastTx` — the same path invites, vouches and likes
+already take. Credits move at block application on every node, not when the
+HTTP call returns.
+
+This replaced a handler that took `{ from, to, amount, signature }` and
+**rebuilt the transaction server-side**, which was wrong twice over:
+
+- **It bypassed consensus entirely** (audit F-consensus-7). `sendCredits`
+  called `consumeBox`/`insertBox` directly with no block and no open journal,
+  so the transfer entered no block, produced no journal entries, and never
+  reached the AVL feed. The node's digest kept matching its peers while its
+  box table did not, and the divergence surfaced at the next restart — when
+  the prover re-bootstraps from `getUnspentBoxes()` and every later block
+  fails its `stateRoot` check. A permanent self-fork with a cause hours old.
+- **It duplicated transaction construction.** The demo UI already built the
+  complete transaction and signed its id, then discarded it and sent the
+  parts; the node rebuilt it. Box-selection order, output shape and field
+  order had to agree byte-for-byte across two implementations or the
+  signature stopped verifying, and nothing tested that. The client-built
+  form deletes the second implementation rather than documenting it.
+
+`expectedHeight` is gone. Since Spec G no output carries a height, so the
+transaction and its id are height-independent and the parameter pinned
+nothing.
 
 ### Blocks
 
@@ -501,13 +532,16 @@ Full read-only validation. Performs all checks without modifying state:
 2. All input boxes exist and are unspent
 3. All inputs have the same boxType
 4. Value conservation: `sum(input values) == sum(output values)` for **every** box
-   type. The exceptions are the two deliberate **zero-output burns** that move value
-   out of the UTXO set by design: a **BondBox burn** (bond forfeited on probation
-   failure) and a **VouchBox burn** (unvouch — the staked karma is escrowed off-UTXO
-   in `vouch_cooldowns` and re-minted to the voucher at maturity). All other user
-   transactions — including karma, like, and vouch *cast* — conserve value; karma/
-   credit mint and burn happen only in block-application paths (like rewards, decay,
-   coinbase, bond forfeiture), never inside a user transaction. Box `value` fields
+   type. The single exception is the deliberate **zero-output VouchBox spend**
+   (unvouch — the staked karma is escrowed off-UTXO in `vouch_cooldowns` and
+   re-minted to the voucher at maturity; an escrow round-trip, not a burn).
+   There is **no BondBox exception**: bond forfeiture is not implemented and no
+   legal transition destroys a bond (see "Bond transition rules" below) — the
+   karma-econ vesting design owns forfeiture, and will define its burn path when
+   it lands. All other user transactions — including karma, like, and vouch
+   *cast* — conserve value; karma/credit mint and burn happen only in
+   block-application paths (like rewards, decay, coinbase), never inside a user
+   transaction. Box `value` fields
    must be non-negative `bigint` base units `< 2⁶⁴` (enforced at the JSON→tx boundary
    via `assertValidBoxValue` and in the engine via `checkOutputValues` — a negative
    value could otherwise balance the sums while minting into a sibling box).
@@ -558,18 +592,185 @@ New code should prefer the split functions.
 
 ### Legal box transitions
 
+Every condition in this table is a **consensus rule enforced by the engine**
+(`checkTransitions`, with guard satisfaction from `checkGuards`) — reachable by
+block-embedded transactions, not only by the service layer. Service-layer
+checks (rate limits, fixed amounts, pairing at create) are policy on *this
+node's* mempool entry and are NOT listed here.
+
 | Consumed | Created | Condition |
 |----------|---------|-----------|
 | KarmaBox | KarmaBox | Same owner, balance change (earn/spend) |
 | KarmaBox | KarmaBox + LikeBox | Same owner, value conserved |
 | KarmaBox | KarmaBox + PostLockBox | Same owner, value conserved |
-| KarmaBox | KarmaBox + InviteBox + BondBox | Same owner, value conserved |
-| InviteBox | KarmaBox | Hash preimage match OR inviter sig (cancel) — handled at service layer |
-| BondBox | KarmaBox (to inviter) | Unlock condition met |
-| BondBox | — (burn) | Invitee karma < minimum during probation |
+
+⚠ **"Same owner" binds the inputs to each other, not only the outputs to
+`inputs[0]`.** Every karma row above requires **all karma inputs to share one
+owner** — see "Karma transition rules" below. Consolidating several of your
+own karma boxes stays legal; that is the legitimate multi-input case.
+| KarmaBox | KarmaBox + InviteBox + BondBox | Invite create: same owner, value conserved, **and the BondBox output is uncommitted** — `inviteePublicKey` empty, both probation fields `0` |
+| KarmaBox | KarmaBox + VouchBox | Vouch cast: karma outputs same owner; `vouch.value == VOUCH_KARMA_AMOUNT`; `vouch.voucherId` == the karma input's owner; no active cooldown for `(voucherId, targetId)` |
+| VouchBox | — (unvouch) | **Exactly one VouchBox input**, zero outputs, voucher-signed. The staked karma escrows to `vouch_cooldowns` and is re-minted to `voucherId` at maturity — a round trip, not a burn |
+| BondBox (uncommitted) | BondBox (committed) | Commit: paired invite's preimage + committed-invitee signature (H-2); preservation fields unchanged; probation window pinned — see bond rules below |
+| InviteBox + BondBox (committed) | KarmaBox + BondBox | Claim (reveal): preimage + committed-invitee signature; karma output owner = committed invitee; bond preservation fields unchanged |
+| KarmaBox + InviteBox + BondBox | KarmaBox | Cancel: inviter signature; output karma owner = input karma owner = `bond.inviterId` = `invite.inviterId` |
+| BondBox (committed) | KarmaBox | Settlement: karma output owner = `bond.inviterId`, AND (settle height > `probationEndBlock` OR invitee's summed unspent karma ≥ `INVITE_KARMA_THRESHOLD`) |
 | CreditBox | CreditBox(+CreditBox) | Any owner, value conserved |
 | LikeBox | — (tallied) | Epoch tally consumption (ordering block only) |
 | PostLockBox | PostLockBox(+KarmaBox) | Epoch processing only (partial/full unlock) |
+
+There is **no other legal bond or invite shape**. In particular:
+
+- **No standalone spend of an InviteBox.** The reveal guard
+  (`hash_preimage_with_bond`) requires a BondBox input in the same
+  transaction, so `InviteBox → KarmaBox` alone is guard-unreachable; the
+  legal exits for an invite are the claim and cancel shapes above. (The
+  previous table listed the standalone spend as a legal row with its rules
+  "handled at service layer" — both halves of that were wrong.)
+- **No standalone spend of an uncommitted BondBox.** Its exits are the
+  commit and cancel shapes. A standalone spend would strand the paired
+  invite: the claim shape needs a bond input, so an invite whose bond is
+  gone can never be claimed.
+- **No bond burn.** `BondBox → ∅` is illegal — see the bond rules below.
+
+### Bond transition rules (P2-B phase 1)
+
+- **The bond's value only ever returns to `bond.inviterId`.** Every shape
+  that releases bond value (cancel, settlement) pins the receiving karma
+  box's owner to the inviter. This is the rule that closes audit
+  F-consensus-1: before it, a committed invitee could sign
+  `bond → own KarmaBox` (or absorb invite + bond through the cancel shape)
+  and take the deposit.
+- **Settlement unlock is a spend-time predicate.** The invitee's *current*
+  summed unspent karma ≥ `INVITE_KARMA_THRESHOLD`, or probation has
+  expired (`settle height > probationEndBlock`). The historical form in
+  ARCHITECTURE's bond-outcomes table ("reached the threshold within
+  probation") is deliberately NOT the consensus rule — a spend-time check
+  cannot see history, and the early-unlock leg is strictly
+  inviter-favorable timing. Karma is summed across boxes, not per-box:
+  multiple unspent karma boxes per owner is reachable (faucet grant +
+  mint, or a karma split).
+- **Forfeiture is not implemented, and no burn shape exists.**
+  "Invitee karma < minimum during probation → burned" is a claim about
+  history; enforcing it requires per-block bond scanning, and the
+  karma-economics vesting design (design track §1.2) replaces bond
+  settlement wholesale — the scanner would be built for deletion. Until
+  that track lands: no legal transition destroys a bond, and value
+  conservation has **no BondBox zero-output exception**. A voluntary burn
+  was also considered and rejected: no flow needs it, and allowing it
+  would let the committed invitee (whose signature satisfies `bond_dual`)
+  torch the inviter's stake out of spite.
+- **The probation window is pinned at commit:** `probationStartBlock > 0`,
+  `probationStartBlock ≤ apply height`, and
+  `probationEndBlock − probationStartBlock == INVITE_PROBATION_BLOCKS`.
+  Without these, the committing invitee chooses the window freely and can
+  lock the inviter's bond forever — via `probationEndBlock` directly, or
+  by future-dating `probationStartBlock` under a pinned length. A strict
+  `probationStartBlock == apply height` is NOT required: it would break on
+  the delay between building the commit and its being mined. Past-dating
+  the start is permitted and harmless: it only *shortens* the effective
+  probation (at the limit, already-expired at commit), which strictly
+  favors the inviter's unlock and evades nothing while forfeiture does not
+  exist; the vesting design replaces these mechanics before forfeiture
+  becomes real.
+- **Engine inputs these rules need:** `checkTransitions` becomes
+  height-aware (the settle height already flows into `validateTx`), and
+  the deps gain an invitee-karma-sum read — the store's `getKarmaValue`
+  (see §Store), which is the one implementation every path shares.
+- **Known residual — claim-time invite↔bond pairing is unenforced**
+  (audit F-consensus-5). The claim shape accepts *any* committed bond
+  alongside the invite. It cannot be enforced under current fields: after
+  commit, the bond's provenance (`txId`) points at the commit transaction,
+  so `(bond.txId, bond.inviteOutputIndex)` no longer resolves the invite
+  it shipped with. The fix is the committed bond carrying the invite's
+  **box id** — safe there (the invite's id is fixed by the create tx
+  before the commit tx exists, so no circularity), but it is a
+  consensus-format change and belongs in the P2-C break bundle. Impact of
+  the gap with this phase's rules in force: crossed pairs strand value
+  recoverable only by the inviter's own cancels — a griefing wart, not
+  theft.
+- **A bond is born uncommitted, and committed state is reachable only
+  through the commit transition** (P2-B phase 2). Invite creation must emit
+  `inviteePublicKey` empty and both probation fields `0`. Without that, an
+  inviter can emit a bond that is *born committed* with a zeroed window, and
+  the settlement rule above accepts an immediate reclaim to themselves —
+  every clause satisfied, the expiry leg vacuously true — while the InviteBox
+  stays live and claimable. The bond, the network's only sybil cost, would
+  cost nothing. This is the invariant that makes the commit-time window pin
+  mean anything: with it, every committed bond has passed through the pinned
+  commit path by construction.
+
+### Karma transition rules (P2-B phase 4)
+
+- **All karma inputs must share one owner.** The engine pins every karma
+  *output* to `inputs[0].owner` and calls the violation "Karma cannot be
+  transferred", but never checked that the inputs themselves agree — and
+  `validateTx` step 3 only requires a common `boxType`. So
+  `[karmaA(10), karmaB(10)] → karmaA(20)` validated: conservation holds,
+  every output matches `inputs[0].owner`, and `checkGuards` gets the owner
+  signature it wants from each of A and B. **B's karma became A's.**
+  Consensual, but karma is non-transferable *by rule* — a consensual transfer
+  is still a transfer, and it prices off-chain. This is the audit's most
+  severe class, and unlike the unlike-path instance it does **not** close when
+  P2-D removes unlike.
+- Self-consolidation (several of your own karma boxes into one) is the
+  legitimate multi-input case and stays legal. The faucet grant is unaffected:
+  it is a single input. The 3-input invite cancel has exactly one karma input,
+  and the 2-input claim has none.
+- **Credits are deliberately exempt.** They are tradeable, so multi-owner
+  credit inputs are an ordinary multi-party payment, not a leak.
+
+### Vouch transition rules (P2-B phase 2)
+
+- **The stake is pinned at cast: `VouchBox.value == VOUCH_KARMA_AMOUNT`.**
+  A vouch is one vote and always stakes exactly 1 karma (user decision,
+  2026-08-07). Before the pin, value was bounded only by conservation and
+  `checkOutputValues` — which permits `0n` — while unvouch escrowed the
+  **constant**. Both directions broke: a 0-value vouch matured into 1 karma
+  minted from nothing, and a 100-value vouch destroyed 99 (audit
+  F-consensus-3).
+- **`voucherId` is pinned at cast: it must equal the karma input's owner.**
+  `checkGuards` resolves a box's signer as `owner ?? voucherId`, so a
+  VouchBox carrying a *foreign* `voucherId` is guarded by that foreign key:
+  A stakes their own karma, B unvouches it, and the escrow matures to B.
+  That is a karma transfer with no invite — the property the whole
+  invite/bond mechanism protects. Not in the audit; found deriving this
+  phase. `castVouch` never compared the signer to `voucherId` either, so it
+  was reachable through the front door as well as through a block.
+- **The escrow records the actual staked value**, never the constant, and
+  maturity re-mints exactly that. With the cast pin the two always agree —
+  recording the real value is what makes the round trip conservation-
+  structural rather than true by coincidence.
+- **A vouch cast is invalid while an active cooldown exists for
+  `(voucherId, targetId)`** — the mempool's `hasActiveVouchCooldown`
+  predicate, promoted to a consensus rule (decided 2026-08-04, built in this
+  phase). Without it a block-embedded vouch→unvouch pair for a pair with a
+  live cooldown reaches `insertVouchCooldown`'s `INSERT OR REPLACE` and
+  destroys the first escrow's pending re-mint on the forward path. With the
+  gate the overwrite is unreachable; the `replaced` side-record stays as
+  rollback-exactness machinery.
+- **Determinism.** `vouch_cooldowns` is not committed state — it is outside
+  the `stateRoot`, the known escrow wart — but it is derived deterministically
+  from block application alone, so every node that applied the same chain
+  holds the same rows and this gate cannot split honest nodes. Modelling the
+  escrow as a maturing box is tracked separately.
+- **Self-vouch stays service-layer policy, not consensus.** At consensus a
+  self-vouch is a value-neutral round trip of the actor's own karma, and vouch
+  *score* is interpretation-layer (the node records; clients rank). Recorded
+  so it is not promoted without a reason.
+- **An unvouch consumes exactly one VouchBox** (P2-B phase 4). Block
+  application detects the unvouch by walking the inputs for a VouchBox,
+  writing one escrow row, and **stopping at the first one** — so a transaction
+  consuming two VouchBoxes consumed both and escrowed one, destroying the
+  other stake. Nothing bounded the count: the transition arm asked only for
+  zero outputs, and conservation exempts zero-output vouch spends wholesale
+  however many inputs there are. Reachable because the one-vouch-at-a-time
+  rule is service-layer only, so block-embedded casts can give one voucher two
+  live boxes, and two colluding owners reach it directly. The pin belongs in
+  `checkTransitions` rather than in a block-apply loop that handles N: burning
+  several stakes in one transaction has no meaning in the design, so it should
+  be inexpressible rather than handled — the same reasoning as the bond
+  settlement's single-input bound.
 
 ### Karma decay (periodic burn)
 
@@ -967,6 +1168,10 @@ encoding added to the table above, and an argument at the call site that
     run epoch tally
 12. Always produce a block — miners need coinbase rewards even when there
     is no user work.  Empty blocks carry credit emission and epoch tallies.
+    ⚠ **One exception, and only one (P2-B phase 1c): a body its own mutation
+    phase rejects.** See step 15b — the creator produces nothing and evicts
+    the included mempool entries. Mining over a body the node itself will not
+    apply wastes PoW on a block that cannot be accepted anywhere.
 13. Track confirmed mempool rowids for cleanup
 14. Build coinbase outputs (credit emission with Ergo-style decay,
     treasury split if configured)
@@ -994,7 +1199,13 @@ encoding added to the table above, and an argument at the call site that
    handling of input *presence* is unchanged: a tx whose inputs are not yet present
    is deferred and retried (intra-block dependency). Idempotent: skips boxes already
    inserted or spent (survives gossip loopback).
-6. Remove confirmed entries from mempool (`removeEntry` for each confirmed rowid)
+6. Remove confirmed entries from mempool (`removeEntry` for each confirmed rowid).
+   ⚠ **This runs even when the block was rejected**, and that is deliberate,
+   not an oversight: whatever made the body invalid is still pooled, so
+   leaving it would rebuild the same rejected block every interval and stall
+   the chain — expiry cannot save it, since `purgeExpired` keys on a height
+   that stops advancing when production stops. Step 15b's `body rejected`
+   outcome applies the same eviction for the same reason.
 7. Reset pending counter and template
 
 ### Mining modes
@@ -1032,10 +1243,38 @@ are in-memory and would survive the rollback; they touch no UTXO box, so the
 digest is unaffected), and performs no block storage, no `clearTemplate`, no
 journal persistence, and no prover checkpoint.
 
+**The speculation has three outcomes, not two** (P2-B phase 1c — the code
+returns them as a discriminated union so no caller can conflate them):
+
+| Outcome | Meaning | Creator's obligation |
+|---|---|---|
+| computed | the post-block digest | mine over it |
+| no prover | no prover initialized — test-only | write `EMPTY_STATE_ROOT` and produce |
+| **body rejected** | the mutation phase rejected this body | **produce nothing, and evict the included mempool entries** |
+
 A producer with no prover initialized writes `EMPTY_STATE_ROOT`. Production
 nodes always initialize one at startup, so this is a test-only path — but a
 node running with `VERIFY_STATE_ROOT` enabled will reject such a block, which
 is correct.
+
+**Body rejected is fatal to production, and the eviction is not optional.**
+Mining over a body this node's own mutation phase refuses produces a block
+nothing will accept — the pre-fix code warned "the block cannot be produced"
+and then mined it anyway. Producing nothing while *leaving the entries pooled*
+is worse still: the creator rebuilds the identical body every interval, and
+`MEMPOOL_EXPIRY_BLOCKS` can never rescue it because expiry keys on a chain
+height that stops advancing the moment the node stops producing — a permanent
+silent stall. Eviction-on-rejection is the same semantics the finalize path
+already applies to a rejected block, and it is load-bearing for exactly this
+reason. An unexpected throw during speculation counts as **body rejected**,
+not as "no prover": the apply funnel's totality doctrine treats the same throw
+as a block rejection, so a body that crashes speculation is one no node will
+apply.
+
+Residual, recorded rather than hidden: entries that rode into the same body
+are evicted with the offending one. Transaction-level drop-and-retry — evict
+only the culprit and rebuild — needs the mutation phase to report *which*
+transaction failed, and is not built.
 
 **External mining.** The template's `stateRoot` is computed at template-build
 time and the block is submitted later. This stays sound because any competing
@@ -1056,6 +1295,24 @@ else:
 
 Coinbase outputs are locked for `CREDIT_MINER_REWARD_DELAY` (720) blocks.
 If `treasuryPubKey` is configured, `CREDIT_TREASURY_PCT` (10%) goes to treasury.
+
+> ⚠ **VIOLATED — the lock has no spend-time enforcement, so it is decorative.**
+> Measured 2026-08-07. `lockedUntilBlock` is checked when a coinbase output is
+> *created* (`block-apply` rejects a block whose coinbase carries the wrong
+> lock) and used as a *selection* filter (`getUnlockedCreditBoxes`, for the UI
+> and faucet). No validation path reads it: `validateTx`, `checkTransitions`
+> and `checkGuards` never mention it, and `net.onTx` calls `validateTx` and
+> nothing else — so a gossiped transaction naming a locked coinbase box as an
+> input pools and applies today.
+>
+> **Enforcing it is not a one-line check**, and that is why it is recorded
+> rather than fixed. `mintCredits` consolidates *every* credit box an owner
+> holds into one carrying `max(all locks)`, so under enforcement a single
+> mined block would freeze the miner's whole balance for 720 blocks, and
+> mining again would extend it — an active miner could never spend. The rule
+> and the consolidation have to be designed together (a coinbase mint keeping
+> its own box is the obvious shape, and is how Bitcoin and Ergo do it), which
+> makes this an emission-model decision the karma-economics track owns.
 
 ### Difficulty schedule
 
@@ -1147,6 +1404,7 @@ Fresh schema — no Phase 1 migration.
 | `getUnspentBoxes()` | `() => AnyBox[]` — all unspent boxes (for AVL bootstrapping) |
 | `getKarmaBox(owner)` | `(Uint8Array) => KarmaBox \| null` — single box (backward compat) |
 | `getKarmaBoxes(owner)` | `(Uint8Array) => KarmaBox[]` — multi-box listing (full boxes, keyed on `id` — the contract previously said `{ boxId, value }[]`, which was never the implementation) |
+| `getKarmaValue(owner)` | `(Uint8Array) => bigint` — **summed** value of every unspent karma box. **Consensus input** (bond settlement's unlock predicate), and the single implementation every validation path shares since P2-B phase 1b. It must sum, never read one box: `getKarmaBox` is `LIMIT 1` with no `ORDER BY`, so a single-box read makes the verdict a function of SQLite's physical row order — M-12's class. Kept as one store function rather than a closure per deps literal, because a consensus-critical read reproduced at each call site is the mirror pattern that produced `computeTxIdLocal` and the copied `u32BE` |
 | `getCreditBox(owner)` | `(Uint8Array) => CreditBox \| null` — single box |
 | `getCreditBoxes(owner)` | `(Uint8Array) => CreditBox[]` — multi-box, `ORDER BY value DESC` (the contract previously said `{ boxId, value, lockedUntilBlock? }[]`, which was never the implementation) |
 | `getUnlockedCreditBoxes(owner, blockHeight)` | `(Uint8Array, number) => CreditBox[]` |
@@ -1325,11 +1583,36 @@ Records are fed in the same canonical order as boxes (lexicographic by hex key).
 A bootstrapped tree and a live tree must agree once records exist, and that
 needs a test.
 
+> ⚠ **SUPERSEDED (2026-08-07) — rebuilding the tree from the UTXO set is being
+> removed, because it is both unreachable and unsound.** The requirement above
+> was the right fix for the tree it described; the mechanism itself does not
+> survive scrutiny.
+>
+> - **Unreachable.** The trigger is `storage.version() === null`, and under
+>   `@ergots/avltree` 0.4.0 the `PersistentBatchAVLProver` constructor writes
+>   the empty-tree version to empty storage — so the condition is statically
+>   false after `createAvlProver()`. Almost certainly a regression from the
+>   0.4.0 migration (`7c8fbe5`), unnoticed because nothing exercised the path.
+> - **Unsound even if revived.** AVL+ tree *shape* is history-dependent, so a
+>   tree rebuilt by re-inserting a set does not generally have the digest of a
+>   tree grown incrementally to the same content. Measured: identical 7-box
+>   content agreed on the digest in **6 of 10 rounds** (content lookups agreed
+>   10/10). A rebuilt node would therefore fork against a node that never
+>   restarted — the failure the rebuild exists to prevent.
+>
+> **The sound restart path is the persisted tree**, which the constructor
+> loads and which is what every normal restart already uses. Replay from the
+> journal would also be sound and is not built.
+>
+> **Operational consequence: AVL storage must never be wiped independently of
+> the chain.** There is no recovery path that reconstructs a matching tree
+> from boxes. Wiping both together is the only supported reset.
+
 ### Vouch Cooldowns
 
 | Function | Signature |
 |----------|-----------|
-| `insertVouchCooldown(voucherId, targetId, releaseAtBlock, karmaAmount)` | `(UserId, UserId, number, bigint) => void` — `INSERT OR REPLACE`; while a block journal is open, records the insertion side-record, capturing any row it replaces |
+| `insertVouchCooldown(voucherId, targetId, releaseAtBlock, karmaAmount)` | `(UserId, UserId, number, bigint) => void` — `INSERT OR REPLACE`; while a block journal is open, records the insertion side-record, capturing any row it replaces. `karmaAmount` is the **actual staked value** of the VouchBox being spent, never a constant (P2-B phase 2). Since the same phase gates a cast on there being no active cooldown for the pair, the REPLACE arm is unreachable at apply; it and the `replaced` capture remain for rollback exactness |
 | `getMaturedVouchCooldowns(currentHeight)` | `(number) => Cooldown[]` |
 | `deleteVouchCooldown(voucherId, targetId)` | `(UserId, UserId) => void` — while a block journal is open, captures the row before deleting and records the deletion side-record (H-7 inverse); deleting a nonexistent row records nothing (the inverse of a no-op is a no-op); unrecorded when called from fork rollback (no journal open) |
 

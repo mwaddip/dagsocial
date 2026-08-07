@@ -23,10 +23,12 @@ import {
   closeDb,
   getDb,
   getKarmaBox,
+  getKarmaBoxes,
   insertBox as storeInsertBox,
   getBox as storeGetBox,
   getBoxByProvenance as storeGetBoxByProvenance,
   consumeBox as storeConsumeBox,
+  hasActiveVouchCooldown as storeHasActiveVouchCooldown,
   getPendingEntries,
   insertMempoolSubBlock,
 } from '../../src/store/index.js';
@@ -132,6 +134,9 @@ describe('invites service', () => {
       insertBox: (box: AnyBox) => storeInsertBox(box),
       consumeBox: (id: string, atBlock: number) => storeConsumeBox(id, atBlock),
       getKarmaBox: (owner: Uint8Array) => getKarmaBox(owner),
+      getKarmaValue: (owner: Uint8Array) =>
+        getKarmaBoxes(owner).reduce((sum, b) => sum + b.value, 0n),
+      hasActiveVouchCooldown: storeHasActiveVouchCooldown,
       runInTransaction: (fn: () => void) => {
         (db.transaction(fn) as () => void)();
       },

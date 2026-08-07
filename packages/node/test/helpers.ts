@@ -416,11 +416,16 @@ export async function makeApplicableBlock(
   // Post-block state root (H-6), obtained the way the block creator obtains
   // it: by running this body through the apply path's own mutation phase and
   // rolling it back. It has to be final before the nonce and the signature,
-  // which both cover the header. Null when no prover is active — most suites —
-  // and apply skips the check there, so EMPTY_STATE_ROOT stands in.
+  // which both cover the header. No prover — most suites — speculates
+  // `no-prover`, and apply skips the check there, so EMPTY_STATE_ROOT stands
+  // in. A `body-rejected` body gets EMPTY_STATE_ROOT too: the helper's job is
+  // to hand the caller its block either way, and the suite's own apply will
+  // reject the body loudly.
   const { computePostBlockStateRoot } = await import('../src/services/block-apply.js');
+  const speculation = computePostBlockStateRoot(block, height);
   header.stateRoot =
-    opts.stateRoot ?? computePostBlockStateRoot(block, height) ?? EMPTY_STATE_ROOT;
+    opts.stateRoot ??
+    (speculation.kind === 'computed' ? speculation.stateRoot : EMPTY_STATE_ROOT);
 
   header.powNonce = solveHeaderPow(header);
   block.validatorSignature = signHeader(header, opts.signWith ?? miner.privateKey);

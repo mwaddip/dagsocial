@@ -205,6 +205,7 @@ interface EngineDeps {
   insertBox: (box: AnyBox) => void;
   consumeBox: (id: string, atBlock: number) => void;
   getKarmaBox: (owner: Uint8Array) => KarmaBox | null;
+  getKarmaValue: (owner: Uint8Array) => bigint;
   runInTransaction: (fn: () => void) => void;
 }
 
@@ -226,6 +227,8 @@ function makeEngineDeps(
       db.prepare('UPDATE utxo_boxes SET spent_at_block = ? WHERE id = ?').run(atBlock, id);
     },
     getKarmaBox: (owner: Uint8Array) => utxoModule.getKarmaBox(owner),
+    getKarmaValue: (owner: Uint8Array) =>
+      utxoModule.getKarmaBoxes(owner).reduce((sum, b) => sum + b.value, 0n),
     runInTransaction: (fn: () => void) => {
       (db.transaction(fn) as () => void)();
     },

@@ -23,10 +23,12 @@ import {
   closeDb,
   getDb,
   getKarmaBox,
+  getKarmaBoxes,
   insertBox,
   insertPost,
   getBox as storeGetBox,
   getBoxByProvenance as storeGetBoxByProvenance,
+  hasActiveVouchCooldown as storeHasActiveVouchCooldown,
   getPendingEntries,
   insertMempoolSubBlock,
 } from '../../src/store/index.js';
@@ -130,6 +132,9 @@ describe('likes service', () => {
         db.prepare('UPDATE utxo_boxes SET spent_at_block = ? WHERE id = ?').run(atBlock, id);
       },
       getKarmaBox: (owner: Uint8Array) => getKarmaBox(owner),
+      getKarmaValue: (owner: Uint8Array) =>
+        getKarmaBoxes(owner).reduce((sum, b) => sum + b.value, 0n),
+      hasActiveVouchCooldown: storeHasActiveVouchCooldown,
       runInTransaction: (fn: () => void) => {
         (db.transaction(fn) as () => void)();
       },
