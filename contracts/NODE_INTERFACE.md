@@ -296,14 +296,31 @@ invites, vouches, credits, faucet, prune).
    with Ed25519 key
 2. Node verifies: post exists and is live, author matches, signature valid,
    subtreePostIds match actual reply tree, Merkle root matches postId list
-3. Node builds PruneEntry, enqueues in mempool, broadcasts simplified Stump
-   to peers
+3. Node builds PruneEntry, enqueues in mempool. Nothing is broadcast at
+   this point — the prune propagates inside the ordering block that carries
+   it, and each node derives its own stump at settlement (see below)
 4. At block application: verify authorship binding (`entry.authorId` equals
    the `block_topology`-recorded author of `rootPostHash`; reject the block if
    no topology row exists — an unconfirmed root is not prunable), verify
    signature, verify topology via block_topology CTE, verify Merkle root,
    settle UTXO deterministically (consume PostLockBoxes and LikeBoxes, mint
-   refund karma), prune DAG content
+   refund karma), insert the Stump derived from the verified entry
+   (**unconditional** — a node holding no DAG content records the same
+   stump), then prune DAG content when present
+
+**Stumps are derived state.** A `dag_stumps` row is a local projection of a
+PruneEntry inside an applied ordering block — never information in its own
+right. `insertStump` has exactly one caller: prune settlement in block
+application. No network input writes the table. Inbound stump gossip is not
+consumed, and no stump pull protocol exists: a gossiped stump is unverifiable
+by construction (it carries neither the author signature nor
+`subtreePostIds`, so a receiver has nothing to check it against), while the
+table it would write is trusted by both the read API (`getPost` resolves
+stumps) and the relay verifier (parent-existence, step 8) — which is why
+nothing unverified may reach it (audit F-api-20, and the sweep-response
+variant found alongside it: a peer answering a stump pull could return
+entries that were never requested, each stored and its prune replayed
+against live content).
 
 ### UTXO queries
 
@@ -1810,6 +1827,18 @@ that keeps the last `replaced`; that restores an intra-block intermediate.
 | `insertStump(stump)` | `(Stump) => void` — simplified Stump (rootPostHash, authorId, replyCount, upvoteCount, trigger, protocolVersion, compactedAtBlockHeight) |
 | `getStump(stumpId)` | `(string) => Stump \| null` |
 
+`insertStump`'s only caller is prune settlement in block application — every
+row derives from a PruneEntry the funnel verified (see "Pruning" → "Stumps
+are derived state"). Because the insert is unconditional at settlement and
+every apply path goes through the one funnel, a settled prune without its
+stump row cannot arise on a fresh chain; there is no repair or pull path.
+
+⚠ **Known gap (recorded, not fixed here):** stump inserts are not
+journalled, so `revertBlock` does not remove them — a reorged-away prune
+leaves its stump row (and `getPost` keeps resolving it) until the entry
+settles again on the winning branch. Belongs to the journalling work
+sequenced with P2-D4.
+
 ### AVL+ State Root
 
 The `packages/node/src/state/` module provides an authenticated dictionary over
@@ -2170,7 +2199,7 @@ the handler.
 | `block-apply.ts` | Block application, UTXO settlement, epoch tally | Block creation |
 | `utxo-engine.ts` | UTXO transaction validation and application | Block structure |
 | `stump-engine.ts` | Verifiable prune execution | DAG content |
-| `content-sweep.ts` | Placeholder and missing-stump resolution | Post creation |
+| `content-sweep.ts` | Placeholder resolution (missing post content pulled from peers) | Post creation |
 | `fork-resolution.ts` | Chain fork detection and reorg | Block creation |
 
 **Validation pipeline (phased, increasing cost):**
@@ -2387,7 +2416,7 @@ Stage 2 handlers for inbound gossip messages. Startup order:
 ```
 1. initDb()
 2. Create NetNode with config + validators
-3. Register Stage 2 handlers (onSubBlock, onOrderingBlock, onTx, onStump)
+3. Register Stage 2 handlers (onSubBlock, onOrderingBlock, onTx)
 4. Register sync handlers (setBlocksHandler, setHeadersHandler) BEFORE net.start()
 5. await net.start()          // connect to bootstrap, subscribe to topics
 6. startHttpServer()          // begin accepting API requests
@@ -2410,7 +2439,6 @@ not fail the API request.
   creates mempool sub-block entry, re-broadcasts to other peers
 - **`onTx(tx)`**: validates (read-only, `validateTx`) → inserts into mempool via
   `insertUtxoTx`
-- **`onStump(stump)`**: stores stump if not already present
 - **`onOrderingBlock(block)`**: structure / chain-link / PoW pre-filters → fork
   detection & resolution → `applyOrderingBlock` → confirms posts → removes
   confirmed entries from mempool. The authoritative consensus checks — including
@@ -2522,10 +2550,17 @@ consensus authority for prune authorization, never `dag_posts.author`.
 - **`setHeadersHandler(getBlock)`**: serves block headers for fork resolution
 - **`setSyncHandler(cb)`**: serves sub-blocks for content-sweep (placeholder fill)
 - **`setPostsHandler(cb)`**: serves posts by ID for peer requests
-- **`setStumpsHandler(cb)`**: serves stumps by ID for peer requests
 
 Additional hooks: `onSyncComplete(cb)` and `onPeerActive(cb)` trigger
-content sweep for placeholder and missing-stump resolution.
+content sweep for placeholder resolution.
+
+The node registers no stump handlers in either direction: inbound
+`/dagsocial/stump/1` gossip is not consumed, `broadcastStump` is not called,
+and stumps are neither requested from peers nor served to them — every node
+derives its own rows at prune settlement (see "Pruning" → "Stumps are
+derived state"). The net-side stump surface this orphans (topic, codec,
+GetStumps/Stumps protocol, handler seams) is deleted in the same unit's net
+phase; NET_INTERFACE is authoritative for that side.
 
 ---
 

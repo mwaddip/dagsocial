@@ -196,7 +196,9 @@ UTXO state (PostLockBoxes, LikeBoxes). Any node can verify the prune
 independently, with or without the DAG content.
 
 Pruning is irreversible. Once content is pruned, it cannot be recovered.
-Nodes propagate stumps, not the original content.
+What propagates is the PruneEntry inside the ordering block that settles
+it — never the original content, and not the stump either: each node
+derives its own stump from the verified entry at settlement (§3).
 
 Future stump triggers beyond author deletion (storage pruning for lean nodes)
 will use their own authorization paths but produce the same stump data structure.
@@ -424,9 +426,14 @@ to verify box existence or absence without storing the full UTXO set.
 
 ### 3. Stumps (Binding Layer)
 
-A stump is what remains after a post subtree is pruned. It is a compact,
-cryptographically signed proof that the subtree existed and that specific
-value was earned inside it.
+A stump is what remains after a post subtree is pruned: a compact record
+that the subtree existed and was settled. The stump itself carries no
+signature — authorization lives in the PruneEntry (author-signed, verified
+at block application), and a stump is a **local projection of that verified
+entry**, derived independently by every node when the prune settles. No
+stump is ever accepted from the network: a gossiped stump would be
+unverifiable by construction (no signature, no `subtreePostIds` to check),
+so the table stumps live in is written by block application alone.
 
 ```
 Stump {
@@ -449,14 +456,16 @@ Stump {
 3. Client submits signed PruneIntent to node via `POST /posts/:id/prune`
 4. Node verifies signature, subtree completeness, and Merkle root
 5. Node enqueues PruneEntry in mempool — included in next ordering block via
-   `SubBlockTree.pruneEntries`
+   `SubBlockTree.pruneEntries`. Nothing else leaves the node: the prune
+   propagates only inside the block that carries it
 6. At block application, every node independently verifies: authorship
    binding (`authorId` equals the `block_topology`-recorded author of the
    root; unconfirmed roots are not prunable), Ed25519 signature, postId set
    against block_topology, Merkle root, then settles UTXO deterministically
    (consumes PostLockBoxes and LikeBoxes, mints refund karma)
-7. DAG content pruned (when present) — simplified Stump stored for
-   historical/gossip purposes
+7. The simplified Stump is inserted, derived from the verified entry —
+   unconditionally, so a node holding no DAG content records the same
+   stump — then DAG content is pruned when present
 
 No validator attestation is needed — the author's signature authorizes the
 prune, and the settlement is deterministically computable from UTXO state.
