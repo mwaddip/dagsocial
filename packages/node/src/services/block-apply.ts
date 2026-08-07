@@ -991,6 +991,8 @@ function applyMutationPhase(
               vb.value,
             );
           }
+          // validateTx above pinned the unvouch shape to exactly one VouchBox
+          // input (P2-B phase 4), so first-match is exhaustive, not lossy.
           break;
         }
       }

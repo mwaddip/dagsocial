@@ -1125,16 +1125,29 @@ forever. A node rejects objects with an unsupported protocol version.
 ### Cross-layer
 
 - Karma is non-tradeable — only moves via invites, likes, earning, decay, or burn
-  > ⚠ **VIOLATED — three independent ways. This is the most load-bearing false invariant
-  > in the document.** The `like` transition checks only that every output is a karma box,
+  > ⚠ **VIOLATED — one route left of five. This was the most load-bearing false invariant
+  > in the document.** The rule is correct and stays: it is the premise the karma↔credit
+  > firewall rests on, asserted in four places here and on two published pages.
+  >
+  > **Still open (1):** the `like` transition checks only that every output is a karma box,
   > with **no owner constraint**, and the liker may consume their own LikeBox — so
-  > like-then-unlike moves karma to an arbitrary recipient. A committed invitee can spend
-  > the BondBox to their own karma box (no recipient, probation or threshold check).
-  > Unvouch re-mints a constant rather than releasing the escrowed stake.
-  > **The rule is correct and stays** — it is the premise the karma↔credit firewall rests
-  > on, asserted in four places here and on two published pages. Phase 2 makes it true.
-  > Note the first of the three closes by **feature removal**: unlike is not a feature in
-  > the current design, so that path is deleted rather than fixed.
+  > like-then-unlike moves karma to an arbitrary recipient. **Closes by feature removal in
+  > P2-D**; unlike is not a feature in the current design.
+  >
+  > **Closed by P2-B (4):** the committed invitee spending the BondBox to their own karma box
+  > (phase 1 — settlement now pays only `bond.inviterId`, under a spend-time unlock, and no
+  > burn shape exists); unvouch re-minting a constant instead of releasing the stake (phase 2);
+  > a vouch cast carrying a **foreign `voucherId`**, which produces a box guarded by that
+  > foreign key — `checkGuards` resolves a signer as `owner ?? voucherId` — so A stakes and B
+  > collects (phase 2); and **karma inputs never being checked for a shared owner**, so
+  > `[karmaA, karmaB] → karmaA` moved karma between accounts whenever both co-signed
+  > (phase 4).
+  >
+  > ⚠ **The last two were not in the audit, and neither closes with P2-D.** This entry
+  > previously said the violation was three routes with the most severe "entirely in the
+  > unlike path" — that framing was wrong and cost nothing only because the extra routes were
+  > found by accident while implementing. **Do not read "closes by feature removal" as "the
+  > class is handled."**
 - Credits are freely tradeable
   > ⚠ **VIOLATED on-chain.** `sendCredits` mutates the UTXO set **outside block
   > application** — no block, no journal entry, no AVL feed. Credits are tradeable on one

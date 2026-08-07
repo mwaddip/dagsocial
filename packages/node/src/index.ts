@@ -18,7 +18,7 @@ import { sweepPlaceholders, hasPlaceholders, sweepStumps, hasMissingStumps } fro
 import { validateTx } from './services/utxo-engine.js';
 import { setNet } from './services/net-instance.js';
 import { applyOrderingBlock } from './services/block-apply.js';
-import { createAvlProver, bootstrapAvlProver } from './state/avl-prover.js';
+import { createAvlProver } from './state/avl-prover.js';
 import { DagService } from './services/dag-service.js';
 import { SqlitePostStore } from './store/sqlite-store.js';
 import { extendsOurTip, findForkPoint, reorg, MAX_REORG_DEPTH } from './services/fork-resolution.js';
@@ -31,7 +31,6 @@ import {
   insertPost,
   getBox,
   getBoxByProvenance,
-  getUnspentBoxes,
   getCurrentHeight,
   insertMempoolSubBlock,
   insertUtxoTx,
@@ -41,7 +40,6 @@ import {
   getStump,
   peerStorage,
 } from './store/index.js';
-import { getAllIdentityRecords, identityRecordKey } from './store/identity-records.js';
 import { encodePost, cumulativeWork, MEMPOOL_EXPIRY_BLOCKS, subBlockFromPost, verifyPostId, VOUCH_COOLDOWN_BLOCKS } from '@dagsocial/types';
 import type { BlockHeader, Stump } from '@dagsocial/types';
 
@@ -119,32 +117,21 @@ if (isFaucetNetwork(config.networkType)) {
 }
 
 // 1c. Initialize AVL prover
-const avlHandle = createAvlProver();
-const currentHeight = getCurrentHeight();
-// Only bootstrap if storage is empty — the PersistentBatchAVLProver
-// constructor already loads existing state via rollback.
-if (currentHeight > 0 && avlHandle.storage.version() === null) {
-  const unspent = getUnspentBoxes();
-  // The tree holds two committed entity kinds, so the rebuild feeds both
-  // (Spec G phase D). Feeding only boxes would rebuild a tree missing every
-  // identity record, and this node would then disagree on `stateRoot` with one
-  // that never restarted.
-  //
-  // Key derivation stays at its single site in the store — `identityRecordKey`
-  // — and the prover consumes the derived key rather than re-deriving it.
-  const records = getAllIdentityRecords().map((r) => ({
-    key: identityRecordKey(r.identityId),
-    record: r.record,
-  }));
-  // Either kind alone is enough to make the empty tree wrong.
-  if (unspent.length > 0 || records.length > 0) {
-    bootstrapAvlProver(avlHandle, unspent, currentHeight, records);
-    console.log(
-      `AVL prover bootstrapped from ${unspent.length} unspent boxes and ` +
-      `${records.length} identity records at height ${currentHeight}`,
-    );
-  }
-}
+//
+// There is deliberately no rebuild-from-UTXO-set path here (NODE_INTERFACE →
+// the SUPERSEDED note on `bootstrapAvlProver`, 2026-08-07). The branch that
+// guarded one was doubly dead: its trigger — `storage.version() === null`
+// after `createAvlProver()` — is statically false under @ergots/avltree
+// 0.4.0, whose PersistentBatchAVLProver constructor writes the empty-tree
+// version to empty storage and throws if `version()` is still null after;
+// and the rebuild it guarded was unsound anyway — AVL+ tree shape is
+// history-dependent, so a tree rebuilt by re-inserting a set forks against
+// one grown incrementally to the same content (measured: identical content
+// agreed on the digest in 6 of 10 rounds). The sound restart path is the
+// persisted tree the constructor loads. Operational consequence: AVL storage
+// must never be wiped independently of the chain — wiping both together is
+// the only supported reset.
+createAvlProver();
 
 // 2. Create NetNode
 // The four discovery knobs are passed explicitly: NET_INTERFACE.md documents

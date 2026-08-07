@@ -230,10 +230,30 @@ function checkTransitions(
         };
       }
 
+      // All karma inputs must share one owner (P2-B phase 4). Every karma
+      // output is pinned to `inputKarma.owner` below, but nothing bound the
+      // inputs to each other — validateTx step 3 only requires a common
+      // boxType — so [karmaA, karmaB] → karmaA validated with both owners
+      // co-signing, and B's karma became A's. Consensual, but karma is
+      // non-transferable by rule: a consensual transfer is still a transfer,
+      // and it prices off-chain. Self-consolidation of one owner's boxes is
+      // the legitimate multi-input case and stays legal; credits are
+      // deliberately exempt — tradeable, so multi-owner credit inputs are an
+      // ordinary multi-party payment.
+      const inputKarma = inputs[0] as KarmaBox;
+      const inputOwnerHex = Buffer.from(inputKarma.owner).toString('hex');
+      for (const box of inputs) {
+        if (Buffer.from((box as KarmaBox).owner).toString('hex') !== inputOwnerHex) {
+          return {
+            valid: false,
+            error: `Karma cannot be transferred (karma inputs have different owners)`,
+          };
+        }
+      }
+
       // All karma outputs must belong to the same owner as the consumed karma.
       // Exception: system box faucet grant — 2 karma outputs, one same-owner
       // (system change), one different-owner (faucet beneficiary).
-      const inputKarma = inputs[0] as KarmaBox;
       if (karmaOutputs.length === 2 && inputs.length === 1 &&
           outputs.length === 2 && deps?.isSystemBox?.(inputKarma.id!)) {
         const sameOwner = karmaOutputs.filter(
@@ -542,6 +562,20 @@ function checkTransitions(
         return {
           valid: false,
           error: `VouchBox can only be spent to produce no outputs (unvouch)`,
+        };
+      }
+      // An unvouch consumes exactly one VouchBox (P2-B phase 4). Block
+      // application walks the inputs for a VouchBox, writes ONE escrow row,
+      // and stops — while conservation exempts zero-output vouch spends
+      // wholesale, however many inputs. A two-VouchBox unvouch therefore
+      // consumed both stakes and escrowed one, destroying the other. Burning
+      // several stakes in one transaction has no meaning in the design, so
+      // the shape is inexpressible rather than handled — the same reasoning
+      // as the bond settlement's single-input bound.
+      if (inputs.length !== 1) {
+        return {
+          valid: false,
+          error: `Unvouch must consume exactly one VouchBox`,
         };
       }
       return { valid: true };

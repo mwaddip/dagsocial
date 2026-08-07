@@ -81,17 +81,14 @@ export function getIdentityRecord(identityId: UserId): IdentityRecord | null {
 /**
  * Every identity record in the store, ordered by raw identity bytes.
  *
- * Exists for one caller: `bootstrapAvlProver`. A node whose AVL storage is
- * empty while its chain DB is populated — the documented "wipe the AVL store"
- * deploy step — rebuilds the tree from the store, and a rebuild that fed only
- * boxes would produce a tree with **no records at all** and therefore a
- * different `stateRoot` than a node that stayed up. That is the same
- * restart-triggered fork class as the explicit-`undefined` provenance key and
- * the `post_lock` field-order divergence, and it is not caught by any
- * apply-path test, because apply never re-reads the record set.
+ * Its one production caller — `bootstrapAvlProver` in `src/index.ts` — was
+ * deleted in P2-B phase 4: the rebuild-from-store path was unreachable under
+ * `@ergots/avltree` 0.4.0 and unsound anyway (NODE_INTERFACE → the SUPERSEDED
+ * note on `bootstrapAvlProver`, 2026-08-07). The full-set read remains for the
+ * store's own unit tests.
  *
  * The SQL `ORDER BY` is not the canonical order — the AVL key is a *hash* of
- * these bytes, so the prover feed sorts by that instead. This ordering only
+ * these bytes, so a prover feed sorts by that instead. This ordering only
  * makes the read deterministic.
  */
 export function getAllIdentityRecords(): Array<{ identityId: UserId; record: IdentityRecord }> {
