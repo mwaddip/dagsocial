@@ -328,6 +328,27 @@ export function getKarmaBoxes(owner: Uint8Array): KarmaBox[] {
 }
 
 /**
+ * Summed value of every unspent KarmaBox owned by `owner`.
+ *
+ * Consensus input, not a convenience read: bond settlement's unlock predicate
+ * reads it at spend time (NODE_INTERFACE → "Bond transition rules"), so every
+ * validation path — pool entry, relay, block application — must compute it
+ * through this one function or nodes can split. It MUST sum all unspent boxes,
+ * never read a single one: multiple unspent karma boxes per owner is reachable
+ * (faucet grant + mint, or a karma split), and `getKarmaBox` above is `LIMIT 1`
+ * with no `ORDER BY` — an arbitrary row, so a single-box read would give two
+ * nodes with different physical row order different balances for the same
+ * owner, and different unlock verdicts on the same settlement.
+ *
+ * Implemented over `getKarmaBoxes` so exactly one query names the
+ * unspent-karma set — a second WHERE clause here would be a mirror
+ * implementation.
+ */
+export function getKarmaValue(owner: Uint8Array): bigint {
+  return getKarmaBoxes(owner).reduce((sum, b) => sum + b.value, 0n);
+}
+
+/**
  * True if a faucet-origin karma box has ever existed for this owner.
  *
  * Deliberately ignores `spent_at_block` — a grant that has since been spent

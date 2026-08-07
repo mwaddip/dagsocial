@@ -38,6 +38,7 @@ import {
   getBox as storeGetBox,
   getBoxByProvenance as storeGetBoxByProvenance,
   getKarmaBox,
+  getKarmaBoxes,
   insertBox as storeInsertBox,
   consumeBox as storeConsumeBox,
 } from '../../src/store/index.js';
@@ -108,6 +109,8 @@ describe('validateAndApplyTx', () => {
       insertBox: (box: AnyBox) => storeInsertBox(box),
       consumeBox: (id: string, atBlock: number) => storeConsumeBox(id, atBlock),
       getKarmaBox: (owner: Uint8Array) => getKarmaBox(owner),
+      getKarmaValue: (owner: Uint8Array) =>
+        getKarmaBoxes(owner).reduce((sum, b) => sum + b.value, 0n),
       runInTransaction: (fn: () => void) => {
         (db.transaction(fn) as () => void)();
       },
@@ -1165,7 +1168,13 @@ describe('validateAndApplyTx', () => {
       expect(result.error).toContain('Value non-conservation');
     });
 
-    it('accepts a BondBox burn (zero outputs) — the sole exception', () => {
+    it('rejects a BondBox burn (zero outputs) — the exemption was removed in P2-B', () => {
+      // This test asserted acceptance until P2-B phase 1. Bond forfeiture is
+      // not implemented and no legal transition destroys a bond, so the
+      // exemption bought nothing but a burn shape the *committed invitee* could
+      // reach — their signature satisfies `bond_dual`, so they could torch the
+      // inviter's stake. See test/services/bond-tightening.test.ts for the
+      // attack form and its non-vacuity controls.
       const bondBox: BondBox = {
         boxType: 'bond',
         value: INVITE_BOND_KARMA,
@@ -1183,9 +1192,10 @@ describe('validateAndApplyTx', () => {
       const tx = buildSignedTx([bondBoxId], [], ownerPrivKey, ownerPubKey);
       const result = validateAndApplyTx(deps, tx, 10);
 
-      expect(result.valid).toBe(true);
-      expect(result.error).toBeUndefined();
-      expect(deps.getBox(bondBoxId)).toBeNull();
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('Value non-conservation');
+      // Nothing applied — the bond is still unspent.
+      expect(deps.getBox(bondBoxId)).not.toBeNull();
     });
 
     it('accepts a VouchBox burn (unvouch) — karma escrows into the cooldown', () => {
@@ -1376,20 +1386,27 @@ describe('validateAndApplyTx', () => {
       expect(result.error).toContain('committed BondBox output');
     });
 
-    it('non-vacuity control: the same sweep is accepted once the inviter signs it', () => {
+    it('non-vacuity control: the inviter-signed sweep reaches the transition layer, where P2-B stops it', () => {
       const attackerKarma = createAndInsertKarma(attackerPubKey, KARMA_IN, 1, 'attacker');
       const tx = buildSweepTx(attackerPubKey, attackerKarma.id!);
       addSignature(tx, attackerPubKey, attackerPrivKey);
       // One added signature is the only difference from the rejected tx above.
-      // With it, `bond_dual` Path 1 (inviter reclaim) matches and the spend is
-      // authorised — the inviter is free to direct the value anywhere. So the
-      // sweep fails for exactly one reason: missing bond authorisation.
+      // With it, `bond_dual` Path 1 (inviter reclaim) matches and every guard is
+      // satisfied — which is what makes this a control: the tx above fails for
+      // exactly one reason, missing bond authorisation.
       addSignature(tx, inviterPubKey, inviterPrivKey);
 
       const result = validateTx(deps, tx, 10);
 
-      expect(result.valid).toBe(true);
-      expect(result.error).toBeUndefined();
+      // Until P2-B phase 1 this was accepted, and that acceptance was the
+      // control's assertion: the inviter may direct the value anywhere. That is
+      // no longer true — the bond's value only ever returns to the inviter
+      // (audit F-consensus-1), so an attacker-owned cancel output is illegal
+      // whoever signs it. The control's *meaning* survives the inversion:
+      // failing at the transition layer proves conservation and every guard
+      // passed on this exact transaction.
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('inviterId');
     });
 
     it('still accepts a legitimate inviter cancel (uncommitted bond)', () => {

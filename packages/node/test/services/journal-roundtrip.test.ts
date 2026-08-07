@@ -109,7 +109,10 @@ async function importBlockCreator() {
 async function importBlockApply() {
   return (await import('../../src/services/block-apply.js')) as unknown as {
     applyOrderingBlock: (block: OrderingBlock) => boolean;
-    computePostBlockStateRoot: (block: OrderingBlock, height: number) => string | null;
+    computePostBlockStateRoot: (
+      block: OrderingBlock,
+      height: number,
+    ) => import('../../src/services/block-apply.js').StateRootSpeculation;
   };
 }
 
@@ -287,10 +290,13 @@ async function assertRoundTrip(
     classBlock,
     classBlock.header.height,
   );
-  expect(speculative).toBe(Buffer.from(postDigest).toString('hex'));
+  expect(speculative).toEqual({
+    kind: 'computed',
+    stateRoot: Buffer.from(postDigest).toString('hex'),
+  });
   // …and it is what the producer committed to before mining, so a verifier
   // running VERIFY_STATE_ROOT accepts exactly the blocks a producer builds.
-  expect(classBlock.header.stateRoot).toBe(speculative);
+  expect(classBlock.header.stateRoot).toBe(Buffer.from(postDigest).toString('hex'));
 
   // 2c. …and it left no trace: its transaction rolled back, the prover was
   //     restored by hand (SQLite rollback cannot reach it), and it persisted

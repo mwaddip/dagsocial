@@ -18,6 +18,7 @@ import {
   closeDb,
   getDb,
   getKarmaBox,
+  getKarmaBoxes,
   insertBox,
   insertVouchCooldown,
   getBox as storeGetBox,
@@ -126,6 +127,8 @@ describe('vouch service', () => {
         db.prepare('UPDATE utxo_boxes SET spent_at_block = ? WHERE id = ?').run(atBlock, id);
       },
       getKarmaBox: (owner: Uint8Array) => getKarmaBox(owner),
+      getKarmaValue: (owner: Uint8Array) =>
+        getKarmaBoxes(owner).reduce((sum, b) => sum + b.value, 0n),
       runInTransaction: (fn: () => void) => {
         (db.transaction(fn) as () => void)();
       },

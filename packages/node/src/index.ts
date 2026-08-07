@@ -25,6 +25,7 @@ import { extendsOurTip, findForkPoint, reorg, MAX_REORG_DEPTH } from './services
 import {
   getKarmaBox,
   getKarmaBoxes,
+  getKarmaValue,
   getPost,
   insertPost,
   getBox,
@@ -327,6 +328,10 @@ net.onTx((tx) => {
     consumeBox: () => {},
     getKarmaBox,
     getKarmaBoxes,
+    // Bond settlement's unlock predicate (P2-B phase 1). Relay validation has
+    // to reach the same verdict the block path will — the store's getKarmaValue
+    // is the single implementation all three paths share (phase 1b).
+    getKarmaValue,
     runInTransaction: (fn: () => void) => fn(),
     isSystemBox: (boxId: string) => {
       const sysKey = getSystemKeypair();

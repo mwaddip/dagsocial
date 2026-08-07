@@ -24,6 +24,7 @@ export {
   getBoxByProvenance,
   getKarmaBox,
   getKarmaBoxes,
+  getKarmaValue,
   getCreditBox,
   getCreditBoxes,
   getUnlockedCreditBoxes,

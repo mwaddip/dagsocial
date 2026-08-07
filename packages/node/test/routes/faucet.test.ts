@@ -6,6 +6,7 @@ import { getCurrentHeight } from '../../src/store/ordering.js';
 import { fixtureProvenance } from '../helpers.js';
 import {
   getKarmaBox,
+  getKarmaBoxes,
   insertBox,
   getBox,
   getBoxByProvenance,
@@ -52,6 +53,8 @@ function pendingFaucetKarmaFor(owner: Uint8Array): bigint {
 function buildDeps(): FaucetDeps {
   return {
     getKarmaBox,
+    getKarmaValue: (owner: Uint8Array) =>
+      getKarmaBoxes(owner).reduce((sum, b) => sum + b.value, 0n),
     getCurrentHeight,
     getBox,
     getBoxByProvenance,

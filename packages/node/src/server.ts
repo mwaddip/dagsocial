@@ -159,6 +159,10 @@ export function createApp(config: Config): express.Express {
 
   // ---- Shared UTXO engine deps (curried into validateTx for routes) ----
 
+  // Bond settlement's unlock predicate reads the invitee's summed unspent
+  // karma (P2-B phase 1). Every deps literal below references the store's
+  // getKarmaValue directly — the single implementation shared with block
+  // application and the relay path (phase 1b).
   const utxoEngineDeps = {
     getBox: store.getBox,
       getBoxByProvenance: store.getBoxByProvenance,
@@ -166,6 +170,7 @@ export function createApp(config: Config): express.Express {
     consumeBox: store.consumeBox,
     getKarmaBox: store.getKarmaBox,
     getKarmaBoxes: store.getKarmaBoxes,
+    getKarmaValue: store.getKarmaValue,
     runInTransaction: (fn: () => void) => getDb().transaction(fn)(),
     isSystemBox: (boxId: string) => {
       const sysKey = getSystemKeypair();
@@ -234,6 +239,7 @@ export function createApp(config: Config): express.Express {
       insertBox: store.insertBox,
       consumeBox: store.consumeBox,
       getKarmaBox: store.getKarmaBox,
+      getKarmaValue: store.getKarmaValue,
       runInTransaction: (fn: () => void) => getDb().transaction(fn)(),
     }),
   );
@@ -250,6 +256,7 @@ export function createApp(config: Config): express.Express {
       insertBox: store.insertBox,
       consumeBox: store.consumeBox,
       getKarmaBox: store.getKarmaBox,
+      getKarmaValue: store.getKarmaValue,
       runInTransaction: (fn: () => void) => getDb().transaction(fn)(),
     }),
   );
@@ -268,6 +275,7 @@ export function createApp(config: Config): express.Express {
       insertBox: store.insertBox,
       consumeBox: store.consumeBox,
       getKarmaBox: store.getKarmaBox,
+      getKarmaValue: store.getKarmaValue,
       runInTransaction: (fn: () => void) => getDb().transaction(fn)(),
     }),
   );
@@ -280,6 +288,7 @@ export function createApp(config: Config): express.Express {
       '/faucet',
       faucetRoutes({
         getKarmaBox: store.getKarmaBox,
+        getKarmaValue: store.getKarmaValue,
         getCurrentHeight: store.getCurrentHeight,
         getBox: store.getBox,
       getBoxByProvenance: store.getBoxByProvenance,

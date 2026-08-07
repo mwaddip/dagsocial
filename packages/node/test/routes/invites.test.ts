@@ -8,7 +8,7 @@ import http from 'http';
 import { createHash, generateKeyPairSync, createPrivateKey } from 'crypto';
 import { initDb, closeDb, getDb } from '../../src/store/db.js';
 import {
-  getBoxByProvenance as storeGetBoxByProvenance, getKarmaBox, getBox as storeGetBox, insertBox as storeInsertBox } from '../../src/store/utxo.js';
+  getBoxByProvenance as storeGetBoxByProvenance, getKarmaBox, getKarmaBoxes, getBox as storeGetBox, insertBox as storeInsertBox } from '../../src/store/utxo.js';
 import { getCurrentHeight } from '../../src/store/ordering.js';
 import {
   createInvite,
@@ -55,6 +55,8 @@ async function request(
         db.prepare('UPDATE utxo_boxes SET spent_at_block = ? WHERE id = ?').run(atBlock, id);
       },
       getKarmaBox: (owner: Uint8Array) => getKarmaBox(owner),
+      getKarmaValue: (owner: Uint8Array) =>
+        getKarmaBoxes(owner).reduce((sum, b) => sum + b.value, 0n),
       runInTransaction: (fn: () => void) => { (db.transaction(fn) as () => void)(); },
       createInvite,
       claimInvite,
@@ -258,7 +260,15 @@ describe('invites routes', () => {
     };
     signTransaction(tx, inviteePrivKeyObj, inviteePubKeyHex);
 
-    const res = await request('/commit', 'POST', { tx: txToJson(tx) });
+    // P2-B phase 1 pins `probationStartBlock <= settle height`. This suite seeds
+    // boxes straight into the store and stores no ordering block, so the real
+    // `getCurrentHeight` returns 0 and no window could satisfy both that bound
+    // and `probationStartBlock > 0`. A bond box cannot exist on-chain at height
+    // 0 — reaching it takes a confirmed invite-create — so the honest fixture is
+    // a height at which this bond could actually be sitting there.
+    const res = await request('/commit', 'POST', { tx: txToJson(tx) }, {
+      getCurrentHeight: () => 5,
+    });
     expect(res.status).toBe(201);
     const body = res.data as Record<string, unknown>;
     expect(body.status).toBe('pending');

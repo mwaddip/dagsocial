@@ -8,7 +8,7 @@ import { createHash, generateKeyPairSync, createPrivateKey, sign as cryptoSign }
 import { initDb, closeDb, getDb } from '../../src/store/db.js';
 import { insertPost } from '../../src/store/posts.js';
 import {
-  getBoxByProvenance as storeGetBoxByProvenance, insertBox, getKarmaBox, getBox as storeGetBox } from '../../src/store/utxo.js';
+  getBoxByProvenance as storeGetBoxByProvenance, insertBox, getKarmaBox, getKarmaBoxes, getBox as storeGetBox } from '../../src/store/utxo.js';
 import { insertLike } from '../../src/store/likes.js';
 import { getCurrentHeight } from '../../src/store/ordering.js';
 import { castLike, removeLike } from '../../src/services/likes.js';
@@ -57,6 +57,8 @@ async function request(
         db.prepare('UPDATE utxo_boxes SET spent_at_block = ? WHERE id = ?').run(atBlock, id);
       },
       getKarmaBox: (owner: Uint8Array) => getKarmaBox(owner),
+      getKarmaValue: (owner: Uint8Array) =>
+        getKarmaBoxes(owner).reduce((sum, b) => sum + b.value, 0n),
       runInTransaction: (fn: () => void) => {
         (db.transaction(fn) as () => void)();
       },

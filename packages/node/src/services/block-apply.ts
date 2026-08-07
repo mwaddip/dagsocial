@@ -28,6 +28,7 @@ import { getSystemKeypair } from '../store/system.js';
 import {
   getKarmaBox,
   getKarmaBoxes,
+  getKarmaValue,
   getPost,
   insertStump,
   insertPostPlaceholder,
@@ -452,9 +453,23 @@ class SpeculativeRollback extends Error {
 }
 
 /**
+ * What the speculative state-root run answered. The two non-computed arms are
+ * deliberately not one `null`: they demand opposite reactions from the block
+ * creator, and conflating them is exactly the P2-B 1c defect — a node mining
+ * a body its own mutation phase had already rejected.
+ */
+export type StateRootSpeculation =
+  /** The post-block digest the header must commit to. Mine over it. */
+  | { kind: 'computed'; stateRoot: string }
+  /** No usable prover — test-only; the caller writes `EMPTY_STATE_ROOT`. */
+  | { kind: 'no-prover' }
+  /** The body is invalid. Producing this block is forbidden. */
+  | { kind: 'body-rejected' };
+
+/**
  * The post-block AVL digest a candidate block's header must commit to as
- * `stateRoot` (H-6; NODE_INTERFACE "Post-block stateRoot"). Null when no
- * prover is initialized — the caller then writes `EMPTY_STATE_ROOT`.
+ * `stateRoot` (H-6; NODE_INTERFACE "Post-block stateRoot"), as a
+ * `StateRootSpeculation`.
  *
  * PoW covers the header, so the producer has to know this digest *before*
  * mining, and the only way to know it without a second implementation of the
@@ -471,18 +486,23 @@ class SpeculativeRollback extends Error {
  *
  * The candidate carries a placeholder header (`powNonce` 0, empty signature):
  * the mutation phase reads neither, and takes its height as an argument.
+ *
+ * An unexpected throw maps to `body-rejected`, not to the proverless fallback:
+ * the apply funnel treats the same throw as a rejection of the block, so a
+ * body that crashes speculation is a body no node — this one included —
+ * will apply.
  */
 export function computePostBlockStateRoot(
   block: OrderingBlock,
   height: number,
-): string | null {
+): StateRootSpeculation {
   const handle = tryGetAvlProver();
-  if (!handle) return null;
+  if (!handle) return { kind: 'no-prover' };
   const snapshot = handle.prover.digest();
-  if (!snapshot) return null;
+  if (!snapshot) return { kind: 'no-prover' };
 
   try {
-    return getDb().transaction((): string => {
+    getDb().transaction((): void => {
       beginBlockJournal(height);
       if (!applyMutationPhase(block, height, undefined)) throw new BlockRejected();
       const { consumed, created, recordPuts } = proverFeedFromJournal(finishBlockJournal());
@@ -493,17 +513,20 @@ export function computePostBlockStateRoot(
         ).toString('hex'),
       );
     })();
+    throw new Error('unreachable: speculative run must exit via throw');
   } catch (err) {
-    if (err instanceof SpeculativeRollback) return err.digestHex;
+    if (err instanceof SpeculativeRollback) {
+      return { kind: 'computed', stateRoot: err.digestHex };
+    }
     if (err instanceof BlockRejected) {
       console.warn(
         `stateRoot speculation at height ${height}: the body was rejected by its ` +
         `own mutation phase — the block cannot be produced`,
       );
-      return null;
+      return { kind: 'body-rejected' };
     }
     console.error(`stateRoot speculation failed at height ${height}: ${String(err)}`);
-    return null;
+    return { kind: 'body-rejected' };
   } finally {
     // The transaction is rolled back by the time this runs (better-sqlite3
     // issues ROLLBACK before re-throwing). These undo what it cannot reach.
@@ -850,6 +873,11 @@ function applyMutationPhase(
     insertBox,
     consumeBox,
     getKarmaBox,
+    // Bond settlement's unlock predicate reads the invitee's current summed
+    // karma (P2-B phase 1). The store's getKarmaValue is the single
+    // implementation shared with the pool and relay paths — a different read
+    // here would be a consensus split, not a style difference (phase 1b).
+    getKarmaValue,
     runInTransaction: (fn: () => void) => {
       getDb().transaction(fn)();
     },
