@@ -37,6 +37,10 @@ export const LIKE_COST = 2n;
 export const LIKE_THRESHOLD = 5;
 export const LIKE_MAX_AUTHOR_REWARD = 10n;
 export const LIKE_FREE_THRESHOLD = 10;  // 10x LIKE_THRESHOLD; beyond this, likes are free
+// P2-D likes — one-way burns settled per block. The four constants above are the
+// retired two-phase system, kept only until consumers stop compiling against them.
+export const LIKE_KARMA_COST = 1n;        // Karma burned by the liker per like (bigint)
+export const LIKES_PER_KARMA_PAYOUT = 5;  // x: per x likes an author accrues x−1; 1 is burned
 
 // Vouch
 export const VOUCH_KARMA_AMOUNT = 1n;         // Karma locked per vouch

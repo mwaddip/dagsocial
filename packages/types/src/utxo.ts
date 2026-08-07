@@ -158,12 +158,18 @@ export function computeCandidateBoxId(candidate: BoxCandidate, txId: TxId, index
  * collide — exactly why `author-reward` and `liker-refund` are separate at epoch
  * tally. They describe today's prune settlement and are expected to be retired
  * by the karma-economics track.
+ *
+ * `like-payout` is P2-D's per-block like settlement (one mint per author per
+ * block, subject = the raw author key). It supersedes the epoch pair
+ * `author-reward`/`liker-refund`, which stay members until the epoch machinery
+ * they serve is deleted; retired names stay reserved.
  */
 export type MintReason =
   | 'coinbase'
   | 'vouch-settle'
   | 'author-reward'
   | 'liker-refund'
+  | 'like-payout'
   | 'postlock-unlock'
   | 'postlock-remainder'
   | 'decay'
@@ -221,7 +227,12 @@ export function computeBoxId(box: Omit<BoxBase, 'id'>): BoxId {
 // Box types
 // ---------------------------------------------------------------------------
 
-export type BoxGuard = 'owner_signature' | 'epoch_tally' | 'hash_preimage' | 'inviter_signature' | 'bond_dual' | 'hash_preimage_with_bond';
+// 'block_apply' replaces 'epoch_tally' (P2-D): the meaning was always
+// "consumable only by block application", and there is no epoch. Both stay
+// members while consumers still compile against the old name; when
+// 'epoch_tally' goes, the string stays reserved — guard strings are box
+// content, inside the box-id preimage.
+export type BoxGuard = 'owner_signature' | 'epoch_tally' | 'block_apply' | 'hash_preimage' | 'inviter_signature' | 'bond_dual' | 'hash_preimage_with_bond';
 
 /**
  * The creator-chosen fields — what a client builds and what `computeTxId`
@@ -395,11 +406,24 @@ export interface UtxoTransaction {
   signatures: Record<string, Uint8Array>;  // publicKey (hex) → Ed25519 sig (64 bytes) over txId
   preimages?: Record<string, Uint8Array>;  // boxId → hash preimage for hash_preimage guards
   protocolVersion: number;
+  /**
+   * Present ⟺ this transaction is a like on the named post (P2-D). The field
+   * sits inside the `computeTxId` preimage, so the signature covers the
+   * target and a relay cannot re-point a like. This package defines only the
+   * field and its encoding; the biconditional itself — present ⟺ the tx
+   * burns exactly `LIKE_KARMA_COST`, the only legal karma deficit in a user
+   * transaction — is consensus validation and lives in node's UTXO engine.
+   */
+  likeTarget?: PostId;
 }
 
 /**
  * Deterministic transaction ID. Hashes inputs, outputs as candidate bytes,
- * preimages (sorted by boxId) when present, and protocolVersion.
+ * preimages (sorted by boxId) when present, protocolVersion, and — only when
+ * present — `likeTarget` behind an ASCII `like:` marker at the tail. Absence
+ * appends nothing, so every pre-P2-D transaction keeps its id. The marker
+ * makes absent/present unambiguous at the tail: a `protocolVersion` decimal
+ * string can never produce `like:`.
  *
  * Outputs go through `canonicalBoxBytes`, so identity has exactly **one** strip
  * rule rather than two that must be kept in agreement. This matters from phase C
@@ -433,6 +457,13 @@ export function computeTxId(tx: UtxoTransaction): TxId {
     }
   }
   h.update(String(tx.protocolVersion));
+  // Presence is `!== undefined`, not truthiness: a malformed empty-string
+  // target must still hash differently from absence — distinct objects never
+  // collide on one id.
+  if (tx.likeTarget !== undefined) {
+    h.update('like:');
+    h.update(tx.likeTarget);
+  }
   return h.digest().subarray(0, 32).toString('hex');
 }
 
