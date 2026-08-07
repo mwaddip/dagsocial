@@ -72,7 +72,7 @@ Nullable, populated by `insertUtxoTx` from the transaction outputs, indexed
 | Column | Populated when the tx has | Value |
 |---|---|---|
 | `like_target` | `likeTarget` set (P2-D — the like tx field, not a box) | `likeTarget` (hex) |
-| `like_liker` | `likeTarget` set | the karma inputs' owner = the signer (hex) |
+| `like_liker` | `likeTarget` set AND `tx.signatures` has exactly one key | that key (hex). **Any other key count → NULL** — an unpaired row matches no `hasPendingLike` query. First-key-wins was rejected: a spare signature could pin a victim's `(liker, target)` pair and DoS their like at the gateway |
 | `invite_inviter` | an `invite` output | `inviterId` (hex) |
 | `vouch_voucher` | a `vouch` output | `voucherId` (hex) |
 

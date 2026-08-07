@@ -170,6 +170,13 @@ The gateway checks are courtesy; **the consensus checks run again at apply** (se
 engine → like transition, and Block application → per-block like settlement). The liker is
 the karma inputs' owner — no separate liker field exists anywhere.
 
+**A like tx carries exactly one signature — the liker's** (decided in N1, ratified
+2026-08-08). `castLike` rejects multi-signature like txs with a legible 400, and the
+mempool gate derives `like_liker` as NULL from any signature map without exactly one key.
+Rationale: a first-key-wins derivation would let a valid tx carrying a spare signature pin
+an arbitrary `(liker, target)` pair in the gate and block that pair's real like — a
+gateway DoS for the price of one extra signature.
+
 ### Invites
 
 | Method | Path | Request | Response | Errors |
