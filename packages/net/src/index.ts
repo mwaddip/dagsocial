@@ -30,8 +30,6 @@ export {
   MSG_PEERS,
   MSG_GET_POSTS,
   MSG_POSTS,
-  MSG_GET_STUMPS,
-  MSG_STUMPS,
   MODIFIER_ORDERING_BLOCK,
 } from './types.js';
 export {
@@ -83,9 +81,6 @@ export type {
   GetPostsMsg,
   PostsEntry,
   PostsMsg,
-  GetStumpsMsg,
-  StumpsEntry,
-  StumpsMsg,
 } from './types.js';
 export type { SyncInfo, Inv, ModifierRequest, ModifierResponse, SyncState } from './sync-types.js';
 export {
@@ -97,8 +92,6 @@ export {
   encodePeers, decodePeers,
   encodeGetPosts, decodeGetPosts,
   encodePosts, decodePosts,
-  encodeGetStumps, decodeGetStumps,
-  encodeStumps, decodeStumps,
   decodeLegacyHeadersRequest,
 } from './sync-codec.js';
 export type { LegacyHeadersRequest } from './sync-codec.js';
