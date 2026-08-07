@@ -377,15 +377,19 @@ This is not a testability nicety. A module-singleton read is the **config-at-a-d
 nothing while ten call sites silently defaulted to mainnet. The faucet is the one place P2-A did
 not reach, and a gate that mints value from nothing is a poor place to keep the last instance.
 
-> ⚠ **NOT IMPLEMENTED** — the guard still reads `config.networkType` from the module singleton.
-> Contract-first for the unit that closes it; the marker is deleted when it lands.
-
-> **Coverage, measured 2026-08-07.** The **mount** gate is covered (`server.test.ts`, three tests
-> via the injectable `createApp`). The **handler** guard is not — mutating it leaves the suite
-> green — and injection above is what makes it reachable. The **provisioning** gate runs as an
-> import side effect of the entrypoint and stays statically untestable; only the parked e2e
-> harness, which spawns a real process, can reach it. Two of three is the target here, and the
-> third is named so its absence is not mistaken for an oversight.
+> **Coverage, measured 2026-08-07.** Two of the three gates are covered. The **mount** gate has
+> three tests (`server.test.ts`, via the injectable `createApp`). The **handler** guard has three
+> (`routes/utxo.test.ts`) and gained them with the injection above — before it, mutating that
+> guard left the entire suite green, which is what made the singleton read a correctness problem
+> rather than a style one. The **provisioning** gate runs as an import side effect of the
+> entrypoint and stays statically untestable; only the parked e2e harness, which spawns a real
+> process, can reach it. It is named here so its absence is not mistaken for an oversight.
+>
+> The handler's three tests pin three separate properties, each killed by a different mutation:
+> **mainnet is rejected** (dies if the guard always allows), **the guard reads `deps.networkType`**
+> (dies if the argument is hardcoded, even to an allowed network), and **the allow-list has two
+> members** (dies if it narrows to `testnet` alone). A `testnet`-only test would have proved none
+> of them, since `testnet` is also the fixture default.
 
 **Idempotency (required):** a given `userId` may be funded at most once, ever. A repeat
 request is rejected (409). Enforced by a durable per-`(userId, asset)` grant ledger
