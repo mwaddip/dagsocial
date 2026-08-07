@@ -368,11 +368,13 @@ to verify box existence or absence without storing the full UTXO set.
   block apply, **default on** since Spec B P3), `MAX_PROOF_HISTORY` (`local` — prune
   old proof versions), and **`AVL_KEY_LENGTH`** (**`consensus`**, default `32`) — the
   tree's key width, which determines the **shape** of every `stateRoot`
-  > ⚠ **VIOLATED — `AVL_KEY_LENGTH` is environment-readable** (`config.ts:130` →
-  > `avl-prover.ts:41`) and appeared in no contract until 2026-08-06. Two nodes with
-  > different values produce different `stateRoot`s for identical state. The
-  > determinism claim below is **conditional on this variable matching**, which nothing
-  > currently enforces. Phase 2 removes the env read.
+  > ⚠ **PARTIAL — the environment read is gone; the shared definition is not yet in place.**
+  > P2-A deleted the `AVL_KEY_LENGTH` env read, so an operator can no longer change the
+  > tree's key width and nodes can no longer diverge on it by configuration. What remains
+  > is that the constant is defined **module-locally in `packages/node/src/config.ts`**
+  > rather than exported from `@dagsocial/types` alongside the other format limits, so a
+  > second implementation has nothing authoritative to read it from. Closing that is the
+  > remaining half of this item.
 - **Deterministic:** Every node computing the AVL+ over the same UTXO set at
   the same height **and holding the same `AVL_KEY_LENGTH`** produces the identical
   stateRoot. Box `value` serializes as a
@@ -941,13 +943,28 @@ Stream messages are framed: `[magic:4][version:1][code:VLQ][length:VLQ][checksum
 
 ## Network Identity
 
-> ⚠ **NOT IMPLEMENTED — decided 2026-08-06, nothing below is built.** Today the three
-> mechanisms this section unifies exist separately and none of them are connected:
-> `NETWORK_MODE` is read into config and only gates the faucet route and a UI banner;
-> `net` defaults to `MAGIC_MAINNET` at **ten call sites** (nine in `node.ts`, one in
-> `sync-machine.ts`) regardless of it; and the consensus parameters are per-process
-> environment reads. **A node started as testnet frames as mainnet and may be running one
-> operator's private decay schedule.**
+> ⚠ **PARTIAL — P2-A built the profile mechanism; one of the three commitment layers
+> remains.** (PR #8, `4670ae5`.)
+>
+> **Built.** `NETWORK_TYPE` selects a `NetworkProfile` that carries the wire magic and every
+> consensus parameter together; an unrecognised value throws at startup. `NetConfig.magic` is
+> **required**, and the ten `?? MAGIC_MAINNET` fallbacks (nine in `node.ts`, one in
+> `sync-machine.ts`) are deleted, so a missing magic is a compile error at the single
+> construction site. Ten consensus parameters stopped being environment-readable. The
+> transport layer of the commitment table below therefore works: networks no longer assemble
+> each other's frames.
+>
+> **The defect this marker originally described was worse than it recorded.** `NETWORK_MODE`
+> did not merely fail to reach `net` — **every node framed as mainnet on every network,
+> unconditionally**, because the contract said `magic: number` while the code said `magic?:
+> number` and node never passed it. A second, undocumented selector (`NETWORK_MAGIC`,
+> defaulting to *testnet*) existed in dead code. Both are gone.
+>
+> **Not built:** the **block** layer — `networkType` is not a field of the ordering block
+> header (verified 2026-08-07: no such field in `@dagsocial/types`). A cross-network block
+> is currently rejected by the transport and chain layers only, never at the structure gate
+> with a legible reason. That field is P2-C, which carries it alongside the other
+> committed-byte changes.
 
 A network is the pairing of a **parameter profile** with a **genesis block**. Three exist:
 

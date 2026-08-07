@@ -392,13 +392,21 @@ endpoint semantics in `MINING_INTERFACE.md`.
 
 | Method | Path | Response |
 |--------|------|----------|
-| `GET` | `/status` | `{ networkMode, blockHeight, postCount, pendingPosts, totalKarma, totalCredits }` |
+| `GET` | `/status` | `{ networkType, blockHeight, postCount, pendingPosts, totalKarma, totalCredits }` |
 
-> ⚠ **NOT IMPLEMENTED — `networkMode` becomes `networkType`, and this one is
-> client-visible.** The demo UI and the e2e harness's `waitForReady` both read `/status`.
-> Renaming a response field is a breaking API change, so it lands **in the same commit as
-> the UI change**, not ahead of it. The harness is parked (`test/e2e/README.md`) and its
-> rewrite picks up the new name.
+> ✅ **`networkMode` → `networkType` landed in P2-A phase 4**, in the same commit as the demo
+> UI change because renaming a response field is a breaking API change. `totalKarma` and
+> `totalCredits` are **decimal strings**, not numbers — they are `bigint` server-side and
+> JSON has no such type. The parked e2e harness's `waitForReady` picks up the new name when
+> it is rewritten (`test/e2e/README.md`).
+>
+> ⚠ **The demo UI renders a field this endpoint has never emitted.** `public/index.html:2081`
+> reads `s.identityCount`, so a live node's status bar shows "Identities: **undefined**".
+> The only producer of that field is `src/routes/status.ts` — a router that is **exported and
+> never mounted**, querying three tables that do not exist (`blocks`, `posts`, `identities`).
+> It is residue from an abandoned design in which the node generated keypairs server-side.
+> **Decided 2026-08-07: drop the UI row and delete the dead router.** `/status` is not
+> gaining the field — there is no identity table by design.
 
 ### Link previews
 
@@ -1979,16 +1987,19 @@ All config via environment variables with defaults.
 convention exists because the absence of one is a live defect class: nothing marked which variables an
 operator may safely change, and four consensus parameters were environment-tunable.
 
-> ⚠ **NOT IMPLEMENTED — the nine `consensus` rows below are being removed from this table
-> entirely** (decided 2026-08-06). They do not become better-documented environment
-> variables; they stop being configuration. **Four** become fields of the **network
-> profile**, **five** become plain universal constants — and `POST_POW_TARGET_BITS`, which
-> is classed `advertised` rather than `consensus`, joins the profile as a tenth. See
-> `ARCHITECTURE §Network Identity` and `TYPES_INTERFACE §Network profiles`. Until P2-A
-> lands, every row marked `⚠ VIOLATED` below is still live and still readable from the
-> environment.
+> ✅ **DONE — P2-A removed all ten from the environment** (PR #8, `4670ae5`). They did not
+> become better-documented environment variables; they stopped being configuration. **Five**
+> are now fields of the **network profile** and **five** are plain universal constants in
+> `@dagsocial/types`. Verified 2026-08-07: none of the ten is read anywhere in
+> `packages/node/src`. The rows below are struck through and kept as a record, so an
+> operator carrying an old env file can see what happened to each one — **all ten are now
+> silently ignored if set.** See `ARCHITECTURE §Network Identity` and
+> `TYPES_INTERFACE §Network profiles`.
+>
+> One remains half-done: `AVL_KEY_LENGTH` lost its env read but is still defined
+> module-locally in `config.ts` rather than exported from `@dagsocial/types`.
 
-**Where each consensus value goes:**
+**Where each consensus value went:**
 
 | Value | Destination | Why |
 |---|---|---|
@@ -2016,18 +2027,18 @@ operator may safely change, and four consensus parameters were environment-tunab
 
 | Variable | Class | Default | Description |
 |----------|-------|---------|-------------|
-| `NETWORK_TYPE` | `network-identity` | `testnet` | **The profile selector — `mainnet` \| `testnet` \| `devnet`.** The only environment variable that may change a consensus parameter, and it changes every one of them together. Also gates debug endpoints (faucet: testnet and devnet only). ⚠ NOT IMPLEMENTED — today this is `NETWORK_MODE` and selects nothing but the faucet and a UI banner |
-| `AVL_KEY_LENGTH` | **consensus** | `32` | AVL tree key length. **Sets the shape of every `stateRoot`** (`avl-prover.ts`). ⚠ VIOLATED — must not be env-readable |
-| `KARMA_DECAY_AMOUNT` | **consensus** | `5` | Karma burned per decay interval. Mutates committed state ⚠ VIOLATED |
-| `KARMA_DECAY_INTERVAL_BLOCKS` | **consensus** | `720` | Blocks between decay applications ⚠ VIOLATED |
-| `KARMA_STALE_THRESHOLD_BLOCKS` | **consensus** | `20160` | Inactivity before decay begins ⚠ VIOLATED |
-| `KARMA_MINIMUM` | **consensus** | `10` | Floor below which decay never reduces ⚠ VIOLATED |
-| `ORDERING_BLOCK_POW_TARGET_BITS` | **consensus** | `12` | Ordering block PoW difficulty. Every block is rejected by a node holding a different value ⚠ VIOLATED — see MINING_INTERFACE invariant 7 |
-| `CREDIT_TREASURY_PCT` | **consensus** | `10` | Percent of block reward to treasury ⚠ VIOLATED |
-| `TREASURY_PUBKEY` | **consensus** | `""` | Hex 32-byte treasury key (empty = no treasury output) ⚠ VIOLATED |
-| `CREDIT_INITIAL_REWARD` | **consensus** | `10000000000` | Credits per block in the fixed-rate period, in **base units of 10⁻⁸** (= 100 credits). Read into config and **never used** ⚠ VIOLATED |
+| `NETWORK_TYPE` | `network-identity` | `testnet` | **The profile selector — `mainnet` \| `testnet` \| `devnet`.** The only environment variable that may change a consensus parameter, and it changes every one of them together. Also gates debug endpoints (faucet: testnet and devnet only, via the shared `isFaucetNetwork` allow-list). An unrecognised value **throws at startup** rather than defaulting |
+| ~~`AVL_KEY_LENGTH`~~ | **removed** | ~~`32`~~ | AVL tree key length — **sets the shape of every `stateRoot`** (`avl-prover.ts`). Env read deleted by P2-A. Now a module-local const in `config.ts`; moving to a `@dagsocial/types` export (TYPES_INTERFACE → State format) |
+| ~~`KARMA_DECAY_AMOUNT`~~ | **removed** | ~~`5`~~ | → universal constant `KARMA_DECAY_AMOUNT` (`@dagsocial/types`). Devnet decays *often*, not *harder* |
+| ~~`KARMA_DECAY_INTERVAL_BLOCKS`~~ | **removed** | ~~`720`~~ | → profile field `karmaDecayIntervalBlocks`. Value corrected to `1440` by P2-A (60s blocks) |
+| ~~`KARMA_STALE_THRESHOLD_BLOCKS`~~ | **removed** | ~~`20160`~~ | → profile field `karmaStaleThresholdBlocks`. Value corrected to `40320` by P2-A (60s blocks) |
+| ~~`KARMA_MINIMUM`~~ | **removed** | ~~`10`~~ | → universal constant `KARMA_MINIMUM` (`@dagsocial/types`) |
+| ~~`ORDERING_BLOCK_POW_TARGET_BITS`~~ | **removed** | ~~`12`~~ | → profile field `orderingBlockPowTargetBits`. Closed MINING invariants 4, 5 and 7 — `expectedTarget(height)` now sources the profile, and its unused `height` parameter is the seam a real retarget will need |
+| ~~`CREDIT_TREASURY_PCT`~~ | **removed** | ~~`10`~~ | → universal constant `CREDIT_TREASURY_PCT` (`@dagsocial/types`) |
+| ~~`TREASURY_PUBKEY`~~ | **removed** | ~~`""`~~ | → profile field `treasuryPubKey` — genesis data, so a different chain has a different treasury |
+| ~~`CREDIT_INITIAL_REWARD`~~ | **removed** | ~~`10000000000`~~ | → universal constant `CREDIT_INITIAL_REWARD` (`@dagsocial/types`). ⚠ The env read is gone but `Config.creditInitialReward` survives as a **dead field** — `block-creator.ts` uses the imported constant directly. Pruning it is audit item A5 |
 | `VERIFY_STATE_ROOT` | `consensus-check` | `true` | Verify `header.stateRoot` at apply (Spec B P3). ⚠ Setting `false` removes the **sole backstop** against the `computeTxId`-collision class, where two distinct block bodies share a header |
-| `POST_POW_TARGET_BITS` | `advertised` | `20` | Post PoW difficulty **as reported to clients**. The verifier enforces the compile-time constant; changing this does not change what the node accepts. ⚠ SUPERSEDED — becomes a profile field, see above |
+| ~~`POST_POW_TARGET_BITS`~~ | **removed** | ~~`20`~~ | → profile field `postPowTargetBits`. The `advertised` class is retired with it: the challenge endpoint and the verifier now read the same field, so a node can no longer report a difficulty it does not enforce (A6) |
 | ~~`NETWORK_MODE`~~ | **renamed** | ~~`testnet`~~ | → `NETWORK_TYPE`. The name changes because the meaning does: it selected a faucet flag, it now selects the whole consensus parameter table |
 | `MAX_SUB_BLOCKS_PER_BLOCK` | `local` | `1000` | Sub-blocks this node puts in blocks **it produces**. ⚠ NO BOUND — CONSENSUS GAP: no maximum is enforced at apply, so this is local only because the consensus cap does not exist |
 | `ORDERING_BLOCK_MIN_SUB_BLOCKS` | `local` | `1` | Sub-blocks that trigger immediate block production |
