@@ -27,7 +27,7 @@ import {
   selectBoxes,
   PROTOCOL_VERSION,
 } from '@dagsocial/types';
-import type { KarmaBox, CreditBox, InviteBox, BondBox, UtxoTransaction } from '@dagsocial/types';
+import type { KarmaBox, CreditBox, InviteBox, BondBox, NetworkType, UtxoTransaction } from '@dagsocial/types';
 import { createRouter } from '../../src/routes/utxo.js';
 import { unlinkSync } from 'fs';
 
@@ -41,9 +41,11 @@ async function request(
   path: string,
   method: 'GET' | 'POST' = 'GET',
   body?: unknown,
+  networkType: NetworkType = 'testnet',
 ): Promise<{ status: number; data: unknown }> {
   return new Promise((resolve) => {
     const deps = {
+      networkType,
       getKarmaBox,
       getKarmaBoxes,
       getCreditBox,
@@ -451,6 +453,28 @@ describe('UTXO routes', () => {
 
       expect(statuses.filter((s) => s === 200)).toHaveLength(1);
       expect(statuses.filter((s) => s === 409)).toHaveLength(2);
+    });
+
+    it('rejects with 403 on mainnet — the allow-list excludes it', async () => {
+      const to = Buffer.from(generateKeyPair().publicKey).toString('hex');
+      const res = await request('/credits/faucet', 'POST', { to }, 'mainnet');
+      expect(res.status).toBe(403);
+      expect(String((res.data as Record<string, unknown>).error)).toContain('faucet disabled');
+    });
+
+    it('allows on devnet — the allow-list has two members, not just the fixture default', async () => {
+      const to = Buffer.from(generateKeyPair().publicKey).toString('hex');
+      const res = await request('/credits/faucet', 'POST', { to }, 'devnet');
+      expect(res.status).toBe(200);
+      expect((res.data as Record<string, unknown>).amount).toBe((1000n * 10n ** 8n).toString());
+    });
+
+    it('a mainnet rejection records no grant — the identity can still be funded elsewhere', async () => {
+      const to = Buffer.from(generateKeyPair().publicKey).toString('hex');
+      const rejected = await request('/credits/faucet', 'POST', { to }, 'mainnet');
+      expect(rejected.status).toBe(403);
+      const granted = await request('/credits/faucet', 'POST', { to });
+      expect(granted.status).toBe(200);
     });
   });
 });

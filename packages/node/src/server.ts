@@ -307,6 +307,7 @@ export function createApp(config: Config): express.Express {
   app.use(
     '/',
     utxoRoutes({
+      networkType: config.networkType,
       getKarmaBox: store.getKarmaBox,
       getKarmaBoxes: store.getKarmaBoxes,
       getCreditBox: store.getCreditBox,

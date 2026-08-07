@@ -305,19 +305,4 @@ describe('faucet route', () => {
     expect(body.status).toBe('pending');
   });
 
-  // -----------------------------------------------------------------------
-  // Test 4: Network mode != testnet → 403
-  // -----------------------------------------------------------------------
-
-  it('returns 403 when network mode is not testnet', async () => {
-    const app = express();
-    app.use(express.json());
-    app.use('/faucet', (_req, res) => {
-      res.status(403).json({ error: 'faucet disabled in production mode' });
-    });
-    const res = await request(app, '/faucet', 'POST', {
-      userId: hex(userId),
-    });
-    expect(res.status).toBe(403);
-  });
 });

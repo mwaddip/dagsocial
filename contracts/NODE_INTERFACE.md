@@ -338,8 +338,11 @@ the JSON (box values are `bigint`; JSON cannot carry one) — clients parse them
 
 Grants 100 karma to an identity, **once per identity, ever** (idempotent). Mints
 from the system keypair — not a transfer. Builds a UTXO transaction creating a
-new karma box and inserts it into the mempool. Gated on `isFaucetNetwork(config.networkType)`
-(`config.ts`) — an **allow-list**, currently `testnet` and `devnet`.
+new karma box and inserts it into the mempool. Gated at **mount** time on
+`isFaucetNetwork(config.networkType)`, where `config` is the `Config` passed to
+`createApp(config)` — injected, not the module singleton, which is why this gate is testable
+and the `/credits/faucet` handler guard currently is not. `isFaucetNetwork` lives in `config.ts`
+and is an **allow-list**, currently `testnet` and `devnet`.
 
 **The allow-list is normative, and the reasoning matters more than the current membership.**
 It fails closed: a network added later mints nothing until someone names it. The property
@@ -358,12 +361,35 @@ mounting leaves unreachable system state. They call one shared predicate so they
 drift; the handler guard applies it as a **reject** condition, so a grep for the enabling
 expression finds only two of the three.
 
-> **Coverage limit, measured 2026-08-07.** Only the **mount** gate is covered
-> (`server.test.ts`, via the injectable `createApp`). The handler guard reads the
-> module-singleton `config`, and the provisioning gate runs as an import side effect of the
-> entrypoint — mutating either leaves the suite green. Covering the handler guard properly
-> means injecting `networkType` through `UtxoDeps` like every other dependency; the singleton
-> read is the config-at-a-distance pattern §Network Identity exists to remove.
+**The handler guard reads injected config, never the module singleton.** `UtxoDeps` carries
+
+```typescript
+readonly networkType: NetworkType;
+```
+
+and the guard is `isFaucetNetwork(deps.networkType)`. A plain readonly field rather than an
+accessor is deliberate: unlike `getCurrentHeight()`, the network cannot change after startup, and
+a field says so. `server.ts` passes `config.networkType` at the single production construction
+site; tests pass whichever network the case is about.
+
+This is not a testability nicety. A module-singleton read is the **config-at-a-distance** pattern
+`ARCHITECTURE §Network Identity` exists to remove — the same shape that let `NETWORK_MODE` reach
+nothing while ten call sites silently defaulted to mainnet. The faucet is the one place P2-A did
+not reach, and a gate that mints value from nothing is a poor place to keep the last instance.
+
+> **Coverage, measured 2026-08-07.** Two of the three gates are covered. The **mount** gate has
+> three tests (`server.test.ts`, via the injectable `createApp`). The **handler** guard has three
+> (`routes/utxo.test.ts`) and gained them with the injection above — before it, mutating that
+> guard left the entire suite green, which is what made the singleton read a correctness problem
+> rather than a style one. The **provisioning** gate runs as an import side effect of the
+> entrypoint and stays statically untestable; only the parked e2e harness, which spawns a real
+> process, can reach it. It is named here so its absence is not mistaken for an oversight.
+>
+> The handler's three tests pin three separate properties, each killed by a different mutation:
+> **mainnet is rejected** (dies if the guard always allows), **the guard reads `deps.networkType`**
+> (dies if the argument is hardcoded, even to an allowed network), and **the allow-list has two
+> members** (dies if it narrows to `testnet` alone). A `testnet`-only test would have proved none
+> of them, since `testnet` is also the fixture default.
 
 **Idempotency (required):** a given `userId` may be funded at most once, ever. A repeat
 request is rejected (409). Enforced by a durable per-`(userId, asset)` grant ledger
@@ -392,13 +418,22 @@ endpoint semantics in `MINING_INTERFACE.md`.
 
 | Method | Path | Response |
 |--------|------|----------|
-| `GET` | `/status` | `{ networkMode, blockHeight, postCount, pendingPosts, totalKarma, totalCredits }` |
+| `GET` | `/status` | `{ networkType, blockHeight, postCount, pendingPosts, totalKarma, totalCredits }` |
 
-> ⚠ **NOT IMPLEMENTED — `networkMode` becomes `networkType`, and this one is
-> client-visible.** The demo UI and the e2e harness's `waitForReady` both read `/status`.
-> Renaming a response field is a breaking API change, so it lands **in the same commit as
-> the UI change**, not ahead of it. The harness is parked (`test/e2e/README.md`) and its
-> rewrite picks up the new name.
+> ✅ **`networkMode` → `networkType` landed in P2-A phase 4**, in the same commit as the demo
+> UI change because renaming a response field is a breaking API change. `totalKarma` and
+> `totalCredits` are **decimal strings**, not numbers — they are `bigint` server-side and
+> JSON has no such type. The parked e2e harness's `waitForReady` picks up the new name when
+> it is rewritten (`test/e2e/README.md`).
+>
+> ✅ **`identityCount` is gone, 2026-08-07.** The demo UI used to render `s.identityCount` in
+> its status bar — a field this endpoint has never emitted — so a live node showed
+> "Identities: **undefined**". Its only producer was `src/routes/status.ts`, a router that was
+> **exported and never mounted**, querying three tables that do not exist (`blocks`, `posts`,
+> `identities`). Both the UI row and that file were deleted. `/status` did **not** gain the
+> field: there is no identity table by design. The residue came from an abandoned design in
+> which the node generated keypairs server-side, which is also why the dead router expected an
+> `identities` table.
 
 ### Link previews
 
@@ -1979,16 +2014,19 @@ All config via environment variables with defaults.
 convention exists because the absence of one is a live defect class: nothing marked which variables an
 operator may safely change, and four consensus parameters were environment-tunable.
 
-> ⚠ **NOT IMPLEMENTED — the nine `consensus` rows below are being removed from this table
-> entirely** (decided 2026-08-06). They do not become better-documented environment
-> variables; they stop being configuration. **Four** become fields of the **network
-> profile**, **five** become plain universal constants — and `POST_POW_TARGET_BITS`, which
-> is classed `advertised` rather than `consensus`, joins the profile as a tenth. See
-> `ARCHITECTURE §Network Identity` and `TYPES_INTERFACE §Network profiles`. Until P2-A
-> lands, every row marked `⚠ VIOLATED` below is still live and still readable from the
-> environment.
+> ✅ **DONE — P2-A removed all ten from the environment** (PR #8, `4670ae5`). They did not
+> become better-documented environment variables; they stopped being configuration. **Five**
+> are now fields of the **network profile** and **five** are plain universal constants in
+> `@dagsocial/types`. Verified 2026-08-07: none of the ten is read anywhere in
+> `packages/node/src`. The rows below are struck through and kept as a record, so an
+> operator carrying an old env file can see what happened to each one — **all ten are now
+> silently ignored if set.** See `ARCHITECTURE §Network Identity` and
+> `TYPES_INTERFACE §Network profiles`.
+>
+> All ten are now fully closed: `AVL_KEY_LENGTH` was the last half-done one, and it is now a
+> `@dagsocial/types` export (TYPES_INTERFACE → State format) that `config.ts` imports.
 
-**Where each consensus value goes:**
+**Where each consensus value went:**
 
 | Value | Destination | Why |
 |---|---|---|
@@ -2016,18 +2054,18 @@ operator may safely change, and four consensus parameters were environment-tunab
 
 | Variable | Class | Default | Description |
 |----------|-------|---------|-------------|
-| `NETWORK_TYPE` | `network-identity` | `testnet` | **The profile selector — `mainnet` \| `testnet` \| `devnet`.** The only environment variable that may change a consensus parameter, and it changes every one of them together. Also gates debug endpoints (faucet: testnet and devnet only). ⚠ NOT IMPLEMENTED — today this is `NETWORK_MODE` and selects nothing but the faucet and a UI banner |
-| `AVL_KEY_LENGTH` | **consensus** | `32` | AVL tree key length. **Sets the shape of every `stateRoot`** (`avl-prover.ts`). ⚠ VIOLATED — must not be env-readable |
-| `KARMA_DECAY_AMOUNT` | **consensus** | `5` | Karma burned per decay interval. Mutates committed state ⚠ VIOLATED |
-| `KARMA_DECAY_INTERVAL_BLOCKS` | **consensus** | `720` | Blocks between decay applications ⚠ VIOLATED |
-| `KARMA_STALE_THRESHOLD_BLOCKS` | **consensus** | `20160` | Inactivity before decay begins ⚠ VIOLATED |
-| `KARMA_MINIMUM` | **consensus** | `10` | Floor below which decay never reduces ⚠ VIOLATED |
-| `ORDERING_BLOCK_POW_TARGET_BITS` | **consensus** | `12` | Ordering block PoW difficulty. Every block is rejected by a node holding a different value ⚠ VIOLATED — see MINING_INTERFACE invariant 7 |
-| `CREDIT_TREASURY_PCT` | **consensus** | `10` | Percent of block reward to treasury ⚠ VIOLATED |
-| `TREASURY_PUBKEY` | **consensus** | `""` | Hex 32-byte treasury key (empty = no treasury output) ⚠ VIOLATED |
-| `CREDIT_INITIAL_REWARD` | **consensus** | `10000000000` | Credits per block in the fixed-rate period, in **base units of 10⁻⁸** (= 100 credits). Read into config and **never used** ⚠ VIOLATED |
+| `NETWORK_TYPE` | `network-identity` | `testnet` | **The profile selector — `mainnet` \| `testnet` \| `devnet`.** The only environment variable that may change a consensus parameter, and it changes every one of them together. Also gates debug endpoints (faucet: testnet and devnet only, via the shared `isFaucetNetwork` allow-list). An unrecognised value **throws at startup** rather than defaulting |
+| ~~`AVL_KEY_LENGTH`~~ | **removed** | ~~`32`~~ | AVL tree key length — **sets the shape of every `stateRoot`** (`avl-prover.ts`). Env read deleted by P2-A; now a `@dagsocial/types` export (TYPES_INTERFACE → State format) that `config.ts` imports and plumbs through `Config.avlKeyLength` |
+| ~~`KARMA_DECAY_AMOUNT`~~ | **removed** | ~~`5`~~ | → universal constant `KARMA_DECAY_AMOUNT` (`@dagsocial/types`). Devnet decays *often*, not *harder* |
+| ~~`KARMA_DECAY_INTERVAL_BLOCKS`~~ | **removed** | ~~`720`~~ | → profile field `karmaDecayIntervalBlocks`. Value corrected to `1440` by P2-A (60s blocks) |
+| ~~`KARMA_STALE_THRESHOLD_BLOCKS`~~ | **removed** | ~~`20160`~~ | → profile field `karmaStaleThresholdBlocks`. Value corrected to `40320` by P2-A (60s blocks) |
+| ~~`KARMA_MINIMUM`~~ | **removed** | ~~`10`~~ | → universal constant `KARMA_MINIMUM` (`@dagsocial/types`) |
+| ~~`ORDERING_BLOCK_POW_TARGET_BITS`~~ | **removed** | ~~`12`~~ | → profile field `orderingBlockPowTargetBits`. Closed MINING invariants 4, 5 and 7 — `expectedTarget(height)` now sources the profile, and its unused `height` parameter is the seam a real retarget will need |
+| ~~`CREDIT_TREASURY_PCT`~~ | **removed** | ~~`10`~~ | → universal constant `CREDIT_TREASURY_PCT` (`@dagsocial/types`) |
+| ~~`TREASURY_PUBKEY`~~ | **removed** | ~~`""`~~ | → profile field `treasuryPubKey` — genesis data, so a different chain has a different treasury |
+| ~~`CREDIT_INITIAL_REWARD`~~ | **removed** | ~~`10000000000`~~ | → universal constant `CREDIT_INITIAL_REWARD` (`@dagsocial/types`), which `block-creator.ts` imports directly. The dead `Config.creditInitialReward` field it left behind was pruned 2026-08-07 (audit **A5**, closed) |
 | `VERIFY_STATE_ROOT` | `consensus-check` | `true` | Verify `header.stateRoot` at apply (Spec B P3). ⚠ Setting `false` removes the **sole backstop** against the `computeTxId`-collision class, where two distinct block bodies share a header |
-| `POST_POW_TARGET_BITS` | `advertised` | `20` | Post PoW difficulty **as reported to clients**. The verifier enforces the compile-time constant; changing this does not change what the node accepts. ⚠ SUPERSEDED — becomes a profile field, see above |
+| ~~`POST_POW_TARGET_BITS`~~ | **removed** | ~~`20`~~ | → profile field `postPowTargetBits`. The `advertised` class is retired with it: the challenge endpoint and the verifier now read the same field, so a node can no longer report a difficulty it does not enforce (A6) |
 | ~~`NETWORK_MODE`~~ | **renamed** | ~~`testnet`~~ | → `NETWORK_TYPE`. The name changes because the meaning does: it selected a faucet flag, it now selects the whole consensus parameter table |
 | `MAX_SUB_BLOCKS_PER_BLOCK` | `local` | `1000` | Sub-blocks this node puts in blocks **it produces**. ⚠ NO BOUND — CONSENSUS GAP: no maximum is enforced at apply, so this is local only because the consensus cap does not exist |
 | `ORDERING_BLOCK_MIN_SUB_BLOCKS` | `local` | `1` | Sub-blocks that trigger immediate block production |

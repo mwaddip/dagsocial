@@ -1,7 +1,7 @@
 # DAGsocial Architecture
 
 **Protocol version:** 1
-**Last updated:** 2026-08-06
+**Last updated:** 2026-08-07
 
 ## Status markers — the convention for every contract in this directory
 
@@ -366,13 +366,12 @@ to verify box existence or absence without storing the full UTXO set.
   inclusion or exclusion proof for a box at a given block height
 - **Config flags:** `VERIFY_STATE_ROOT` (`consensus-check` — validate stateRoot at
   block apply, **default on** since Spec B P3), `MAX_PROOF_HISTORY` (`local` — prune
-  old proof versions), and **`AVL_KEY_LENGTH`** (**`consensus`**, default `32`) — the
-  tree's key width, which determines the **shape** of every `stateRoot`
-  > ⚠ **VIOLATED — `AVL_KEY_LENGTH` is environment-readable** (`config.ts:130` →
-  > `avl-prover.ts:41`) and appeared in no contract until 2026-08-06. Two nodes with
-  > different values produce different `stateRoot`s for identical state. The
-  > determinism claim below is **conditional on this variable matching**, which nothing
-  > currently enforces. Phase 2 removes the env read.
+  old proof versions). **`AVL_KEY_LENGTH`** is no longer configuration at all — it is a
+  `@dagsocial/types` export (TYPES_INTERFACE → State format), imported by `config.ts` and
+  plumbed through `Config.avlKeyLength`. It determines the **shape** of every `stateRoot`,
+  so two nodes differing on it compute different digests for identical state; P2-A removed
+  its environment read and the types export gives a second implementation an authoritative
+  definition to read.
 - **Deterministic:** Every node computing the AVL+ over the same UTXO set at
   the same height **and holding the same `AVL_KEY_LENGTH`** produces the identical
   stateRoot. Box `value` serializes as a
@@ -941,13 +940,28 @@ Stream messages are framed: `[magic:4][version:1][code:VLQ][length:VLQ][checksum
 
 ## Network Identity
 
-> ⚠ **NOT IMPLEMENTED — decided 2026-08-06, nothing below is built.** Today the three
-> mechanisms this section unifies exist separately and none of them are connected:
-> `NETWORK_MODE` is read into config and only gates the faucet route and a UI banner;
-> `net` defaults to `MAGIC_MAINNET` at **ten call sites** (nine in `node.ts`, one in
-> `sync-machine.ts`) regardless of it; and the consensus parameters are per-process
-> environment reads. **A node started as testnet frames as mainnet and may be running one
-> operator's private decay schedule.**
+> ⚠ **PARTIAL — P2-A built the profile mechanism; one of the three commitment layers
+> remains.** (PR #8, `4670ae5`.)
+>
+> **Built.** `NETWORK_TYPE` selects a `NetworkProfile` that carries the wire magic and every
+> consensus parameter together; an unrecognised value throws at startup. `NetConfig.magic` is
+> **required**, and the ten `?? MAGIC_MAINNET` fallbacks (nine in `node.ts`, one in
+> `sync-machine.ts`) are deleted, so a missing magic is a compile error at the single
+> construction site. Ten consensus parameters stopped being environment-readable. The
+> transport layer of the commitment table below therefore works: networks no longer assemble
+> each other's frames.
+>
+> **The defect this marker originally described was worse than it recorded.** `NETWORK_MODE`
+> did not merely fail to reach `net` — **every node framed as mainnet on every network,
+> unconditionally**, because the contract said `magic: number` while the code said `magic?:
+> number` and node never passed it. A second, undocumented selector (`NETWORK_MAGIC`,
+> defaulting to *testnet*) existed in dead code. Both are gone.
+>
+> **Not built:** the **block** layer — `networkType` is not a field of the ordering block
+> header (verified 2026-08-07: no such field in `@dagsocial/types`). A cross-network block
+> is currently rejected by the transport and chain layers only, never at the structure gate
+> with a legible reason. That field is P2-C, which carries it alongside the other
+> committed-byte changes.
 
 A network is the pairing of a **parameter profile** with a **genesis block**. Three exist:
 
@@ -1398,6 +1412,54 @@ These invariants are adopted from production-grade Ergo Rust node practices:
 
 ---
 
+## Build and test resolution
+
+Every package is ESM and builds with `tsup src/index.ts --format esm --dts` to a single bundled
+`dist/index.js`. The four library packages (`types`, `wire`, `validation`, `net`) each declare
+exactly one export condition — `"."` — and there are no subpath exports anywhere. **`node` has no
+`exports` field at all**, only `main`; it is the application package and nothing depends on it, so
+bare-specifier resolution there goes through `main`. The practical effect is identical, but `node`
+is not subject to the subpath restriction the other four get from `exports`.
+
+**Test code resolves `@dagsocial/*` to the package's `src/index.ts`, never to `dist/`.** A vitest
+`resolve.alias` maps each workspace package name to `packages/<pkg>/src/index.ts`, declared once at
+the repo root and merged into every package's vitest config.
+
+Four rules govern it:
+
+1. **Uniform across all five packages.** Aliasing some and not others puts two copies of the same
+   module in one process — one transpiled from `src`, one bundled inside `dist`. `instanceof` fails
+   across that boundary and every module-level singleton exists twice.
+2. **The alias target is `src/index.ts`, not `src/`.** The barrel stays the surface under test, so a
+   symbol exported from a module but missing from `index.ts` still fails at import.
+3. **`pnpm test` no longer proves a package builds.** Nothing in the unit-test path executes `tsup`,
+   so a bundling or externalisation break passes the suite. `pnpm -r build && pnpm -r typecheck &&
+   pnpm -r test` is the gate before any commit or PR — **the build is a separate obligation, not a
+   side effect of testing.**
+4. **Spawned processes are exempt and still need a real build.** A vitest alias exists only inside
+   the vitest process. `packages/node/test/e2e/*` spawns `dist/index.js` as a child process, so any
+   run including that suite requires a genuine build first. Node's `globalSetup` build therefore
+   stays, **gated on the resolved exclude list**: it skips while `'test/e2e/**'` sits in
+   `config.exclude`, and re-arms by itself when the post-P2-D rewrite removes that exclusion. The
+   gate fails safe — an exclude string it does not recognise builds rather than skips.
+
+**Cost, measured 2026-08-07.** Node's suite went **11.7 s → 25.1 s**: transforming three sibling
+packages' `src` per file costs more than the `tsup` build it replaced. This is a known, accepted
+trade — the alias buys correctness and removes `dist`-write contention, **not** speed. Do not
+"optimise" it away expecting the suite to get faster.
+
+**Why this rule exists.** Before it, 12 test files imported their own package by name — all 5 in
+`wire`, 7 of 20 in `net` — and neither package had a rebuild hook, so a source edit was invisible to
+its own tests. That produced false-green mutation runs twice, a completeness grep that hit stale
+`dist` and read as a genuine failure, and a "mutation survived" conclusion that was really a stale
+binary. The alternative — a build hook in every package — was **rejected**: the recorded failure mode
+is two sessions racing the same `dist` (a build in one window swapped `net/dist` under a suite
+running in another), and four more build-on-test-start hooks makes that worse rather than better.
+Taking `dist` out of the unit-test path dissolves the race instead of tightening the discipline
+around it.
+
+---
+
 ## Store Architecture
 
 > ⚠ **The namespacing below does not match the schema.** 17 of 18 lines are original
@@ -1405,7 +1467,8 @@ These invariants are adopted from production-grade Ergo Rust node practices:
 > — sub-block state lives in the mempool and in `block_topology`. Ordering blocks are
 > outside the `block_*` prefix. The audit also found the store contract naming tables and
 > columns that do not exist, and `routes/status.ts` querying three (`blocks`, `posts`,
-> `identities`) that were never created.
+> `identities`) that were never created — **that file was deleted 2026-08-07**, so the
+> remaining instances of this defect are in the contract text below, not in code.
 >
 > **`NODE_INTERFACE.md → Store Interface` is authoritative for the schema; this section is
 > a sketch of an organising principle that was not followed.** Do not derive table names

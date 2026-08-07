@@ -71,7 +71,6 @@ const testConfig = {
   epochBlocks: 2, // Trigger epoch every 2 blocks for easy testing
   miningMode: 'internal' as const,
   orderingBlockPowTargetBits: 12,
-  creditInitialReward: 100,
   creditTreasuryPct: 10,
   treasuryPubKey: '',
   bootstrapPeers: [] as string[],

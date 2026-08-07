@@ -60,7 +60,6 @@ const testConfig = {
   epochBlocks: 100,
   miningMode: 'internal' as const,
   orderingBlockPowTargetBits: 12,
-  creditInitialReward: 100,
   creditTreasuryPct: 10,
   treasuryPubKey: '',
   bootstrapPeers: [] as string[],

@@ -893,6 +893,25 @@ export const MAX_CONTENT_BYTES = 300;
 export const MAX_PARENT_REFS = 8;
 ```
 
+### State format
+
+```typescript
+export const AVL_KEY_LENGTH = 32;   // bytes
+```
+
+The AVL+ tree's key width. It **sets the shape of every `stateRoot`**
+(`packages/node/src/state/avl-prover.ts`), so two nodes holding different values compute
+different digests for identical state — which makes it a consensus constant, not a tuning
+knob. It is universal rather than per-network: a network has no reason to differ on a
+format width, so it does **not** belong in `NetworkProfile`.
+
+`packages/node/src/config.ts` imports it and plumbs it through `Config.avlKeyLength`, which
+`state/avl-prover.ts` reads. That plumbing field is permitted, but its value originates here —
+`node/test/config.test.ts` §8 compares the plumbed field against this export, which goes red if
+node ever regrows a divergent local definition. A value pin alone cannot catch that: if this
+constant moves while a stale local pin holds node at the old number, both remain self-consistent
+and only the origination comparison fails.
+
 ### PoW
 
 ```typescript

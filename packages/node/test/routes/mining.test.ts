@@ -211,7 +211,6 @@ function makeConfig(overrides?: Partial<Config>): Config {
     miningMode: 'internal',
     miningSecret: '',
     orderingBlockPowTargetBits: 12,
-    creditInitialReward: 100,
     creditTreasuryPct: 10,
     treasuryPubKey: '',
     bootstrapPeers: [],

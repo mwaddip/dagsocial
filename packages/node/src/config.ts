@@ -1,19 +1,13 @@
 import {
   CHALLENGE_WINDOW_BLOCKS,
   EPOCH_BLOCKS,
-  CREDIT_INITIAL_REWARD,
   CREDIT_TREASURY_PCT,
   KARMA_DECAY_AMOUNT,
   KARMA_MINIMUM,
+  AVL_KEY_LENGTH,
   profileFor,
 } from '@dagsocial/types';
 import type { NetworkProfile, NetworkType } from '@dagsocial/types';
-
-// AVL tree key length in bytes — a universal format constant, not a per-network
-// value (NODE_INTERFACE §Configuration: "Format. No network has a reason to
-// differ"). TYPES_INTERFACE lists it with the format limits, but @dagsocial/types
-// does not export it yet; until that lands this is the single definition.
-const AVL_KEY_LENGTH = 32;
 
 export interface Config {
   port: number;
@@ -47,7 +41,6 @@ export interface Config {
   miningMode: 'internal' | 'external';
   miningSecret: string;          // bearer token for mining API, required non-empty in external mode
   orderingBlockPowTargetBits: number;
-  creditInitialReward: bigint;   // credit base units (10⁻⁸ credit)
   creditTreasuryPct: number;
   treasuryPubKey: string;  // hex-encoded 32-byte key, empty = no treasury
   // Karma decay
@@ -112,9 +105,6 @@ export function loadConfig(): Readonly<Config> {
     miningMode: parseMiningMode(process.env['MINING_MODE'] ?? 'internal'),
     miningSecret: process.env['MINING_SECRET'] ?? '',
     orderingBlockPowTargetBits: profile.orderingBlockPowTargetBits,
-    // Dead in src — block-creator.ts uses the imported constant directly; the
-    // field survives only for test fixtures until audit A5 prunes it.
-    creditInitialReward: CREDIT_INITIAL_REWARD,
     creditTreasuryPct: CREDIT_TREASURY_PCT,
     treasuryPubKey: profile.treasuryPubKey,
     // Karma decay — per-network timescale from the profile, universal economics

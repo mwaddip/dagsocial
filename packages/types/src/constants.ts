@@ -13,6 +13,9 @@ export const PROTOCOL_VERSION = 1;
 export const MAX_CONTENT_BYTES = 300;
 export const MAX_PARENT_REFS = 8;
 
+// State format
+export const AVL_KEY_LENGTH = 32; // bytes — AVL+ key width; sets the shape of every stateRoot
+
 // PoW
 export const POST_POW_TARGET_BITS = 20; // → profile: postPowTargetBits
 export const CHALLENGE_WINDOW_BLOCKS = 10;

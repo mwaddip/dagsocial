@@ -5,7 +5,7 @@ import {
   PROTOCOL_VERSION,
   MEMPOOL_EXPIRY_BLOCKS,
 } from '@dagsocial/types';
-import type { CandidateOf, KarmaBox, CreditBox, InviteBox, BondBox, UtxoTransaction } from '@dagsocial/types';
+import type { CandidateOf, KarmaBox, CreditBox, InviteBox, BondBox, NetworkType, UtxoTransaction } from '@dagsocial/types';
 import { sendCredits } from '../services/credits.js';
 import { validateTx } from '../services/utxo-engine.js';
 import type { UtxoEngineDeps } from '../services/utxo-engine.js';
@@ -23,13 +23,14 @@ import {
 } from '../store/system.js';
 import { getNet } from '../services/net-instance.js';
 import { respondError } from './respond-error.js';
-import { config, isFaucetNetwork } from '../config.js';
+import { isFaucetNetwork } from '../config.js';
 
 // ---------------------------------------------------------------------------
 // Dependency types
 // ---------------------------------------------------------------------------
 
 export interface UtxoDeps {
+  readonly networkType: NetworkType;
   getKarmaBox(owner: Uint8Array): KarmaBox | null;
   getKarmaBoxes(owner: Uint8Array): KarmaBox[];
   getCreditBox(owner: Uint8Array): CreditBox | null;
@@ -199,7 +200,7 @@ export function createRouter(deps: UtxoDeps): Router {
   // with the /faucet mount and the system-box provisioning — the three move
   // together.
   router.post('/credits/faucet', (req, res) => {
-    if (!isFaucetNetwork(config.networkType)) {
+    if (!isFaucetNetwork(deps.networkType)) {
       res.status(403).json({ error: 'faucet disabled in production mode' });
       return;
     }

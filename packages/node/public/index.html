@@ -2078,7 +2078,6 @@ async function loadStatus() {
       <div><span>Network:</span> <strong style="color:${networkType === 'testnet' ? 'var(--amber)' : networkType === 'devnet' ? 'var(--red)' : 'var(--p)'}">${esc(networkType)}</strong></div>
       <div><span>Block height:</span> <strong>${s.blockHeight}</strong></div>
       <div><span>Posts (confirmed / pending):</span> <strong>${s.postCount} / ${s.pendingPosts}</strong></div>
-      <div><span>Identities:</span> <strong>${s.identityCount}</strong></div>
       <div><span>Total karma:</span> <strong>${s.totalKarma}</strong> &nbsp; <span>Total credits:</span> <strong>${formatCredits(BigInt(s.totalCredits))}</strong></div>
     `;
 
