@@ -637,7 +637,8 @@ There is **no other legal bond or invite shape**. In particular:
   becomes real.
 - **Engine inputs these rules need:** `checkTransitions` becomes
   height-aware (the settle height already flows into `validateTx`), and
-  the deps gain an invitee-karma-sum read (backed by `getKarmaBoxes`).
+  the deps gain an invitee-karma-sum read — the store's `getKarmaValue`
+  (see §Store), which is the one implementation every path shares.
 - **Known residual — claim-time invite↔bond pairing is unenforced**
   (audit F-consensus-5). The claim shape accepts *any* committed bond
   alongside the invite. It cannot be enforced under current fields: after
@@ -1047,6 +1048,10 @@ encoding added to the table above, and an argument at the call site that
     run epoch tally
 12. Always produce a block — miners need coinbase rewards even when there
     is no user work.  Empty blocks carry credit emission and epoch tallies.
+    ⚠ **One exception, and only one (P2-B phase 1c): a body its own mutation
+    phase rejects.** See step 15b — the creator produces nothing and evicts
+    the included mempool entries. Mining over a body the node itself will not
+    apply wastes PoW on a block that cannot be accepted anywhere.
 13. Track confirmed mempool rowids for cleanup
 14. Build coinbase outputs (credit emission with Ergo-style decay,
     treasury split if configured)
@@ -1074,7 +1079,13 @@ encoding added to the table above, and an argument at the call site that
    handling of input *presence* is unchanged: a tx whose inputs are not yet present
    is deferred and retried (intra-block dependency). Idempotent: skips boxes already
    inserted or spent (survives gossip loopback).
-6. Remove confirmed entries from mempool (`removeEntry` for each confirmed rowid)
+6. Remove confirmed entries from mempool (`removeEntry` for each confirmed rowid).
+   ⚠ **This runs even when the block was rejected**, and that is deliberate,
+   not an oversight: whatever made the body invalid is still pooled, so
+   leaving it would rebuild the same rejected block every interval and stall
+   the chain — expiry cannot save it, since `purgeExpired` keys on a height
+   that stops advancing when production stops. Step 15b's `body rejected`
+   outcome applies the same eviction for the same reason.
 7. Reset pending counter and template
 
 ### Mining modes
@@ -1112,10 +1123,38 @@ are in-memory and would survive the rollback; they touch no UTXO box, so the
 digest is unaffected), and performs no block storage, no `clearTemplate`, no
 journal persistence, and no prover checkpoint.
 
+**The speculation has three outcomes, not two** (P2-B phase 1c — the code
+returns them as a discriminated union so no caller can conflate them):
+
+| Outcome | Meaning | Creator's obligation |
+|---|---|---|
+| computed | the post-block digest | mine over it |
+| no prover | no prover initialized — test-only | write `EMPTY_STATE_ROOT` and produce |
+| **body rejected** | the mutation phase rejected this body | **produce nothing, and evict the included mempool entries** |
+
 A producer with no prover initialized writes `EMPTY_STATE_ROOT`. Production
 nodes always initialize one at startup, so this is a test-only path — but a
 node running with `VERIFY_STATE_ROOT` enabled will reject such a block, which
 is correct.
+
+**Body rejected is fatal to production, and the eviction is not optional.**
+Mining over a body this node's own mutation phase refuses produces a block
+nothing will accept — the pre-fix code warned "the block cannot be produced"
+and then mined it anyway. Producing nothing while *leaving the entries pooled*
+is worse still: the creator rebuilds the identical body every interval, and
+`MEMPOOL_EXPIRY_BLOCKS` can never rescue it because expiry keys on a chain
+height that stops advancing the moment the node stops producing — a permanent
+silent stall. Eviction-on-rejection is the same semantics the finalize path
+already applies to a rejected block, and it is load-bearing for exactly this
+reason. An unexpected throw during speculation counts as **body rejected**,
+not as "no prover": the apply funnel's totality doctrine treats the same throw
+as a block rejection, so a body that crashes speculation is one no node will
+apply.
+
+Residual, recorded rather than hidden: entries that rode into the same body
+are evicted with the offending one. Transaction-level drop-and-retry — evict
+only the culprit and rebuild — needs the mutation phase to report *which*
+transaction failed, and is not built.
 
 **External mining.** The template's `stateRoot` is computed at template-build
 time and the block is submitted later. This stays sound because any competing
@@ -1227,6 +1266,7 @@ Fresh schema — no Phase 1 migration.
 | `getUnspentBoxes()` | `() => AnyBox[]` — all unspent boxes (for AVL bootstrapping) |
 | `getKarmaBox(owner)` | `(Uint8Array) => KarmaBox \| null` — single box (backward compat) |
 | `getKarmaBoxes(owner)` | `(Uint8Array) => KarmaBox[]` — multi-box listing (full boxes, keyed on `id` — the contract previously said `{ boxId, value }[]`, which was never the implementation) |
+| `getKarmaValue(owner)` | `(Uint8Array) => bigint` — **summed** value of every unspent karma box. **Consensus input** (bond settlement's unlock predicate), and the single implementation every validation path shares since P2-B phase 1b. It must sum, never read one box: `getKarmaBox` is `LIMIT 1` with no `ORDER BY`, so a single-box read makes the verdict a function of SQLite's physical row order — M-12's class. Kept as one store function rather than a closure per deps literal, because a consensus-critical read reproduced at each call site is the mirror pattern that produced `computeTxIdLocal` and the copied `u32BE` |
 | `getCreditBox(owner)` | `(Uint8Array) => CreditBox \| null` — single box |
 | `getCreditBoxes(owner)` | `(Uint8Array) => CreditBox[]` — multi-box, `ORDER BY value DESC` (the contract previously said `{ boxId, value, lockedUntilBlock? }[]`, which was never the implementation) |
 | `getUnlockedCreditBoxes(owner, blockHeight)` | `(Uint8Array, number) => CreditBox[]` |
