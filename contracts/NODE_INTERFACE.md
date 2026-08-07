@@ -269,7 +269,10 @@ at a time (ARCHITECTURE invariant). `castVouch` rejects when the voucher has
 ANY active VouchBox — not merely one for the same target — or any pending
 vouch transaction in the mempool (`hasPendingVouch`). The pair-scoped
 cooldown check (no re-vouch of the same target during its cooldown) is
-unchanged.
+**also a consensus rule as of P2-B phase 2** — the service check is now the
+mempool-side mirror of the apply-time gate, not the only enforcement (see
+"Vouch transition rules"). The single-active-vouch and pending-vouch checks
+above remain service-layer policy.
 
 **Route error policy (L-12):** services signal intentional, client-safe
 rejections with a typed client-error class; route handlers return its message
@@ -572,7 +575,9 @@ node's* mempool entry and are NOT listed here.
 | KarmaBox | KarmaBox | Same owner, balance change (earn/spend) |
 | KarmaBox | KarmaBox + LikeBox | Same owner, value conserved |
 | KarmaBox | KarmaBox + PostLockBox | Same owner, value conserved |
-| KarmaBox | KarmaBox + InviteBox + BondBox | Invite create: same owner, value conserved |
+| KarmaBox | KarmaBox + InviteBox + BondBox | Invite create: same owner, value conserved, **and the BondBox output is uncommitted** — `inviteePublicKey` empty, both probation fields `0` |
+| KarmaBox | KarmaBox + VouchBox | Vouch cast: karma outputs same owner; `vouch.value == VOUCH_KARMA_AMOUNT`; `vouch.voucherId` == the karma input's owner; no active cooldown for `(voucherId, targetId)` |
+| VouchBox | — (unvouch) | Zero outputs, voucher-signed. The staked karma escrows to `vouch_cooldowns` and is re-minted to `voucherId` at maturity — a round trip, not a burn |
 | BondBox (uncommitted) | BondBox (committed) | Commit: paired invite's preimage + committed-invitee signature (H-2); preservation fields unchanged; probation window pinned — see bond rules below |
 | InviteBox + BondBox (committed) | KarmaBox + BondBox | Claim (reveal): preimage + committed-invitee signature; karma output owner = committed invitee; bond preservation fields unchanged |
 | KarmaBox + InviteBox + BondBox | KarmaBox | Cancel: inviter signature; output karma owner = input karma owner = `bond.inviterId` = `invite.inviterId` |
@@ -651,6 +656,55 @@ There is **no other legal bond or invite shape**. In particular:
   the gap with this phase's rules in force: crossed pairs strand value
   recoverable only by the inviter's own cancels — a griefing wart, not
   theft.
+- **A bond is born uncommitted, and committed state is reachable only
+  through the commit transition** (P2-B phase 2). Invite creation must emit
+  `inviteePublicKey` empty and both probation fields `0`. Without that, an
+  inviter can emit a bond that is *born committed* with a zeroed window, and
+  the settlement rule above accepts an immediate reclaim to themselves —
+  every clause satisfied, the expiry leg vacuously true — while the InviteBox
+  stays live and claimable. The bond, the network's only sybil cost, would
+  cost nothing. This is the invariant that makes the commit-time window pin
+  mean anything: with it, every committed bond has passed through the pinned
+  commit path by construction.
+
+### Vouch transition rules (P2-B phase 2)
+
+- **The stake is pinned at cast: `VouchBox.value == VOUCH_KARMA_AMOUNT`.**
+  A vouch is one vote and always stakes exactly 1 karma (user decision,
+  2026-08-07). Before the pin, value was bounded only by conservation and
+  `checkOutputValues` — which permits `0n` — while unvouch escrowed the
+  **constant**. Both directions broke: a 0-value vouch matured into 1 karma
+  minted from nothing, and a 100-value vouch destroyed 99 (audit
+  F-consensus-3).
+- **`voucherId` is pinned at cast: it must equal the karma input's owner.**
+  `checkGuards` resolves a box's signer as `owner ?? voucherId`, so a
+  VouchBox carrying a *foreign* `voucherId` is guarded by that foreign key:
+  A stakes their own karma, B unvouches it, and the escrow matures to B.
+  That is a karma transfer with no invite — the property the whole
+  invite/bond mechanism protects. Not in the audit; found deriving this
+  phase. `castVouch` never compared the signer to `voucherId` either, so it
+  was reachable through the front door as well as through a block.
+- **The escrow records the actual staked value**, never the constant, and
+  maturity re-mints exactly that. With the cast pin the two always agree —
+  recording the real value is what makes the round trip conservation-
+  structural rather than true by coincidence.
+- **A vouch cast is invalid while an active cooldown exists for
+  `(voucherId, targetId)`** — the mempool's `hasActiveVouchCooldown`
+  predicate, promoted to a consensus rule (decided 2026-08-04, built in this
+  phase). Without it a block-embedded vouch→unvouch pair for a pair with a
+  live cooldown reaches `insertVouchCooldown`'s `INSERT OR REPLACE` and
+  destroys the first escrow's pending re-mint on the forward path. With the
+  gate the overwrite is unreachable; the `replaced` side-record stays as
+  rollback-exactness machinery.
+- **Determinism.** `vouch_cooldowns` is not committed state — it is outside
+  the `stateRoot`, the known escrow wart — but it is derived deterministically
+  from block application alone, so every node that applied the same chain
+  holds the same rows and this gate cannot split honest nodes. Modelling the
+  escrow as a maturing box is tracked separately.
+- **Self-vouch stays service-layer policy, not consensus.** At consensus a
+  self-vouch is a value-neutral round trip of the actor's own karma, and vouch
+  *score* is interpretation-layer (the node records; clients rank). Recorded
+  so it is not promoted without a reason.
 
 ### Karma decay (periodic burn)
 
@@ -1449,7 +1503,7 @@ needs a test.
 
 | Function | Signature |
 |----------|-----------|
-| `insertVouchCooldown(voucherId, targetId, releaseAtBlock, karmaAmount)` | `(UserId, UserId, number, bigint) => void` — `INSERT OR REPLACE`; while a block journal is open, records the insertion side-record, capturing any row it replaces |
+| `insertVouchCooldown(voucherId, targetId, releaseAtBlock, karmaAmount)` | `(UserId, UserId, number, bigint) => void` — `INSERT OR REPLACE`; while a block journal is open, records the insertion side-record, capturing any row it replaces. `karmaAmount` is the **actual staked value** of the VouchBox being spent, never a constant (P2-B phase 2). Since the same phase gates a cast on there being no active cooldown for the pair, the REPLACE arm is unreachable at apply; it and the `replaced` capture remain for rollback exactness |
 | `getMaturedVouchCooldowns(currentHeight)` | `(number) => Cooldown[]` |
 | `deleteVouchCooldown(voucherId, targetId)` | `(UserId, UserId) => void` — while a block journal is open, captures the row before deleting and records the deletion side-record (H-7 inverse); deleting a nonexistent row records nothing (the inverse of a no-op is a no-op); unrecorded when called from fork rollback (no journal open) |
 
