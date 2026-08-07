@@ -2,11 +2,9 @@ import {
   decodeSubBlock,
   decodeOrderingBlock,
   decodeTx,
-  decodeStump,
   encodeSubBlock,
   encodeOrderingBlock,
   encodeTx,
-  encodeStump,
   postPowPreimage,
 } from '@dagsocial/types';
 import {
@@ -14,7 +12,7 @@ import {
   verifyContentCharacters,
   verifyParentRefsCount,
 } from '@dagsocial/validation';
-import type { SubBlock, OrderingBlock, UtxoTransaction, Stump } from '@dagsocial/types';
+import type { SubBlock, OrderingBlock, UtxoTransaction } from '@dagsocial/types';
 import { TopicValidatorResult } from '@libp2p/interface';
 import type { PubSub } from '@libp2p/interface';
 import type { GossipsubEvents } from '@chainsafe/libp2p-gossipsub';
@@ -44,7 +42,6 @@ export const TOPICS = {
   subblock: '/dagsocial/subblock/1',
   orderingBlock: '/dagsocial/ordering-block/1',
   tx: '/dagsocial/tx/1',
-  stump: '/dagsocial/stump/1',
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -55,7 +52,6 @@ export interface GossipHandlers {
   onSubBlock: (sb: SubBlock) => void;
   onOrderingBlock: (block: OrderingBlock) => void;
   onTx: (tx: UtxoTransaction) => void;
-  onStump: (stump: Stump) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -154,22 +150,6 @@ export function subscribeTopics(
     }
   });
 
-  gs.topicValidators.set(TOPICS.stump, (_peer, msg) => {
-    try {
-      const raw = new Uint8Array(msg.data);
-      const stump = decodeStump(raw);
-      // Structural check: rootPostHash must be a valid 64-char hex string
-      if (!/^[0-9a-f]{64}$/.test(stump.rootPostHash)) {
-        peerMgr.recordPenalty('misbehavior', _peer.toString(), 100, 'invalid stump');
-        return TopicValidatorResult.Reject;
-      }
-      return TopicValidatorResult.Accept;
-    } catch (err) {
-      peerMgr.recordPenaltyKind(PenaltyKind.ProtocolViolation, _peer.toString(), `malformed stump: ${String(err)}`);
-      return TopicValidatorResult.Reject;
-    }
-  });
-
   // -------------------------------------------------------------------------
   // Event listener — dispatches accepted messages to app-layer handlers.
   // Topic validators (above) guarantee only structurally-valid, PoW-verified
@@ -196,8 +176,6 @@ export function subscribeTopics(
         handlers.onOrderingBlock(decodeOrderingBlock(raw));
       } else if (topic === TOPICS.tx) {
         handlers.onTx(decodeTx(raw));
-      } else if (topic === TOPICS.stump) {
-        handlers.onStump(decodeStump(raw));
       }
     } catch {
       // Decode failure here would indicate a validator bug — the message
@@ -209,7 +187,6 @@ export function subscribeTopics(
   gs.subscribe(TOPICS.subblock);
   gs.subscribe(TOPICS.orderingBlock);
   gs.subscribe(TOPICS.tx);
-  gs.subscribe(TOPICS.stump);
 }
 
 // ---------------------------------------------------------------------------
@@ -274,11 +251,6 @@ export async function broadcastOrderingBlock(libp2p: Libp2pGossip, block: Orderi
 export async function broadcastTx(libp2p: Libp2pGossip, tx: UtxoTransaction): Promise<void> {
   const data = encodeTx(tx);
   await libp2p.services.pubsub.publish(TOPICS.tx, data);
-}
-
-export async function broadcastStump(libp2p: Libp2pGossip, stump: Stump): Promise<void> {
-  const data = encodeStump(stump);
-  await libp2p.services.pubsub.publish(TOPICS.stump, data);
 }
 
 // ---------------------------------------------------------------------------

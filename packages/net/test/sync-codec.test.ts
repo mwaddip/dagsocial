@@ -5,7 +5,7 @@ import {
   encodeInv, decodeInv,
   encodeModifierRequest, decodeModifierRequest,
   encodeModifierResponse, decodeModifierResponse,
-  decodeGetPosts, decodeGetStumps, decodePosts, decodeStumps,
+  decodeGetPosts, decodePosts,
   decodeLegacyHeadersRequest,
 } from '@dagsocial/net';
 import { MAGIC_TESTNET, decodeFrame, MAX_ADVERTISED_HEIGHT } from '@dagsocial/net';
@@ -78,9 +78,7 @@ describe('sync codec decode boundary', () => {
     decodeModifierRequest,
     decodeModifierResponse,
     decodeGetPosts,
-    decodeGetStumps,
     decodePosts,
-    decodeStumps,
     decodeLegacyHeadersRequest,
   };
 
@@ -194,36 +192,30 @@ describe('sync codec decode boundary', () => {
     });
   });
 
-  describe('GetPosts / GetStumps', () => {
+  describe('GetPosts', () => {
     it('rejects a body missing its id list', () => {
       expect(decodeGetPosts(body({ ids: ['a'] }))).toBeNull();
-      expect(decodeGetStumps(body({ ids: ['a'] }))).toBeNull();
     });
 
     it('rejects a non-string id', () => {
       expect(decodeGetPosts(body({ postIds: [1] }))).toBeNull();
-      expect(decodeGetStumps(body({ stumpIds: [1] }))).toBeNull();
     });
 
     it('accepts a well-formed request', () => {
       expect(decodeGetPosts(body({ postIds: ['a', 'b'] }))).toEqual({ postIds: ['a', 'b'] });
-      expect(decodeGetStumps(body({ stumpIds: ['a'] }))).toEqual({ stumpIds: ['a'] });
     });
   });
 
-  describe('Posts / Stumps responses', () => {
+  describe('Posts responses', () => {
     it('rejects an entry whose envelope is not walkable', () => {
       expect(decodePosts(body({ entries: ['nope'] }))).toBeNull();
       expect(decodePosts(body({ entries: [{ postId: 'a', post: 'not-a-map', likeBoxes: [] }] }))).toBeNull();
       expect(decodePosts(body({ entries: [{ postId: 'a', post: {}, likeBoxes: 'none' }] }))).toBeNull();
-      expect(decodeStumps(body({ entries: [{ stumpId: 'a' }] }))).toBeNull();
     });
 
     it('accepts a well-formed envelope', () => {
       const posts = { entries: [{ postId: 'a', post: { content: 'hi' }, likeBoxes: [] }] };
       expect(decodePosts(body(posts))).toEqual(posts);
-      const stumps = { entries: [{ stumpId: 's', stump: { id: 's' } }] };
-      expect(decodeStumps(body(stumps))).toEqual(stumps);
     });
   });
 

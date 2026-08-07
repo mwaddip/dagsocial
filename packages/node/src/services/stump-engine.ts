@@ -1,6 +1,5 @@
 import {
   computePostId,
-  PROTOCOL_VERSION,
   leafHash,
   buildMerkleRoot,
   hexToBuf,
@@ -13,7 +12,6 @@ import {
   getCurrentHeight,
   insertMempoolPrune,
 } from '../store/index.js';
-import { getNet } from './net-instance.js';
 import { createHash, createPublicKey, verify } from 'crypto';
 
 // ---------------------------------------------------------------------------
@@ -111,20 +109,12 @@ export function executePrune(intent: PruneIntent): PruneEntry {
     trigger: intent.trigger,
   };
 
-  // 8. Broadcast and enqueue
-  const net = getNet();
-  if (net) {
-    net.broadcastStump({
-      rootPostHash: entry.rootPostHash,
-      authorId: entry.authorId,
-      replyCount: descendants.length,
-      upvoteCount: 0,
-      trigger: entry.trigger,
-      protocolVersion: PROTOCOL_VERSION,
-      compactedAtBlockHeight: getCurrentHeight(),
-    });
-  }
-
+  // 8. Enqueue in mempool. Nothing is broadcast at prune initiation: the prune
+  // propagates inside the ordering block that carries the PruneEntry, and every
+  // node derives its own stump at settlement (NODE_INTERFACE "Stumps are
+  // derived state"). A gossiped stump is unverifiable by construction and the
+  // table it would write is trusted by the read API and relay verifier, so no
+  // stump crosses the network in either direction.
   const currentHeight = getCurrentHeight();
   insertMempoolPrune(entry, currentHeight + MEMPOOL_EXPIRY_BLOCKS);
 

@@ -85,7 +85,6 @@ function makeHarness(postPowTargetBits: number = POST_POW_TARGET_BITS) {
     onSubBlock: () => {},
     onOrderingBlock: () => {},
     onTx: () => {},
-    onStump: () => {},
   }, postPowTargetBits);
 
   const penaltySpy = vi.spyOn(peerMgr, 'recordPenalty');

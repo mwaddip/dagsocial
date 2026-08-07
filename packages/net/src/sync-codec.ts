@@ -1,9 +1,9 @@
 import { encode, decode } from 'cbor-x';
 import { encodeFrame } from './frame.js';
 import type { SyncInfo, Inv, ModifierRequest, ModifierResponse } from './sync-types.js';
-import { MSG_SYNC_INFO, MSG_INV, MSG_MODIFIER_REQUEST, MSG_MODIFIER_RESPONSE, MSG_GET_PEERS, MSG_PEERS, MSG_GET_POSTS, MSG_POSTS, MSG_GET_STUMPS, MSG_STUMPS } from './types.js';
-import type { GetPeersMsg, PeersMsg, PeerEntryMsg, GetPostsMsg, PostsMsg, PostsEntry, GetStumpsMsg, StumpsMsg, StumpsEntry } from './types.js';
-import type { Post, LikeBox, Stump } from '@dagsocial/types';
+import { MSG_SYNC_INFO, MSG_INV, MSG_MODIFIER_REQUEST, MSG_MODIFIER_RESPONSE, MSG_GET_PEERS, MSG_PEERS, MSG_GET_POSTS, MSG_POSTS } from './types.js';
+import type { GetPeersMsg, PeersMsg, PeerEntryMsg, GetPostsMsg, PostsMsg, PostsEntry } from './types.js';
+import type { Post, LikeBox } from '@dagsocial/types';
 import {
   isRecord,
   isBoundedInt,
@@ -206,36 +206,6 @@ export function decodePosts(body: Uint8Array): PostsMsg | null {
       post: e.post as unknown as Post,
       likeBoxes: e.likeBoxes as unknown as LikeBox[],
     });
-  }
-
-  return { entries };
-}
-
-export function encodeGetStumps(magic: number, msg: GetStumpsMsg): Uint8Array {
-  return frameMessage(magic, MSG_GET_STUMPS, msg);
-}
-
-export function decodeGetStumps(body: Uint8Array): GetStumpsMsg | null {
-  const v = tryDecode(body);
-  if (!isRecord(v)) return null;
-  if (!isStringArray(v.stumpIds)) return null;
-  return { stumpIds: [...v.stumpIds] };
-}
-
-export function encodeStumps(magic: number, msg: StumpsMsg): Uint8Array {
-  return frameMessage(magic, MSG_STUMPS, msg);
-}
-
-export function decodeStumps(body: Uint8Array): StumpsMsg | null {
-  const v = tryDecode(body);
-  if (!isRecord(v)) return null;
-  if (!Array.isArray(v.entries)) return null;
-
-  const entries: StumpsEntry[] = [];
-  for (const e of v.entries) {
-    if (!isRecord(e) || typeof e.stumpId !== 'string' || !isRecord(e.stump)) return null;
-    // Stump interior is Stage 1's job, as with posts above.
-    entries.push({ stumpId: e.stumpId, stump: e.stump as unknown as Stump });
   }
 
   return { entries };

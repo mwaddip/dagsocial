@@ -760,19 +760,25 @@ function applyMutationPhase(
       return false;
     }
 
-    // 6. Prune DAG content (when present)
+    // 6. Insert the Stump, then prune DAG content (when present)
+    //
+    // The stump is derived state — a projection of this verified entry — and
+    // recording it is part of settlement: a node holding no DAG content for
+    // the subtree records the same stump (NODE_INTERFACE "Stumps are derived
+    // state"). Unconditional by construction: it must not sit behind any
+    // content-dependent guard, so it runs before and outside the content
+    // prune's try/catch.
+    insertStump({
+      rootPostHash: entry.rootPostHash,
+      authorId: entry.authorId,
+      replyCount: entry.subtreePostIds.length - 1, // exclude root
+      upvoteCount: 0, // can be derived from like boxes if needed
+      trigger: entry.trigger,
+      protocolVersion: PROTOCOL_VERSION,
+      compactedAtBlockHeight: height,
+    });
     try {
       pruneSubtree(entry.rootPostHash);
-      // Insert simplified Stump for historical record
-      insertStump({
-        rootPostHash: entry.rootPostHash,
-        authorId: entry.authorId,
-        replyCount: entry.subtreePostIds.length - 1, // exclude root
-        upvoteCount: 0, // can be derived from like boxes if needed
-        trigger: entry.trigger,
-        protocolVersion: PROTOCOL_VERSION,
-        compactedAtBlockHeight: height,
-      });
     } catch (err) {
       console.warn(`Failed to prune DAG subtree for ${entry.rootPostHash}: ${String(err)}`);
       // Non-fatal — DAG content may not be present

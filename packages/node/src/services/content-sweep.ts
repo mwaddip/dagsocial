@@ -1,8 +1,7 @@
-import { verifyPostId, encodePost, decodeSubBlockTree } from '@dagsocial/types';
+import { verifyPostId, encodePost } from '@dagsocial/types';
 import type { NetNode } from '@dagsocial/net';
 import { verifyPostForRelay, type VerifierDeps } from './verifier.js';
 import { insertPost } from '../store/posts.js';
-import { insertStump, pruneSubtree, getPost } from '../store/index.js';
 import { getDb } from '../store/db.js';
 
 export interface SweepResult {
@@ -124,117 +123,5 @@ export async function sweepPlaceholders(
   }
 
   const remaining = getPlaceholderIds().length;
-  return { success: false, remaining };
-}
-
-/** Check if any prune entries referenced in blocks are missing from local dag_stumps. */
-export function hasMissingStumps(): boolean {
-  const db = getDb();
-  const rows = db.prepare(
-    `SELECT subblock_tree_cbor FROM ordering_blocks
-     ORDER BY height DESC LIMIT 50`,
-  ).all() as Array<{ subblock_tree_cbor: Buffer }>;
-  for (const row of rows) {
-    const tree = decodeSubBlockTree(new Uint8Array(row.subblock_tree_cbor));
-    for (const entry of tree.pruneEntries) {
-      const existing = db.prepare('SELECT 1 FROM dag_stumps WHERE root_post_hash = ?').get(entry.rootPostHash);
-      if (!existing) return true;
-    }
-  }
-  return false;
-}
-
-function getMissingStumpIds(): string[] {
-  const db = getDb();
-  const rows = db.prepare(
-    `SELECT subblock_tree_cbor FROM ordering_blocks
-     ORDER BY height DESC LIMIT 50`,
-  ).all() as Array<{ subblock_tree_cbor: Buffer }>;
-  const missing: string[] = [];
-  const seen = new Set<string>();
-  for (const row of rows) {
-    const tree = decodeSubBlockTree(new Uint8Array(row.subblock_tree_cbor));
-    for (const entry of tree.pruneEntries) {
-      if (seen.has(entry.rootPostHash)) continue;
-      seen.add(entry.rootPostHash);
-      const existing = db.prepare('SELECT 1 FROM dag_stumps WHERE root_post_hash = ?').get(entry.rootPostHash);
-      if (!existing) missing.push(entry.rootPostHash);
-    }
-  }
-  return missing;
-}
-
-/**
- * Fetch missing stumps from peers after block sync.
- */
-export async function sweepStumps(
-  net: NetNode,
-  maxRetries: number = DEFAULT_MAX_RETRIES,
-): Promise<SweepResult> {
-  let retries = 0;
-
-  while (retries < maxRetries) {
-    const missingIds = getMissingStumpIds();
-    if (missingIds.length === 0) {
-      return { success: true, remaining: 0 };
-    }
-
-    const peerIds = net.getConnectedPeers();
-    if (peerIds.length === 0) {
-      return { success: false, remaining: missingIds.length };
-    }
-
-    const batches = chunk(missingIds, BATCH_SIZE);
-    for (const batch of batches) {
-      const selected = peerIds.slice(0, MAX_PEERS_PER_BATCH);
-      const results = await Promise.all(
-        selected.map((peerId) =>
-          net.requestStumps(peerId, batch).catch(() => ({ entries: [] })),
-        ),
-      );
-
-      const seen = new Set<string>();
-      for (const response of results) {
-        for (const entry of response.entries) {
-          if (seen.has(entry.stumpId)) continue;
-          seen.add(entry.stumpId);
-
-          // Verify stump ID matches rootPostHash
-          if (entry.stump.rootPostHash !== entry.stumpId) {
-            console.warn(
-              `[content-sweep] stump ID mismatch for claimed ${entry.stumpId}, dropping`,
-            );
-            continue;
-          }
-
-          // Store the stump and replay the prune
-          insertStump(entry.stump);
-          const rootPost = getPost(entry.stump.rootPostHash);
-          // Check if the post still needs pruning (has content = not yet pruned)
-          if (rootPost && 'content' in rootPost) {
-            try {
-              pruneSubtree(entry.stump.rootPostHash);
-            } catch (err) {
-              console.warn(
-                `[content-sweep] failed to replay prune for stump ${entry.stumpId}: ${String(err)}`,
-              );
-            }
-          }
-        }
-      }
-    }
-
-    const remaining = getMissingStumpIds().length;
-    if (remaining === 0) {
-      return { success: true, remaining: 0 };
-    }
-
-    retries++;
-    if (retries < maxRetries) {
-      await sleep(BASE_DELAY_MS * retries);
-    }
-  }
-
-  const remaining = getMissingStumpIds().length;
   return { success: false, remaining };
 }
