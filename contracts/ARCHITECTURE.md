@@ -1,7 +1,7 @@
 # DAGsocial Architecture
 
 **Protocol version:** 1
-**Last updated:** 2026-08-06
+**Last updated:** 2026-08-07
 
 ## Status markers — the convention for every contract in this directory
 
@@ -1395,6 +1395,54 @@ These invariants are adopted from production-grade Ergo Rust node practices:
   > file in `packages/node/src` contains the word "Precondition".** Either the invariant is
   > adopted for real or it should be dropped; as written it is aspiration in the present
   > indicative, which is the failure mode the status markers exist to prevent.
+
+---
+
+## Build and test resolution
+
+Every package is ESM and builds with `tsup src/index.ts --format esm --dts` to a single bundled
+`dist/index.js`. The four library packages (`types`, `wire`, `validation`, `net`) each declare
+exactly one export condition — `"."` — and there are no subpath exports anywhere. **`node` has no
+`exports` field at all**, only `main`; it is the application package and nothing depends on it, so
+bare-specifier resolution there goes through `main`. The practical effect is identical, but `node`
+is not subject to the subpath restriction the other four get from `exports`.
+
+**Test code resolves `@dagsocial/*` to the package's `src/index.ts`, never to `dist/`.** A vitest
+`resolve.alias` maps each workspace package name to `packages/<pkg>/src/index.ts`, declared once at
+the repo root and merged into every package's vitest config.
+
+Four rules govern it:
+
+1. **Uniform across all five packages.** Aliasing some and not others puts two copies of the same
+   module in one process — one transpiled from `src`, one bundled inside `dist`. `instanceof` fails
+   across that boundary and every module-level singleton exists twice.
+2. **The alias target is `src/index.ts`, not `src/`.** The barrel stays the surface under test, so a
+   symbol exported from a module but missing from `index.ts` still fails at import.
+3. **`pnpm test` no longer proves a package builds.** Nothing in the unit-test path executes `tsup`,
+   so a bundling or externalisation break passes the suite. `pnpm -r build && pnpm -r typecheck &&
+   pnpm -r test` is the gate before any commit or PR — **the build is a separate obligation, not a
+   side effect of testing.**
+4. **Spawned processes are exempt and still need a real build.** A vitest alias exists only inside
+   the vitest process. `packages/node/test/e2e/*` spawns `dist/index.js` as a child process, so any
+   run including that suite requires a genuine build first. Node's `globalSetup` build therefore
+   stays, **gated on the resolved exclude list**: it skips while `'test/e2e/**'` sits in
+   `config.exclude`, and re-arms by itself when the post-P2-D rewrite removes that exclusion. The
+   gate fails safe — an exclude string it does not recognise builds rather than skips.
+
+**Cost, measured 2026-08-07.** Node's suite went **11.7 s → 25.1 s**: transforming three sibling
+packages' `src` per file costs more than the `tsup` build it replaced. This is a known, accepted
+trade — the alias buys correctness and removes `dist`-write contention, **not** speed. Do not
+"optimise" it away expecting the suite to get faster.
+
+**Why this rule exists.** Before it, 12 test files imported their own package by name — all 5 in
+`wire`, 7 of 20 in `net` — and neither package had a rebuild hook, so a source edit was invisible to
+its own tests. That produced false-green mutation runs twice, a completeness grep that hit stale
+`dist` and read as a genuine failure, and a "mutation survived" conclusion that was really a stale
+binary. The alternative — a build hook in every package — was **rejected**: the recorded failure mode
+is two sessions racing the same `dist` (a build in one window swapped `net/dist` under a suite
+running in another), and four more build-on-test-start hooks makes that worse rather than better.
+Taking `dist` out of the unit-test path dissolves the race instead of tightening the discipline
+around it.
 
 ---
 

@@ -1,4 +1,8 @@
-import { defineConfig } from 'vitest/config';
-export default defineConfig({
-  test: { globals: true, passWithNoTests: true },
-});
+import { defineConfig, mergeConfig } from 'vitest/config';
+import shared from '../../vitest.shared.js';
+export default mergeConfig(
+  shared,
+  defineConfig({
+    test: { globals: true, passWithNoTests: true },
+  }),
+);
