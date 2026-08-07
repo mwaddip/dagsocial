@@ -1376,12 +1376,13 @@ These invariants are adopted from production-grade Ergo Rust node practices:
 - **Validate, don't trust** — independently recompute every self-reported
   claim. A post's parent hash, PoW solution, and signature MUST be verified
   by the local node before the post enters the store.
-  > ⚠ **FALSE — three paths write before verifying.** `insertPostPlaceholder` writes a
-  > confirmed row before anything verifies it; a post is written to `dag_posts` before its
-  > karma-lock transaction validates, with no rollback; and `onStump` stores unauthenticated
-  > gossip stumps — a forged one satisfies the verifier's parent-existence check for a post
-  > that never existed. **Post PoW is not verified at ordering time either**: `verifyPoW`
-  > has two call sites, both in the verifier, neither reachable from block application.
+  > ⚠ **FALSE — two paths write before verifying.** `insertPostPlaceholder` writes a
+  > confirmed row before anything verifies it; and a post is written to `dag_posts` before
+  > its karma-lock transaction validates, with no rollback. (A third path — `onStump`
+  > storing unauthenticated gossip stumps — was closed by P2-F F1: no network path writes
+  > `dag_stumps` anymore; see §3.) **Post PoW is not verified at ordering time either**:
+  > `verifyPoW` has two call sites, both in the verifier, neither reachable from block
+  > application.
 - **Never add checks the reference lacks** — extra validation rules beyond
   the protocol spec create fork surfaces. Every rule is either
   protocol-spec or explicitly local-policy-only.
