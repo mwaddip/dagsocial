@@ -71,8 +71,8 @@ Nullable, populated by `insertUtxoTx` from the transaction outputs, indexed
 
 | Column | Populated when the tx has | Value |
 |---|---|---|
-| `like_target` | a `like` output | `targetPostId` (hex) |
-| `like_liker` | a `like` output | `likerId` (hex) |
+| `like_target` | `likeTarget` set (P2-D — the like tx field, not a box) | `likeTarget` (hex) |
+| `like_liker` | `likeTarget` set | the karma inputs' owner = the signer (hex) |
 | `invite_inviter` | an `invite` output | `inviterId` (hex) |
 | `vouch_voucher` | a `vouch` output | `voucherId` (hex) |
 
@@ -329,13 +329,11 @@ pending entries:
 5. After block finalization: `removeEntry(rowid)` for each confirmed rowid,
    `removeMempoolPrunes(entryIds)` for confirmed prune entries
 
-### Like attachment during assembly
+### ~~Like attachment during assembly~~ — DELETED (P2-D)
 
-Standalone like UTXO transactions (batch_id = null, outputs contain a LikeBox)
-are matched to sub-blocks by `targetPostId`. If a matching sub-block exists in
-the same pending batch, the like box is attached to the sub-block's `likeBoxes`
-array and the UTXO entry is consumed (not listed separately). If no matching
-sub-block exists, the like goes as a standalone `likeBoxId`.
+There is no like attachment, no sidecar array and no standalone `likeBoxId` pool. A like
+transaction (`likeTarget` set) is an ordinary mempool UTXO entry pulled into `utxoTxIds`
+like every other transaction.
 
 ---
 

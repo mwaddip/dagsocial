@@ -178,7 +178,6 @@ precedes it, only a holder of the mining secret can redirect the coinbase.
   "subBlockRefs": ["hex(32)", ...],
   "subBlockEntries": [{ "postId": "hex(32)", "parentRefs": ["hex(32)"], "author": "hex(32)" }, ...],
   "pruneEntries": [...],
-  "likeBoxIds": ["hex(32)", ...],
   "utxoTxIds": [],
   "coinbaseOutputs": [
     { "owner": "hex(32)", "value": 90, "lockedUntilBlock": 843, "isTreasury": false },

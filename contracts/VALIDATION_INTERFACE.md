@@ -207,8 +207,9 @@ that the verdict does not consult runtime category data.
 verifySubBlockStructure(sb: SubBlock): { valid: boolean; error?: string }
 ```
 
-Checks: `post` present, `subBlockId` present, `likeBoxes` is an array,
-`protocolVersion` is a number, `producerId` present. Returns `{ valid, error }`.
+Checks: `post` present, `subBlockId` present, `protocolVersion` is a number,
+`producerId` present. Returns `{ valid, error }`. (The `likeBoxes` array check
+died with the sidecar field — P2-D.)
 
 ### verifyTxStructure
 
@@ -217,8 +218,10 @@ verifyTxStructure(tx: UtxoTransaction): { valid: boolean; error?: string }
 ```
 
 Checks: `inputs` is a non-empty array, `outputs` is a non-empty array,
-no duplicate inputs, `protocolVersion` is a number. Does NOT check UTXO
-conservation or guard satisfaction — those are Stage 2 (stateful) checks.
+no duplicate inputs, `protocolVersion` is a number, and `likeTarget` — when
+present — is a 64-char hex string (P2-D). Does NOT check UTXO conservation,
+guard satisfaction, or the like biconditional (`likeTarget` ⟺ deficit) — those
+are Stage 2 (stateful) checks.
 
 ### verifyOrderingBlockStructure
 
