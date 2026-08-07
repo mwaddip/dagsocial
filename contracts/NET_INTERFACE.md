@@ -149,11 +149,16 @@ to the envelope structure (not the message bodies).
 | 9 | `Peers` | ← | Peer list response |
 | 10 | `GetPosts` | → | Request posts by ID |
 | 11 | `Posts` | ← | Posts response |
-| 12 | `GetStumps` | → | Request stumps by ID |
-| 13 | `Stumps` | ← | Stumps response |
+| 12 | — | | **Retired** (was `GetStumps`; P2-F F1) — never reuse |
+| 13 | — | | **Retired** (was `Stumps`; P2-F F1) — never reuse |
 
 Codes 10–11 support content-sweep (placeholder fill) for posts the node
-has headers for but not content. Codes 12–13 support missing-stump resolution.
+has headers for but not content. Codes 12–13 are retired: stumps are
+derived state — every node projects its own `dag_stumps` rows from the
+PruneEntries in applied blocks (NODE_INTERFACE → "Stumps are derived
+state"), so no stump crosses the network in either direction. The numbers
+stay reserved so a stale peer sending code 12 is an identifiable protocol
+violation rather than a misparse of some future message.
 Codes 6-7 replace the old ad-hoc `/dagsocial/sync/1` stream protocol.
 Codes 2-5 replace the old `/dagsocial/headers/1` protocol. The old protocols
 are deleted.
@@ -183,7 +188,11 @@ Sub-block structure, lifecycle, and propagation semantics are defined in
 | `/dagsocial/subblock/1` | SubBlock (CBOR) | High | User posts + sidecar likes |
 | `/dagsocial/ordering-block/1` | OrderingBlock (CBOR) | Critical | Consensus anchors |
 | `/dagsocial/tx/1` | UtxoTransaction (CBOR) | High | Invites, claims, cancellations, credit transfers |
-| `/dagsocial/stump/1` | Stump (CBOR) | Normal | Pruned subtree records |
+
+`/dagsocial/stump/1` is retired (P2-F F1): a gossiped stump is unverifiable
+by construction (no author signature, no `subtreePostIds`) and stumps are
+derived locally from applied blocks, so the topic is neither subscribed nor
+published. Prunes propagate as PruneEntries inside ordering blocks.
 
 All gossip topics carry CBOR-encoded messages directly — no framing.
 The topic version (`/1`) matches the protocol version for topic naming but
@@ -782,7 +791,6 @@ ban); well-formed but invalid → misbehavior penalty (100). Uses
 | sub-block | `verifySubBlockStructure`; content limits (1–300 UTF-8 bytes) + character rules; parent-refs count; protocol version; post PoW (`verifyPoW` over `postPowPreimage` at `POST_POW_TARGET_BITS`); post signature (`verifyPostSignature` — the post's own `author` key) |
 | ordering-block | `verifyOrderingBlockStructure`; protocol version; `header.height` is a safe integer (NaN/float/±Infinity → Reject); ordering-block PoW (`verifyOrderingBlockPoW`) — the solution must satisfy the header's own `powTargetBits` (bounded ≥ `ORDERING_BLOCK_POW_TARGET_FLOOR` by structure), and a non-safe-integer `powNonce`/`powTargetBits` never verifies (audit M-6, M-9) |
 | tx | `verifyTxStructure`; protocol version |
-| stump | `rootPostHash` is 64-char hex |
 
 Stage 1 is stateless. It does **not** check the difficulty schedule
 (`powTargetBits === expectedTarget(height)`), chain linkage, validator
@@ -829,7 +837,6 @@ structure, PoW, and signatures.
 | `broadcastSubBlock(sb)` | `(SubBlock) => Promise<void>` | Gossip a newly assembled sub-block |
 | `broadcastOrderingBlock(b)` | `(OrderingBlock) => Promise<void>` | Gossip a newly created ordering block |
 | `broadcastTx(tx)` | `(UtxoTransaction) => Promise<void>` | Gossip a UTXO transaction |
-| `broadcastStump(stump)` | `(Stump) => Promise<void>` | Gossip a stump for pruned content |
 
 ### Inbound Processing
 
@@ -838,7 +845,6 @@ structure, PoW, and signatures.
 | `onSubBlock(callback)` | `((SubBlock) => void) => void` | Register handler for inbound sub-blocks |
 | `onOrderingBlock(callback)` | `((OrderingBlock) => void) => void` | Register handler for inbound ordering blocks |
 | `onTx(callback)` | `((UtxoTransaction) => void) => void` | Register handler for inbound UTXO transactions |
-| `onStump(callback)` | `((Stump) => void) => void` | Register handler for inbound stumps |
 
 ### Pull Requests (Peer-to-Peer)
 
@@ -847,7 +853,6 @@ structure, PoW, and signatures.
 | `requestHeaders(start, max, peerId)` | `(number, number, string) => Promise<BlockHeader[]>` | Request block headers for fork resolution |
 | `requestBlocks(start, end, peerId)` | `(number, number, string) => Promise<OrderingBlock[]>` | Request full blocks for reorg |
 | `requestPosts(peerId, postIds)` | `(string, string[]) => Promise<PostsMsg>` | Request posts by ID (content-sweep) |
-| `requestStumps(peerId, stumpIds)` | `(string, string[]) => Promise<StumpsMsg>` | Request stumps by ID |
 
 ### Sync Handler Registration
 
@@ -857,7 +862,6 @@ structure, PoW, and signatures.
 | `setBlocksHandler(cb)` | `((block: OrderingBlock) => void) => void` | Handler for blocks received during sync |
 | `setHeadersHandler(cb)` | `((height: number) => BlockHeader \| null) => void` | Provider for block headers |
 | `setPostsHandler(cb)` | `((ids: string[]) => PostsEntry[]) => void` | Provider for posts by ID |
-| `setStumpsHandler(cb)` | `((ids: string[]) => {stumpId, stump}[]) => void` | Provider for stumps by ID |
 | `onSyncComplete(cb)` | `(() => void) => void` | Fired when sync finishes |
 | `onPeerActive(cb)` | `((peerId: string) => void) => void` | Fired when a peer becomes active |
 
