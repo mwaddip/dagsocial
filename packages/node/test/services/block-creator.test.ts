@@ -51,7 +51,6 @@ const testConfig = {
   // Mining
   miningMode: 'internal' as const,
   orderingBlockPowTargetBits: 12,
-  creditInitialReward: 100n * 10n ** 8n,
   creditTreasuryPct: 10,
   treasuryPubKey: '',
   // Net settings

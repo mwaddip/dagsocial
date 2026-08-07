@@ -1467,7 +1467,8 @@ around it.
 > — sub-block state lives in the mempool and in `block_topology`. Ordering blocks are
 > outside the `block_*` prefix. The audit also found the store contract naming tables and
 > columns that do not exist, and `routes/status.ts` querying three (`blocks`, `posts`,
-> `identities`) that were never created.
+> `identities`) that were never created — **that file was deleted 2026-08-07**, so the
+> remaining instances of this defect are in the contract text below, not in code.
 >
 > **`NODE_INTERFACE.md → Store Interface` is authoritative for the schema; this section is
 > a sketch of an organising principle that was not followed.** Do not derive table names

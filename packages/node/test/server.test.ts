@@ -26,7 +26,6 @@ function makeConfig(overrides?: Partial<Config>): Config {
     epochBlocks: 60,
     miningMode: 'internal',
     orderingBlockPowTargetBits: 12,
-    creditInitialReward: 100,
     creditTreasuryPct: 10,
     treasuryPubKey: '',
     bootstrapPeers: [],

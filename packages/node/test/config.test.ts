@@ -285,7 +285,6 @@ describe('config', () => {
       expect(cfg.karmaDecayAmount).toBe(5n);
       expect(cfg.karmaMinimum).toBe(10n);
       expect(cfg.creditTreasuryPct).toBe(10);
-      expect(cfg.creditInitialReward).toBe(10_000_000_000n);
       expect(cfg.treasuryPubKey).toBe('');
       expect(cfg.avlKeyLength).toBe(32);
     });

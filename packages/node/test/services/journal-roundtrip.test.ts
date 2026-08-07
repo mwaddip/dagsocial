@@ -75,7 +75,6 @@ const plainConfig = {
   epochBlocks: 100, // no epoch boundary inside these tests
   miningMode: 'internal' as const,
   orderingBlockPowTargetBits: 12,
-  creditInitialReward: 100,
   creditTreasuryPct: 10,
   treasuryPubKey: '',
   bootstrapPeers: [] as string[],

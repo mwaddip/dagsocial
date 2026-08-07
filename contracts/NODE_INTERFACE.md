@@ -338,8 +338,11 @@ the JSON (box values are `bigint`; JSON cannot carry one) — clients parse them
 
 Grants 100 karma to an identity, **once per identity, ever** (idempotent). Mints
 from the system keypair — not a transfer. Builds a UTXO transaction creating a
-new karma box and inserts it into the mempool. Gated on `isFaucetNetwork(config.networkType)`
-(`config.ts`) — an **allow-list**, currently `testnet` and `devnet`.
+new karma box and inserts it into the mempool. Gated at **mount** time on
+`isFaucetNetwork(config.networkType)`, where `config` is the `Config` passed to
+`createApp(config)` — injected, not the module singleton, which is why this gate is testable
+and the `/credits/faucet` handler guard currently is not. `isFaucetNetwork` lives in `config.ts`
+and is an **allow-list**, currently `testnet` and `devnet`.
 
 **The allow-list is normative, and the reasoning matters more than the current membership.**
 It fails closed: a network added later mints nothing until someone names it. The property
@@ -358,12 +361,31 @@ mounting leaves unreachable system state. They call one shared predicate so they
 drift; the handler guard applies it as a **reject** condition, so a grep for the enabling
 expression finds only two of the three.
 
-> **Coverage limit, measured 2026-08-07.** Only the **mount** gate is covered
-> (`server.test.ts`, via the injectable `createApp`). The handler guard reads the
-> module-singleton `config`, and the provisioning gate runs as an import side effect of the
-> entrypoint — mutating either leaves the suite green. Covering the handler guard properly
-> means injecting `networkType` through `UtxoDeps` like every other dependency; the singleton
-> read is the config-at-a-distance pattern §Network Identity exists to remove.
+**The handler guard reads injected config, never the module singleton.** `UtxoDeps` carries
+
+```typescript
+readonly networkType: NetworkType;
+```
+
+and the guard is `isFaucetNetwork(deps.networkType)`. A plain readonly field rather than an
+accessor is deliberate: unlike `getCurrentHeight()`, the network cannot change after startup, and
+a field says so. `server.ts` passes `config.networkType` at the single production construction
+site; tests pass whichever network the case is about.
+
+This is not a testability nicety. A module-singleton read is the **config-at-a-distance** pattern
+`ARCHITECTURE §Network Identity` exists to remove — the same shape that let `NETWORK_MODE` reach
+nothing while ten call sites silently defaulted to mainnet. The faucet is the one place P2-A did
+not reach, and a gate that mints value from nothing is a poor place to keep the last instance.
+
+> ⚠ **NOT IMPLEMENTED** — the guard still reads `config.networkType` from the module singleton.
+> Contract-first for the unit that closes it; the marker is deleted when it lands.
+
+> **Coverage, measured 2026-08-07.** The **mount** gate is covered (`server.test.ts`, three tests
+> via the injectable `createApp`). The **handler** guard is not — mutating it leaves the suite
+> green — and injection above is what makes it reachable. The **provisioning** gate runs as an
+> import side effect of the entrypoint and stays statically untestable; only the parked e2e
+> harness, which spawns a real process, can reach it. Two of three is the target here, and the
+> third is named so its absence is not mistaken for an oversight.
 
 **Idempotency (required):** a given `userId` may be funded at most once, ever. A repeat
 request is rejected (409). Enforced by a durable per-`(userId, asset)` grant ledger
@@ -400,13 +422,14 @@ endpoint semantics in `MINING_INTERFACE.md`.
 > JSON has no such type. The parked e2e harness's `waitForReady` picks up the new name when
 > it is rewritten (`test/e2e/README.md`).
 >
-> ⚠ **The demo UI renders a field this endpoint has never emitted.** `public/index.html:2081`
-> reads `s.identityCount`, so a live node's status bar shows "Identities: **undefined**".
-> The only producer of that field is `src/routes/status.ts` — a router that is **exported and
-> never mounted**, querying three tables that do not exist (`blocks`, `posts`, `identities`).
-> It is residue from an abandoned design in which the node generated keypairs server-side.
-> **Decided 2026-08-07: drop the UI row and delete the dead router.** `/status` is not
-> gaining the field — there is no identity table by design.
+> ✅ **`identityCount` is gone, 2026-08-07.** The demo UI used to render `s.identityCount` in
+> its status bar — a field this endpoint has never emitted — so a live node showed
+> "Identities: **undefined**". Its only producer was `src/routes/status.ts`, a router that was
+> **exported and never mounted**, querying three tables that do not exist (`blocks`, `posts`,
+> `identities`). Both the UI row and that file were deleted. `/status` did **not** gain the
+> field: there is no identity table by design. The residue came from an abandoned design in
+> which the node generated keypairs server-side, which is also why the dead router expected an
+> `identities` table.
 
 ### Link previews
 
@@ -2036,7 +2059,7 @@ operator may safely change, and four consensus parameters were environment-tunab
 | ~~`ORDERING_BLOCK_POW_TARGET_BITS`~~ | **removed** | ~~`12`~~ | → profile field `orderingBlockPowTargetBits`. Closed MINING invariants 4, 5 and 7 — `expectedTarget(height)` now sources the profile, and its unused `height` parameter is the seam a real retarget will need |
 | ~~`CREDIT_TREASURY_PCT`~~ | **removed** | ~~`10`~~ | → universal constant `CREDIT_TREASURY_PCT` (`@dagsocial/types`) |
 | ~~`TREASURY_PUBKEY`~~ | **removed** | ~~`""`~~ | → profile field `treasuryPubKey` — genesis data, so a different chain has a different treasury |
-| ~~`CREDIT_INITIAL_REWARD`~~ | **removed** | ~~`10000000000`~~ | → universal constant `CREDIT_INITIAL_REWARD` (`@dagsocial/types`). ⚠ The env read is gone but `Config.creditInitialReward` survives as a **dead field** — `block-creator.ts` uses the imported constant directly. Pruning it is audit item A5 |
+| ~~`CREDIT_INITIAL_REWARD`~~ | **removed** | ~~`10000000000`~~ | → universal constant `CREDIT_INITIAL_REWARD` (`@dagsocial/types`), which `block-creator.ts` imports directly. The dead `Config.creditInitialReward` field it left behind was pruned 2026-08-07 (audit **A5**, closed) |
 | `VERIFY_STATE_ROOT` | `consensus-check` | `true` | Verify `header.stateRoot` at apply (Spec B P3). ⚠ Setting `false` removes the **sole backstop** against the `computeTxId`-collision class, where two distinct block bodies share a header |
 | ~~`POST_POW_TARGET_BITS`~~ | **removed** | ~~`20`~~ | → profile field `postPowTargetBits`. The `advertised` class is retired with it: the challenge endpoint and the verifier now read the same field, so a node can no longer report a difficulty it does not enforce (A6) |
 | ~~`NETWORK_MODE`~~ | **renamed** | ~~`testnet`~~ | → `NETWORK_TYPE`. The name changes because the meaning does: it selected a faucet flag, it now selects the whole consensus parameter table |

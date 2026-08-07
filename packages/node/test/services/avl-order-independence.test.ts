@@ -52,7 +52,6 @@ const epochConfig = {
   epochBlocks: 2, // tally on block 3
   miningMode: 'internal' as const,
   orderingBlockPowTargetBits: 12,
-  creditInitialReward: 100,
   creditTreasuryPct: 10,
   treasuryPubKey: '',
   bootstrapPeers: [] as string[],
