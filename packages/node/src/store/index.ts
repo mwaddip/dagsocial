@@ -53,6 +53,12 @@ export {
   getUnprocessedFreeLikes,
   markFreeLikesProcessed,
   markFreeLikesUnprocessed,
+  insertLikeRecord,
+  hasLikeRecord,
+  getLikeRecordCount,
+  deleteLikeRecordsForPosts,
+  deleteLikeRecord,
+  restoreLikeRecord,
 } from './likes.js';
 
 export {

@@ -33,7 +33,7 @@ describe('GET /api/v1/proof/:boxId', () => {
     };
     // Spec G phase D: the tree holds two entity kinds, so the fixture does too.
     applyBlockMutations(handle.prover, [], [box], [
-      { key: RECORD_KEY, record: { lastActivityBlock: 7, lastDecayBlock: 3 } },
+      { key: RECORD_KEY, record: { lastActivityBlock: 7, lastDecayBlock: 3, likeCarry: 0n } },
     ]);
     checkpointProver(handle, 1);
 
@@ -79,7 +79,9 @@ describe('GET /api/v1/proof/:boxId', () => {
       .expect(200);
 
     expect(res.body.kind).toBe('record');
-    expect(res.body.value).toEqual({ lastActivityBlock: 7, lastDecayBlock: 3 });
+    // `likeCarry` rides JSON as a decimal string — the same discipline as box
+    // `value`; JSON.stringify throws on bigint.
+    expect(res.body.value).toEqual({ lastActivityBlock: 7, lastDecayBlock: 3, likeCarry: '0' });
     expect(res.body.proof).toBeTruthy();
     expect(res.body.stateRoot).toBeTruthy();
   });
@@ -111,7 +113,7 @@ describe('GET /api/v1/proof/:boxId', () => {
     // it had its own `deserializeBoxWithId` call.
     const handle = createAvlProver(db);
     applyBlockMutations(handle.prover, [], [], [
-      { key: RECORD_KEY, record: { lastActivityBlock: 9, lastDecayBlock: 9 } },
+      { key: RECORD_KEY, record: { lastActivityBlock: 9, lastDecayBlock: 9, likeCarry: 0n } },
     ]);
     checkpointProver(handle, 2);
 
@@ -120,13 +122,13 @@ describe('GET /api/v1/proof/:boxId', () => {
     registerProofEndpoint(app2, handle);
 
     const atTip = await request(app2).get('/api/v1/proof/' + RECORD_KEY).expect(200);
-    expect(atTip.body.value).toEqual({ lastActivityBlock: 9, lastDecayBlock: 9 });
+    expect(atTip.body.value).toEqual({ lastActivityBlock: 9, lastDecayBlock: 9, likeCarry: '0' });
 
     const historical = await request(app2)
       .get('/api/v1/proof/' + RECORD_KEY + '?atHeight=1')
       .expect(200);
     expect(historical.body.kind).toBe('record');
-    expect(historical.body.value).toEqual({ lastActivityBlock: 7, lastDecayBlock: 3 });
+    expect(historical.body.value).toEqual({ lastActivityBlock: 7, lastDecayBlock: 3, likeCarry: '0' });
   });
 
   it('returns 400 for invalid boxId length', async () => {

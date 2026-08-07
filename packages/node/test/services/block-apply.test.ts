@@ -1684,6 +1684,7 @@ describe('block-apply mint provenance', () => {
       expect(records.getIdentityRecord(idle.userId)).toEqual({
         lastActivityBlock: 4,
         lastDecayBlock: 4,
+        likeCarry: 0n,
       });
       const afterAdjacency = utxo.getKarmaBox(idle.userId)!.value;
 
@@ -1693,6 +1694,7 @@ describe('block-apply mint provenance', () => {
       expect(records.getIdentityRecord(idle.userId)).toEqual({
         lastActivityBlock: 4,
         lastDecayBlock: 4,
+        likeCarry: 0n,
       });
       expect(utxo.getKarmaBox(idle.userId)!.value).toBe(afterAdjacency);
 
@@ -1705,6 +1707,7 @@ describe('block-apply mint provenance', () => {
       expect(records.getIdentityRecord(idle.userId)).toEqual({
         lastActivityBlock: 4,
         lastDecayBlock: 7,
+        likeCarry: 0n,
       });
     } finally {
       vi.doUnmock('../../src/config.js');

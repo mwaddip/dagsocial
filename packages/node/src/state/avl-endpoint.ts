@@ -1,15 +1,15 @@
 import type { Express, Request, Response } from 'express';
-import type { AnyBox } from '@dagsocial/types';
 import type { AvlProverHandle } from './avl-prover.js';
 import { deserializeAvlValue } from './serialize-box.js';
 
 /**
- * JSON-safe view of a box: bigint amount fields (`value`, `originalValue`)
- * become decimal strings — JSON.stringify throws on bigint.
+ * JSON-safe view of an entity's fields: bigint fields (box `value` /
+ * `originalValue`, record `likeCarry`) become decimal strings —
+ * JSON.stringify throws on bigint.
  */
-function jsonSafeBox(box: AnyBox): Record<string, unknown> {
+function jsonSafeFields(fields: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  for (const [key, val] of Object.entries(box)) {
+  for (const [key, val] of Object.entries(fields)) {
     out[key] = typeof val === 'bigint' ? val.toString() : val;
   }
   return out;
@@ -40,9 +40,9 @@ interface DecodedValue {
 function decodeValue(id: string, bytes: Uint8Array): DecodedValue {
   const decoded = deserializeAvlValue(bytes);
   if (decoded.kind === 'record') {
-    return { kind: 'record', value: { ...decoded.record } };
+    return { kind: 'record', value: jsonSafeFields({ ...decoded.record }) };
   }
-  return { kind: 'box', value: jsonSafeBox({ id, ...decoded.box } as AnyBox) };
+  return { kind: 'box', value: jsonSafeFields({ id, ...decoded.box }) };
 }
 
 export function registerProofEndpoint(app: Express, handle: AvlProverHandle): void {

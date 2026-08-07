@@ -121,7 +121,7 @@ export const IDENTITY_RECORD_TAG = 0x80;
 
 /**
  * Serialize an identity record to a deterministic Uint8Array.
- * Format: 0x80(1) || CBOR({ lastActivityBlock, lastDecayBlock })
+ * Format: 0x80(1) || CBOR({ lastActivityBlock, lastDecayBlock, likeCarry })
  *
  * The AVL key is `blake2b512(IDENTITY_KEY_DOMAIN ‖ identityId)[0:32]` (see
  * `store/identity-records.ts`), not part of the value — the same split boxes
@@ -133,11 +133,21 @@ export const IDENTITY_RECORD_TAG = 0x80;
  * (NODE_INTERFACE → "Two entity kinds" → 1b). Fixing it at the single encode
  * site means a record cannot acquire the field-order divergence that `post_lock`
  * has between its producer and `rowToBox`.
+ *
+ * `likeCarry` is ALWAYS PRESENT, zero included (P2-D). Conditional presence
+ * would reopen the key-set-exactness fork (contract 1a): the cbor map header
+ * counts keys, so an omit-when-zero producer and an always-write producer
+ * disagree on every zero-carry record's bytes — and therefore on the
+ * `stateRoot`. The type requires the field; do not "optimise" the zero away.
+ * bigint deliberately: cbor-x encodes bigint as a fixed 8-byte integer, so
+ * the value's width cannot drift with its magnitude, and a `number` sneaking
+ * in here would change the bytes (a 1-byte zero) — the type is the guard.
  */
 export function serializeIdentityRecord(record: IdentityRecord): Uint8Array {
   const payload = cborEncode({
     lastActivityBlock: record.lastActivityBlock,
     lastDecayBlock: record.lastDecayBlock,
+    likeCarry: record.likeCarry,
   });
 
   const out = new Uint8Array(1 + payload.length);
@@ -159,6 +169,10 @@ export function deserializeIdentityRecord(bytes: Uint8Array): IdentityRecord {
   return {
     lastActivityBlock: Number(fields.lastActivityBlock),
     lastDecayBlock: Number(fields.lastDecayBlock),
+    // BigInt(undefined) throws — bytes missing the field (pre-P2-D, or a
+    // hand-rolled conditional-presence encoding) fail loudly here rather
+    // than silently defaulting to 0n and masking a key-set fork.
+    likeCarry: BigInt(fields.likeCarry as bigint),
   };
 }
 

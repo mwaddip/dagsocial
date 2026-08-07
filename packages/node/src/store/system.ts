@@ -124,6 +124,7 @@ export function ensureSystemKarmaBox(systemPubKey: Uint8Array, currentHeight: nu
   putIdentityRecord(box.owner, {
     lastActivityBlock: genesisHeight,
     lastDecayBlock: 0,
+    likeCarry: 0n,
   });
   return box;
 }

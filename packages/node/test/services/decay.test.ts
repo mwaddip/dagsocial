@@ -34,7 +34,7 @@ const TEST_CFG = {
 };
 
 function clock(lastActivityBlock: number, lastDecayBlock = 0): IdentityRecord {
-  return { lastActivityBlock, lastDecayBlock };
+  return { lastActivityBlock, lastDecayBlock, likeCarry: 0n };
 }
 
 function makeKarmaBox(overrides: Partial<KarmaBox> = {}): KarmaBox {

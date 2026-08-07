@@ -80,6 +80,8 @@ describe('block journal (store choke-point recording)', () => {
     expect(j.confirmedSubBlockIds).toEqual([]);
     expect(j.appliedUtxoTxs).toEqual([]);
     expect(j.processedFreeLikeIds).toEqual([]);
+    expect(j.likeRecordInsertions).toEqual([]);
+    expect(j.likeRecordDeletions).toEqual([]);
     expect(j.vouchCooldownInsertions).toEqual([]);
     expect(j.vouchCooldownDeletions).toEqual([]);
     expect(s.isBlockJournalOpen()).toBe(false);

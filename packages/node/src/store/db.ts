@@ -97,13 +97,22 @@ const MIGRATIONS = [
   // there is no separate IdentityId type). The AVL key is DERIVED as
   // blake2b512(IDENTITY_KEY_DOMAIN ‖ identityId)[0:32], never the raw bytes —
   // both are total functions of the identity, so the two cannot drift.
+  //
+  // like_carry (P2-D): outstanding like accrual < LIKES_PER_KARMA_PAYOUT,
+  // written only by per-block like settlement. Committed state — it enters the
+  // record's AVL value encoding as an always-present field.
   `CREATE TABLE IF NOT EXISTS identity_records (
     identity_id BLOB PRIMARY KEY,
     last_activity_block INTEGER NOT NULL,
-    last_decay_block INTEGER NOT NULL
+    last_decay_block INTEGER NOT NULL,
+    like_carry INTEGER NOT NULL DEFAULT 0
   )`,
 
   // Free likes (beyond LIKE_FREE_THRESHOLD * LIKE_THRESHOLD)
+  //
+  // RETIRED (P2-D): the free tier is gone from the contract; this table and
+  // its functions run the retired system until N4 drops them. Do not add
+  // readers.
   `CREATE TABLE IF NOT EXISTS dag_likes (
     id TEXT PRIMARY KEY,
     target_post_id TEXT NOT NULL,
@@ -111,6 +120,19 @@ const MIGRATIONS = [
     created_at INTEGER NOT NULL DEFAULT (unixepoch()),
     processed INTEGER NOT NULL DEFAULT 0,  -- 0 = pending, 1 = processed at epoch
     UNIQUE(target_post_id, liker_id)
+  )`,
+
+  // Like-records (P2-D — replaces dag_likes): (liker, targetPostId) pairs,
+  // written ONLY at block application, never by an HTTP route. Content-layer
+  // consensus state (the block_topology tier): deterministic by replay,
+  // journalled with exact inverses, not in the stateRoot. Records die with
+  // the post on prune and survive withdraw; applied_at_block is the height
+  // the like's block settled at.
+  `CREATE TABLE IF NOT EXISTS like_records (
+    target_post_id TEXT NOT NULL,
+    liker_id BLOB NOT NULL,            -- 32-byte Ed25519 public key
+    applied_at_block INTEGER NOT NULL,
+    PRIMARY KEY (target_post_id, liker_id)
   )`,
 
   // Mempool (unified sub-block + UTXO transaction pool)

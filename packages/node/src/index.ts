@@ -1,6 +1,6 @@
 import { loadConfig, isFaucetNetwork } from './config.js';
 import { initDb, closeDb } from './store/db.js';
-import { schemaVersion, writeSchemaVersion, CURRENT_SCHEMA_VERSION } from './store/meta.js';
+import { ensureSchemaVersion } from './store/meta.js';
 import { getSystemKeypair, initSystemKeypair, ensureSystemKarmaBox, ensureFaucetCreditBox } from './store/system.js';
 import { startBlockCreator, stopBlockCreator, setDagServiceForMiner } from './services/block-creator.js';
 import { createApp, createAdminApp } from './server.js';
@@ -51,23 +51,17 @@ emitServerStarting('1.0.0', config.networkType);
 // 1. Init DB
 initDb(config.dbPath);
 
-// 1a. Schema version gate: refuse downgrade, run migrations on upgrade
-const storedVersion = schemaVersion();
-if (storedVersion > CURRENT_SCHEMA_VERSION) {
-  console.error(
-    `Database schema version is ${storedVersion} but this build expects ` +
-    `${CURRENT_SCHEMA_VERSION}. Downgrade is not supported.`
-  );
+// 1a. Schema version gate: stamp a fresh DB, refuse any stamped mismatch —
+// downgrade OR stale (P2-D N2a: the previous < branch stamped a stale DB as
+// current with zero migrations registered, which defeated the counter: the
+// tables kept their old shape and the node ran until the first read of a
+// missing column instead of failing here). Logic and any future migrations
+// live in ensureSchemaVersion, where tests can reach them.
+try {
+  ensureSchemaVersion();
+} catch (err) {
+  console.error(err instanceof Error ? err.message : String(err));
   process.exit(1);
-}
-if (storedVersion < CURRENT_SCHEMA_VERSION) {
-  console.log(
-    `Database schema version ${storedVersion} < ${CURRENT_SCHEMA_VERSION}, ` +
-    `running migrations...`
-  );
-  // Future migrations go here, guarded by sentinel keys:
-  // if (!metaHas('migration_xyz_v1')) { ...; metaPut('migration_xyz_v1', done); }
-  writeSchemaVersion(CURRENT_SCHEMA_VERSION);
 }
 
 // ---------------------------------------------------------------------------

@@ -638,9 +638,11 @@ export function getPostTotalLikes(targetPostId: string): number {
  * choke point is what makes the clock swap behaviour-preserving by
  * construction rather than by re-derivation at each of the eight producers.
  *
- * `lastDecayBlock` is carried through untouched: the two halves of the record
+ * `lastDecayBlock` is carried through untouched: the fields of the record
  * have different writers, and an activity bump that reset the decay clock would
- * hand the owner a free interval.
+ * hand the owner a free interval. `likeCarry` (P2-D) likewise — it is
+ * settlement-owned, and zeroing it here would confiscate accrued likes on
+ * every karma receipt.
  *
  * With no journal open — genesis, bootstrap, any non-block path — this records
  * nothing, consistent with every other choke-point hook. Consensus only reads
@@ -654,6 +656,7 @@ function bumpActivityClock(owner: Uint8Array): void {
   putIdentityRecord(owner, {
     lastActivityBlock: height,
     lastDecayBlock: existing?.lastDecayBlock ?? 0,
+    likeCarry: existing?.likeCarry ?? 0n,
   });
 }
 

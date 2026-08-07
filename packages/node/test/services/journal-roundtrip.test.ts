@@ -850,9 +850,9 @@ describe('journal round-trip per mutation class (P1 acceptance)', () => {
         .getBlockJournal(4)!
         .mutations.filter((m) => m.kind === 'record');
       expect(recordMutations).toHaveLength(2);
-      expect(recordMutations[0]).toMatchObject({ record: { lastDecayBlock: 4 } });
+      expect(recordMutations[0]).toMatchObject({ record: { lastDecayBlock: 4, likeCarry: 0n } });
       expect(recordMutations[1]).toMatchObject({
-        record: { lastActivityBlock: 4, lastDecayBlock: 4 },
+        record: { lastActivityBlock: 4, lastDecayBlock: 4, likeCarry: 0n },
       });
 
       // The TREE holds the last write, not the first. Read it back through the
@@ -865,6 +865,7 @@ describe('journal round-trip per mutation class (P1 acceptance)', () => {
       expect(serialize.deserializeIdentityRecord(lookup.value!)).toEqual({
         lastActivityBlock: 4,
         lastDecayBlock: 4,
+        likeCarry: 0n,
       });
       // The lookup above recorded proof directions; drop them so the digest
       // comparisons below see the same prover state the block left behind.
@@ -880,6 +881,7 @@ describe('journal round-trip per mutation class (P1 acceptance)', () => {
       expect(recordStore.getIdentityRecord(idle.userId)).toEqual({
         lastActivityBlock: 4,
         lastDecayBlock: 4,
+        likeCarry: 0n,
       });
     } finally {
       vi.doUnmock('../../src/config.js');
