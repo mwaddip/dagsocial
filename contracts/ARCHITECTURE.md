@@ -775,6 +775,17 @@ is tied to the invite — cancelling the invite cancels the bond).
 | Bob's karma drops below `KARMA_POSTING_MINIMUM` during probation | Burned | Alice vouched for a bad actor |
 | Probation expires without Bob reaching threshold | Returned to Alice | Bob was fine, just didn't cross the threshold |
 
+**Enforcement status (P2-B phase 1).** The two "returned to Alice" rows are
+consensus rules in their spend-time form: a committed bond spends only to a
+karma box **owned by Alice**, when probation has expired or Bob's current
+summed karma meets the threshold (NODE_INTERFACE → "Bond transition rules").
+The **burn row is not implemented and has no legal transition** — "dropped
+below during probation" is a historical predicate needing per-block bond
+scanning, and the karma-econ vesting design (design track §1.2) replaces bond
+settlement wholesale, so the scanner would be built for deletion. Until that
+lands, a bond is never destroyed; the paragraph below describes the *intended*
+economics, not running code.
+
 Burned karma is permanently destroyed — not redistributed. This creates
 deflationary pressure on karma supply and makes invite decisions consequential.
 

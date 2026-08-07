@@ -501,13 +501,16 @@ Full read-only validation. Performs all checks without modifying state:
 2. All input boxes exist and are unspent
 3. All inputs have the same boxType
 4. Value conservation: `sum(input values) == sum(output values)` for **every** box
-   type. The exceptions are the two deliberate **zero-output burns** that move value
-   out of the UTXO set by design: a **BondBox burn** (bond forfeited on probation
-   failure) and a **VouchBox burn** (unvouch — the staked karma is escrowed off-UTXO
-   in `vouch_cooldowns` and re-minted to the voucher at maturity). All other user
-   transactions — including karma, like, and vouch *cast* — conserve value; karma/
-   credit mint and burn happen only in block-application paths (like rewards, decay,
-   coinbase, bond forfeiture), never inside a user transaction. Box `value` fields
+   type. The single exception is the deliberate **zero-output VouchBox spend**
+   (unvouch — the staked karma is escrowed off-UTXO in `vouch_cooldowns` and
+   re-minted to the voucher at maturity; an escrow round-trip, not a burn).
+   There is **no BondBox exception**: bond forfeiture is not implemented and no
+   legal transition destroys a bond (see "Bond transition rules" below) — the
+   karma-econ vesting design owns forfeiture, and will define its burn path when
+   it lands. All other user transactions — including karma, like, and vouch
+   *cast* — conserve value; karma/credit mint and burn happen only in
+   block-application paths (like rewards, decay, coinbase), never inside a user
+   transaction. Box `value` fields
    must be non-negative `bigint` base units `< 2⁶⁴` (enforced at the JSON→tx boundary
    via `assertValidBoxValue` and in the engine via `checkOutputValues` — a negative
    value could otherwise balance the sums while minting into a sibling box).
@@ -558,18 +561,95 @@ New code should prefer the split functions.
 
 ### Legal box transitions
 
+Every condition in this table is a **consensus rule enforced by the engine**
+(`checkTransitions`, with guard satisfaction from `checkGuards`) — reachable by
+block-embedded transactions, not only by the service layer. Service-layer
+checks (rate limits, fixed amounts, pairing at create) are policy on *this
+node's* mempool entry and are NOT listed here.
+
 | Consumed | Created | Condition |
 |----------|---------|-----------|
 | KarmaBox | KarmaBox | Same owner, balance change (earn/spend) |
 | KarmaBox | KarmaBox + LikeBox | Same owner, value conserved |
 | KarmaBox | KarmaBox + PostLockBox | Same owner, value conserved |
-| KarmaBox | KarmaBox + InviteBox + BondBox | Same owner, value conserved |
-| InviteBox | KarmaBox | Hash preimage match OR inviter sig (cancel) — handled at service layer |
-| BondBox | KarmaBox (to inviter) | Unlock condition met |
-| BondBox | — (burn) | Invitee karma < minimum during probation |
+| KarmaBox | KarmaBox + InviteBox + BondBox | Invite create: same owner, value conserved |
+| BondBox (uncommitted) | BondBox (committed) | Commit: paired invite's preimage + committed-invitee signature (H-2); preservation fields unchanged; probation window pinned — see bond rules below |
+| InviteBox + BondBox (committed) | KarmaBox + BondBox | Claim (reveal): preimage + committed-invitee signature; karma output owner = committed invitee; bond preservation fields unchanged |
+| KarmaBox + InviteBox + BondBox | KarmaBox | Cancel: inviter signature; output karma owner = input karma owner = `bond.inviterId` = `invite.inviterId` |
+| BondBox (committed) | KarmaBox | Settlement: karma output owner = `bond.inviterId`, AND (settle height > `probationEndBlock` OR invitee's summed unspent karma ≥ `INVITE_KARMA_THRESHOLD`) |
 | CreditBox | CreditBox(+CreditBox) | Any owner, value conserved |
 | LikeBox | — (tallied) | Epoch tally consumption (ordering block only) |
 | PostLockBox | PostLockBox(+KarmaBox) | Epoch processing only (partial/full unlock) |
+
+There is **no other legal bond or invite shape**. In particular:
+
+- **No standalone spend of an InviteBox.** The reveal guard
+  (`hash_preimage_with_bond`) requires a BondBox input in the same
+  transaction, so `InviteBox → KarmaBox` alone is guard-unreachable; the
+  legal exits for an invite are the claim and cancel shapes above. (The
+  previous table listed the standalone spend as a legal row with its rules
+  "handled at service layer" — both halves of that were wrong.)
+- **No standalone spend of an uncommitted BondBox.** Its exits are the
+  commit and cancel shapes. A standalone spend would strand the paired
+  invite: the claim shape needs a bond input, so an invite whose bond is
+  gone can never be claimed.
+- **No bond burn.** `BondBox → ∅` is illegal — see the bond rules below.
+
+### Bond transition rules (P2-B phase 1)
+
+- **The bond's value only ever returns to `bond.inviterId`.** Every shape
+  that releases bond value (cancel, settlement) pins the receiving karma
+  box's owner to the inviter. This is the rule that closes audit
+  F-consensus-1: before it, a committed invitee could sign
+  `bond → own KarmaBox` (or absorb invite + bond through the cancel shape)
+  and take the deposit.
+- **Settlement unlock is a spend-time predicate.** The invitee's *current*
+  summed unspent karma ≥ `INVITE_KARMA_THRESHOLD`, or probation has
+  expired (`settle height > probationEndBlock`). The historical form in
+  ARCHITECTURE's bond-outcomes table ("reached the threshold within
+  probation") is deliberately NOT the consensus rule — a spend-time check
+  cannot see history, and the early-unlock leg is strictly
+  inviter-favorable timing. Karma is summed across boxes, not per-box:
+  multiple unspent karma boxes per owner is reachable (faucet grant +
+  mint, or a karma split).
+- **Forfeiture is not implemented, and no burn shape exists.**
+  "Invitee karma < minimum during probation → burned" is a claim about
+  history; enforcing it requires per-block bond scanning, and the
+  karma-economics vesting design (design track §1.2) replaces bond
+  settlement wholesale — the scanner would be built for deletion. Until
+  that track lands: no legal transition destroys a bond, and value
+  conservation has **no BondBox zero-output exception**. A voluntary burn
+  was also considered and rejected: no flow needs it, and allowing it
+  would let the committed invitee (whose signature satisfies `bond_dual`)
+  torch the inviter's stake out of spite.
+- **The probation window is pinned at commit:** `probationStartBlock > 0`,
+  `probationStartBlock ≤ apply height`, and
+  `probationEndBlock − probationStartBlock == INVITE_PROBATION_BLOCKS`.
+  Without these, the committing invitee chooses the window freely and can
+  lock the inviter's bond forever — via `probationEndBlock` directly, or
+  by future-dating `probationStartBlock` under a pinned length. A strict
+  `probationStartBlock == apply height` is NOT required: it would break on
+  the delay between building the commit and its being mined. Past-dating
+  the start is permitted and harmless: it only *shortens* the effective
+  probation (at the limit, already-expired at commit), which strictly
+  favors the inviter's unlock and evades nothing while forfeiture does not
+  exist; the vesting design replaces these mechanics before forfeiture
+  becomes real.
+- **Engine inputs these rules need:** `checkTransitions` becomes
+  height-aware (the settle height already flows into `validateTx`), and
+  the deps gain an invitee-karma-sum read (backed by `getKarmaBoxes`).
+- **Known residual — claim-time invite↔bond pairing is unenforced**
+  (audit F-consensus-5). The claim shape accepts *any* committed bond
+  alongside the invite. It cannot be enforced under current fields: after
+  commit, the bond's provenance (`txId`) points at the commit transaction,
+  so `(bond.txId, bond.inviteOutputIndex)` no longer resolves the invite
+  it shipped with. The fix is the committed bond carrying the invite's
+  **box id** — safe there (the invite's id is fixed by the create tx
+  before the commit tx exists, so no circularity), but it is a
+  consensus-format change and belongs in the P2-C break bundle. Impact of
+  the gap with this phase's rules in force: crossed pairs strand value
+  recoverable only by the inviter's own cancels — a griefing wart, not
+  theft.
 
 ### Karma decay (periodic burn)
 
