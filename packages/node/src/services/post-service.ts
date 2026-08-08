@@ -3,7 +3,7 @@ import {
   decodePost,
   MEMPOOL_EXPIRY_BLOCKS,
 } from '@dagsocial/types';
-import type { Post, KarmaBox, UtxoTransaction, AnyBox, SubBlock } from '@dagsocial/types';
+import type { Post, Stump, KarmaBox, UtxoTransaction, AnyBox, SubBlock } from '@dagsocial/types';
 import type { VerifierDeps, VerificationResult } from './verifier.js';
 import { ClientError } from './client-error.js';
 
@@ -56,7 +56,8 @@ export interface PostServiceDeps {
     userId: Uint8Array,
   ) => { challenge: Uint8Array; expiresAtBlock: number; userId: Uint8Array } | null;
   getKarmaBoxes: (owner: Uint8Array) => { value: bigint; id?: string }[];
-  getPost: (id: string) => unknown | null;
+  /** The store's real signature — passed straight through to `VerifierDeps`. */
+  getPost: (id: string) => Post | Stump | null;
 
   // Raw byte access for independent hash recomputation
   getPostRaw: (id: string) => Uint8Array | null;

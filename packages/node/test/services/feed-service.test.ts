@@ -121,14 +121,31 @@ describe('feed-service', () => {
     expect(r['likers']).toEqual([]);
   });
 
-  it('getPost on a pruned root returns the Stump as-is', () => {
+  it('getPost on a pruned root returns StumpJson, not the raw Stump', () => {
+    // CHANGED 2026-08-08 with the contracted `StumpJson` shape (NODE_INTERFACE
+    // → Posts). This test asserted "returns the Stump as-is" — the raw object,
+    // `authorId` still a Uint8Array — which is exactly the defect: `res.json`
+    // serialized it index-keyed (`{"0":…,"1":…}`) at the route above.
     const r = feedService.getPost(prunedRootId) as Record<string, unknown>;
     expect(r).not.toBeNull();
-    expect(r).toMatchObject({ rootPostHash: prunedRootId, ...stumpScalars });
-    expect(new Uint8Array(r['authorId'] as Uint8Array)).toEqual(authorId);
-    // A stump is not a post: no content, and no PostJson serialization.
+    expect(r).toEqual({
+      kind: 'stump',
+      id: prunedRootId,
+      author: Buffer.from(authorId).toString('hex'),
+      ...stumpScalars,
+    });
+    // The author is hex — `PostJson.author`'s convention — never index-keyed.
+    expect(r['author']).toMatch(/^[0-9a-f]{64}$/);
+    expect(r['authorId']).toBeUndefined();
+    expect(r['rootPostHash']).toBeUndefined();
+    // A stump is not a post: no content, no like counters.
     expect('content' in r).toBe(false);
     expect('likeCount' in r).toBe(false);
+  });
+
+  it('a live post carries no `kind` — clients discriminate on its presence', () => {
+    const r = feedService.getPost(liveRootId) as Record<string, unknown>;
+    expect('kind' in r).toBe(false);
   });
 
   it('getPost returns null for an unknown id', () => {
@@ -148,13 +165,19 @@ describe('feed-service', () => {
     expect(t!.descendants).toEqual([]);
   });
 
-  it('getThread on a pruned root returns the stump shell', () => {
+  it('getThread on a pruned root returns the stump shell as StumpJson', () => {
+    // CHANGED 2026-08-08 alongside `getPost` above: the stump arm used to cast
+    // the raw object through `as unknown as PostJson` — a cast that asserted
+    // a lie the compiler then had to be told to ignore. `ThreadJson.post` is
+    // now `PostJson | StumpJson | null` and the cast is gone.
     const t = feedService.getThread(prunedRootId);
     expect(t).not.toBeNull();
     expect(t!.ancestors).toEqual([]);
     expect(t!.descendants).toEqual([]);
-    expect(t!.post).toMatchObject({
-      rootPostHash: prunedRootId,
+    expect(t!.post).toEqual({
+      kind: 'stump',
+      id: prunedRootId,
+      author: Buffer.from(authorId).toString('hex'),
       ...stumpScalars,
     });
   });

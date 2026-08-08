@@ -294,7 +294,7 @@ export interface CreditBox extends BoxBase {
   boxType: 'credit';
   owner: Uint8Array;          // 32 raw bytes
   guard: 'owner_signature';
-  proofSource: number;        // Ordering block height that minted these credits
+  proofSource: number;        // Minting block height, OR -1: the transfer sentinel (heightOrTransfer)
   lockedUntilBlock?: number;  // Block height before which credits cannot be spent
 }
 

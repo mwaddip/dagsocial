@@ -133,6 +133,14 @@ export function createRouter(deps: VouchesDeps): Router {
       const vouches = getVouchesByVoucher(voucherBytes);
       res.status(200).json({
         vouches: vouches.map((v) => ({
+          // The VouchBox's id. An unvouch spends a NAMED box, and no read
+          // surface exposed one — so a client could hold an active vouch and
+          // still be unable to build the transaction that ends it. Available
+          // without a join: `getVouchesByVoucher` already resolves each row
+          // through `getBox`, and `rowToBox` sets `id` on every box it builds
+          // (the "every stored box has an id" invariant), so the assertion is
+          // on the store's guarantee, not on hope.
+          boxId: v.id!,
           voucherId: Buffer.from(v.voucherId).toString('hex'),
           targetId: Buffer.from(v.targetId).toString('hex'),
         })),

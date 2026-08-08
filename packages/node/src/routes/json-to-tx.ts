@@ -11,6 +11,14 @@ const BINARY_BOX_FIELDS = new Set([
   'secretHash',       // InviteBox
   'inviterId',        // InviteBox, BondBox
   'inviteePublicKey', // BondBox
+  // VouchBox. Missing until 2026-08-08, which made the vouch cast
+  // INEXPRESSIBLE over HTTP JSON: both fields arrived as hex strings and died
+  // at `validateTx`'s step-4 schema, which wants `bytes32`. Invisible to the
+  // suite because vouch coverage was service-level only — raw `Uint8Array`
+  // objects, never through this edge. The demo UI's `canonicalBoxBytes` mirror
+  // already listed both, so this is the receiver catching up with the sender.
+  'voucherId',        // VouchBox
+  'targetId',         // VouchBox
 ]);
 
 /**
