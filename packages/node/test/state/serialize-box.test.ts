@@ -84,7 +84,7 @@ describe('serializeBox', () => {
       originalValue: 5n,
       owner: new Uint8Array(32).fill(0x44),
       targetPostId: 'post-2',
-      guard: 'epoch_tally' as const,
+      guard: 'block_apply' as const,
     };
     expect(deserializeBoxWithId(box.id, serializeBox(box))).toEqual(box);
   });

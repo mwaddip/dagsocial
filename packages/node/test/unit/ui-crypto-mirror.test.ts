@@ -174,7 +174,7 @@ const GOLDEN_BOND_BOX: BondBox = {
 const GOLDEN_POST_LOCK_BOX: PostLockBox = {
   boxType: 'post_lock', value: 8n, 
   originalValue: 10n, owner: GOLDEN_AUTHOR, targetPostId: GOLDEN_POST_ID,
-  guard: 'epoch_tally',
+  guard: 'block_apply',
 };
 
 const GOLDEN_VOUCH_BOX: VouchBox = {

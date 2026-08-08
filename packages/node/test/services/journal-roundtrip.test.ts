@@ -466,7 +466,7 @@ describe('journal round-trip per mutation class (P1 acceptance)', () => {
       originalValue: 30n,
       owner: author.userId,
       targetPostId: postId,
-      guard: 'epoch_tally',
+      guard: 'block_apply',
     };
     Object.assign(lockBox, fixtureProvenance(lockBox, 1));
     lockBox.id = computeBoxId(lockBox);

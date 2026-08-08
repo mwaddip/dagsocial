@@ -361,7 +361,7 @@ export interface PostLockBox extends BoxBase {
   originalValue: bigint;      // Initial lock amount (POST_LOCK_THREAD_COST or POST_LOCK_REPLY_COST)
   owner: Uint8Array;          // 32 raw bytes — post author's Ed25519 public key
   targetPostId: PostId;       // The post this lock secures
-  guard: 'epoch_tally';       // Only consumable by epoch processing
+  guard: 'block_apply';       // Only consumable by block application
 }
 
 // --- Vouch ---

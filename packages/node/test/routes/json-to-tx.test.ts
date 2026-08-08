@@ -99,7 +99,7 @@ describe('jsonToTx box value validation (audit L-11, Spec B P0)', () => {
           originalValue: '5',
           owner: ownerHex,
           targetPostId: 'ef'.repeat(32),
-          guard: 'epoch_tally',
+          guard: 'block_apply',
         },
       ],
       signatures: {},

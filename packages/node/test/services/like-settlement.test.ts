@@ -230,7 +230,7 @@ function seedPostLock(value: bigint, author: TestIdentity, postId: string): Post
     originalValue: value,
     owner: author.userId,
     targetPostId: postId,
-    guard: 'epoch_tally',
+    guard: 'block_apply',
   };
   Object.assign(lockBox, fixtureProvenance(lockBox, 1));
   lockBox.id = computeBoxId(lockBox);
@@ -796,6 +796,51 @@ describe('per-block like settlement (P2-D N2b)', () => {
     expect(utxo.getPostLockBox(postId)).toBeNull();
     // 10 likes → payout 8, then the unlock 1 merges in → 9n.
     expect(utxo.getKarmaBox(author.userId)!.value).toBe(9n);
+  });
+
+  it('T2a re-guard: the vesting remainder is block_apply-guarded, content-true, and the guard is id-bearing', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+    const utxo = await importUtxo();
+    const posts = await importPosts();
+    const blockApply = await importBlockApply();
+
+    const author = makeTestIdentity();
+    const post = makePost(author.userId, 're-guard pin target');
+    const postId = computePostId(post);
+    posts.insertPost(post, encodePost(post));
+
+    const lockBox = seedPostLock(3n, author, postId);
+    utxo.insertBox(lockBox);
+
+    expect(blockApply.applyOrderingBlock(await confirmPostBlock(postId, author))).toBe(true);
+
+    // 10 likes → unlock 1 of 3 → block application re-mints a remainder(2).
+    const likers = await seedLikers(POST_LOCK_UNLOCK_PER_LIKES);
+    expect(
+      blockApply.applyOrderingBlock(
+        await makeApplicableBlock({
+          height: 2,
+          utxoTxs: likers.map((l) => makeLikeTx(l.id, l.box, postId)),
+        }),
+      ),
+    ).toBe(true);
+
+    const remainder = utxo.getPostLockBox(postId);
+    expect(remainder).not.toBeNull();
+    expect(remainder!.guard).toBe('block_apply');
+
+    // The store fabricates the guard on read, so the line above alone cannot
+    // catch a producer still writing the retired guard — this one does: the
+    // stored id was hashed over the producer's bytes, and it must equal the
+    // hash of the reconstructed content.
+    expect(computeBoxId(remainder!)).toBe(remainder!.id);
+
+    // The consensus fact the phase turns on: the guard string sits inside the
+    // box-id preimage, so identical content under the retired guard hashes to
+    // a different id (and therefore a different stateRoot).
+    const underRetiredGuard = { ...remainder!, guard: 'epoch_tally' } as unknown as PostLockBox;
+    expect(computeBoxId(underRetiredGuard)).not.toBe(computeBoxId(remainder!));
   });
 
   // -------------------------------------------------------------------------

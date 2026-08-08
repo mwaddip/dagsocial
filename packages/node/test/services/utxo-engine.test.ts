@@ -1043,7 +1043,7 @@ describe('validateAndApplyTx', () => {
         originalValue: POST_LOCK_THREAD_COST,
         owner: ownerPubKey,
         targetPostId: 'ab'.repeat(32),
-        guard: 'epoch_tally',
+        guard: 'block_apply',
       };
 
       const tx = buildSignedTx(
@@ -1593,7 +1593,7 @@ describe('validateAndApplyTx', () => {
         originalValue: 5n,
         owner: ownerPubKey,
         targetPostId: TARGET,
-        guard: 'epoch_tally',
+        guard: 'block_apply',
       } as PostLockBox;
       const tx = buildSignedTx(
         [karma.id!],
@@ -1648,7 +1648,35 @@ describe('validateAndApplyTx', () => {
       );
       const result = validateTx(deps, tx, 10);
       expect(result.valid).toBe(false);
-      expect(result.error).toContain('epoch tally');
+      expect(result.error).toContain('guard can only be consumed by block application');
+    });
+
+    it('spending a block_apply-guarded PostLockBox is rejected at the guard (T2a)', () => {
+      const postLock: PostLockBox = {
+        boxType: 'post_lock',
+        value: POST_LOCK_THREAD_COST,
+        originalValue: POST_LOCK_THREAD_COST,
+        owner: ownerPubKey,
+        targetPostId: TARGET,
+        guard: 'block_apply',
+      };
+      Object.assign(postLock, fixtureProvenance(postLock, 1));
+      const postLockId = computeBoxId(postLock);
+      storeInsertBox({ ...postLock, id: postLockId } as AnyBox);
+
+      // The owner's own signature does not open a settlement-guarded box.
+      // Conservation holds (5 in, 5 out), and the transition table would also
+      // reject a post_lock input — so what this pins is the guard arm
+      // specifically: the error must name the actual guard.
+      const tx = buildSignedTx(
+        [postLockId],
+        [karmaOut(POST_LOCK_THREAD_COST, ownerPubKey)],
+        ownerPrivKey, ownerPubKey,
+      );
+      const result = validateTx(deps, tx, 10);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('block_apply guard');
+      expect(result.error).toContain('can only be consumed by block application');
     });
   });
 });

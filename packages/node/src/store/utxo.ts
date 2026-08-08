@@ -246,7 +246,7 @@ function rowToBox(row: UtxoRow): AnyBox {
         originalValue: BigInt(e.originalValue),
         owner: new Uint8Array(e.owner),
         targetPostId: e.targetPostId,
-        guard: 'epoch_tally',
+        guard: 'block_apply',
         ...prov,
       };
     }

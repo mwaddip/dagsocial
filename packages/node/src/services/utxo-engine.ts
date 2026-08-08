@@ -570,12 +570,12 @@ function checkTransitions(
     }
 
     // ------------------------------------------------------------------
-    // PostLockBox — consumed by epoch only, rejected in guard check
+    // PostLockBox — consumed by block application only, rejected in guard check
     // ------------------------------------------------------------------
     case 'post_lock': {
       return {
         valid: false,
-        error: `PostLockBox can only be consumed by epoch tally (not user transactions)`,
+        error: `PostLockBox can only be consumed by block application (not user transactions)`,
       };
     }
 
@@ -721,7 +721,7 @@ function checkValueConservation(
 }
 
 /**
- * Check guard satisfaction (signatures, hash preimages, epoch tally) for all inputs.
+ * Check guard satisfaction (signatures, hash preimages, settlement guards) for all inputs.
  */
 function checkGuards(
   deps: UtxoEngineDeps,
@@ -744,14 +744,15 @@ function checkGuards(
         break;
       }
 
+      case 'block_apply':
       case 'epoch_tally': {
-        // Boxes with this guard (PostLockBox; retired LikeBoxes) are
-        // consumable only by block application — no user transaction spends
-        // them. The liker-unlike carve-out died with P2-D: unlike is not a
-        // feature.
+        // Settlement-guarded boxes ('block_apply': PostLockBox; 'epoch_tally':
+        // LikeBox until T2b, and any pre-T2a box still on disk) are consumable
+        // only by block application — no user transaction spends them. The
+        // liker-unlike carve-out died with P2-D: unlike is not a feature.
         return {
           valid: false,
-          error: `Box with epoch_tally guard can only be consumed by epoch tally`,
+          error: `Box with ${box.guard} guard can only be consumed by block application`,
         };
       }
 

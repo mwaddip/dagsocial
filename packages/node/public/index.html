@@ -845,7 +845,7 @@ function buildKarmaLockTx(karmaBox, lockAmount, targetPostId, pubKeyHex) {
     originalValue: lockAmount,
     owner: pubKeyHex,
     targetPostId,
-    guard: 'epoch_tally',
+    guard: 'block_apply',
   };
 
   return {

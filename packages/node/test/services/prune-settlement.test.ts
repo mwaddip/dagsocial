@@ -134,7 +134,7 @@ function makePostLockBox(
     originalValue: value,
     owner,
     targetPostId,
-    guard: 'epoch_tally',
+    guard: 'block_apply',
   };
   Object.assign(box, fixtureProvenance(box, seed));
   box.id = computeBoxId(box);

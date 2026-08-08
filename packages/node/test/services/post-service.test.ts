@@ -72,7 +72,7 @@ function makeKarmaLockTx(): UtxoTransaction {
         originalValue: 25,
         owner: new Uint8Array(32),
         targetPostId: '',
-        guard: 'epoch_tally',
+        guard: 'block_apply',
       } as AnyBox,
     ],
     signatures: {},

@@ -231,7 +231,7 @@ describe('posts routes', () => {
       originalValue: POST_LOCK_THREAD_COST,
       owner: userId,
       targetPostId: '', // Will be filled by postId after submission
-      guard: 'epoch_tally',
+      guard: 'block_apply',
     };
 
     // Use a placeholder postId for the lock box (the tx is validated before the

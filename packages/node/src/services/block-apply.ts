@@ -1097,7 +1097,7 @@ function applyMutationPhase(
         originalValue: lockBox.originalValue,
         owner: lockBox.owner,
         targetPostId: postId,
-        guard: 'epoch_tally',
+        guard: 'block_apply',
         txId: mintTxIdFor(postlockRemainderContext(postId), height),
         index: MINT_OUTPUT_INDEX,
       };

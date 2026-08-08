@@ -822,7 +822,7 @@ describe('block-apply embedded tx re-validation', () => {
           originalValue: 5n,
           owner: attacker.userId,
           targetPostId: 'target_post',
-          guard: 'epoch_tally',
+          guard: 'block_apply',
         } as PostLockBox,
       ],
       signatures: {},

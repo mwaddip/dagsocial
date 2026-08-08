@@ -147,7 +147,7 @@ export function postLockTx(
       },
       {
         boxType: 'post_lock', value: lockAmount, originalValue: lockAmount,
-        owner: author, targetPostId, guard: 'epoch_tally',
+        owner: author, targetPostId, guard: 'block_apply',
       },
     ],
     signatures: {},
