@@ -441,28 +441,28 @@ describe('verifySubBlockStructure', () => {
     const sb: SubBlock = {
       subBlockId: computePostId(makeBasePost()),
       post: makeBasePost(),
-      likeBoxes: [],
       producerId: 'user1',
       protocolVersion: 1,
     };
     expect(verifySubBlockStructure(sb)).toEqual({ valid: true });
   });
 
+  it('T2b pin: accepts a sub-block without the retired likeBoxes field', () => {
+    // Two-sided pin, after-leg. Before-leg captured on the pre-T2b tree
+    // (2026-08-08): this exact shape was rejected with
+    // { valid: false, error: 'Sub-block likeBoxes must be an array' }.
+    const sb = {
+      subBlockId: 'ab'.repeat(32),
+      post: makeBasePost(),
+      producerId: 'user1',
+      protocolVersion: 1,
+    } as SubBlock;
+    expect(verifySubBlockStructure(sb)).toEqual({ valid: true });
+  });
+
   it('rejects sub-block missing post', () => {
     const sb = {
       subBlockId: 'abc',
-      likeBoxes: [],
-      producerId: 'user1',
-      protocolVersion: 1,
-    } as unknown as SubBlock;
-    expect(verifySubBlockStructure(sb).valid).toBe(false);
-  });
-
-  it('rejects sub-block with non-array likeBoxes', () => {
-    const sb = {
-      subBlockId: 'abc',
-      post: makeBasePost(),
-      likeBoxes: 'not-an-array',
       producerId: 'user1',
       protocolVersion: 1,
     } as unknown as SubBlock;

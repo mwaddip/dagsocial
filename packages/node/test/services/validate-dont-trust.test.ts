@@ -113,7 +113,7 @@ function makeKarmaLockTx(): UtxoTransaction {
         originalValue: 25,
         owner: new Uint8Array(32),
         targetPostId: '',
-        guard: 'epoch_tally',
+        guard: 'block_apply',
       } as AnyBox,
     ],
     signatures: {},
@@ -349,7 +349,9 @@ describe('validate-dont-trust', () => {
 
     const result = createPost(mockDeps(store), post, tx);
     expect(result.status).toBe('pending');
-    expect(result.subBlock.likeBoxes).toEqual([]);
+    expect(Object.keys(result.subBlock).sort()).toEqual(
+      ['post', 'producerId', 'protocolVersion', 'subBlockId'],
+    );
   });
 
   it('accepts a post with multiple valid parent refs', () => {

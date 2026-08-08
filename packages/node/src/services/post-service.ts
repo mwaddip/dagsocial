@@ -3,7 +3,7 @@ import {
   decodePost,
   MEMPOOL_EXPIRY_BLOCKS,
 } from '@dagsocial/types';
-import type { Post, KarmaBox, UtxoTransaction, AnyBox, SubBlock, LikeBox } from '@dagsocial/types';
+import type { Post, KarmaBox, UtxoTransaction, AnyBox, SubBlock } from '@dagsocial/types';
 import type { VerifierDeps, VerificationResult } from './verifier.js';
 import { ClientError } from './client-error.js';
 
@@ -240,7 +240,6 @@ export function createPost(
   const subBlock = {
     subBlockId: postId,
     post,
-    likeBoxes: [] as LikeBox[],
     producerId: post.author,
     protocolVersion: post.protocolVersion,
   };

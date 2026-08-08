@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { blockHash } from '@dagsocial/validation';
-import type { EpochTally, OrderingBlock } from '@dagsocial/types';
+import type { OrderingBlock } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
 // Dependency types
@@ -48,56 +48,14 @@ function blockToJson(block: OrderingBlock): Record<string, unknown> {
       // CBOR fields omitted from JSON — UTXO tx CBOR has no meaningful
       // textual representation.
       utxoTxs: [],
-      likeBoxIds: block.utxoTxTree.likeBoxIds,
       coinbaseOutputs: block.utxoTxTree.coinbaseOutputs.map((o) => ({
         owner: Buffer.from(o.owner).toString('hex'),
         value: o.value.toString(),
         lockedUntilBlock: o.lockedUntilBlock,
         isTreasury: o.isTreasury,
       })),
-      ...(block.utxoTxTree.epochTallyResults
-        ? { epochTallyResults: epochTallyToJson(block.utxoTxTree.epochTallyResults) }
-        : {}),
     },
     validatorSignature: Buffer.from(block.validatorSignature).toString('hex'),
-  };
-}
-
-/**
- * JSON-safe shape of an EpochTally: bigint amounts as decimal strings,
- * binary owner keys as hex.
- */
-function epochTallyToJson(tally: EpochTally): Record<string, unknown> {
-  const rewards: Record<string, unknown> = {};
-  for (const [postId, r] of Object.entries(tally.rewards)) {
-    const likerRefunds: Record<string, string> = {};
-    for (const [likerId, refund] of Object.entries(r.likerRefunds)) {
-      likerRefunds[likerId] = refund.toString();
-    }
-    rewards[postId] = {
-      targetPostId: r.targetPostId,
-      likeCount: r.likeCount,
-      authorReward: r.authorReward.toString(),
-      likerRefunds,
-      ...(r.postLockKarmaUnlocked !== undefined
-        ? { postLockKarmaUnlocked: r.postLockKarmaUnlocked.toString() }
-        : {}),
-    };
-  }
-  return {
-    rewards,
-    talliedLockedLikeBoxIds: tally.talliedLockedLikeBoxIds,
-    processedFreeLikeIds: tally.processedFreeLikeIds,
-    consumedPostLockBoxIds: tally.consumedPostLockBoxIds,
-    newPostLockBoxes: tally.newPostLockBoxes.map((b) => ({
-      id: b.id,
-      boxType: b.boxType,
-      value: b.value.toString(),
-      originalValue: b.originalValue.toString(),
-      owner: Buffer.from(b.owner).toString('hex'),
-      targetPostId: b.targetPostId,
-      guard: b.guard,
-    })),
   };
 }
 

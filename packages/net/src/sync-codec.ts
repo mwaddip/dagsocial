@@ -3,7 +3,7 @@ import { encodeFrame } from './frame.js';
 import type { SyncInfo, Inv, ModifierRequest, ModifierResponse } from './sync-types.js';
 import { MSG_SYNC_INFO, MSG_INV, MSG_MODIFIER_REQUEST, MSG_MODIFIER_RESPONSE, MSG_GET_PEERS, MSG_PEERS, MSG_GET_POSTS, MSG_POSTS } from './types.js';
 import type { GetPeersMsg, PeersMsg, PeerEntryMsg, GetPostsMsg, PostsMsg, PostsEntry } from './types.js';
-import type { Post, LikeBox } from '@dagsocial/types';
+import type { Post } from '@dagsocial/types';
 import {
   isRecord,
   isBoundedInt,
@@ -197,14 +197,12 @@ export function decodePosts(body: Uint8Array): PostsMsg | null {
   for (const e of v.entries) {
     if (!isRecord(e) || typeof e.postId !== 'string') return null;
     if (!isRecord(e.post)) return null;
-    if (!Array.isArray(e.likeBoxes) || !e.likeBoxes.every(isRecord)) return null;
-    // The Post / LikeBox interiors are not inspected here — content validation
-    // is Stage 1's job (`@dagsocial/validation`). This boundary only guarantees
+    // The Post interior is not inspected here — content validation is
+    // Stage 1's job (`@dagsocial/validation`). This boundary only guarantees
     // the envelope can be walked without throwing.
     entries.push({
       postId: e.postId,
       post: e.post as unknown as Post,
-      likeBoxes: e.likeBoxes as unknown as LikeBox[],
     });
   }
 

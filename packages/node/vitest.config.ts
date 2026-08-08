@@ -17,6 +17,13 @@ export default mergeConfig(
       // that P2-A removes. It is rewritten against the post-P2-D protocol on
       // the network-profile mechanism, not repaired in place.
       exclude: [...configDefaults.exclude, 'test/e2e/**'],
+      // Block-application suites mine real PoW solutions (the powTargetBits
+      // schedule is enforced at apply, so fixtures cannot fake it) and are
+      // compute-bound by design. Under a full-repo parallel run the 5s
+      // default flakes on whichever heavy test lands on a contended core —
+      // observed on journal-roundtrip and like-settlement — so the ceiling
+      // reflects the workload instead of per-test annotations chasing it.
+      testTimeout: 60_000,
       env: {
         POW_SLOT_TARGET_BITS: '4',
       },

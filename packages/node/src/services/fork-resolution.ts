@@ -10,7 +10,8 @@ import {
   unconsumeBox,
   deleteBox,
   unconfirmPost,
-  markFreeLikesUnprocessed,
+  deleteLikeRecord,
+  restoreLikeRecord,
   insertUtxoTx,
   insertMempoolSubBlock,
   insertMempoolPrune,
@@ -128,8 +129,16 @@ export function revertBlock(height: number): PruneEntry[] {
   for (const subBlockId of journal.confirmedSubBlockIds) {
     unconfirmPost(subBlockId);
   }
-  if (journal.processedFreeLikeIds.length > 0) {
-    markFreeLikesUnprocessed(journal.processedFreeLikeIds);
+  // Like-record inverses (P2-D). Order between the two arrays is immaterial:
+  // a record cannot be both inserted and prune-deleted in one block — the
+  // same-block exclusion (prune settles before embedded txs, so a like on a
+  // post the block also prunes finds a stump and the block is rejected) —
+  // so the two sets are disjoint by construction.
+  for (const ins of journal.likeRecordInsertions) {
+    deleteLikeRecord(ins.targetPostId, ins.likerId);
+  }
+  for (const del of journal.likeRecordDeletions) {
+    restoreLikeRecord(del.targetPostId, del.likerId, del.appliedAtBlock);
   }
   for (const ins of journal.vouchCooldownInsertions) {
     deleteVouchCooldown(ins.voucherId, ins.targetId);

@@ -66,17 +66,16 @@ Inspired by Ergo's subblock model (EIP-15):
 
 | Block type | Producer | PoW difficulty | Purpose | Interval |
 |------------|----------|----------------|---------|----------|
-| **Sub-block** | User (post author) | Post PoW | Fast inclusion: post + pending likes | Per post |
-| **Ordering block** | Validator | Full PoW | Consensus anchor: batches sub-blocks, deduplicates likes, triggers epoch processing | Configurable |
+| **Sub-block** | User (post author) | Post PoW | Fast inclusion: the post | Per post |
+| **Ordering block** | Validator | Full PoW | Consensus anchor: batches sub-blocks, orders UTXO transactions, settles per-block like accrual | Configurable |
 
-A user's post PoW solution IS the sub-block proof. The sub-block carries the
-post plus any pending likes queued since the last sub-block. Likes without
-posts between ordering blocks sit in a pending queue and are bundled into the
-next ordering block directly.
+A user's post PoW solution IS the sub-block proof. A sub-block carries exactly
+the post — likes are ordinary UTXO transactions and ride `utxoTxIds` in the
+ordering block like every other transaction (P2-D; see §Likes).
 
 Validators produce ordering blocks: full PoW, batch all sub-blocks produced
-since the previous ordering block, deduplicate any doubly-submitted likes,
-trigger epoch transitions (like tallies), and distribute credit rewards.
+since the previous ordering block, order the pending UTXO transactions (likes
+included), and distribute credit rewards.
 
 ---
 
@@ -164,8 +163,8 @@ model. The post's PoW solution IS the sub-block proof:
    hashes below the target difficulty — **preimage specified in `TYPES_INTERFACE.md`,
    not here** (see the note above; the formula previously restated at this line
    disagreed with the one four lines earlier on field order)
-3. Author submits the completed post → it becomes a sub-block (likeBoxes are
-   collected separately at ordering block assembly, not attached as sidecars)
+3. Author submits the completed post → it becomes a sub-block (a sub-block
+   carries only the post; likes are ordinary UTXO transactions — P2-D)
 4. Validators verify the PoW when anchoring sub-blocks in an ordering block
 
 The challenge prevents precomputation. Requesting a new challenge replaces
@@ -192,8 +191,9 @@ recorded in `block_topology`, and a PruneEntry is valid only if its
 `authorId` equals that recorded author (audit H-3) — so a signature from
 anyone else, however valid for its own key, authorizes nothing. No validator
 attestation is required — settlement is deterministically computable from the
-UTXO state (PostLockBoxes, LikeBoxes). Any node can verify the prune
-independently, with or without the DAG content.
+UTXO state (the subtree's PostLockBoxes) plus the like-records it deletes
+(P2-D). Any node can verify the prune independently, with or without the DAG
+content.
 
 Pruning is irreversible. Once content is pruned, it cannot be recovered.
 What propagates is the PruneEntry inside the ordering block that settles
@@ -462,7 +462,8 @@ Stump {
    binding (`authorId` equals the `block_topology`-recorded author of the
    root; unconfirmed roots are not prunable), Ed25519 signature, postId set
    against block_topology, Merkle root, then settles UTXO deterministically
-   (consumes PostLockBoxes and LikeBoxes, mints refund karma)
+   (consumes the subtree's PostLockBoxes, mints `prune-refund-author` karma,
+   deletes the subtree's like-records — journalled; P2-D)
 7. The simplified Stump is inserted, derived from the verified entry —
    unconditionally, so a node holding no DAG content records the same
    stump — then DAG content is pruned when present
@@ -593,143 +594,134 @@ userId → walk DAG for active username claim
 
 ## Likes
 
-> ⚠ **SUPERSEDED IN ITS ENTIRETY (2026-08-06) — do not implement, do not reconcile
-> line by line.** These 120 lines are 100% original July text describing a **two-phase
-> locked/free** system with refunds, an epoch tally and a free tier. All of it is replaced.
->
-> **The decided design** (`docs/site/economy`, `tmp/karmanomics.md`, design track §5.3–§5.5):
-> - **A like costs the liker 1 karma and it does not come back.** One-way. **There is no
->   unlike**, and no free tier — no like is free.
-> - **The author receives `x−1` per `x` likes; 1 is burned.** Integer arithmetic only.
-> - **The accumulator is per author, not per post**, held as a carry (< `x`) on the
->   committed per-identity record.
-> - **No epoch.** Accrual and settlement are **per block** — the arithmetic never needed an
->   interval, so it was dropped (KISS, where it costs nothing in security or determinism).
-> - **`LikeBox` is eliminated.** With the karma burned at like time there is nothing to
->   hold: a like is a **burn transaction plus a `(liker, post)` record**. Records die with
->   the post on prune and survive withdraw; likes on pruned posts are rejected by rule.
->
-> **What this section gets right and is worth carrying forward:** likes belong to the value
-> layer rather than the content DAG. That survives — the record is committed state, not a
-> DAG object.
->
-> Everything below describes the retired model and is retained only so it is not rebuilt.
+Likes live in the value layer, not the content DAG. **A like costs the liker
+`LIKE_KARMA_COST` (1 karma) and it does not come back** — one-way, no unlike, no free tier.
+A free like is cheap talk; a like that cost something is a signal.
 
-Likes exist in the value layer, not the content DAG. The system has two phases
-depending on how many likes a post has already accumulated.
+### The like transaction
 
-### Liking a post
+A like is an ordinary UTXO transaction that **burns exactly `LIKE_KARMA_COST`**, named by a
+tx-level field:
 
-**One like per account per post.** Enforced at the service layer.
+```
+inputs:      the liker's karma box(es) — all one owner (the liker signs)
+outputs:     exactly one karma box, same owner
+deficit:     sum(inputs) − output.value == LIKE_KARMA_COST     (the burn)
+likeTarget:  the liked post's id — inside the signed bytes
+```
 
-**Phase A — locked likes (likes 1–50 on a post, i.e. < 10 × LIKE_THRESHOLD):**
+**`likeTarget` and the deficit are biconditional.** `likeTarget` present ⇒ the transaction
+must match this shape exactly (no other output types, exactly this deficit); `likeTarget`
+absent ⇒ any karma deficit is illegal. This is the **only** karma-burning user transaction
+— see §Invariants → UTXO conservation. The field sits inside the `computeTxId` preimage, so
+the signature covers the target and a relay cannot re-point a like.
 
-1. 2 karma locked from the liker's karma box
-2. A LikeBox (value 2, `epoch_tally` guard) is created in the UTXO set
-3. The like box rides the next sub-block or goes directly to an ordering block
-4. At the next epoch boundary, the karma is refunded according to the refund
-   schedule (see below)
+Like transactions ride `utxoTxIds` like every other transaction. There are no sub-block
+sidecars and no standalone like pool.
 
-**Phase B — free likes (like 51+ on a post, i.e. ≥ 10 × LIKE_THRESHOLD):**
+**Apply-time rules** (consensus, not gateway courtesy):
 
-1. No karma locked. The like is recorded as a simple `dag_likes` row.
-2. Only gate: the liker has any karma (> 0 karma box value)
-3. Free likes still count toward the total for author rewards
+- The target post must be **confirmed and live** at apply height. Likes on pruned posts are
+  **rejected by stated rule**, not as an emergent property — without this rule, dropping
+  like-records at prune (below) would reopen duplicate likes on stumps.
+- The target's author is resolved from **`block_topology`**, never `dag_posts.author`
+  (placeholder rows carry a zeroed author).
+- `(liker, target)` must not already exist in the like-records — one like per account per
+  post, structurally enforced: the key exists or it does not.
+- Self-likes are legal and uneconomical by construction: each burns real karma and returns
+  at most `(x−1)/x` of it.
 
-### Refund schedule (for locked likes, computed at epoch)
+Applying the transaction writes the `(liker, target)` **like-record** (journalled) and
+increments the target author's like count for this block.
 
-| Likes on post | Refund | Effect |
-|---------------|--------|--------|
-| < 10 (2× threshold) | 0 | Like stays locked, rolls over to next epoch |
-| ≥ 10 (2× threshold) | 2 (full) | Like box consumed, 2 karma returned to liker |
+### Per-block accrual and settlement
 
-Locked karma is never burned. It remains locked across epochs until the
-2× threshold is met. Free likes (51+) cost nothing and generate no refunds.
+There is no epoch. At the end of every block's mutation phase, for each author who received
+likes in this block (ascending author-hex order):
 
-### Epoch tally (every EPOCH_BLOCKS ordering blocks)
+```
+total = record.likeCarry + likesThisBlock
+paid  = (total / LIKES_PER_KARMA_PAYOUT) * (LIKES_PER_KARMA_PAYOUT − 1)   // integer, truncating
+carry = total % LIKES_PER_KARMA_PAYOUT
+```
 
-Epoch processing runs every `EPOCH_BLOCKS` ordering blocks (default 60), not
-every block. It processes both locked like boxes and free like rows:
+`paid` (when > 0) is minted to the author — reason `like-payout`, subject = the raw author
+key, one mint per author per block. `carry` is written back to the author's committed
+`IdentityRecord` (`likeCarry`) **even when `paid` is 0**, and the record is in the
+`stateRoot` — two nodes can never disagree on the next payout undetected. All integer
+arithmetic; a float intermediate is a consensus fork. Per `x = LIKES_PER_KARMA_PAYOUT`
+likes: likers paid `x`, the author receives `x−1`, **1 is burned** — the deflation dial.
 
-1. Collects all unprocessed locked like boxes + unprocessed free like rows
-2. Groups by `targetPostId` — total = locked count + free count
-3. Deduplicates (a like can only appear in one epoch)
-4. For each target post:
-   - **Author reward:** `min(floor(totalLikes / LIKE_THRESHOLD), LIKE_MAX_AUTHOR_REWARD)` — minted to post author
-   - **Liker refunds** (locked like boxes only, per above schedule):
-     - If net == 0: full 2 karma returned to liker's karma box
-     - If net < 0: like box consumed, difference burned
-   - **Free likes:** marked as processed (no karma movement)
-5. Consume all processed like boxes, mark free likes processed
-6. Record `EpochTally` in the ordering block
+The accumulator is **per author, not per post** (design track §1.3.1): outstanding carry is
+bounded by `x−1` per identity and deferred rather than lost, and the payout is independent
+of arrival pattern — the floor runs over a running total, never over a per-window group.
 
-### Like parameters
+> **Recorded open question (design track §5.3):** whether outstanding carry counts as live
+> supply. Nothing in the code reads a live-supply denominator today; decide before anything
+> (decay honesty accounting, governance quorum) does.
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `LIKE_COST` | 2 | Karma locked to cast a like |
-| `LIKE_THRESHOLD` | 5 | Absolute like count per multiplier step |
-| `LIKE_MAX_AUTHOR_REWARD` | 10 | Maximum karma an author can earn per post |
-| `LIKE_FREE_THRESHOLD` | 10 | 10× LIKE_THRESHOLD; beyond this, likes are free |
-| `EPOCH_BLOCKS` | 60 | Like processing every N ordering blocks |
+> ⚠ **Known karma-econ item, stated rather than hidden:** `lastActivityBlock` bumps on any
+> non-decay karma insert, so a `like-payout` mint resets the author's decay clock —
+> "receiving karma is activity," which `karmanomics.md` explicitly rejects for likes (an
+> activity reset must cost a bond, or a second account resets your clock for 1 karma).
+> Redefining the activity trigger is karma-econ scope; P2-D keeps bump-on-mint semantics.
 
-All are protocol parameters, absolute (not proportional to author karma).
+### Like-records
+
+`(liker, targetPostId)` pairs, written only at block application. They are content-layer
+consensus state (the `block_topology` tier): deterministic by replay, journalled with exact
+inverses, **not** in the `stateRoot`.
+
+- **They die with the post on prune.** Prune settlement deletes the pruned subtree's
+  like-records, and the deletions are journalled so a reverted prune restores them exactly.
+  History needs no live record — the burn transaction is block history and names the post,
+  and the post's identity stays committed via the stump. Dedup needs none either: a pruned
+  post cannot be liked (the rejection rule above).
+- **They survive withdraw.** A withdrawn post (semi-stump — designed, not built) keeps its
+  identity and stays likeable, so its records stay. Records follow the post.
+- Growth is bounded by likes on **live** posts, not by every like ever given.
 
 ### Post karma locking
 
-Posting requires karma to be locked — skin in the game against spam. The locked
-karma is held in a `PostLockBox` (guard: `epoch_tally`) and gradually unlocked
-as the post accumulates likes.
-
-**Lock amounts:**
-
-| Post type | Karma locked |
-|-----------|-------------|
-| New thread (no parentRefs) | `POST_LOCK_THREAD_COST` (5) |
-| Reply (has parentRefs) | `POST_LOCK_REPLY_COST` (3) |
-
-**Unlock schedule:**
-
-At each epoch boundary, for every post with a `PostLockBox`:
+Posting still locks a bond — the anti-dodge mechanism (`PostLockBox`, amounts unchanged).
+The lock is created exactly as before, by the client-built karma-lock transaction that
+accompanies every post (`KarmaBox → KarmaBox + PostLockBox`) — P2-D changes only how it
+vests. **Vesting moves to per-block.** At end of block, for every post that received likes
+this block and has a live `PostLockBox`:
 
 ```
-totalLikes       = locked likes + free likes (lifetime, cumulative)
-alreadyUnlocked  = originalValue - currentValue
-shouldUnlock     = floor(totalLikes / POST_LOCK_UNLOCK_PER_LIKES)
-toUnlock         = min(currentValue, shouldUnlock - alreadyUnlocked)
+totalLikes      = like-record count for the post    (lifetime, on a live post)
+alreadyUnlocked = originalValue − value
+shouldUnlock    = totalLikes / POST_LOCK_UNLOCK_PER_LIKES                  // integer, truncating
+toUnlock        = min(value, shouldUnlock − alreadyUnlocked)
 ```
 
-For every 10 lifetime likes, 1 karma is unlocked and returned to the author.
-A thread post (5 locked) needs 50 likes to fully unlock; a reply (3 locked)
-needs 30 likes. If `toUnlock` is zero, the box rolls over to the next epoch.
+`toUnlock > 0` consumes the box, mints that karma to the author (`postlock-unlock`), and
+recreates the reduced box (`postlock-remainder`) unless fully unlocked. The formula is the
+retired epoch schedule evaluated per block; posts are processed in ascending post-id order.
 
-**Locking at post time:**
+The guard is **`block_apply`** (renamed from `epoch_tally` — there is no epoch, and the
+meaning was always "consumable only by block application"). No user transaction can spend a
+`PostLockBox`.
 
-When a post is submitted:
-1. The verifier checks the author has >= required karma
-2. The route handler performs a UTXO transaction:
-   - Consume author's existing KarmaBox (value V)
-   - Create new KarmaBox (value V - lockAmount)
-   - Create PostLockBox (value = lockAmount, originalValue = lockAmount, guard = epoch_tally)
+### Like parameters
 
-**Epoch processing:**
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| `LIKE_KARMA_COST` | `1n` | Karma burned by the liker per like |
+| `LIKES_PER_KARMA_PAYOUT` | `5` | `x`: per `x` likes an author accrues `x−1`; 1 is burned |
+| `POST_LOCK_THREAD_COST` | `5n` | Karma locked for new threads |
+| `POST_LOCK_REPLY_COST` | `3n` | Karma locked for replies |
+| `POST_LOCK_UNLOCK_PER_LIKES` | `10` | Every N lifetime likes unlocks 1 karma |
 
-During `runEpochTally()`, after processing LikeBoxes:
-- Collect all unspent PostLockBoxes
-- For each, compute unlockable karma based on lifetime likes
-- Consume old PostLockBox, create reduced one with remaining locked value
-- Mint unlocked karma back to the author
-- Record `postLockKarmaUnlocked` in the epoch tally's LikeReward entry
+All universal constants — never per-network (§Network Identity: compress time, never
+economics). Values are placeholders until the constants session pins them.
 
-**Post lock parameters:**
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `POST_LOCK_THREAD_COST` | 5 | Karma locked for new threads |
-| `POST_LOCK_REPLY_COST` | 3 | Karma locked for replies |
-| `POST_LOCK_UNLOCK_PER_LIKES` | 10 | Every N likes unlocks 1 karma |
-
-All are protocol parameters, governable in the future.
+**Retired, do not rebuild — names reserved, never reuse:** `LikeBox` and the boxType string
+`'like'` · the `likebox` and `epoch` Merkle leaf domains · the `epoch_tally` guard string ·
+the free-like tier (`dag_likes` rows as likes) · unlike and every refund path · the epoch
+interval and `EPOCH_BLOCKS` · `LIKE_COST` · `LIKE_THRESHOLD` · `LIKE_MAX_AUTHOR_REWARD` ·
+`LIKE_FREE_THRESHOLD`.
 
 ---
 
@@ -852,8 +844,8 @@ Validators secure the network via Proof of Work. They are distinct from users.
 
 ### Responsibilities
 
-1. Produce ordering blocks — batch sub-blocks, deduplicate likes, trigger
-   epoch processing (like tallies)
+1. Produce ordering blocks — batch sub-blocks, order UTXO transactions
+   (per-block like settlement runs inside block application, not here)
 2. Earn newly minted credits as ordering block rewards
 3. Anchor the sub-block chain via Merkle tree digest in each ordering block
 
@@ -963,10 +955,11 @@ Bootstrap uses a **two-phase genesis committee** model:
    PoW → sub-block + karma-lock UTXO tx → mempool (batch-linked by postId)
 5. **Liking:** User spends karma → like box UTXO tx → mempool (standalone)
 6. **Ordering:** Block creator pulls from mempool (FIFO), assembles block with
-   sub-blocks + UTXO txs + standalone likes, mines PoW, finalizes → state
+   sub-blocks + UTXO txs (likes included), mines PoW, finalizes → state
    applied atomically
-7. **Epoch tally:** Every `EPOCH_BLOCKS` ordering blocks — processes locked
-   like boxes, free likes, post lock box unlocks, mints author rewards
+7. **Like settlement:** Every block, at the end of the mutation phase — like
+   burns recorded, per-author accrual settled against `IdentityRecord.likeCarry`
+   (`like-payout` mints), post-lock vesting evaluated (§Likes)
 8. **Pruning:** Author signs prune intent → stump constructed with deterministic
    karma deltas → committed in ordering block → DAG compacted
 9. **Vouch cooldown:** Every block, matured vouch cooldowns release escrowed karma
@@ -1042,8 +1035,9 @@ not be independently readable — nine of them are today, marked `⚠ VIOLATED` 
 
 **Universal — every other constant, including consensus ones:** the format limits
 (`MAX_CONTENT_BYTES`, `MAX_PARENT_REFS`, `PROTOCOL_VERSION`, `AVL_KEY_LENGTH`) and **every
-karma and credit cost** (`LIKE_COST`, `POST_LOCK_*`, `VOUCH_KARMA_AMOUNT`, `INVITE_*`,
-`KARMA_MINIMUM`, `KARMA_DECAY_AMOUNT`, `CREDIT_TREASURY_PCT`, `CREDIT_INITIAL_REWARD`).
+karma and credit cost** (`LIKE_KARMA_COST`, `LIKES_PER_KARMA_PAYOUT`, `POST_LOCK_*`,
+`VOUCH_KARMA_AMOUNT`, `INVITE_*`, `KARMA_MINIMUM`, `KARMA_DECAY_AMOUNT`,
+`CREDIT_TREASURY_PCT`, `CREDIT_INITIAL_REWARD`).
 
 **The split is normative: compress time, never economics.** Every per-network parameter is a
 place where devnet and mainnet behave differently, which is precisely where a defect hides
@@ -1160,14 +1154,11 @@ forever. A node rejects objects with an unsupported protocol version.
 ### Cross-layer
 
 - Karma is non-tradeable — only moves via invites, likes, earning, decay, or burn
-  > ⚠ **VIOLATED — one route left of five. This was the most load-bearing false invariant
-  > in the document.** The rule is correct and stays: it is the premise the karma↔credit
-  > firewall rests on, asserted in four places here and on two published pages.
-  >
-  > **Still open (1):** the `like` transition checks only that every output is a karma box,
-  > with **no owner constraint**, and the liker may consume their own LikeBox — so
-  > like-then-unlike moves karma to an arbitrary recipient. **Closes by feature removal in
-  > P2-D**; unlike is not a feature in the current design.
+  > **Holds since P2-D** (previously the most load-bearing false invariant in the
+  > document — five transfer routes existed). The rule is the premise the karma↔credit
+  > firewall rests on, asserted in four places here and on two published pages. The fifth
+  > and final route (like-then-unlike moved karma to an arbitrary recipient) closed by
+  > feature removal: unlike is not a feature and `LikeBox` no longer exists.
   >
   > **Closed by P2-B (4):** the committed invitee spending the BondBox to their own karma box
   > (phase 1 — settlement now pays only `bond.inviterId`, under a spend-time unlock, and no
@@ -1191,17 +1182,15 @@ forever. A node rejects objects with an unsupported protocol version.
 - A post's cryptographic identity (hash) survives pruning — parent refs remain valid
 - The DAG's merkle integrity is independent of content availability
 - The UTXO ledger's correctness is independent of the DAG's index state
-  > ⚠ **FALSE AS DESIGNED, not as implemented.** The epoch tally's author reward is a
-  > function of a `dag_likes` row count — a DAG index read inside a consensus mutation.
-  > **Resolved by the per-block accumulator** (design track §5.3), which reads a committed
-  > per-identity record instead. Until that lands, this invariant does not hold.
+  > **Holds since P2-D** (was FALSE AS DESIGNED: the epoch tally's author reward read a
+  > `dag_likes` row count — a DAG index read inside a consensus mutation). Settlement now
+  > reads the per-identity `likeCarry` in the `stateRoot` and `like_records` — consensus
+  > state written only at block application (`block_topology` tier), never by a route.
 - Stumps are the sole bridge: DAG compaction → karma issuance
-- Like boxes live in the UTXO layer — they are not DAG objects
-  > ⚠ **SUPERSEDED — `LikeBox` is being removed entirely** (design track §5.4). With the
-  > karma burned at like time there is no held value, so a like becomes a burn transaction
-  > plus a `(liker, post)` record. True of the object as it stands; the free-like tier the
-  > §Likes section describes contradicted it by minting from `dag_likes`, and that tier is
-  > also gone.
+- A like is a burn transaction plus a `(liker, post)` like-record — no box, no held
+  value. Like-records are content-layer consensus state (`block_topology` tier):
+  deterministic by replay, journalled with exact inverses, deleted with the post at
+  prune, not in the `stateRoot`. (`LikeBox` and the free-like tier are retired — P2-D.)
 
 ### Cryptographic
 
@@ -1260,25 +1249,27 @@ forever. A node rejects objects with an unsupported protocol version.
 
 ### UTXO conservation
 
-- Total karma supply = genesis + like rewards (minted) - decay burns - invite bond burns
-  > ⚠ **FALSE — incomplete.** `mint-provenance.ts` carries **ten** mint reasons, including
-  > `prune-refund-author`, `prune-refund-liker`, `postlock-unlock`, vouch settlement and
-  > the faucet. This equation names three. **The mint-reason table is the authoritative
-  > enumeration; this bullet must be derived from it, not maintained beside it** — a
-  > hand-kept parallel list of mint sources is a mirror, and it has already diverged.
+- Karma supply changes only via the mint reasons (NODE_INTERFACE's mint-reason table is
+  the **authoritative enumeration** — derive from it, never maintain a parallel list here;
+  a hand-kept mirror of it had already diverged once) and exactly two burns: **decay**, and
+  **the like burn** — `LIKE_KARMA_COST` leaves the liker per like, `x−1` per `x` returns
+  via `like-payout`, net 1 burned per `LIKES_PER_KARMA_PAYOUT` likes.
 - Total credit supply = genesis + ordering block rewards - future sinks
   > ⚠ **QUALIFIED — true in shape, but "total" is currently unbounded.** The reward
   > function has **no terminus**: it floors at `CREDIT_TAIL_REWARD` and mints 2 credits per
   > block forever, while `MINING_INTERFACE.md` states a fixed ~453.9M total. Emission is
   > decided to **terminate** (Ergo shape, decay to zero, no tail — design track §5.7), and
   > every current total-supply figure in the repo is wrong until that lands.
-- Every UTXO transaction conserves value except mint and burn
-  > ⚠ **UNENFORCED — and the repo already says so.** `packages/node/CLAUDE.md` states
-  > verbatim: *"(Being enforced by the value-integrity spec — today the node does not
-  > enforce it.)"* Live instances: unvouch re-minting a constant instead of releasing the
-  > staked amount, and `sendCredits` mutating the UTXO set outside block application.
-  > **This is a prerequisite, not a parallel track** — the like-burn transition of design
-  > track §5.4 cannot be correct until burning is an enforced transition.
+- Every UTXO transaction conserves value, with exactly **one stated exception: the like
+  transaction burns `LIKE_KARMA_COST`** — `likeTarget` present ⟺ that exact deficit (the
+  biconditional; NODE_INTERFACE → legal transitions). All other mints and burns happen
+  only in block-application paths, never inside a user transaction.
+  > Conservation is **enforced** since P2-B (`checkValueConservation` per transaction,
+  > full re-validation at apply; the unvouch and `sendCredits` violations closed in its
+  > phases 2–3) — this entry's previous `⚠ UNENFORCED` marker had outlived its defect.
+  > The like carve-out is enforced since P2-D N1 (the biconditional lives in the engine's
+  > like arm). P2-B landing first is what made it safe to add — a deficit rule only means
+  > something once conservation is otherwise enforced.
 - Box `value` and all value/amount arithmetic are `bigint` integer base units
   (`value < 2⁶⁴`); **no float math in any consensus value path** — floats are
   non-deterministic across platforms and credit sums exceed 2⁵³ (Spec B P0)
@@ -1290,16 +1281,18 @@ forever. A node rejects objects with an unsupported protocol version.
 - **One record-once mutation log.** Block application maintains a single
   ordered journal of primitive box mutations —
   `{ op: 'insert' | 'remove', boxId, box? }` — recorded automatically at the
-  store choke point (`insertBox`, `consumeBox`, `markLikeBoxesTallied`) while
-  a block journal is open. Call sites never maintain parallel mutation
-  bookkeeping; every box mutation a block makes appears in the log exactly
-  once, in application order.
+  store choke point (`insertBox`, `consumeBox`) while a block journal is open.
+  Call sites never maintain parallel mutation bookkeeping; every box mutation
+  a block makes appears in the log exactly once, in application order.
+  (P2-D deleted the third choke point, `markLikeBoxesTallied`, together with
+  the epoch; the like-record side-records journal through their own hooks,
+  with exact inverses.)
 - **Accounting-agnostic.** The log carries no per-mutation-class fields.
   Future mutation classes (invite/post bonds, one-way like accounting,
   storage rent, coinbase splits) journal through the same log unchanged.
 - **Rollback replays inverses.** Reverting a block walks the log in reverse:
   `insert` → delete the box, `remove` → un-spend it. Non-box side effects
-  (post confirmations, free-like processed flags, vouch-cooldown rows,
+  (post confirmations, like-records, vouch-cooldown rows,
   mempool re-insertion payloads) travel as typed side-records, each with an
   exact inverse. Apply-then-revert restores the identical UTXO set and AVL
   digest for every mutation class.
@@ -1316,10 +1309,10 @@ forever. A node rejects objects with an unsupported protocol version.
 See `SUBBLOCK_INTERFACE.md` for the full contract.
 
 - Sub-blocks are user-produced; ordering blocks are validator-produced
-- Sub-blocks carry at most one post (like boxes collected at ordering time)
+- Sub-blocks carry exactly one post and nothing else
 - Ordering blocks anchor sub-blocks via Merkle digest
-- Like deduplication happens at ordering time
-- Epoch transitions (like tally) happen at ordering block boundaries
+- Like dedup is structural: the `(liker, post)` like-record exists or it does not
+- Like accrual and settlement happen every block — there is no epoch (P2-D)
 
 ### Network identity
 
@@ -1428,13 +1421,15 @@ These invariants are adopted from production-grade Ergo Rust node practices:
   > **Decision 2026-08-06: replace, do not specify.** Move to a length-prefixed canonical
   > encoding — the pattern `postFieldBytes` already uses, which is the M-1 fix and is
   > verified injective. Two supporting reasons: the format is **already straining**
-  > (`canonicalEpochTallyJson` exists precisely because JSON insertion order was not
-  > deterministic enough for one leaf), and it is protocol-breaking either way, so it costs
+  > (`canonicalEpochTallyJson` existed precisely because JSON insertion order was not
+  > deterministic enough for one leaf — retired with the epoch, P2-D), and it is
+  > protocol-breaking either way, so it costs
   > nothing extra folded into the id-moving bundle (`computeTxId` length-prefixing, post
   > typing) rather than as a second coordinated break later.
   >
   > `stump`, `prune` and `utxotx` are simple byte forms and are unaffected — they get written
-  > specs as-is. `epoch` and `likebox` are deleted with the like/epoch removal.
+  > specs as-is. `epoch` and `likebox` are deleted by P2-D, their domain strings **reserved,
+  > never reused** (§Likes).
 
 ### Package boundaries
 - **No dependencies above the package's abstraction level** — the storage
@@ -1559,8 +1554,9 @@ fresh. Namespacing keeps the option open to split into separate stores later
 
 - Sovereign subtrees with author-controlled pruning
 - UTXO ledger: karma (non-tradeable) + credits (tradeable)
-  > ⚠ **karma non-tradeable is VIOLATED three ways; credits are tradeable only on one
-  > node's disk** (`sendCredits` bypasses block application). See §Invariants → Cross-layer.
+  > Both halves hold: the karma-transfer routes closed across P2-B (vouch/co-sign) and
+  > P2-D (unlike, by feature removal), and `sendCredits` rides block application since
+  > P2-B phase 3. See §Invariants → Cross-layer.
 - ~~Like system: locked likes (karma staking) + free likes (post-50), epoch tally~~
   > ⚠ **SUPERSEDED.** Likes are one-way at 1 karma with no refund, no free tier and no
   > epoch. The **free-like tier has no producer anywhere in the node** — correctly never

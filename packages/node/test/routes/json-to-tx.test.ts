@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { PROTOCOL_VERSION, LIKE_COST } from '@dagsocial/types';
+import { PROTOCOL_VERSION } from '@dagsocial/types';
 
 import { jsonToTx } from '../../src/routes/json-to-tx.js';
 
@@ -79,11 +79,11 @@ describe('jsonToTx box value validation (audit L-11, Spec B P0)', () => {
   it('rejects when any one output in a multi-output tx is invalid', () => {
     const raw = rawTx(100);
     (raw.outputs as Record<string, unknown>[]).push({
-      boxType: 'like',
-      value: -LIKE_COST,
-      likerId: ownerHex,
-      targetPostId: 'ef'.repeat(32),
-      guard: 'epoch_tally',
+      boxType: 'karma',
+      value: -2n,
+      owner: ownerHex,
+      guard: 'owner_signature',
+      proofSource: 'x',
     });
 
     expect(() => jsonToTx(raw)).toThrow(/box value must be a non-negative/);
@@ -99,7 +99,7 @@ describe('jsonToTx box value validation (audit L-11, Spec B P0)', () => {
           originalValue: '5',
           owner: ownerHex,
           targetPostId: 'ef'.repeat(32),
-          guard: 'epoch_tally',
+          guard: 'block_apply',
         },
       ],
       signatures: {},

@@ -14,8 +14,12 @@ import {
   IDENTITY_KEY_DOMAIN,
   INVITE_KARMA_AMOUNT,
   INVITE_BOND_KARMA,
+  LIKE_KARMA_COST,
+  LIKES_PER_KARMA_PAYOUT,
+  encodeTx,
+  decodeTx,
 } from '../src/index.js';
-import type { CandidateOf, KarmaBox, CreditBox, LikeBox, InviteBox, BondBox, UtxoTransaction, MintReason } from '../src/index.js';
+import type { CandidateOf, KarmaBox, CreditBox, InviteBox, BondBox, UtxoTransaction, MintReason } from '../src/index.js';
 
 const owner = new Uint8Array(32).fill(0xaa);
 
@@ -37,16 +41,6 @@ function makeCreditBox(): CreditBox {
     owner,
     guard: 'owner_signature',
     proofSource: 42,
-  };
-}
-
-function makeLikeBox(): LikeBox {
-  return {
-    boxType: 'like',
-    value: 2n,
-    likerId: 'user123',
-    targetPostId: 'a'.repeat(64),
-    guard: 'epoch_tally',
   };
 }
 
@@ -112,7 +106,6 @@ describe('boxes', () => {
 
     it('works for all box types', () => {
       expect(() => computeBoxId(makeCreditBox())).not.toThrow();
-      expect(() => computeBoxId(makeLikeBox())).not.toThrow();
       expect(() => computeBoxId(makeInviteBox())).not.toThrow();
       expect(() => computeBoxId(makeBondBox())).not.toThrow();
     });
@@ -136,7 +129,7 @@ describe('boxes', () => {
       //
       // Same boxes, opposite claim — moving the same `(txId, index)` pair must
       // move the id, and two indices under one txId must not collide.
-      for (const bare of [makeKarmaBox(), makeCreditBox(), makeLikeBox(), makeInviteBox(), makeBondBox()]) {
+      for (const bare of [makeKarmaBox(), makeCreditBox(), makeInviteBox(), makeBondBox()]) {
         const at3 = { ...bare, txId: GOLDEN_TX_ID, index: 3 };
         const at4 = { ...bare, txId: GOLDEN_TX_ID, index: 4 };
         const otherTx = { ...bare, txId: 'a'.repeat(64), index: 3 };
@@ -291,14 +284,12 @@ function u32BEMirror(n: number): Uint8Array {
 const ALL_MINT_REASONS: MintReason[] = [
   'coinbase',
   'vouch-settle',
-  'author-reward',
-  'liker-refund',
+  'like-payout',
   'postlock-unlock',
   'postlock-remainder',
   'decay',
   'genesis',
   'prune-refund-author',
-  'prune-refund-liker',
 ];
 
 /**
@@ -508,31 +499,16 @@ describe('computeMintTxId', () => {
     expect(computeMintTxId(70000, 'decay', new Uint8Array(32).fill(0xff))).not.toBe(base);
   });
 
-  it('separates author-reward from postlock-unlock for the same subject', () => {
-    // The two mints that otherwise land on the same author, for the same post,
-    // at the same height — the collision the `reason` tag exists to prevent.
+  it('separates like-payout from postlock-unlock for the same subject bytes', () => {
+    // The reason tag is the only separator when two same-height mints share
+    // subject bytes — under P2-D the accrual payout and a lock vesting unlock
+    // both land on an author in one block's settlement.
     const subject = new Uint8Array(32).fill(0x11);
-    expect(computeMintTxId(70000, 'author-reward', subject))
+    expect(computeMintTxId(70000, 'like-payout', subject))
       .not.toBe(computeMintTxId(70000, 'postlock-unlock', subject));
   });
 
-  it('separates the two prune-refund legs for the same subject', () => {
-    // The collision the second prune reason exists to prevent: one user who both
-    // authored and liked inside a single pruned subtree gets two refund mints at
-    // the same height, from the same `settlePruneUtxo` call, with the same
-    // `(rootPostHash, owner)` subject. One reason would derive one txId twice at
-    // index 0, trip UNIQUE(tx_id, output_index) and reject a legitimate block.
-    //
-    // Subject shape is node's (NODE_INTERFACE → reason/subject table), built
-    // here only so the scenario is the real one: utf8(rootPostHash) ‖ raw(owner).
-    const subject = new Uint8Array(96);
-    subject.set(Buffer.from('c'.repeat(64), 'utf8'), 0);
-    subject.set(new Uint8Array(32).fill(0x22), 64);
-    expect(computeMintTxId(70000, 'prune-refund-author', subject))
-      .not.toBe(computeMintTxId(70000, 'prune-refund-liker', subject));
-  });
-
-  it('the two prune-refund reasons are distinct from every other reason', () => {
+  it('every reason derives a distinct mint id for the same subject', () => {
     // Widening the set must not let a new tag land on an existing mint id.
     const subject = new Uint8Array(96).fill(0x33);
     const ids = ALL_MINT_REASONS.map((r) => computeMintTxId(70000, r, subject));
@@ -766,6 +742,67 @@ describe('transactions', () => {
       const id = computeTxId(tx);
       expect(typeof id).toBe('string');
       expect(id.length).toBe(64);
+    });
+  });
+
+  describe('computeTxId with likeTarget (P2-D)', () => {
+    const TARGET_A = 'a'.repeat(64);
+    const TARGET_B = 'b'.repeat(64);
+
+    it('presence changes the txId', () => {
+      const liked: UtxoTransaction = { ...GOLDEN_TX, likeTarget: TARGET_A };
+      expect(computeTxId(liked)).not.toBe(computeTxId(GOLDEN_TX));
+    });
+
+    it('a relay cannot re-point a like: two targets, two txIds', () => {
+      // The signature is over the TxId, so this inequality is what binds a
+      // like to its post.
+      const likeA: UtxoTransaction = { ...GOLDEN_TX, likeTarget: TARGET_A };
+      const likeB: UtxoTransaction = { ...GOLDEN_TX, likeTarget: TARGET_B };
+      expect(computeTxId(likeA)).not.toBe(computeTxId(likeB));
+    });
+
+    it('absence appends nothing: the frozen pre-P2-D golden txId is unchanged', () => {
+      // Restates the golden-vector pin as the additive-phase invariant: a tx
+      // without likeTarget hashes byte-identically to before the field existed.
+      expect(computeTxId(GOLDEN_TX)).toBe(GOLDEN_TX_ID);
+    });
+
+    it("the tail contribution is ASCII 'like:' ‖ likeTarget, after protocolVersion — independently recomputed", () => {
+      // Mirror written from the contract text (TYPES_INTERFACE →
+      // UtxoTransaction), not by calling the function under test — the G3b
+      // lesson: a golden regenerated after the fact pins nothing.
+      const tx: UtxoTransaction = { ...GOLDEN_TX, likeTarget: TARGET_A };
+      const h = createHash('blake2b512');
+      h.update(Buffer.from('dagsocial/tx-id/1'));
+      for (const input of tx.inputs) h.update(input);
+      for (const out of tx.outputs) h.update(canonicalBoxBytes(out));
+      h.update(String(tx.protocolVersion));
+      h.update(Buffer.from('like:', 'utf8'));
+      h.update(Buffer.from(TARGET_A, 'utf8'));
+      expect(computeTxId(tx)).toBe(h.digest().subarray(0, 32).toString('hex'));
+    });
+
+    it('likeTarget rides encodeTx/decodeTx and the id survives the round-trip', () => {
+      // Like txs ride `utxoTxs` as CBOR like any other transaction; a wire
+      // codec that dropped the field would re-derive a different id after
+      // decode, and the signature over the original id would stop verifying.
+      const tx: UtxoTransaction = { ...GOLDEN_TX, likeTarget: TARGET_A };
+      const decoded = decodeTx(encodeTx(tx));
+      expect(decoded.likeTarget).toBe(TARGET_A);
+      expect(computeTxId(decoded)).toBe(computeTxId(tx));
+    });
+  });
+
+  describe('like constants (P2-D)', () => {
+    it('LIKE_KARMA_COST is 1n — a karma amount, so bigint', () => {
+      expect(typeof LIKE_KARMA_COST).toBe('bigint');
+      expect(LIKE_KARMA_COST).toBe(1n);
+    });
+
+    it('LIKES_PER_KARMA_PAYOUT is 5 — a count, so number', () => {
+      expect(typeof LIKES_PER_KARMA_PAYOUT).toBe('number');
+      expect(LIKES_PER_KARMA_PAYOUT).toBe(5);
     });
   });
 

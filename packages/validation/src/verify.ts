@@ -304,7 +304,6 @@ export function verifySubBlockStructure(sb: SubBlock): { valid: boolean; error?:
   if (!isObject(sb)) return { valid: false, error: 'Sub-block is not an object' };
   if (!sb.post) return { valid: false, error: 'Sub-block missing post' };
   if (!sb.subBlockId) return { valid: false, error: 'Sub-block missing subBlockId' };
-  if (!Array.isArray(sb.likeBoxes)) return { valid: false, error: 'Sub-block likeBoxes must be an array' };
   if (typeof sb.protocolVersion !== 'number') return { valid: false, error: 'Sub-block missing protocolVersion' };
   if (!sb.producerId) return { valid: false, error: 'Sub-block missing producerId' };
   return { valid: true };

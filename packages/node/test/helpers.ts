@@ -3,12 +3,13 @@ import {
   computeTxId,
   computeBoxId,
   canonicalBoxBytes,
+  encodeTx,
   u32BE,
   leafHash,
   buildMerkleRoot,
   hexToBuf,
   PROTOCOL_VERSION,
-  LIKE_COST,
+  LIKE_KARMA_COST,
   CREDIT_MINER_REWARD_DELAY,
   EMPTY_STATE_ROOT,
 } from '@dagsocial/types';
@@ -18,7 +19,6 @@ import type {
   UtxoTransaction,
   AnyBox,
   Post,
-  LikeBox,
   KarmaBox,
   BlockHeader,
   OrderingBlock,
@@ -171,24 +171,6 @@ export function seedAsOneTx(candidates: object[], seedHeight = 1, nonce = 0): An
   });
 }
 
-export function makeLikeBox(
-  likerId: Uint8Array,
-  targetPostId: string,
-  seedHeight: number,
-  nonce = 0,
-): LikeBox {
-  const candidate = {
-    boxType: 'like' as const,
-    value: 2n,
-    likerId,
-    targetPostId,
-    guard: 'epoch_tally' as const,
-  };
-  const box: LikeBox = { ...candidate, ...fixtureProvenance(candidate, seedHeight, nonce) };
-  box.id = computeBoxId(box);
-  return box;
-}
-
 export function makeKarmaBox(
   value: bigint,
   owner: Uint8Array,
@@ -208,13 +190,14 @@ export function makeKarmaBox(
 }
 
 /**
- * Build a signed, value-conserving like transaction — the shape a real client
- * submits: the liker's karma box is consumed and split into a karma change box
- * and the LikeBox.
+ * Build a signed like transaction — the P2-D burn shape a real client submits:
+ * the liker's karma box is consumed into a single karma change box at
+ * `−LIKE_KARMA_COST`, with `likeTarget` naming the post inside the signed
+ * bytes. A like is a transaction, never a box.
  *
  * Block application re-validates every embedded tx in full, so a fixture that
- * omitted the signature or the change output would be indistinguishable from a
- * forgery and would take the whole block down with it.
+ * omitted the signature or mis-stated the deficit would be indistinguishable
+ * from a forgery and would take the whole block down with it.
  */
 export function makeLikeTx(
   liker: TestIdentity,
@@ -226,21 +209,15 @@ export function makeLikeTx(
     outputs: [
       {
         boxType: 'karma',
-        value: karmaBox.value - LIKE_COST,
+        value: karmaBox.value - LIKE_KARMA_COST,
         owner: liker.userId,
         guard: 'owner_signature',
         proofSource: 'like_op',
       },
-      {
-        boxType: 'like',
-        value: LIKE_COST,
-        likerId: liker.userId,
-        targetPostId,
-        guard: 'epoch_tally',
-      },
     ],
     signatures: {},
     protocolVersion: PROTOCOL_VERSION,
+    likeTarget: targetPostId,
   };
   signTransaction(tx, liker.privateKey, Buffer.from(liker.userId).toString('hex'));
   return tx;
@@ -355,6 +332,13 @@ export async function makeApplicableBlock(
     /** Mine to this identity (coinbase owner + validatorId) instead of a fresh
      *  one — lets a test seed pre-existing boxes for the coinbase owner. */
     miner?: TestIdentity;
+    /** Embed these UTXO transactions directly — the validator-embeds-a-tx
+     *  shape, bypassing every gateway (mempool intake, castLike's
+     *  one-signature rule). Ids and CBOR are derived here, so the Merkle
+     *  commitment is honest; whether the txs are *valid* is exactly what the
+     *  suite's apply measures. Listed in the order given — dependency order
+     *  is the apply loop's job. */
+    utxoTxs?: UtxoTransaction[];
     /** Split the coinbase across these owners instead of paying the miner
      *  alone — the shape a node with `creditTreasuryPct > 0` produces. The
      *  shares must sum to the scheduled emission or apply rejects the block. */
@@ -382,10 +366,10 @@ export async function makeApplicableBlock(
     pruneEntries: opts.pruneEntries ?? [],
   };
   const lockedUntilBlock = opts.lockedUntilBlock ?? height + CREDIT_MINER_REWARD_DELAY;
+  const embeddedTxs = opts.utxoTxs ?? [];
   const utxoTxTree = {
-    utxoTxIds: [],
-    utxoTxs: [],
-    likeBoxIds: [],
+    utxoTxIds: embeddedTxs.map((tx) => computeTxId(tx)),
+    utxoTxs: embeddedTxs.map((tx) => encodeTx(tx)),
     coinbaseOutputs: (
       opts.coinbaseSplit ?? [
         { owner: miner.userId, value: computeBlockReward(height), isTreasury: false },
@@ -458,5 +442,8 @@ export function txToJson(tx: UtxoTransaction): Record<string, unknown> {
         )
       : undefined,
     protocolVersion: tx.protocolVersion,
+    // Present ⟺ the tx is a like (P2-D) — the JSON edge must not drop it,
+    // since it sits inside the signed bytes.
+    ...(tx.likeTarget !== undefined ? { likeTarget: tx.likeTarget } : {}),
   };
 }

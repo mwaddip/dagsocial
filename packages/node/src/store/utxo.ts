@@ -10,7 +10,6 @@ import type {
   AnyBox,
   KarmaBox,
   CreditBox,
-  LikeBox,
   InviteBox,
   BondBox,
   PostLockBox,
@@ -49,11 +48,6 @@ interface KarmaExtra {
 interface CreditExtra {
   proofSource: number;
   lockedUntilBlock?: number;
-}
-
-interface LikeExtra {
-  likerId: string;       // hex-encoded pubkey in JSON (Uint8Array in code)
-  targetPostId: string;
 }
 
 interface InviteExtra {
@@ -184,30 +178,6 @@ function rowToBox(row: UtxoRow): AnyBox {
       return cb;
     }
 
-    case 'like': {
-      const e = extra as LikeExtra;
-      return {
-        id: row.id,
-        boxType: 'like',
-        // The row's real value, NOT the literal 2n this used to fabricate.
-        // The box id hashes `canonicalBoxBytes` — value included — so a store
-        // that rewrites the value on read returns a box whose bytes no longer
-        // match its own id, and an AVL prover re-bootstrapped from SQLite
-        // would diverge from one fed at insert time. Unlike vouch there is no
-        // cast-time value pin (LIKE_COST is what every production builder
-        // uses, but outputs arrive as client CBOR, and P2-D deletes the box
-        // rather than pinning it); the store's job is to round-trip what is
-        // actually on disk. The `as` cast bridges LikeBox's literal `2n`
-        // value type, which documents the builders' constant rather than a
-        // storage guarantee.
-        value: row.value as LikeBox['value'],
-        likerId: hexToPubkey(e.likerId),
-        targetPostId: e.targetPostId,
-        guard: 'epoch_tally',
-        ...prov,
-      };
-    }
-
     case 'invite':
       return {
         id: row.id,
@@ -246,7 +216,7 @@ function rowToBox(row: UtxoRow): AnyBox {
         originalValue: BigInt(e.originalValue),
         owner: new Uint8Array(e.owner),
         targetPostId: e.targetPostId,
-        guard: 'epoch_tally',
+        guard: 'block_apply',
         ...prov,
       };
     }
@@ -498,81 +468,28 @@ export function getBondBoxes(inviterId: Uint8Array): BondBox[] {
 }
 
 /**
- * Return the hex-encoded liker IDs for all unspent LikeBoxes targeting
- * the given post. Used by the feed API to tell clients who has liked.
+ * Return the hex-encoded liker IDs for everyone holding a like-record on
+ * the given post (N4a — reads `like_records`, the source of truth since
+ * per-block settlement). Used by the feed API to tell clients who has liked.
+ * Ordered by liker id so the listing is a function of state, not row order.
  */
 export function getLikersForPost(targetPostId: string): string[] {
   const db = getDb();
   const rows = db
     .prepare(
-      `SELECT DISTINCT json_extract(extra_data, '$.likerId') AS likerId FROM utxo_boxes
-       WHERE box_type = 'like'
-         AND json_extract(extra_data, '$.targetPostId') = ?
-         AND spent_at_block IS NULL`,
+      `SELECT liker_id FROM like_records
+       WHERE target_post_id = ?
+       ORDER BY liker_id`,
     )
-    .all(targetPostId) as { likerId: string }[];
-  return rows.map((r) => r.likerId);
+    .all(targetPostId) as { liker_id: Buffer }[];
+  return rows.map((r) => r.liker_id.toString('hex'));
 }
 
 /**
- * Return all unspent (unconsumed) like boxes targeting the given post.
- * Used by prune settlement to refund likers' locked karma.
- */
-export function getUnspentLikeBoxes(targetPostId: string): LikeBox[] {
-  const db = getDb();
-  const rows = db
-    .prepare(
-      `SELECT * FROM utxo_boxes
-       WHERE box_type = 'like'
-         AND json_extract(extra_data, '$.targetPostId') = ?
-         AND spent_at_block IS NULL`,
-    )
-    .safeIntegers()
-    .all(targetPostId) as UtxoRow[];
-  return rows.map(rowToBox) as LikeBox[];
-}
-
-/**
- * Return all locked like boxes targeting the given post.
- */
-export function getLockedLikeBoxes(targetPostId: string): LikeBox[] {
-  const db = getDb();
-  const rows = db
-    .prepare(
-      `SELECT * FROM utxo_boxes
-       WHERE box_type = 'like'
-         AND json_extract(extra_data, '$.targetPostId') = ?`,
-    )
-    .safeIntegers()
-    .all(targetPostId) as UtxoRow[];
-  return rows.map((r) => rowToBox(r) as LikeBox);
-}
-
-/**
- * Return all unprocessed (unspent) locked like boxes for epoch tally.
+ * Return all unspent post lock boxes for per-block vesting.
  *
- * Ordered by box id — content-derived, so every node walks these in the same
- * order regardless of the order it received the likes in.  Defence in depth
- * for the epoch tally: the consensus-relevant serialization is canonicalized
- * (`epoch-canonical.ts`), never left to rely on rowid order.
- */
-export function getUnprocessedLockedLikeBoxes(): LikeBox[] {
-  const db = getDb();
-  const rows = db
-    .prepare(
-      `SELECT * FROM utxo_boxes
-       WHERE box_type = 'like' AND spent_at_block IS NULL
-       ORDER BY id`,
-    )
-    .safeIntegers()
-    .all() as UtxoRow[];
-  return rows.map((r) => rowToBox(r) as LikeBox);
-}
-
-/**
- * Return all unspent post lock boxes for epoch tally.
- *
- * Ordered by box id, for the same reason as the like boxes above.
+ * Ordered by box id — consensus code iterates the result, so the order must
+ * be deterministic across nodes.
  */
 export function getUnspentPostLockBoxes(): PostLockBox[] {
   const db = getDb();
@@ -606,29 +523,6 @@ export function getPostLockBox(targetPostId: string): PostLockBox | null {
 }
 
 /**
- * Return the total lifetime like count for a post.
- * Counts ALL like boxes (including spent/tallied) plus ALL free likes
- * (including processed). This is needed because post lock unlocking is
- * cumulative — past likes still count.
- */
-export function getPostTotalLikes(targetPostId: string): number {
-  const db = getDb();
-  const likeRow = db
-    .prepare(
-      `SELECT COUNT(*) AS cnt FROM utxo_boxes
-       WHERE box_type = 'like'
-         AND json_extract(extra_data, '$.targetPostId') = ?`,
-    )
-    .get(targetPostId) as { cnt: number };
-  const freeRow = db
-    .prepare(
-      'SELECT COUNT(*) AS cnt FROM dag_likes WHERE target_post_id = ?',
-    )
-    .get(targetPostId) as { cnt: number };
-  return likeRow.cnt + freeRow.cnt;
-}
-
-/**
  * Bump an identity's activity clock to the height of the block being applied
  * (Spec G phase D; NODE_INTERFACE → "Populating the record").
  *
@@ -638,9 +532,11 @@ export function getPostTotalLikes(targetPostId: string): number {
  * choke point is what makes the clock swap behaviour-preserving by
  * construction rather than by re-derivation at each of the eight producers.
  *
- * `lastDecayBlock` is carried through untouched: the two halves of the record
+ * `lastDecayBlock` is carried through untouched: the fields of the record
  * have different writers, and an activity bump that reset the decay clock would
- * hand the owner a free interval.
+ * hand the owner a free interval. `likeCarry` (P2-D) likewise — it is
+ * settlement-owned, and zeroing it here would confiscate accrued likes on
+ * every karma receipt.
  *
  * With no journal open — genesis, bootstrap, any non-block path — this records
  * nothing, consistent with every other choke-point hook. Consensus only reads
@@ -654,6 +550,7 @@ function bumpActivityClock(owner: Uint8Array): void {
   putIdentityRecord(owner, {
     lastActivityBlock: height,
     lastDecayBlock: existing?.lastDecayBlock ?? 0,
+    likeCarry: existing?.likeCarry ?? 0n,
   });
 }
 
@@ -710,14 +607,6 @@ export function insertBox(box: AnyBox): void {
       extraData = ce satisfies CreditExtra;
       owner = Buffer.from(c.owner);
       proofSource = String(c.proofSource);
-      break;
-    }
-    case 'like': {
-      const l = box as LikeBox;
-      extraData = {
-        likerId: pubkeyToHex(l.likerId),
-        targetPostId: l.targetPostId,
-      } satisfies LikeExtra;
       break;
     }
     case 'invite': {
@@ -840,22 +729,4 @@ export function getUnspentBoxes(): AnyBox[] {
     .safeIntegers()
     .all() as UtxoRow[];
   return rows.map(rowToBox);
-}
-
-/**
- * Bulk-mark like boxes as tallied (spent) in a single statement.
- *
- * Uses a temporary table-less approach with a variable number of ? placeholders.
- * For an empty array this is a no-op.
- */
-export function markLikeBoxesTallied(boxIds: string[]): void {
-  if (boxIds.length === 0) return;
-  const db = getDb();
-  const placeholders = boxIds.map(() => '?').join(', ');
-  db.prepare(
-    `UPDATE utxo_boxes SET spent_at_block = -1 WHERE id IN (${placeholders})`,
-  ).run(...boxIds);
-  for (const boxId of boxIds) {
-    recordBoxRemove(boxId);
-  }
 }

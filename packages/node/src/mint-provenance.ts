@@ -64,13 +64,15 @@ function concat(...parts: Uint8Array[]): Uint8Array {
 // reviewable in one place instead of at every call site.
 //
 // Each returns a whole `MintContext` rather than bare bytes, so "right subject,
-// wrong reason" is unrepresentable at a call site. That pairing is load-bearing
-// for exactly two pairs, both of which mint the same value to the same key at
-// the same height and are separated by nothing but the reason tag:
-// `author-reward`/`postlock-unlock` at epoch tally, and
-// `prune-refund-author`/`prune-refund-liker` for a user who both authored and
-// liked inside one pruned subtree. Getting one wrong produces a box-id
-// collision, not an error.
+// wrong reason" is unrepresentable at a call site. The pairing is load-bearing
+// wherever two same-height mints can land on one recipient: `like-payout` and
+// `postlock-unlock` both mint to an author at one height, separated by reason
+// (and, as it happens, subject shape — NODE_INTERFACE → reason/subject table);
+// `like-payout` and `decay` share exact subject bytes — one raw pubkey — with
+// the tag as the only separator. Getting one wrong produces a box-id
+// collision, not an error. (The epoch-tally and prune-liker reason pairs this
+// comment used to cite are retired, P2-D; their strings stay reserved in
+// types' MintReason tombstone.)
 //
 // Byte forms follow TYPES_INTERFACE → "Pinned byte forms": a hex-typed value
 // (`PostId`) enters as the UTF-8 bytes of its hex text, a `Uint8Array`-typed
@@ -86,25 +88,20 @@ export function vouchSettleContext(voucherId: Uint8Array, targetId: Uint8Array):
   return { reason: 'vouch-settle', subject: concat(voucherId, targetId) };
 }
 
-/** `author-reward` — 64 bytes: the post id as hex text. */
-export function authorRewardContext(targetPostId: PostId): MintContext {
-  return { reason: 'author-reward', subject: utf8.encode(targetPostId) };
-}
-
 /**
- * `liker-refund` — 96 bytes: post id as hex text, then the liker's 32 raw
- * pubkey bytes.
+ * `like-payout` — 32 bytes: the credited author's raw pubkey (P2-D per-block
+ * like settlement). Fixed length, so the injectivity rule holds by
+ * construction. One mint per author per block, which is what makes
+ * `(height, 'like-payout', author)` unique: the settlement consolidates every
+ * like the author received in the block into a single mint.
  *
- * The only two-part encoding whose parts are not both fixed-width by type. It
- * is still unambiguous because the *suffix* is: a 32-byte pubkey pins the split
- * point from the right regardless of what precedes it, so no two
- * `(postId, likerId)` pairs concatenate to the same bytes.
+ * Copied rather than aliased, same as `decayContext`.
  */
-export function likerRefundContext(targetPostId: PostId, likerId: Uint8Array): MintContext {
-  return { reason: 'liker-refund', subject: concat(utf8.encode(targetPostId), likerId) };
+export function likePayoutContext(author: Uint8Array): MintContext {
+  return { reason: 'like-payout', subject: Uint8Array.from(author) };
 }
 
-/** `postlock-unlock` — 64 bytes. Distinguished from `author-reward` only by the tag. */
+/** `postlock-unlock` — 64 bytes: the vested post's id as hex text. */
 export function postlockUnlockContext(targetPostId: PostId): MintContext {
   return { reason: 'postlock-unlock', subject: utf8.encode(targetPostId) };
 }
@@ -139,8 +136,8 @@ export function genesisContext(which: number): MintContext {
 
 /**
  * `prune-refund-author` — 96 bytes: the pruned subtree's root post id as hex
- * text, then the refunded author's 32 raw pubkey bytes. Unambiguous by the same
- * argument as `likerRefundContext`: the 32-byte suffix pins the split point.
+ * text, then the refunded author's 32 raw pubkey bytes. Unambiguous because
+ * the 32-byte suffix pins the split point.
  *
  * The subject names the **prune entry**, not the post the karma was locked
  * against — refunds are aggregated per user across the whole subtree, so no
@@ -155,19 +152,6 @@ export function pruneRefundAuthorContext(rootPostHash: PostId, owner: Uint8Array
   return { reason: 'prune-refund-author', subject: concat(utf8.encode(rootPostHash), owner) };
 }
 
-/**
- * `prune-refund-liker` — 96 bytes, the same encoding against the liker.
- *
- * Two reasons rather than one, for the same reason `author-reward` and
- * `liker-refund` are two at epoch tally: the same user can be both an author
- * and a liker within one pruned subtree — they replied in a thread they also
- * liked — and a single tag would give both of that user's mints an identical
- * `(height, reason, subject)`.
- */
-export function pruneRefundLikerContext(rootPostHash: PostId, likerId: Uint8Array): MintContext {
-  return { reason: 'prune-refund-liker', subject: concat(utf8.encode(rootPostHash), likerId) };
-}
-
 // ---------------------------------------------------------------------------
 // Derivation
 // ---------------------------------------------------------------------------
@@ -175,7 +159,7 @@ export function pruneRefundLikerContext(rootPostHash: PostId, likerId: Uint8Arra
 /**
  * The single site where a mint's synthetic transaction id is derived.
  *
- * `mintKarma`, `mintCredits` and the direct producers (decay, the epoch
+ * `mintKarma`, `mintCredits` and the direct producers (decay, the vesting
  * remainder post-lock, genesis) all route through here, so the height that
  * reaches `computeMintTxId` is always the height the box settles at.
  */

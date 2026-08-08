@@ -35,7 +35,11 @@ export interface DecayJournalEntry {
  * Over-charging by a fraction of an interval is recoverable; a karma balance
  * that can never decay is an economic hole.
  */
-const NEVER_ACTIVE: IdentityRecord = { lastActivityBlock: 0, lastDecayBlock: 0 };
+const NEVER_ACTIVE: IdentityRecord = {
+  lastActivityBlock: 0,
+  lastDecayBlock: 0,
+  likeCarry: 0n,
+};
 
 /**
  * Is this identity stale — no normal activity within the threshold window?
@@ -189,10 +193,12 @@ export function applyKarmaDecay(
     // `lastActivityBlock` is carried through unchanged: the decay-burn box the
     // line above inserted is deliberately *not* activity, and resetting the
     // activity half here would make an identity look freshly active every time
-    // it was charged.
+    // it was charged. `likeCarry` likewise — it is settlement-owned (P2-D),
+    // and a decay that zeroed it would silently confiscate accrued likes.
     deps.putIdentityRecord(owner, {
       lastActivityBlock: record?.lastActivityBlock ?? 0,
       lastDecayBlock: currentHeight,
+      likeCarry: record?.likeCarry ?? 0n,
     });
 
     journal.push({ owner, consumedBoxIds, newBoxId: boxId, burnAmount });

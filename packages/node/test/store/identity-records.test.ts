@@ -50,9 +50,9 @@ describe('identity records store (Spec G phase B)', () => {
     initDb(':memory:');
 
     const id = uidBytes();
-    putIdentityRecord(id, { lastActivityBlock: 42, lastDecayBlock: 7 });
+    putIdentityRecord(id, { lastActivityBlock: 42, lastDecayBlock: 7, likeCarry: 0n });
 
-    expect(getIdentityRecord(id)).toEqual({ lastActivityBlock: 42, lastDecayBlock: 7 });
+    expect(getIdentityRecord(id)).toEqual({ lastActivityBlock: 42, lastDecayBlock: 7, likeCarry: 0n });
   });
 
   it('heights come back as numbers, not bigints', async () => {
@@ -61,7 +61,7 @@ describe('identity records store (Spec G phase B)', () => {
     initDb(':memory:');
 
     const id = uidBytes();
-    putIdentityRecord(id, { lastActivityBlock: 5, lastDecayBlock: 0 });
+    putIdentityRecord(id, { lastActivityBlock: 5, lastDecayBlock: 0, likeCarry: 0n });
 
     const got = getIdentityRecord(id)!;
     expect(typeof got.lastActivityBlock).toBe('number');
@@ -74,10 +74,10 @@ describe('identity records store (Spec G phase B)', () => {
     initDb(':memory:');
 
     const id = uidBytes();
-    putIdentityRecord(id, { lastActivityBlock: 10, lastDecayBlock: 1 });
-    putIdentityRecord(id, { lastActivityBlock: 20, lastDecayBlock: 2 });
+    putIdentityRecord(id, { lastActivityBlock: 10, lastDecayBlock: 1, likeCarry: 0n });
+    putIdentityRecord(id, { lastActivityBlock: 20, lastDecayBlock: 2, likeCarry: 0n });
 
-    expect(getIdentityRecord(id)).toEqual({ lastActivityBlock: 20, lastDecayBlock: 2 });
+    expect(getIdentityRecord(id)).toEqual({ lastActivityBlock: 20, lastDecayBlock: 2, likeCarry: 0n });
 
     const { cnt } = getDb()
       .prepare('SELECT COUNT(*) AS cnt FROM identity_records')
@@ -92,11 +92,11 @@ describe('identity records store (Spec G phase B)', () => {
 
     const a = uidBytes();
     const b = uidBytes();
-    putIdentityRecord(a, { lastActivityBlock: 1, lastDecayBlock: 1 });
-    putIdentityRecord(b, { lastActivityBlock: 2, lastDecayBlock: 2 });
+    putIdentityRecord(a, { lastActivityBlock: 1, lastDecayBlock: 1, likeCarry: 0n });
+    putIdentityRecord(b, { lastActivityBlock: 2, lastDecayBlock: 2, likeCarry: 0n });
 
-    expect(getIdentityRecord(a)).toEqual({ lastActivityBlock: 1, lastDecayBlock: 1 });
-    expect(getIdentityRecord(b)).toEqual({ lastActivityBlock: 2, lastDecayBlock: 2 });
+    expect(getIdentityRecord(a)).toEqual({ lastActivityBlock: 1, lastDecayBlock: 1, likeCarry: 0n });
+    expect(getIdentityRecord(b)).toEqual({ lastActivityBlock: 2, lastDecayBlock: 2, likeCarry: 0n });
   });
 
   it('the key is the identity bytes, not the identity object', async () => {
@@ -105,12 +105,13 @@ describe('identity records store (Spec G phase B)', () => {
     initDb(':memory:');
 
     const id = uidBytes();
-    putIdentityRecord(id, { lastActivityBlock: 9, lastDecayBlock: 3 });
+    putIdentityRecord(id, { lastActivityBlock: 9, lastDecayBlock: 3, likeCarry: 0n });
 
     // A distinct Uint8Array with identical bytes must resolve the same row.
     expect(getIdentityRecord(new Uint8Array(id))).toEqual({
       lastActivityBlock: 9,
       lastDecayBlock: 3,
+      likeCarry: 0n,
     });
   });
 
@@ -121,7 +122,7 @@ describe('identity records store (Spec G phase B)', () => {
     initDb(':memory:');
 
     const id = uidBytes();
-    putIdentityRecord(id, { lastActivityBlock: 3, lastDecayBlock: 3 });
+    putIdentityRecord(id, { lastActivityBlock: 3, lastDecayBlock: 3, likeCarry: 0n });
     deleteIdentityRecord(id);
 
     expect(getIdentityRecord(id)).toBeNull();
@@ -143,12 +144,12 @@ describe('identity records store (Spec G phase B)', () => {
 
     const a = uidBytes();
     const b = uidBytes();
-    putIdentityRecord(a, { lastActivityBlock: 1, lastDecayBlock: 1 });
-    putIdentityRecord(b, { lastActivityBlock: 2, lastDecayBlock: 2 });
+    putIdentityRecord(a, { lastActivityBlock: 1, lastDecayBlock: 1, likeCarry: 0n });
+    putIdentityRecord(b, { lastActivityBlock: 2, lastDecayBlock: 2, likeCarry: 0n });
     deleteIdentityRecord(a);
 
     expect(getIdentityRecord(a)).toBeNull();
-    expect(getIdentityRecord(b)).toEqual({ lastActivityBlock: 2, lastDecayBlock: 2 });
+    expect(getIdentityRecord(b)).toEqual({ lastActivityBlock: 2, lastDecayBlock: 2, likeCarry: 0n });
   });
 
   it('a zero clock is stored and read back as zero, not treated as absent', async () => {
@@ -157,9 +158,9 @@ describe('identity records store (Spec G phase B)', () => {
     initDb(':memory:');
 
     const id = uidBytes();
-    putIdentityRecord(id, { lastActivityBlock: 0, lastDecayBlock: 0 });
+    putIdentityRecord(id, { lastActivityBlock: 0, lastDecayBlock: 0, likeCarry: 0n });
 
-    expect(getIdentityRecord(id)).toEqual({ lastActivityBlock: 0, lastDecayBlock: 0 });
+    expect(getIdentityRecord(id)).toEqual({ lastActivityBlock: 0, lastDecayBlock: 0, likeCarry: 0n });
   });
 });
 
@@ -195,8 +196,8 @@ describe('getAllIdentityRecords (Spec G phase D)', () => {
 
     const a = uidBytes();
     const b = uidBytes();
-    putIdentityRecord(a, { lastActivityBlock: 3, lastDecayBlock: 1 });
-    putIdentityRecord(b, { lastActivityBlock: 9, lastDecayBlock: 0 });
+    putIdentityRecord(a, { lastActivityBlock: 3, lastDecayBlock: 1, likeCarry: 0n });
+    putIdentityRecord(b, { lastActivityBlock: 9, lastDecayBlock: 0, likeCarry: 0n });
 
     const all = getAllIdentityRecords();
     expect(all).toHaveLength(2);
@@ -212,10 +213,12 @@ describe('getAllIdentityRecords (Spec G phase D)', () => {
     expect(byHex.get(Buffer.from(a).toString('hex'))).toEqual({
       lastActivityBlock: 3,
       lastDecayBlock: 1,
+      likeCarry: 0n,
     });
     expect(byHex.get(Buffer.from(b).toString('hex'))).toEqual({
       lastActivityBlock: 9,
       lastDecayBlock: 0,
+      likeCarry: 0n,
     });
   });
 
@@ -226,7 +229,7 @@ describe('getAllIdentityRecords (Spec G phase D)', () => {
 
     // `.safeIntegers()` hands back bigints; a bigint reaching `serializeIdentityRecord`
     // would CBOR-encode differently and move the digest.
-    putIdentityRecord(uidBytes(), { lastActivityBlock: 5, lastDecayBlock: 2 });
+    putIdentityRecord(uidBytes(), { lastActivityBlock: 5, lastDecayBlock: 2, likeCarry: 0n });
 
     const [entry] = getAllIdentityRecords();
     expect(typeof entry!.record.lastActivityBlock).toBe('number');
@@ -239,11 +242,66 @@ describe('getAllIdentityRecords (Spec G phase D)', () => {
     initDb(':memory:');
 
     const id = uidBytes();
-    putIdentityRecord(id, { lastActivityBlock: 1, lastDecayBlock: 0 });
-    putIdentityRecord(id, { lastActivityBlock: 8, lastDecayBlock: 4 });
+    putIdentityRecord(id, { lastActivityBlock: 1, lastDecayBlock: 0, likeCarry: 0n });
+    putIdentityRecord(id, { lastActivityBlock: 8, lastDecayBlock: 4, likeCarry: 0n });
 
     expect(getAllIdentityRecords()).toEqual([
-      { identityId: id, record: { lastActivityBlock: 8, lastDecayBlock: 4 } },
+      { identityId: id, record: { lastActivityBlock: 8, lastDecayBlock: 4, likeCarry: 0n } },
     ]);
+  });
+});
+
+/**
+ * P2-D N2a — `likeCarry` at the row boundary: SQLite INTEGER in, bigint out.
+ * Heights stay numbers; the carry stays bigint end-to-end so no `Number()`
+ * coercion can appear in a consensus path.
+ */
+describe('likeCarry at the row boundary (P2-D N2a)', () => {
+  beforeEach(async () => { vi.resetModules(); });
+  afterEach(() => { vi.resetModules(); });
+
+  it('a non-zero carry round-trips through put/get as bigint', async () => {
+    const { initDb } = await importDbFresh();
+    const { putIdentityRecord, getIdentityRecord } = await importRecordsFresh();
+    initDb(':memory:');
+
+    const id = uidBytes();
+    putIdentityRecord(id, { lastActivityBlock: 10, lastDecayBlock: 2, likeCarry: 4n });
+
+    const got = getIdentityRecord(id)!;
+    expect(got).toEqual({ lastActivityBlock: 10, lastDecayBlock: 2, likeCarry: 4n });
+    expect(typeof got.likeCarry).toBe('bigint');
+    expect(typeof got.lastActivityBlock).toBe('number');
+  });
+
+  it('a zero carry reads back as 0n, and the full-set read agrees', async () => {
+    const { initDb } = await importDbFresh();
+    const records = (await import('../../src/store/identity-records.js')) as {
+      putIdentityRecord: (id: UserId, r: IdentityRecord) => void;
+      getAllIdentityRecords: () => Array<{ identityId: UserId; record: IdentityRecord }>;
+    };
+    initDb(':memory:');
+
+    records.putIdentityRecord(uidBytes(), { lastActivityBlock: 5, lastDecayBlock: 0, likeCarry: 0n });
+
+    const [entry] = records.getAllIdentityRecords();
+    expect(entry!.record.likeCarry).toBe(0n);
+    expect(typeof entry!.record.likeCarry).toBe('bigint');
+  });
+
+  it('an update can change ONLY the carry and the other fields hold', async () => {
+    const { initDb } = await importDbFresh();
+    const { putIdentityRecord, getIdentityRecord } = await importRecordsFresh();
+    initDb(':memory:');
+
+    const id = uidBytes();
+    putIdentityRecord(id, { lastActivityBlock: 7, lastDecayBlock: 3, likeCarry: 0n });
+    putIdentityRecord(id, { lastActivityBlock: 7, lastDecayBlock: 3, likeCarry: 3n });
+
+    expect(getIdentityRecord(id)).toEqual({
+      lastActivityBlock: 7,
+      lastDecayBlock: 3,
+      likeCarry: 3n,
+    });
   });
 });

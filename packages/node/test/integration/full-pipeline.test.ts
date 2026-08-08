@@ -22,10 +22,9 @@ import {
 } from 'crypto';
 import {
   computeBoxId,
-  computeCandidateBoxId,
   computeTxId,
   PROTOCOL_VERSION,
-  LIKE_COST,
+  LIKE_KARMA_COST,
   INVITE_KARMA_AMOUNT,
   INVITE_BOND_KARMA,
   encodePost,
@@ -35,7 +34,6 @@ import {
 import type {
   Post,
   KarmaBox,
-  LikeBox,
   InviteBox,
   BondBox,
   UtxoTransaction,
@@ -57,7 +55,6 @@ const testConfig = {
   orderingBlockIntervalMs: 60000,
   orderingBlockMinSubBlocks: 1,
   maxSubBlocksPerBlock: 1000,
-  epochBlocks: 100,
   miningMode: 'internal' as const,
   orderingBlockPowTargetBits: 12,
   creditTreasuryPct: 10,
@@ -102,7 +99,23 @@ async function importUtxo() {
     getBox: (id: string) => AnyBox | null;
     getKarmaBox: (owner: Uint8Array) => KarmaBox | null;
     consumeBox: (boxId: string, consumedAtBlock: number) => void;
-    getUnprocessedLockedLikeBoxes: () => LikeBox[];
+  };
+}
+
+/** The read path as server.ts wires it (N4a): counts and likers from like_records. */
+async function importFeedReadPath() {
+  const posts = await import('../../src/store/posts.js');
+  const utxo = await import('../../src/store/utxo.js');
+  const likes = await import('../../src/store/likes.js');
+  const feed = await import('../../src/services/feed-service.js');
+  return {
+    queryPosts: posts.queryPosts,
+    getAncestors: posts.getAncestors,
+    getSubtree: posts.getSubtree,
+    getLikersForPost: utxo.getLikersForPost,
+    getLikeRecordCount: likes.getLikeRecordCount,
+    hasLikeRecord: likes.hasLikeRecord,
+    FeedService: feed.FeedService,
   };
 }
 
@@ -282,8 +295,19 @@ describe('full-pipeline', () => {
     const posts = await importPosts();
     posts.insertPost(post, encodePost(post));
 
-    // Build and sign like tx with karma change output
-    const changeVal = karmaBox.value - LIKE_COST;
+    // ---- Step 0: Confirm the target first (N2b: a like on an unconfirmed
+    // post is invalid at apply, so the canonical flow likes an
+    // already-confirmed post; the confirm-and-like-in-one-block shape is
+    // test 2 below). Block 1 carries the sub-block alone.
+    const mempool = await importMempool();
+    mempool.insertSubBlock(postId, 1000);
+    const bc = await importBlockCreator();
+    bc.startBlockCreator(testConfig);
+    expect(bc.createOrderingBlock()).not.toBeNull();
+
+    // Build and sign the burn-shape like tx (P2-D): one karma output at
+    // −LIKE_KARMA_COST, likeTarget inside the signed bytes, no box output.
+    const changeVal = karmaBox.value - LIKE_KARMA_COST;
     const likeTx: UtxoTransaction = {
       inputs: [karmaBox.id!],
       outputs: [
@@ -294,16 +318,10 @@ describe('full-pipeline', () => {
           guard: 'owner_signature',
           proofSource: 'like_op',
         } as KarmaBox,
-        {
-          boxType: 'like',
-          value: LIKE_COST,
-          likerId: liker.userId,
-          targetPostId: postId,
-          guard: 'epoch_tally',
-        } as LikeBox,
       ],
       signatures: {},
       protocolVersion: PROTOCOL_VERSION,
+      likeTarget: postId,
     };
     const likerPubHex = Buffer.from(liker.userId).toString('hex');
     signTransaction(likeTx, liker.privateKey, likerPubHex);
@@ -311,37 +329,42 @@ describe('full-pipeline', () => {
     // ---- Step 1: Cast like (validateTx + mempool) ----
     const likesSvc = await importLikesService();
     const deps = makeEngineDeps(db, utxo);
-    const result = likesSvc.castLike(deps, likeTx, 0);
+    const result = likesSvc.castLike(deps, likeTx, 1);
 
     expect(result.castLikeResult).toBe('pending');
     expect(result.txId).toBeTruthy();
 
     // ---- Step 2: Mine block (mempool entry removed during finalizeBlock) ----
-    const bc = await importBlockCreator();
-    bc.startBlockCreator(testConfig);
     const block = bc.createOrderingBlock() as Record<string, unknown> | null;
     expect(block).not.toBeNull();
     const blockHeight = (block!.header as Record<string, unknown>).height as number;
-    expect(blockHeight).toBe(1);
+    expect(blockHeight).toBe(2);
 
     // ---- Step 3: Verify confirmed state (UTXO txs applied by block creator) ----
-    // Like box exists
-    const likeBoxes = utxo.getUnprocessedLockedLikeBoxes();
-    const found = likeBoxes.find(
-      (lb) =>
-        lb.targetPostId === postId &&
-        Buffer.from(lb.likerId).toString('hex') === likerPubHex,
-    );
-    expect(found).toBeDefined();
-    expect(found!.value).toBe(LIKE_COST);
-
     // Old karma box consumed (check via deps, which filters by spent_at_block)
     expect(deps.getBox(karmaBox.id!)).toBeNull();
 
-    // New karma box (change) exists
+    // New karma box (change) exists at −LIKE_KARMA_COST: the karma is gone
+    // from the UTXO set entirely, not parked in a box.
     const newKarma = utxo.getKarmaBox(liker.userId);
     expect(newKarma).not.toBeNull();
     expect(newKarma!.value).toBe(changeVal);
+
+    // ---- Step 4 (N4a): the feed/read path reports the applied like-record ----
+    // Apply wrote the record; the API's likeCount and likers must come from it.
+    const f = await importFeedReadPath();
+    expect(f.hasLikeRecord(postId, liker.userId)).toBe(true);
+    const feed = new f.FeedService({
+      getPost: posts.getPost,
+      queryPosts: f.queryPosts,
+      getLikeRecordCount: f.getLikeRecordCount,
+      getLikersForPost: f.getLikersForPost,
+      getAncestors: f.getAncestors,
+      getSubtree: f.getSubtree,
+    });
+    const postJson = feed.getPost(postId) as { likeCount: number; likers: string[] };
+    expect(postJson.likeCount).toBe(1);
+    expect(postJson.likers).toEqual([likerPubHex]);
   });
 
   // -------------------------------------------------------------------------
@@ -371,8 +394,8 @@ describe('full-pipeline', () => {
     const mempool = await importMempool();
     mempool.insertSubBlock(postId, 1000);
 
-    // Cast like via service
-    const changeVal = karmaBox.value - LIKE_COST;
+    // Cast like via service (P2-D burn shape)
+    const changeVal = karmaBox.value - LIKE_KARMA_COST;
     const likeTx: UtxoTransaction = {
       inputs: [karmaBox.id!],
       outputs: [
@@ -383,16 +406,10 @@ describe('full-pipeline', () => {
           guard: 'owner_signature',
           proofSource: 'like_op',
         } as KarmaBox,
-        {
-          boxType: 'like',
-          value: LIKE_COST,
-          likerId: liker.userId,
-          targetPostId: postId,
-          guard: 'epoch_tally',
-        } as LikeBox,
       ],
       signatures: {},
       protocolVersion: PROTOCOL_VERSION,
+      likeTarget: postId,
     };
     const likerPubHex = Buffer.from(liker.userId).toString('hex');
     signTransaction(likeTx, liker.privateKey, likerPubHex);
@@ -414,14 +431,11 @@ describe('full-pipeline', () => {
     const confirmedPost = posts.getPost(postId);
     expect(confirmedPost).not.toBeNull();
 
-    // Like box created (UTXO path)
-    const likeBoxes = utxo.getUnprocessedLockedLikeBoxes();
-    const found = likeBoxes.find(
-      (lb) =>
-        lb.targetPostId === postId &&
-        Buffer.from(lb.likerId).toString('hex') === likerPubHex,
-    );
-    expect(found).toBeDefined();
+    // The UTXO path is a pure burn: the change box carries the deficit and
+    // the input is spent.
+    const newKarma = utxo.getKarmaBox(liker.userId);
+    expect(newKarma).not.toBeNull();
+    expect(newKarma!.value).toBe(changeVal);
 
     // Old karma consumed (check via deps, which filters by spent_at_block)
     expect(deps.getBox(karmaBox.id!)).toBeNull();
@@ -531,99 +545,15 @@ describe('full-pipeline', () => {
   // -------------------------------------------------------------------------
   // 4. Predicted-id flows through a real block funnel (Spec G phase G3b)
   //
-  // These are the two flows that got `p3a-box-id-parked` pulled as a functional
-  // regression, and they are the reason provenance-derived identity exists. The
-  // shape they need is NOT symmetric, because Option 1 changed what each one
-  // depends on:
-  //
-  //   - the UNLIKE path still genuinely predicts a box id and spends it later,
-  //     so what it needs is an EXACTNESS test — the id cached at signing time is
-  //     the id block application stores.
-  //   - the INVITE path no longer predicts anything. Its bond names an output
-  //     index, so what it needs is the opposite: proof that a bond pointing at
-  //     the wrong output is REJECTED AT CREATE, which is the property pairing by
-  //     index buys and the thing that makes a mispaired bond inexpressible
-  //     rather than late-failing as a dangling reference.
+  // The unlike half of this pair died with P2-D: no flow predicts a box id
+  // anymore (a like is a burn transaction, not a box, and unlike is not a
+  // feature), so the exactness test went with it. What remains is the INVITE
+  // path, which no longer predicts anything either — its bond names an output
+  // index, so what it needs is proof that a bond pointing at the wrong output
+  // is REJECTED AT CREATE, which is the property pairing by index buys and the
+  // thing that makes a mispaired bond inexpressible rather than late-failing
+  // as a dangling reference.
   // -------------------------------------------------------------------------
-
-  it('unlike: the LikeBox id predicted at signing time is the id the block stores, and it spends', async () => {
-    const dbModule = await importDb();
-    dbModule.initDb(':memory:');
-    const db = dbModule.getDb();
-
-    const author = makeTestIdentity();
-    const liker = makeTestIdentity();
-    const utxo = await importUtxo();
-    const karmaBox = makeKarmaBox(100n, liker.userId, 0);
-    utxo.insertBox(karmaBox);
-
-    const post = makePost(author.userId, 'unlike prediction test');
-    const postId = computePostId(post);
-    const posts = await importPosts();
-    posts.insertPost(post, encodePost(post));
-
-    const likeTx: UtxoTransaction = {
-      inputs: [karmaBox.id!],
-      outputs: [
-        {
-          boxType: 'karma', value: karmaBox.value - LIKE_COST, owner: liker.userId,
-          guard: 'owner_signature', proofSource: 'like_op',
-        },
-        {
-          boxType: 'like', value: LIKE_COST, likerId: liker.userId,
-          targetPostId: postId, guard: 'epoch_tally',
-        },
-      ],
-      signatures: {},
-      protocolVersion: PROTOCOL_VERSION,
-    };
-    const likerPubHex = Buffer.from(liker.userId).toString('hex');
-    signTransaction(likeTx, liker.privateKey, likerPubHex);
-
-    // What the demo UI does at signing time: derive the LikeBox id from the
-    // transaction's OWN id and the output's position, and cache it. Nothing
-    // about the ledger is consulted — this is a pure client-side prediction,
-    // made before the transaction has been seen by anyone.
-    const signedTxId = computeTxId(likeTx);
-    const predictedLikeBoxId = computeCandidateBoxId(likeTx.outputs[1]!, signedTxId, 1);
-
-    const likesSvc = await importLikesService();
-    const deps = makeEngineDeps(db, utxo);
-    expect(likesSvc.castLike(deps, likeTx, 0).castLikeResult).toBe('pending');
-
-    // Through a real block funnel — mined and applied, not hand-inserted.
-    const bc = await importBlockCreator();
-    bc.startBlockCreator(testConfig);
-    expect(bc.createOrderingBlock()).not.toBeNull();
-
-    // EXACT, not merely resolvable: the stored box carries the predicted id.
-    const storedLike = deps.getBox(predictedLikeBoxId);
-    expect(storedLike).not.toBeNull();
-    expect(storedLike!.boxType).toBe('like');
-    expect((storedLike as LikeBox).targetPostId).toBe(postId);
-
-    // And the prediction is ACTIONABLE, which is the point — the unlike path
-    // spends the box by the id it cached, having never read it back from the
-    // node. Under the parked branch's settled-height derivation this input did
-    // not resolve, which is exactly how that regression presented.
-    expect(storedLike!.id).toBe(predictedLikeBoxId);
-    const unlikeTx: UtxoTransaction = {
-      inputs: [predictedLikeBoxId],
-      outputs: [
-        {
-          boxType: 'karma', value: LIKE_COST, owner: liker.userId,
-          guard: 'owner_signature', proofSource: 'unlike',
-        },
-      ],
-      signatures: {},
-      protocolVersion: PROTOCOL_VERSION,
-    };
-    signTransaction(unlikeTx, liker.privateKey, likerPubHex);
-    const engine = await import('../../src/services/utxo-engine.js');
-    const unlikeResult = engine.validateTx(deps, unlikeTx, 1);
-    expect(unlikeResult.error).toBeUndefined();
-    expect(unlikeResult.valid).toBe(true);
-  });
 
   it('invite: a bond naming the wrong output index is rejected at create — and the right one still applies', async () => {
     const dbModule = await importDb();

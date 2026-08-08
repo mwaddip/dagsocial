@@ -18,11 +18,6 @@ import {
   KARMA_DECAY_INTERVAL_BLOCKS,
   KARMA_DECAY_AMOUNT,
   KARMA_MINIMUM,
-  LIKE_COST,
-  LIKE_THRESHOLD,
-  LIKE_MAX_AUTHOR_REWARD,
-  LIKE_FREE_THRESHOLD,
-  EPOCH_BLOCKS,
   MAX_PENDING_INVITES,
   INVITE_BOND_KARMA,
   INVITE_PROBATION_BLOCKS,
@@ -314,17 +309,6 @@ describe('constants', () => {
     expect(KARMA_DECAY_INTERVAL_BLOCKS).toBe(1440); // 24 hours at 60s blocks (P2-A unit correction)
     expect(KARMA_DECAY_AMOUNT).toBe(5n);
     expect(KARMA_MINIMUM).toBe(10n);
-  });
-
-  it('like constants are defined', () => {
-    expect(LIKE_COST).toBe(2n);
-    expect(LIKE_THRESHOLD).toBe(5);
-    expect(LIKE_MAX_AUTHOR_REWARD).toBe(10n);
-    expect(LIKE_FREE_THRESHOLD).toBe(10);
-  });
-
-  it('epoch constants are defined', () => {
-    expect(EPOCH_BLOCKS).toBe(60);
   });
 
   it('invite constants are defined', () => {

@@ -13,20 +13,14 @@ import {
   CREDIT_TAIL_REWARD,
   CREDIT_MINER_REWARD_DELAY,
   CREDIT_TREASURY_PCT,
-  LIKE_THRESHOLD,
-  LIKE_MAX_AUTHOR_REWARD,
-  LIKE_COST,
-  POST_LOCK_UNLOCK_PER_LIKES,
   EMPTY_STATE_ROOT,
   decodeTx,
-  computeBoxId,
   computeTxId,
   leafHash,
   buildMerkleRoot,
   serializePruneEntry,
   hexToBuf,
 } from '@dagsocial/types';
-import { MINT_OUTPUT_INDEX, mintTxIdFor, postlockRemainderContext } from '../mint-provenance.js';
 import {
   verifyOrderingBlockPoW,
   blockHash,
@@ -38,15 +32,9 @@ import type {
   SubBlockTree,
   UtxoTxTree,
   CoinbaseOutput,
-  EpochTally,
-  LikeReward,
   Post,
-  LikeBox,
-  PostLockBox,
-  UtxoTransaction,
 } from '@dagsocial/types';
 import type { Config } from '../config.js';
-import { canonicalEpochTallyJson } from './epoch-canonical.js';
 import { expectedTarget } from './difficulty.js';
 import { getNet } from './net-instance.js';
 import { applyOrderingBlock, computePostBlockStateRoot } from './block-apply.js';
@@ -60,11 +48,7 @@ import {
 import {
   getOrderingBlock,
   getCurrentHeight,
-  getUnprocessedLockedLikeBoxes,
-  getUnprocessedFreeLikes,
   getPost,
-  getUnspentPostLockBoxes,
-  getPostTotalLikes,
 } from '../store/index.js';
 
 // ---------------------------------------------------------------------------
@@ -93,8 +77,6 @@ export function computeUtxoTxRoot(tree: UtxoTxTree): string {
   const leaves: Uint8Array[] = [
     ...tree.utxoTxIds.map((id) =>
       leafHash('utxotx', hexToBuf(id))),
-    ...tree.likeBoxIds.map((id) =>
-      leafHash('likebox', hexToBuf(id))),
     ...tree.coinbaseOutputs.map((o) =>
       // `value` is bigint — JSON.stringify throws on it, and this preimage is
       // consensus (utxoTxRoot leaf). Canonical decimal string, deterministic.
@@ -105,13 +87,6 @@ export function computeUtxoTxRoot(tree: UtxoTxTree): string {
         isTreasury: o.isTreasury,
       })))),
   ];
-  if (tree.epochTallyResults) {
-    // Canonical, not insertion-order: the tally's key/row order differs between
-    // honest nodes and does not survive a CBOR round-trip (audit C-6).
-    leaves.push(
-      leafHash('epoch', Buffer.from(canonicalEpochTallyJson(tree.epochTallyResults))),
-    );
-  }
   return Buffer.from(buildMerkleRoot(leaves)).toString('hex');
 }
 
@@ -312,7 +287,7 @@ export function createOrderingBlock(): OrderingBlock | null {
   );
 
   // 4. Resolve sub-block metadata from dag_posts (mempool now stores postId, not CBOR)
-  const resolvedSubBlocks: Array<{ subBlockId: string; post: Post; likeBoxes: LikeBox[] }> = [];
+  const resolvedSubBlocks: Array<{ subBlockId: string; post: Post }> = [];
   for (const entry of subBlockEntries) {
     if (!entry.subblockId) continue;
     const post = getPost(entry.subblockId);
@@ -320,7 +295,6 @@ export function createOrderingBlock(): OrderingBlock | null {
     resolvedSubBlocks.push({
       subBlockId: entry.subblockId,
       post,
-      likeBoxes: [],
     });
   }
 
@@ -333,41 +307,11 @@ export function createOrderingBlock(): OrderingBlock | null {
     }
   }
 
-  // 6. Attach standalone likes to matching sub-blocks by targetPostId
-  const matchedUtxoRowids = new Set<number>();
-  for (const entry of standaloneUtxoTxs) {
-    const tx = decodeTx(entry.utxoTxCbor!);
-    const targetPostId = extractLikeTarget(tx);
-    if (targetPostId) {
-      const matchingSb = resolvedSubBlocks.find((sb) => sb.subBlockId === targetPostId);
-      if (matchingSb) {
-        // Attach like boxes from this tx to the sub-block
-        for (const output of tx.outputs) {
-          if (output.boxType === 'like') {
-            matchingSb.likeBoxes.push(output as LikeBox);
-          }
-        }
-        matchedUtxoRowids.add(entry.rowid);
-      }
-    }
-  }
-
-  // 7. Remaining standalone UTXO entries → utxoTxIds
-  const remainingUtxoTxs = standaloneUtxoTxs.filter(
-    (e) => !matchedUtxoRowids.has(e.rowid),
-  );
-  const utxoTxIds = remainingUtxoTxs.map((e) => {
+  // 7. Standalone UTXO entries → utxoTxIds
+  const utxoTxIds = standaloneUtxoTxs.map((e) => {
     const tx = decodeTx(e.utxoTxCbor!);
     return computeTxId(tx);
   });
-
-  // 7a. Matched UTXO entries (attached to sub-blocks) → also apply them
-  for (const entry of standaloneUtxoTxs) {
-    if (matchedUtxoRowids.has(entry.rowid)) {
-      const tx = decodeTx(entry.utxoTxCbor!);
-      utxoTxIds.push(computeTxId(tx));
-    }
-  }
 
   // 7b. Batch-linked UTXO entries → utxoTxIds
   // These were grouped by batch_id in step 5 but never decoded/added to the block.
@@ -380,26 +324,9 @@ export function createOrderingBlock(): OrderingBlock | null {
     }
   }
 
-  // 8. Collect standalone unprocessed locked like boxes
-  const standaloneLikes = getUnprocessedLockedLikeBoxes();
-
-  // 9. Deduplicate like boxes (a like box in both sub-block and standalone pool)
-  const sbLikeIds = new Set(
-    resolvedSubBlocks.flatMap((sb) => sb.likeBoxes.map((lb) => lb.id!)),
-  );
-  const filteredStandaloneLikes = standaloneLikes.filter(
-    (lb) => !sbLikeIds.has(lb.id!),
-  );
-
-  const allLikeBoxIds = filteredStandaloneLikes.map((lb) => lb.id!);
-
-  // 10. Epoch boundary?
-  const isEpochBoundary =
-    currentHeight > 0 && currentHeight % config.epochBlocks === 0;
-
   // 11. Always produce a block — miners need coinbase rewards even when
   //     there is no user work.  The block will be empty but still carries
-  //     credit emission and (at epoch boundaries) an epoch tally.
+  //     credit emission.
 
   // 12. Track confirmed rowids for finalizeBlock cleanup
   confirmedRowids = new Set<number>();
@@ -407,11 +334,6 @@ export function createOrderingBlock(): OrderingBlock | null {
     confirmedRowids.add(e.rowid);
   }
   for (const e of standaloneUtxoTxs) {
-    if (matchedUtxoRowids.has(e.rowid)) {
-      confirmedRowids.add(e.rowid);
-    }
-  }
-  for (const e of remainingUtxoTxs) {
     confirmedRowids.add(e.rowid);
   }
   // Also track batch entries
@@ -426,12 +348,6 @@ export function createOrderingBlock(): OrderingBlock | null {
 
   // 14. Difficulty — fixed by the height schedule, and enforced at apply
   const powTargetBits = expectedTarget(newHeight);
-
-  // 15. Epoch tally
-  let epochTallyResults: EpochTally | undefined;
-  if (isEpochBoundary) {
-    epochTallyResults = computeEpochTally(newHeight);
-  }
 
   // 16. Previous block hash
   const prevBlock = currentHeight > 0 ? getOrderingBlock(currentHeight) : null;
@@ -452,19 +368,12 @@ export function createOrderingBlock(): OrderingBlock | null {
   }));
 
   // Collect UTXO tx CBOR for inline storage, matching the utxoTxIds order:
-  // 1. remainingUtxoTxs IDs, 2. matchedUtxoRowids IDs, 3. batch-linked entries
+  // 1. standalone entries, 2. batch-linked entries
   const utxoTxCbors: Uint8Array[] = [];
 
-  // Standalone UTXO txs that were not matched to sub-blocks
-  for (const entry of remainingUtxoTxs) {
-    utxoTxCbors.push(entry.utxoTxCbor!);
-  }
-
-  // Matched UTXO entries (attached to sub-blocks)
+  // Standalone UTXO txs
   for (const entry of standaloneUtxoTxs) {
-    if (matchedUtxoRowids.has(entry.rowid)) {
-      utxoTxCbors.push(entry.utxoTxCbor!);
-    }
+    utxoTxCbors.push(entry.utxoTxCbor!);
   }
 
   // Batch-linked UTXO entries
@@ -489,12 +398,8 @@ export function createOrderingBlock(): OrderingBlock | null {
   const utxoTxTree: UtxoTxTree = {
     utxoTxIds,
     utxoTxs: utxoTxCbors,
-    likeBoxIds: allLikeBoxIds,
     coinbaseOutputs,
   };
-  if (epochTallyResults) {
-    utxoTxTree.epochTallyResults = epochTallyResults;
-  }
 
   // 18. Compute Merkle roots
   const subBlockRoot = computeSubBlockRoot(subBlockTree);
@@ -668,167 +573,4 @@ function buildCoinbaseOutputs(height: number): CoinbaseOutput[] {
   }
 
   return outputs;
-}
-
-// ---------------------------------------------------------------------------
-// Epoch tally
-// ---------------------------------------------------------------------------
-
-export function computeEpochTally(blockHeight: number): EpochTally {
-  const lockedLikes = getUnprocessedLockedLikeBoxes();
-  const freeLikes = getUnprocessedFreeLikes();
-
-  type LockedLikeBox = ReturnType<typeof getUnprocessedLockedLikeBoxes>[number];
-  type FreeLike = ReturnType<typeof getUnprocessedFreeLikes>[number];
-
-  const groups = new Map<
-    string,
-    { locked: LockedLikeBox[]; free: FreeLike[] }
-  >();
-
-  for (const lb of lockedLikes) {
-    const group = groups.get(lb.targetPostId);
-    if (group) {
-      group.locked.push(lb);
-    } else {
-      groups.set(lb.targetPostId, { locked: [lb], free: [] });
-    }
-  }
-
-  for (const fl of freeLikes) {
-    const group = groups.get(fl.targetPostId);
-    if (group) {
-      group.free.push(fl);
-    } else {
-      groups.set(fl.targetPostId, { locked: [], free: [fl] });
-    }
-  }
-
-  const rewards: Record<string, LikeReward> = {};
-  const allLockedBoxIds: string[] = [];
-  const allFreeLikeIds: string[] = [];
-
-  for (const [targetPostId, { locked, free }] of groups) {
-    const totalLikeCount = locked.length + free.length;
-
-    // Count math in number, then BigInt the step count before the bigint min.
-    const rewardSteps = BigInt(Math.floor(totalLikeCount / LIKE_THRESHOLD));
-    const authorReward =
-      rewardSteps < LIKE_MAX_AUTHOR_REWARD ? rewardSteps : LIKE_MAX_AUTHOR_REWARD;
-
-    const likerRefunds: Record<string, bigint> = {};
-    const thresholdMet = totalLikeCount >= 2 * LIKE_THRESHOLD;
-
-    for (const lb of locked) {
-      if (thresholdMet) {
-        if (lb.id) allLockedBoxIds.push(lb.id);
-        // mintKarma is handled by applyOrderingBlock from epochTallyResults
-        likerRefunds[Buffer.from(lb.likerId).toString('hex')] = 0n;
-      }
-    }
-
-    if (authorReward > 0n) {
-      // mintKarma is handled by applyOrderingBlock from epochTallyResults
-    }
-
-    for (const fl of free) {
-      allFreeLikeIds.push(fl.id);
-    }
-
-    rewards[targetPostId] = {
-      targetPostId,
-      likeCount: totalLikeCount,
-      authorReward,
-      likerRefunds,
-    };
-  }
-
-  // Side effects deferred to applyOrderingBlock so all nodes (not just
-  // the miner) mark boxes tallied, process free likes, and update post
-  // lock boxes.  The IDs are carried in the EpochTally and committed via
-  // the Merkle root — the receiver verifies by recomputing locally.
-
-  const consumedPostLockBoxIds: string[] = [];
-  const newPostLockBoxes: PostLockBox[] = [];
-
-  // Process post lock boxes
-  const postLockBoxes = getUnspentPostLockBoxes();
-  for (const plb of postLockBoxes) {
-    if (!plb.id) continue;
-
-    const totalLikes = getPostTotalLikes(plb.targetPostId);
-    const alreadyUnlocked = plb.originalValue - plb.value;
-    // Like counts are number; the unlock step count converts to bigint before
-    // mixing with box values.
-    const shouldUnlock = BigInt(Math.floor(totalLikes / POST_LOCK_UNLOCK_PER_LIKES));
-    const unlockable = shouldUnlock - alreadyUnlocked;
-    const toUnlock = plb.value < unlockable ? plb.value : unlockable;
-
-    if (toUnlock <= 0n) continue;
-
-    const remainingLocked = plb.value - toUnlock;
-
-    consumedPostLockBoxIds.push(plb.id);
-
-    if (remainingLocked > 0n) {
-      // `post_lock`'s producer-vs-`rowToBox` field-order divergence — the one
-      // known live instance of contract hazard 1b — is **fixed** as of phase
-      // G3b, and deliberately not by reordering this site: both encoders now
-      // sort keys, so the two shapes agree whatever order either writes.
-      //
-      // One remainder box per post per tally, and the tally runs once per epoch
-      // block, so `(height, 'postlock-remainder', targetPostId)` cannot repeat.
-      const newPlb: PostLockBox = {
-        boxType: 'post_lock',
-        value: remainingLocked,
-        originalValue: plb.originalValue,
-        owner: plb.owner,
-        targetPostId: plb.targetPostId,
-        guard: 'epoch_tally',
-        txId: mintTxIdFor(postlockRemainderContext(plb.targetPostId), blockHeight),
-        index: MINT_OUTPUT_INDEX,
-      };
-      newPlb.id = computeBoxId(newPlb);
-      newPostLockBoxes.push(newPlb);
-    }
-
-    // mintKarma for post lock unlock is handled by applyOrderingBlock from epochTallyResults
-
-    if (!rewards[plb.targetPostId]) {
-      rewards[plb.targetPostId] = {
-        targetPostId: plb.targetPostId,
-        likeCount: 0,
-        authorReward: 0n,
-        likerRefunds: {},
-      };
-    }
-    rewards[plb.targetPostId]!.postLockKarmaUnlocked =
-      (rewards[plb.targetPostId]!.postLockKarmaUnlocked ?? 0n) + toUnlock;
-  }
-
-  return {
-    rewards,
-    talliedLockedLikeBoxIds: allLockedBoxIds,
-    processedFreeLikeIds: allFreeLikeIds,
-    consumedPostLockBoxIds,
-    newPostLockBoxes,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-
-/**
- * Extract the targetPostId from a UTXO transaction if it contains a LikeBox
- * output. Returns null if no like box is found in the outputs.
- */
-function extractLikeTarget(tx: UtxoTransaction): string | null {
-  for (const output of tx.outputs) {
-    if (output.boxType === 'like') {
-      return output.targetPostId || null;
-    }
-  }
-  return null;
 }

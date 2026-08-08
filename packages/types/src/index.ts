@@ -14,14 +14,11 @@ export {
   POST_LOCK_THREAD_COST,
   POST_LOCK_REPLY_COST,
   POST_LOCK_UNLOCK_PER_LIKES,
-  LIKE_COST,
-  LIKE_THRESHOLD,
-  LIKE_MAX_AUTHOR_REWARD,
-  LIKE_FREE_THRESHOLD,
+  LIKE_KARMA_COST,
+  LIKES_PER_KARMA_PAYOUT,
   VOUCH_KARMA_AMOUNT,
   VOUCH_MIN_BALANCE,
   VOUCH_COOLDOWN_BLOCKS,
-  EPOCH_BLOCKS,
   MAX_PENDING_INVITES,
   INVITE_MIN_KARMA,
   INVITE_KARMA_AMOUNT,
@@ -94,7 +91,6 @@ export type {
   MintReason,
   KarmaBox,
   CreditBox,
-  LikeBox,
   InviteBox,
   BondBox,
   PostLockBox,
@@ -118,8 +114,6 @@ export type {
   SubBlockTree,
   UtxoTxTree,
   CoinbaseOutput,
-  EpochTally,
-  LikeReward,
 } from './block.js';
 
 // Serialization

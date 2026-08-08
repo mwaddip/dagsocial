@@ -33,7 +33,6 @@ function makeTemplate(): OrderingBlock {
     utxoTxTree: {
       utxoTxIds: [],
       utxoTxs: [],
-      likeBoxIds: [],
       coinbaseOutputs: [
         {
           owner: new Uint8Array(32).fill(0x55),
@@ -207,7 +206,6 @@ function makeConfig(overrides?: Partial<Config>): Config {
     orderingBlockIntervalMs: 60000,
     orderingBlockMinSubBlocks: 1,
     maxSubBlocksPerBlock: 1000,
-    epochBlocks: 60,
     miningMode: 'internal',
     miningSecret: '',
     orderingBlockPowTargetBits: 12,

@@ -14,7 +14,6 @@ import {
 import { blockHash } from '@dagsocial/validation';
 import type {
   Post,
-  LikeBox,
   KarmaBox,
   OrderingBlock,
   UtxoTransaction,
@@ -44,7 +43,6 @@ const testConfig = {
   orderingBlockIntervalMs: 60000,
   orderingBlockMinSubBlocks: 1,
   maxSubBlocksPerBlock: 1000,
-  epochBlocks: 100, // High to avoid epoch triggers during simple tests
   miningMode: 'internal' as const,
   orderingBlockPowTargetBits: 12,
   creditTreasuryPct: 10,
@@ -124,7 +122,6 @@ async function importUtxo() {
     getKarmaBox: (owner: Uint8Array) => KarmaBox | null;
     getBox: (boxId: string) => unknown;
     consumeBox: (boxId: string, consumedAtBlock: number) => void;
-    getUnprocessedLockedLikeBoxes: () => LikeBox[];
     getCreditBox: (owner: Uint8Array) => unknown;
   };
 }
@@ -345,7 +342,7 @@ describe('extendsOurTip', () => {
         createdAt: Date.now(),
       },
       subBlockTree: { subBlockRefs: [], subBlockEntries: [], stumpIds: [] },
-      utxoTxTree: { utxoTxIds: [], utxoTxs: [], likeBoxIds: [], coinbaseOutputs: [] },
+      utxoTxTree: { utxoTxIds: [], utxoTxs: [], coinbaseOutputs: [] },
       validatorSignature: new Uint8Array(64),
     };
 
@@ -371,7 +368,7 @@ describe('extendsOurTip', () => {
         createdAt: Date.now(),
       },
       subBlockTree: { subBlockRefs: [], subBlockEntries: [], stumpIds: [] },
-      utxoTxTree: { utxoTxIds: [], utxoTxs: [], likeBoxIds: [], coinbaseOutputs: [] },
+      utxoTxTree: { utxoTxIds: [], utxoTxs: [], coinbaseOutputs: [] },
       validatorSignature: new Uint8Array(64),
     };
 
@@ -650,10 +647,12 @@ describe('revertBlock', () => {
     // Insert sub-block
     mempool.insertSubBlock(postId, 1000);
 
-    // Insert a standalone UTXO tx
+    // Insert a standalone UTXO tx. The like targets the post this block
+    // confirms — N2b rejects likes on unconfirmed targets, and topology
+    // (§8b) precedes the tx loop (§11). Self-like is legal by contract.
     const karmaBox = makeKarmaBox(100n, author.userId, 0);
     utxo.insertBox(karmaBox);
-    const likeTx = makeLikeTx(author, karmaBox, 'unrelated');
+    const likeTx = makeLikeTx(author, karmaBox, postId);
     mempool.insertUtxoTx(likeTx, null, 1000);
 
     bc.startBlockCreator(testConfig);
@@ -830,7 +829,7 @@ describe('reorg', () => {
     const posts = await importPosts();
     const mempool = await importMempoolFresh();
     const bc = await importBlockCreator();
-    bc.startBlockCreator(testConfig); // epochBlocks = 100 (no epoch)
+    bc.startBlockCreator(testConfig);
 
     // Build 3 blocks
     for (let i = 0; i < 3; i++) {

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { randomBytes } from 'node:crypto';
-import type { AnyBox, KarmaBox, CreditBox, LikeBox } from '@dagsocial/types';
+import type { AnyBox, KarmaBox, CreditBox } from '@dagsocial/types';
 import { fixtureProvenance } from '../helpers.js';
 
 /**
@@ -187,11 +187,6 @@ describe('box provenance columns (Spec G phase B)', () => {
         owner: OWNER, guard: 'owner_signature', proofSource: 2, lockedUntilBlock: 900,
         txId: '44'.repeat(32), index: 0,
       } satisfies CreditBox,
-      {
-        id: '55'.repeat(32), boxType: 'like', value: 2n,
-        likerId: bytes(32), targetPostId: 'post456', guard: 'epoch_tally',
-        txId: '55'.repeat(32), index: 0,
-      } satisfies LikeBox,
     ];
     for (const box of produced) insertBox(box);
 

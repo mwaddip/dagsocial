@@ -165,7 +165,6 @@ describe('Two-node integration', () => {
     const sb: SubBlock = {
       subBlockId: computePostId(post),
       post,
-      likeBoxes: [],
       producerId: post.author,
       protocolVersion: 1,
     };
@@ -225,7 +224,6 @@ describe('Two-node integration', () => {
       utxoTxTree: {
         utxoTxIds: [],
         utxoTxs: [],
-        likeBoxIds: [],
         coinbaseOutputs: [],
       },
       validatorSignature: new Uint8Array(64),
@@ -253,11 +251,13 @@ describe('Two-node integration', () => {
       received = true;
     });
 
-    // Broadcast an invalid sub-block (empty content — fails ContentLimits)
+    // Broadcast an invalid sub-block (empty content — fails ContentLimits).
+    // T2b re-derived: with the structure gate's likeBoxes check gone, this
+    // fixture still passes structure and still dies at ContentLimits — the
+    // rejection fires for its intended reason.
     const invalidSb = {
       subBlockId: 'bad',
       post: { content: '', author: 'user1', parentRefs: [], protocolVersion: 1 },
-      likeBoxes: [],
       producerId: 'user1',
       protocolVersion: 1,
     } as unknown as SubBlock;

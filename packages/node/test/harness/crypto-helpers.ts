@@ -5,7 +5,7 @@ import {
   postPowPreimage,
   signingHash,
   PROTOCOL_VERSION,
-  LIKE_COST,
+  LIKE_KARMA_COST,
 } from '@dagsocial/types';
 import type { Post, UtxoTransaction } from '@dagsocial/types';
 
@@ -116,6 +116,9 @@ export function txToApi(tx: UtxoTransaction): Record<string, unknown> {
         )
       : undefined,
     protocolVersion: tx.protocolVersion,
+    // Present ⟺ the tx is a like (P2-D) — the JSON edge must not drop it,
+    // since it sits inside the signed bytes.
+    ...(tx.likeTarget !== undefined ? { likeTarget: tx.likeTarget } : {}),
   };
 }
 
@@ -144,7 +147,7 @@ export function postLockTx(
       },
       {
         boxType: 'post_lock', value: lockAmount, originalValue: lockAmount,
-        owner: author, targetPostId, guard: 'epoch_tally',
+        owner: author, targetPostId, guard: 'block_apply',
       },
     ],
     signatures: {},
@@ -152,6 +155,11 @@ export function postLockTx(
   };
 }
 
+/**
+ * Like tx (P2-D burn shape) — karma(total) → karma(total − LIKE_KARMA_COST),
+ * `likeTarget` naming the post inside the signed bytes. The deficit IS the
+ * like; a like is a transaction, never a box, and unlike is not a feature.
+ */
 export function likeTx(
   boxes: { boxId: string; value: string }[],
   targetPostId: string,
@@ -162,15 +170,12 @@ export function likeTx(
     inputs: boxes.map(b => b.boxId),
     outputs: [
       {
-        boxType: 'karma', value: t - LIKE_COST, 
-        owner: liker, guard: 'owner_signature', proofSource: targetPostId, 
-      },
-      {
-        boxType: 'like', value: LIKE_COST, 
-        likerId: liker, targetPostId, guard: 'epoch_tally',
+        boxType: 'karma', value: t - LIKE_KARMA_COST,
+        owner: liker, guard: 'owner_signature', proofSource: targetPostId,
       },
     ],
     signatures: {},
     protocolVersion: PROTOCOL_VERSION,
+    likeTarget: targetPostId,
   };
 }

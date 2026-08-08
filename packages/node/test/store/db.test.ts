@@ -21,7 +21,7 @@ const EXPECTED_TABLES = [
   'dag_posts',
   'dag_parent_refs',
   'dag_stumps',
-  'dag_likes',
+  'like_records',
   'mempool',
   'ordering_blocks',
   'block_journal',
@@ -137,5 +137,27 @@ describe('db lifecycle', () => {
     expect(orderNames).toContain('utxotx_tree_cbor');
     expect(orderNames).toContain('validator_signature');
     expect(orderNames).toContain('created_at');
+
+    // like_records (P2-D N2a) — the contract's exact three columns, with the
+    // composite PK on (target_post_id, liker_id): the structural dedup.
+    const likeRecCols = db.pragma('table_info(like_records)') as Array<{
+      name: string; notnull: number; pk: number;
+    }>;
+    const likeRecByName = new Map(likeRecCols.map((c) => [c.name, c]));
+    expect([...likeRecByName.keys()].sort()).toEqual(
+      ['applied_at_block', 'liker_id', 'target_post_id'],
+    );
+    expect(likeRecByName.get('target_post_id')!.pk).toBe(1);
+    expect(likeRecByName.get('liker_id')!.pk).toBe(2);
+    expect(likeRecByName.get('applied_at_block')!.pk).toBe(0);
+    expect(likeRecCols.every((c) => c.notnull === 1)).toBe(true);
+
+    // identity_records gains like_carry (P2-D N2a), NOT NULL with default 0.
+    const idRecCols = db.pragma('table_info(identity_records)') as Array<{
+      name: string; notnull: number;
+    }>;
+    const likeCarry = idRecCols.find((c) => c.name === 'like_carry');
+    expect(likeCarry).toBeDefined();
+    expect(likeCarry!.notnull).toBe(1);
   });
 });

@@ -31,28 +31,23 @@ export {
   getPendingInvites,
   getPendingInviteCount,
   getBondBoxes,
-  getLockedLikeBoxes,
-  getUnprocessedLockedLikeBoxes,
   getUnspentPostLockBoxes,
   getPostLockBox,
-  getPostTotalLikes,
-  getUnspentLikeBoxes,
   getLikersForPost,
   getUnspentBoxes,
   insertBox,
   consumeBox,
   unconsumeBox,
   deleteBox,
-  markLikeBoxesTallied,
 } from './utxo.js';
 
 export {
-  insertLike,
-  hasLiked,
-  getLikeCount,
-  getUnprocessedFreeLikes,
-  markFreeLikesProcessed,
-  markFreeLikesUnprocessed,
+  insertLikeRecord,
+  hasLikeRecord,
+  getLikeRecordCount,
+  deleteLikeRecordsForPosts,
+  deleteLikeRecord,
+  restoreLikeRecord,
 } from './likes.js';
 
 export {

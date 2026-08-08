@@ -158,10 +158,6 @@ describe('transaction output provenance (Spec G phase C3)', () => {
         guard: 'owner_signature', proofSource: -1, lockedUntilBlock: 900,
       } satisfies CreditBox,
       {
-        boxType: 'like', value: 2n, likerId: user(0xe4),
-        targetPostId: 'ab'.repeat(32), guard: 'epoch_tally',
-      },
-      {
         boxType: 'invite', value: 1n, secretHash: user(0xe5),
         inviterId: user(0xe6), guard: 'hash_preimage_with_bond',
       },

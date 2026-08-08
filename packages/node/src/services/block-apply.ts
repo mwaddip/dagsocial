@@ -3,11 +3,13 @@ import * as validation from '@dagsocial/validation';
 import { mintKarma } from './karma.js';
 import { mintCredits } from './credits.js';
 import {
-  authorRewardContext,
   coinbaseContext,
-  likerRefundContext,
+  likePayoutContext,
+  postlockRemainderContext,
   postlockUnlockContext,
   vouchSettleContext,
+  mintTxIdFor,
+  MINT_OUTPUT_INDEX,
 } from '../mint-provenance.js';
 import { applyKarmaDecay } from './decay.js';
 import {
@@ -20,9 +22,8 @@ import { VOUCH_COOLDOWN_BLOCKS } from '@dagsocial/types';
 import { settlePruneUtxo } from './settle-prune-utxo.js';
 import type { DecayDeps } from './decay.js';
 import { config } from '../config.js';
-import { computeBlockReward, computeSubBlockRoot, computeUtxoTxRoot, clearTemplate, computeEpochTally } from './block-creator.js';
+import { computeBlockReward, computeSubBlockRoot, computeUtxoTxRoot, clearTemplate } from './block-creator.js';
 import { expectedTarget } from './difficulty.js';
-import { canonicalRewardsJson } from './epoch-canonical.js';
 import { DagService } from './dag-service.js';
 import { applyTx, materializeOutput, validateTx } from './utxo-engine.js';
 import { getSystemKeypair } from '../store/system.js';
@@ -39,8 +40,6 @@ import {
   consumeBox,
   confirmPost,
   pruneSubtree,
-  markLikeBoxesTallied,
-  markFreeLikesProcessed,
   getCurrentHeight,
   createOrderingBlock as storeCreateOrderingBlock,
   getOrderingBlock,
@@ -52,6 +51,10 @@ import {
   getTopologyAuthor,
   getIdentityRecord,
   putIdentityRecord,
+  hasLikeRecord,
+  insertLikeRecord,
+  getLikeRecordCount,
+  getPostLockBox,
 } from '../store/index.js';
 import { getDb } from '../store/db.js';
 import {
@@ -71,13 +74,21 @@ import {
   decodeTx,
   PROTOCOL_VERSION,
   CREDIT_MINER_REWARD_DELAY,
+  LIKES_PER_KARMA_PAYOUT,
+  POST_LOCK_UNLOCK_PER_LIKES,
   computeTxId,
   computeBoxId,
   leafHash,
   buildMerkleRoot,
   hexToBuf,
 } from '@dagsocial/types';
-import type { AnyBox, OrderingBlock, UtxoTransaction } from '@dagsocial/types';
+import type {
+  AnyBox,
+  KarmaBox,
+  OrderingBlock,
+  PostLockBox,
+  UtxoTransaction,
+} from '@dagsocial/types';
 
 function processVouchCooldowns(currentHeight: number): void {
   const matured = getMaturedVouchCooldowns(currentHeight);
@@ -103,8 +114,8 @@ class BlockRejected extends Error {}
  * Apply an ordering block — all of it, or none of it.
  *
  * A block is a single unit of state transition, so every mutation it makes
- * (coinbase mint, sub-block confirmation, prune settlement, epoch tally, UTXO
- * transactions, decay) lives in one SQLite transaction. Any rejection — at any
+ * (coinbase mint, sub-block confirmation, prune settlement, UTXO transactions,
+ * per-block like settlement, decay) lives in one SQLite transaction. Any rejection — at any
  * step — rolls the whole thing back, leaving the node on the state it had
  * before the block arrived. Returns false for a rejected block; `reorg()`
  * nests this inside its own transaction, which SQLite handles as a savepoint.
@@ -294,28 +305,6 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
       console.warn(
         `Rejected block height=${block.header.height}: coinbase lockedUntilBlock ` +
         `${out.lockedUntilBlock} != expected ${expectedLock}`,
-      );
-      abortBlockJournal();
-      return false;
-    }
-  }
-
-  // 5. Verify epoch tally results (before storing the block)
-  // The Merkle root commits to epochTallyResults, so they can't be
-  // fabricated.  But we must also verify the results are correct for
-  // the current UTXO state — a malicious miner could commit to valid
-  // (Merkle-matching) but incorrect (state-divergent) results.
-  //
-  // Compared canonically: the miner's key order is its own gossip/row order,
-  // and it arrives here through a CBOR round-trip that preserves it, so an
-  // insertion-order compare rejects logically identical tallies (audit C-6).
-  if (block.utxoTxTree.epochTallyResults) {
-    const localTally = computeEpochTally(block.header.height);
-    const blockRewards = canonicalRewardsJson(block.utxoTxTree.epochTallyResults.rewards);
-    const localRewards = canonicalRewardsJson(localTally.rewards);
-    if (blockRewards !== localRewards) {
-      console.warn(
-        `Rejected block height=${block.header.height}: epoch tally mismatch`,
       );
       abortBlockJournal();
       return false;
@@ -677,7 +666,8 @@ function applyMutationPhase(
   //   2. Verify Ed25519 author signature over (rootPostHash || subtreeMerkleRoot)
   //   3. Verify postId set against block_topology (deterministic, no DAG walk)
   //   4. Verify Merkle root from entry.subtreePostIds
-  //   5. Settle UTXO — consume PostLockBox + LikeBox, mint refund karma
+  //   5. Settle UTXO — consume PostLockBoxes, mint prune-refund-author karma,
+  //      delete the subtree's like-records (journalled)
   //   6. Prune DAG content, insert simplified Stump for historical record
   for (const entry of block.subBlockTree.pruneEntries) {
     // 1. Authorship binding (H-3)
@@ -772,7 +762,7 @@ function applyMutationPhase(
       rootPostHash: entry.rootPostHash,
       authorId: entry.authorId,
       replyCount: entry.subtreePostIds.length - 1, // exclude root
-      upvoteCount: 0, // can be derived from like boxes if needed
+      upvoteCount: 0, // not captured — the subtree's like-records are deleted at settlement (step 5)
       trigger: entry.trigger,
       protocolVersion: PROTOCOL_VERSION,
       compactedAtBlockHeight: height,
@@ -782,79 +772,6 @@ function applyMutationPhase(
     } catch (err) {
       console.warn(`Failed to prune DAG subtree for ${entry.rootPostHash}: ${String(err)}`);
       // Non-fatal — DAG content may not be present
-    }
-  }
-
-  // 9. Standalone like boxes are tallied by computeEpochTally at epoch
-  // boundaries.  The computation was verified before block storage (§5);
-  // here we apply the karma mints and the UTXO/bookkeeping side effects.
-
-  // 10. Apply epoch tally results
-  if (block.utxoTxTree.epochTallyResults) {
-    const tally = computeEpochTally(height);
-    const rewards = tally.rewards;
-
-    for (const postId of Object.keys(rewards)) {
-      const reward = rewards[postId];
-      if (!reward) continue;
-
-      // Author reward — the choke point journals the merge-consumed
-      // pre-existing karma boxes and the minted box.
-      if (reward.authorReward > 0n) {
-        const post = getPost(postId);
-        if (post && 'author' in post) {
-          mintKarma(post.author, reward.authorReward, height, authorRewardContext(postId));
-        }
-      }
-
-      // Liker refunds (locked likes that met threshold)
-      for (const likerId of Object.keys(reward.likerRefunds)) {
-        const refund = reward.likerRefunds[likerId];
-        if (refund !== undefined && refund !== 0n) {
-          const likerBytes = new Uint8Array(Buffer.from(likerId, "hex"));
-          mintKarma(likerBytes, refund, height, likerRefundContext(postId, likerBytes));
-        }
-      }
-
-      // Post lock karma unlocked.
-      //
-      // This and the author reward above mint to the **same author, for the
-      // same post, at the same height**. The `reason` tag is the only thing
-      // separating them, which is why the context constructors pair reason with
-      // subject: swapping them here would produce a box-id collision, not an
-      // error.
-      if (reward.postLockKarmaUnlocked && reward.postLockKarmaUnlocked > 0n) {
-        const post = getPost(postId);
-        if (post && 'author' in post) {
-          mintKarma(
-            post.author,
-            reward.postLockKarmaUnlocked,
-            height,
-            postlockUnlockContext(postId),
-          );
-        }
-      }
-    }
-
-    // Apply side effects that were previously only run on the miner's node.
-    // These must run on every node so the UTXO state stays consistent.
-
-    // Mark like boxes as tallied (prevents double-counting in later epochs)
-    if (tally.talliedLockedLikeBoxIds.length > 0) {
-      markLikeBoxesTallied(tally.talliedLockedLikeBoxIds);
-    }
-
-    // Mark free likes as processed
-    if (tally.processedFreeLikeIds.length > 0) {
-      markFreeLikesProcessed(tally.processedFreeLikeIds);
-    }
-
-    // Consume old post lock boxes and insert replacement boxes
-    for (const boxId of tally.consumedPostLockBoxIds) {
-      consumeBox(boxId, height);
-    }
-    for (const newBox of tally.newPostLockBoxes) {
-      insertBox(newBox);
     }
   }
 
@@ -947,6 +864,13 @@ function applyMutationPhase(
     queue.push({ txId, tx, outputs });
   }
 
+  // P2-D per-block like accrual: in-memory, this invocation only — the
+  // end-of-phase settlement (§11b) reads both maps. Local by design, so the
+  // speculative (creator) run accrues and settles identically and its rollback
+  // discards everything with it.
+  const likesPerAuthor = new Map<string, number>(); // author hex → likes this block
+  const likesPerPost = new Map<string, number>(); // post id → likes this block
+
   // Multi-pass: try to apply txs, retrying those whose inputs aren't
   // available yet (may have been created by an earlier tx in this block).
   const MAX_PASSES = 20;
@@ -973,6 +897,62 @@ function applyMutationPhase(
           `${item.txId} failed re-validation: ${revalidated.error}`,
         );
         return false;
+      }
+
+      // P2-D like apply rules (NODE_INTERFACE "Per-block like settlement"):
+      // re-checked at apply — consensus, not gateway courtesy — and BEFORE
+      // applyTx, so a failing like never mutates state. Any failure rejects
+      // the whole block, like any other invalid embedded tx.
+      let likeToRecord: {
+        targetPostId: string;
+        likerId: Uint8Array;
+        authorHex: string;
+      } | null = null;
+      if (item.tx.likeTarget !== undefined) {
+        const targetPostId = item.tx.likeTarget;
+        // Confirmed ⟺ a topology row exists, and its author — never
+        // dag_posts.author — is who the like credits: placeholder rows carry
+        // a zeroed author, and a like on a confirmed but content-less post
+        // must credit the consensus-recorded author.
+        const authorHex = getTopologyAuthor(targetPostId);
+        if (authorHex === null) {
+          console.warn(
+            `Rejected block height=${height}: like tx ${item.txId} targets ` +
+            `unconfirmed post ${targetPostId}`,
+          );
+          return false;
+        }
+        // Live at this height: likes on pruned posts are rejected by stated
+        // rule — without it, dropping like-records at prune would reopen
+        // duplicate likes on stumps. A pruned root comes back as a Stump
+        // (no `content` field); a pruned non-root comes back as null (its
+        // stump lookup misses); so anything but a Post rejects.
+        const target = getPost(targetPostId);
+        if (target === null || !('content' in target)) {
+          console.warn(
+            `Rejected block height=${height}: like tx ${item.txId} targets ` +
+            `pruned or unknown post ${targetPostId}`,
+          );
+          return false;
+        }
+        // The liker is the karma inputs' owner, read from the input boxes —
+        // never from the signature map. The gateway's one-signature rule is
+        // gateway policy; a validator can embed a spare-signature like tx
+        // directly, and it must still apply with the liker the owner state
+        // names. validateTx above pinned every input to one karma owner, so
+        // the first input names it.
+        const likerId = (getBox(item.tx.inputs[0]!) as KarmaBox).owner;
+        // One like per account per post, structurally: the key exists or it
+        // does not. Applied likes earlier in this block already inserted
+        // their record, so an intra-block duplicate fails here too.
+        if (hasLikeRecord(targetPostId, likerId)) {
+          console.warn(
+            `Rejected block height=${height}: like tx ${item.txId} ` +
+            `duplicates an existing like-record for ${targetPostId}`,
+          );
+          return false;
+        }
+        likeToRecord = { targetPostId, likerId, authorHex };
       }
 
       // Detect vouch unvouch before the VouchBox is consumed
@@ -1006,6 +986,20 @@ function applyMutationPhase(
       applyTx(utxoDeps, item.tx, item.outputs, height);
       applied++;
 
+      if (likeToRecord !== null) {
+        // Journalled side-record (inverse: deleteLikeRecord), plus the
+        // in-memory accrual §11b settles.
+        insertLikeRecord(likeToRecord.targetPostId, likeToRecord.likerId, height);
+        likesPerAuthor.set(
+          likeToRecord.authorHex,
+          (likesPerAuthor.get(likeToRecord.authorHex) ?? 0) + 1,
+        );
+        likesPerPost.set(
+          likeToRecord.targetPostId,
+          (likesPerPost.get(likeToRecord.targetPostId) ?? 0) + 1,
+        );
+      }
+
       // Remove from local mempool if present
       const mempoolEntry = pendingEntries.find((e) => {
         if (e.entryType !== 'utxo_tx' || !e.utxoTxCbor) return false;
@@ -1038,6 +1032,79 @@ function applyMutationPhase(
       `Block ${height}: ${queue.length} UTXO tx(s) could not be applied ` +
       `after ${MAX_PASSES} passes`,
     );
+  }
+
+  // 11b. Per-block like settlement (P2-D — NODE_INTERFACE "Per-block like
+  // settlement"). Entirely derived — nothing rides in the block, so producer
+  // and verifier cannot disagree on it. Order pinned by the contract:
+  // embedded txs → author settlement → post-lock vesting → decay → vouch
+  // cooldowns. Blocks with no likes run neither loop. All value arithmetic
+  // bigint — a float intermediate is a consensus fork.
+  const PAYOUT_X = BigInt(LIKES_PER_KARMA_PAYOUT);
+
+  // Author settlement, ascending author-hex order (journal-order
+  // canonicality; the mint ids are order-independent regardless).
+  for (const authorHex of [...likesPerAuthor.keys()].sort()) {
+    const author = new Uint8Array(Buffer.from(authorHex, 'hex'));
+    const record = getIdentityRecord(author);
+    const total = (record?.likeCarry ?? 0n) + BigInt(likesPerAuthor.get(authorHex)!);
+    const paid = (total / PAYOUT_X) * (PAYOUT_X - 1n);
+    const carry = total % PAYOUT_X;
+    if (paid > 0n) {
+      // One mint per author per block; per X likes the likers burned X, the
+      // author receives X−1, 1 is gone — the deflation dial. The mint's
+      // insertBox bumps the author's lastActivityBlock — known,
+      // contract-recorded karma-econ behaviour (ARCHITECTURE §Likes), kept
+      // as-is until the karma-economics track redefines the trigger.
+      mintKarma(author, paid, height, likePayoutContext(author));
+    }
+    // Unconditional carry write, even at paid = 0: the carry changed, and the
+    // record is in the stateRoot — two nodes can never disagree on the next
+    // payout undetected. Re-read after the mint so the activity bump the
+    // mint's choke point just wrote is preserved; a missing record means
+    // maximally stale ({0, 0}), never "skip this owner".
+    const after = getIdentityRecord(author);
+    putIdentityRecord(author, {
+      lastActivityBlock: after?.lastActivityBlock ?? 0,
+      lastDecayBlock: after?.lastDecayBlock ?? 0,
+      likeCarry: carry,
+    });
+  }
+
+  // Post-lock vesting, ascending post-id order, for posts liked this block
+  // that hold a live PostLockBox: the retired epoch schedule evaluated per
+  // block.
+  for (const postId of [...likesPerPost.keys()].sort()) {
+    const lockBox = getPostLockBox(postId);
+    if (!lockBox || !lockBox.id) continue;
+    const totalLikes = BigInt(getLikeRecordCount(postId)); // lifetime, live post
+    const alreadyUnlocked = lockBox.originalValue - lockBox.value;
+    const shouldUnlock = totalLikes / BigInt(POST_LOCK_UNLOCK_PER_LIKES);
+    const unlockable = shouldUnlock - alreadyUnlocked;
+    const toUnlock = lockBox.value < unlockable ? lockBox.value : unlockable;
+    if (toUnlock <= 0n) continue;
+    consumeBox(lockBox.id, height);
+    // The unlocked karma returns to the lock's owner — the author who locked
+    // it: committed value-layer state, not a dag_posts read.
+    mintKarma(lockBox.owner, toUnlock, height, postlockUnlockContext(postId));
+    const remaining = lockBox.value - toUnlock;
+    if (remaining > 0n) {
+      // A fully-unlocked lock is consumed without a remainder. One remainder
+      // per post per block, so (height, 'postlock-remainder', postId) cannot
+      // repeat.
+      const remainder: PostLockBox = {
+        boxType: 'post_lock',
+        value: remaining,
+        originalValue: lockBox.originalValue,
+        owner: lockBox.owner,
+        targetPostId: postId,
+        guard: 'block_apply',
+        txId: mintTxIdFor(postlockRemainderContext(postId), height),
+        index: MINT_OUTPUT_INDEX,
+      };
+      remainder.id = computeBoxId(remainder);
+      insertBox(remainder);
+    }
   }
 
   // 12. Apply periodic karma decay

@@ -40,6 +40,17 @@ export interface IdentityRecord {
   lastActivityBlock: number;
   /** u32 — bumped when decay fires. */
   lastDecayBlock: number;
+  /**
+   * Outstanding like accrual, `< LIKES_PER_KARMA_PAYOUT` — written ONLY by
+   * per-block like settlement (P2-D). No other path may touch it; every other
+   * writer of this record carries the stored value through unchanged.
+   *
+   * `bigint` although the value is tiny: it is karma-denominated committed
+   * state, and the row boundary (`safeIntegers`) hands back bigint — keeping
+   * the type end-to-end means no `Number()` coercion can silently appear in a
+   * consensus path.
+   */
+  likeCarry: bigint;
 }
 
 /**
@@ -65,16 +76,18 @@ export function identityRecordKey(identityId: UserId): string {
 export function getIdentityRecord(identityId: UserId): IdentityRecord | null {
   const row = getDb()
     .prepare(
-      `SELECT last_activity_block, last_decay_block
+      `SELECT last_activity_block, last_decay_block, like_carry
        FROM identity_records WHERE identity_id = ?`,
     )
     .safeIntegers()
     .get(Buffer.from(identityId)) as
-      { last_activity_block: bigint; last_decay_block: bigint } | undefined;
+      { last_activity_block: bigint; last_decay_block: bigint; like_carry: bigint }
+      | undefined;
   if (!row) return null;
   return {
     lastActivityBlock: Number(row.last_activity_block),
     lastDecayBlock: Number(row.last_decay_block),
+    likeCarry: row.like_carry,
   };
 }
 
@@ -94,7 +107,7 @@ export function getIdentityRecord(identityId: UserId): IdentityRecord | null {
 export function getAllIdentityRecords(): Array<{ identityId: UserId; record: IdentityRecord }> {
   const rows = getDb()
     .prepare(
-      `SELECT identity_id, last_activity_block, last_decay_block
+      `SELECT identity_id, last_activity_block, last_decay_block, like_carry
        FROM identity_records ORDER BY identity_id`,
     )
     .safeIntegers()
@@ -102,12 +115,14 @@ export function getAllIdentityRecords(): Array<{ identityId: UserId; record: Ide
       identity_id: Buffer;
       last_activity_block: bigint;
       last_decay_block: bigint;
+      like_carry: bigint;
     }>;
   return rows.map((row) => ({
     identityId: new Uint8Array(row.identity_id),
     record: {
       lastActivityBlock: Number(row.last_activity_block),
       lastDecayBlock: Number(row.last_decay_block),
+      likeCarry: row.like_carry,
     },
   }));
 }
@@ -132,10 +147,15 @@ export function putIdentityRecord(identityId: UserId, record: IdentityRecord): v
   getDb()
     .prepare(
       `INSERT OR REPLACE INTO identity_records
-         (identity_id, last_activity_block, last_decay_block)
-       VALUES (?, ?, ?)`,
+         (identity_id, last_activity_block, last_decay_block, like_carry)
+       VALUES (?, ?, ?, ?)`,
     )
-    .run(Buffer.from(identityId), record.lastActivityBlock, record.lastDecayBlock);
+    .run(
+      Buffer.from(identityId),
+      record.lastActivityBlock,
+      record.lastDecayBlock,
+      record.likeCarry,
+    );
   recordIdentityRecordPut(identityRecordKey(identityId), identityId, record, replaced);
 }
 

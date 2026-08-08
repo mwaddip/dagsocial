@@ -12,7 +12,7 @@ export interface FeedServiceDeps {
     limit?: number;
     offset?: number;
   }) => Post[];
-  getLikeCount: (postId: string) => { locked: number; free: number };
+  getLikeRecordCount: (postId: string) => number;
   getLikersForPost: (postId: string) => string[];
   getAncestors: (postId: string) => Post[];
   getSubtree: (postId: string) => Post[];
@@ -101,9 +101,9 @@ export class FeedService {
     }
 
     const post = result as Post;
-    const counts = this.deps.getLikeCount(id);
+    const likeCount = this.deps.getLikeRecordCount(id);
     const likers = this.deps.getLikersForPost(id);
-    return postToJson(post, counts.locked + counts.free, likers);
+    return postToJson(post, likeCount, likers);
   }
 
   /**
@@ -119,9 +119,9 @@ export class FeedService {
     const posts = this.deps.queryPosts({ author: opts.author, limit, offset });
     return posts.map((post) => {
       const postId = computePostId(post);
-      const counts = this.deps.getLikeCount(postId);
+      const likeCount = this.deps.getLikeRecordCount(postId);
       const likers = this.deps.getLikersForPost(postId);
-      return postToJson(post, counts.locked + counts.free, likers);
+      return postToJson(post, likeCount, likers);
     });
   }
 
@@ -144,26 +144,26 @@ export class FeedService {
     }
 
     const post = result as Post;
-    const counts = this.deps.getLikeCount(id);
+    const likeCount = this.deps.getLikeRecordCount(id);
     const likers = this.deps.getLikersForPost(id);
-    const postJson = postToJson(post, counts.locked + counts.free, likers);
+    const postJson = postToJson(post, likeCount, likers);
 
     // Ancestors: walk up the parent chain (genesis → immediate parent)
     const ancestorPosts = this.deps.getAncestors(id);
     const ancestors = ancestorPosts.map((p) => {
       const pid = computePostId(p);
-      const c = this.deps.getLikeCount(pid);
+      const c = this.deps.getLikeRecordCount(pid);
       const l = this.deps.getLikersForPost(pid);
-      return postToJson(p, c.locked + c.free, l);
+      return postToJson(p, c, l);
     });
 
     // Descendants: full reply subtree below the target
     const descendantPosts = this.deps.getSubtree(id);
     const descendants = descendantPosts.map((p) => {
       const pid = computePostId(p);
-      const c = this.deps.getLikeCount(pid);
+      const c = this.deps.getLikeRecordCount(pid);
       const l = this.deps.getLikersForPost(pid);
-      return postToJson(p, c.locked + c.free, l);
+      return postToJson(p, c, l);
     });
 
     return { post: postJson, ancestors, descendants };

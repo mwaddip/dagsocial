@@ -1,4 +1,4 @@
-import type { SubBlock, OrderingBlock, UtxoTransaction, Post, LikeBox, BlockHeader } from '@dagsocial/types';
+import type { SubBlock, OrderingBlock, UtxoTransaction, Post, BlockHeader } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
 // Message codes
@@ -202,7 +202,6 @@ export interface GetPostsMsg {
 export interface PostsEntry {
   postId: string;
   post: Post;
-  likeBoxes: LikeBox[];
 }
 
 export interface PostsMsg {

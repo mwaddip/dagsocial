@@ -81,6 +81,7 @@ describe('genesis identity record (Spec G phase D)', () => {
     expect(s.records.getIdentityRecord(keypair.publicKey)).toEqual({
       lastActivityBlock: 1,
       lastDecayBlock: 0,
+      likeCarry: 0n,
     });
   });
 
@@ -95,6 +96,7 @@ describe('genesis identity record (Spec G phase D)', () => {
     expect(s.records.getIdentityRecord(keypair.publicKey)).toEqual({
       lastActivityBlock: 500,
       lastDecayBlock: 0,
+      likeCarry: 0n,
     });
   });
 
@@ -111,6 +113,7 @@ describe('genesis identity record (Spec G phase D)', () => {
     expect(s.records.getIdentityRecord(keypair.publicKey)).toEqual({
       lastActivityBlock: 1,
       lastDecayBlock: 0,
+      likeCarry: 0n,
     });
   });
 

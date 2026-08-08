@@ -32,19 +32,14 @@ export const POST_LOCK_THREAD_COST = 5n;  // Karma locked for new threads
 export const POST_LOCK_REPLY_COST = 3n;   // Karma locked for replies
 export const POST_LOCK_UNLOCK_PER_LIKES = 10;  // Every N likes unlocks 1 karma
 
-// Likes
-export const LIKE_COST = 2n;
-export const LIKE_THRESHOLD = 5;
-export const LIKE_MAX_AUTHOR_REWARD = 10n;
-export const LIKE_FREE_THRESHOLD = 10;  // 10x LIKE_THRESHOLD; beyond this, likes are free
+// Likes (P2-D) — one-way burns settled per block
+export const LIKE_KARMA_COST = 1n;        // Karma burned by the liker per like (bigint)
+export const LIKES_PER_KARMA_PAYOUT = 5;  // x: per x likes an author accrues x−1; 1 is burned
 
 // Vouch
 export const VOUCH_KARMA_AMOUNT = 1n;         // Karma locked per vouch
 export const VOUCH_MIN_BALANCE = 11n;          // Must have >= this to vouch
 export const VOUCH_COOLDOWN_BLOCKS = 60;       // Blocks before karma returned → profile: vouchCooldownBlocks
-
-// Epoch
-export const EPOCH_BLOCKS = 60;  // Like processing every N ordering blocks
 
 // Invites
 export const MAX_PENDING_INVITES = 5;

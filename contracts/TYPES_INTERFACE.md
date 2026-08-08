@@ -164,10 +164,12 @@ could be presented as `nodeHash(left,right)` for a forged inclusion proof
 
 > **Forward constraint — this is a consensus rule with no test behind it.** The scheme is
 > sound only while **every** leaf domain is a non-empty printable ASCII string, so that no
-> leaf preimage can ever begin with `0x00`. The seven live domains are `stump`, `subblock`,
-> `prune`, `utxotx`, `likebox`, `coinbase`, `epoch` — all printable, none a prefix of
-> another, so the NUL delimiter suffices. **Adding a leaf domain that begins with a
-> non-printable byte silently reopens leaf/internal-node confusion.** No test enforces
+> leaf preimage can ever begin with `0x00`. The five live domains are `stump`, `subblock`,
+> `prune`, `utxotx`, `coinbase` — all printable, none a prefix of another, so the NUL
+> delimiter suffices. (`likebox` and `epoch` were retired by P2-D; both strings stay
+> **reserved** — a future domain reusing them would collide with historical leaf meanings.)
+> **Adding a leaf domain that begins with a non-printable byte silently reopens
+> leaf/internal-node confusion.** No test enforces
 > this; it is a contract and review rule, recorded here because it previously existed only
 > as a comment in `merkle.ts`.
 
@@ -213,7 +215,7 @@ type AnyBoxCandidate = CandidateOf<KarmaBox> | CandidateOf<CreditBox> | …   //
 **`BoxCandidate` is the base, `CandidateOf<B>` is the per-type candidate.** An earlier draft of
 this block wrote `BoxCandidate` with a `…per-type fields` placeholder, which read as though one
 name covered both; it does not, and typing `UtxoTransaction.outputs` as the base would erase
-`owner`, `guard`, `likerId` and force a cast at every consumer. `Omit` is applied **per union
+`owner`, `guard`, `targetPostId` and force a cast at every consumer. `Omit` is applied **per union
 member** — omitting from a union collapses it to the common keys. `UtxoTransaction.outputs` is
 `AnyBoxCandidate[]`.
 
@@ -242,7 +244,7 @@ committed per-identity record instead — see `NODE_INTERFACE.md`.
 #### Mint identity
 
 Boxes created by block application rather than by a user transaction (coinbase, karma mints,
-decay, epoch post-locks, genesis) derive a **synthetic transaction id**, so there is exactly
+decay, post-lock vesting, genesis) derive a **synthetic transaction id**, so there is exactly
 one derivation path:
 
 ```
@@ -394,17 +396,13 @@ CreditBox extends BoxBase {
 Credits are freely transferable between any accounts. Locked credits (from
 coinbase) cannot be spent until `lockedUntilBlock` passes.
 
-### LikeBox
+### ~~LikeBox~~ — DELETED (P2-D)
 
-```
-LikeBox extends BoxBase {
-  boxType: "like"
-  value: 2n                    // LIKE_COST — always 2n (bigint)
-  likerId: UserId
-  targetPostId: PostId
-  guard: "epoch_tally"         // Locked until epoch tally. Consumed by ordering block processor.
-}
-```
+**There is no like box.** A like burns its karma at cast, so there is no held value and
+nothing for a box to carry — a like is a **transaction** (`UtxoTransaction.likeTarget`,
+below) plus a node-side `(liker, post)` record. The boxType string **`'like'` is reserved,
+never to be reused**: a future box type wearing it would make old-vs-new greps and
+historical debugging ambiguous forever.
 
 ### InviteBox
 
@@ -442,17 +440,18 @@ BondBox extends BoxBase {
 ```
 PostLockBox extends BoxBase {
   boxType: "post_lock"
-  value: bigint                // Current locked karma (decreases each epoch as likes accumulate)
+  value: bigint                // Current locked karma (decreases per block as likes accumulate)
   originalValue: bigint        // Initial lock amount (POST_LOCK_THREAD_COST or POST_LOCK_REPLY_COST)
   owner: Uint8Array            // 32 raw bytes — post author's Ed25519 public key
   targetPostId: PostId         // The post this lock secures
-  guard: "epoch_tally"         // Only consumed by epoch processing (unlock schedule)
+  guard: "block_apply"         // Consumable only by block application (per-block vesting)
 }
 ```
 
-Post lock karma is gradually unlocked at epoch boundaries: every
+Post lock karma vests **per block** (P2-D — there is no epoch): every
 `POST_LOCK_UNLOCK_PER_LIKES` (10) lifetime likes on the target post unlocks
-1 karma back to the author.
+1 karma back to the author, evaluated at the end of any block in which the
+post received likes (`ARCHITECTURE §Likes → Post karma locking`).
 
 ### VouchBox
 
@@ -469,10 +468,13 @@ VouchBox extends BoxBase {
 ### BoxGuard
 
 ```
-type BoxGuard = "owner_signature" | "epoch_tally" | "hash_preimage" | "inviter_signature" | "bond_dual" | "hash_preimage_with_bond"
+type BoxGuard = "owner_signature" | "block_apply" | "hash_preimage" | "inviter_signature" | "bond_dual" | "hash_preimage_with_bond"
+// "block_apply" replaced "epoch_tally" in P2-D — there is no epoch, and the meaning was
+//   always "consumable only by block application". The string 'epoch_tally' is RESERVED,
+//   never to be reused; guard strings are box content, inside the box-id preimage.
 // ⚠ "hash_preimage" and "inviter_signature" are UNREACHABLE — no box type can carry them.
 //   Every box fixes its guard to a literal (InviteBox → 'hash_preimage_with_bond',
-//   BondBox → 'bond_dual', rest → 'owner_signature' | 'epoch_tally'). The engine switches
+//   BondBox → 'bond_dual', rest → 'owner_signature' | 'block_apply'). The engine switches
 //   only on the live names, the store writes only the live names, and db.ts carries a
 //   migration that DELETES rows still holding the old ones.
 //   Low severity, but it is why stale test fixtures using them look plausible, and it
@@ -488,11 +490,23 @@ UtxoTransaction {
   signatures: Record<string, Uint8Array>   // publicKey (hex) → Ed25519 sig (64 bytes) over TxId
   preimages?: Record<string, Uint8Array>   // boxId → hash preimage, for hash_preimage guards
   protocolVersion: number                  // 1
+  likeTarget?: PostId                      // Present ⟺ this tx is a like (P2-D) — see below
 }
 
 TxId = blake2b512( TX_ID_DOMAIN ‖ inputs ‖ canonicalCbor(outputs, in order)
-                   ‖ preimages (sorted by boxId) ‖ protocolVersion )[0:32]
+                   ‖ preimages (sorted by boxId) ‖ protocolVersion
+                   ‖ ("like:" ‖ likeTarget, iff present) )[0:32]
 ```
+
+**`likeTarget`** names the liked post from inside the signed bytes — a relay cannot
+re-point a like. Its preimage contribution is the ASCII marker `like:` followed by the
+64-char hex, appended after `protocolVersion` **only when the field is present**; absence
+appends nothing. The marker makes absent/present unambiguous at the tail (a
+`protocolVersion` decimal string can never produce `like:`). This package defines only the
+field and its encoding; the **biconditional rule** — `likeTarget` present ⟺ the
+transaction burns exactly `LIKE_KARMA_COST`, the only legal karma deficit in any user
+transaction — is consensus validation and lives in `NODE_INTERFACE.md` (UTXO engine).
+P2-C's C1 (length-prefixed preimage rework) absorbs this field when it lands.
 
 `outputs` carries **candidates**, not boxes. A transaction cannot name its own outputs' ids
 without circularity, so ids are derived once `TxId` is known; the ledger materializes candidate
@@ -566,15 +580,15 @@ Stump {
 SubBlock {
   subBlockId: PostId             // = post.postId (the post IS the sub-block)
   post: Post                     // The post (with PoW = sub-block proof)
-  likeBoxes: LikeBox[]           // Pending likes riding as sidecars
   producerId: UserId             // = post.author
   protocolVersion: number        // 1
 }
 ```
 
-Sub-blocks are user-produced. A sub-block carries exactly one post plus any
-pending like boxes queued since the last sub-block. Sub-block identity IS post
-identity — they are the same object.
+Sub-blocks are user-produced. A sub-block carries exactly one post and nothing
+else — the `likeBoxes` sidecar field died with `LikeBox` (P2-D; likes are
+ordinary UTXO transactions). Sub-block identity IS post identity — they are the
+same object.
 
 ### Block header
 
@@ -645,13 +659,17 @@ SubBlockEntry {
 }
 
 UtxoTxTree {
-  utxoTxIds: TxId[]                  // UTXO transaction IDs
+  utxoTxIds: TxId[]                  // UTXO transaction IDs (likes included — P2-D)
   utxoTxs: Uint8Array[]              // CBOR-encoded UtxoTransactions, aligned with utxoTxIds
-  likeBoxIds: BoxId[]                // standalone likes (no sub-block to ride)
   coinbaseOutputs: CoinbaseOutput[]  // block reward distribution
-  epochTallyResults?: EpochTally     // present if an epoch transition triggered
 }
 ```
+
+`likeBoxIds` and `epochTallyResults` were deleted by P2-D: likes ride `utxoTxIds` like
+every other transaction, and per-block settlement is **derived state** computed identically
+by every node at apply — nothing to carry in the block. (The `EpochTally` structure, its
+`epoch` Merkle leaf and `canonicalEpochTallyJson` died with it; audit C-6's
+key-order-divergence problem is closed by not existing.)
 
 `SubBlockEntry.author` is the consensus-carried authorship claim for the confirmed
 post: it is committed under `subBlockRoot`, so every node — including one that
@@ -673,25 +691,11 @@ CoinbaseOutput {
 }
 ```
 
-### Epoch tally
+### ~~Epoch tally~~ — DELETED (P2-D)
 
-```
-EpochTally {
-  rewards: Record<PostId, LikeReward>       // per-post like rewards this epoch
-  talliedLockedLikeBoxIds: string[]         // locked like boxes marked tallied (anti-double-count)
-  processedFreeLikeIds: string[]            // free like rows marked processed
-  consumedPostLockBoxIds: string[]          // post lock boxes consumed during this tally
-  newPostLockBoxes: PostLockBox[]           // replacement post lock boxes (reduced value; empty if fully unlocked)
-}
-
-LikeReward {
-  targetPostId: PostId
-  likeCount: number                      // a count — stays number
-  authorReward: bigint                   // karma amount (bigint; feeds mintKarma)
-  likerRefunds: Record<string, bigint>   // likerId → net karma refund (bigint)
-  postLockKarmaUnlocked?: bigint          // Karma released from post lock this epoch (bigint)
-}
-```
+`EpochTally` and `LikeReward` are gone with the epoch. Settlement is per-block and derived
+— see `ARCHITECTURE §Likes` for the accrual arithmetic and `NODE_INTERFACE.md` for the
+apply-time algorithm. Nothing epoch-shaped may return to the block structure.
 
 ---
 
@@ -871,14 +875,16 @@ threshold / percentage / bits** constants stay `number`.
   `GENESIS_CREDITS_PER_MEMBER`, and the node/UI faucet credit amounts.
 - **Karma amounts → `bigint` literals, NOT rescaled** (karma is indivisible):
   `KARMA_POSTING_MINIMUM`, `KARMA_DECAY_AMOUNT`, `KARMA_MINIMUM`,
-  `POST_LOCK_THREAD_COST`, `POST_LOCK_REPLY_COST`, `LIKE_COST`,
-  `LIKE_MAX_AUTHOR_REWARD`, `INVITE_MIN_KARMA`, `INVITE_BOND_KARMA`,
+  `POST_LOCK_THREAD_COST`, `POST_LOCK_REPLY_COST`, `LIKE_KARMA_COST`,
+  `INVITE_MIN_KARMA`, `INVITE_BOND_KARMA`,
   `INVITE_KARMA_THRESHOLD`, `VOUCH_KARMA_AMOUNT`, `VOUCH_MIN_BALANCE`,
   `GENESIS_KARMA_PER_MEMBER`.
-- **Stay `number`:** all `*_BLOCKS`, `*_TARGET_BITS`/`*_FLOOR`, `LIKE_THRESHOLD`,
-  `LIKE_FREE_THRESHOLD`, `POST_LOCK_UNLOCK_PER_LIKES`, `EPOCH_BLOCKS`, `MAX_*`,
+- **Stay `number`:** all `*_BLOCKS`, `*_TARGET_BITS`/`*_FLOOR`,
+  `LIKES_PER_KARMA_PAYOUT` (a count), `POST_LOCK_UNLOCK_PER_LIKES`, `MAX_*`,
   `CREDIT_MINER_REWARD_DELAY` (a block count, NOT an amount), `CREDIT_TREASURY_PCT`
   (percentage). The exhaustive per-constant classification rides in the dispatch prompt.
+  (`LIKE_COST`, `LIKE_THRESHOLD`, `LIKE_MAX_AUTHOR_REWARD`, `LIKE_FREE_THRESHOLD` and
+  `EPOCH_BLOCKS` were deleted by P2-D.)
 
 ### Version
 
@@ -959,17 +965,13 @@ export const POST_LOCK_UNLOCK_PER_LIKES = 10;     // Every N likes unlocks 1 kar
 ### Likes
 
 ```typescript
-export const LIKE_COST = 2;                    // Karma locked to cast a like
-export const LIKE_THRESHOLD = 5;               // Absolute like count per multiplier step
-export const LIKE_MAX_AUTHOR_REWARD = 10;      // Max karma an author earns per post
-export const LIKE_FREE_THRESHOLD = 10;         // 10× LIKE_THRESHOLD; beyond this, likes are free
+export const LIKE_KARMA_COST = 1n;             // Karma burned by the liker per like (bigint)
+export const LIKES_PER_KARMA_PAYOUT = 5;       // x: per x likes an author accrues x−1; 1 burned
 ```
 
-### Epoch
-
-```typescript
-export const EPOCH_BLOCKS = 60;                // Like processing every N ordering blocks
-```
+The four retired like constants (`LIKE_COST`, `LIKE_THRESHOLD`, `LIKE_MAX_AUTHOR_REWARD`,
+`LIKE_FREE_THRESHOLD`) and the epoch (`EPOCH_BLOCKS`) are **deleted** — P2-D. Names
+reserved; the deletion-proof grep for the old mechanics depends on them never returning.
 
 ### Invites
 

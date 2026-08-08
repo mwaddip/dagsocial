@@ -104,7 +104,7 @@ describe('insertBox populates the activity clock (Spec G phase D2)', () => {
     insertBox(karmaBox(alice, 100n, 42));
     finishBlockJournal();
 
-    expect(getIdentityRecord(alice)).toEqual({ lastActivityBlock: 42, lastDecayBlock: 0 });
+    expect(getIdentityRecord(alice)).toEqual({ lastActivityBlock: 42, lastDecayBlock: 0, likeCarry: 0n });
   });
 
   it('the height is the journal height, not the box createdAtBlock', async () => {
@@ -122,7 +122,7 @@ describe('insertBox populates the activity clock (Spec G phase D2)', () => {
     insertBox(karmaBox(alice, 100n, 7));
     finishBlockJournal();
 
-    expect(getIdentityRecord(alice)).toEqual({ lastActivityBlock: 90, lastDecayBlock: 0 });
+    expect(getIdentityRecord(alice)).toEqual({ lastActivityBlock: 90, lastDecayBlock: 0, likeCarry: 0n });
   });
 
   it('a decay-burn karma box does NOT bump the activity clock', async () => {
@@ -156,7 +156,7 @@ describe('insertBox populates the activity clock (Spec G phase D2)', () => {
     insertBox(karmaBox(alice, 100n, 50, false));
     finishBlockJournal();
 
-    expect(getIdentityRecord(alice)).toEqual({ lastActivityBlock: 50, lastDecayBlock: 0 });
+    expect(getIdentityRecord(alice)).toEqual({ lastActivityBlock: 50, lastDecayBlock: 0, likeCarry: 0n });
   });
 
   it('a decay-burn insert leaves an existing record untouched', async () => {
@@ -175,7 +175,7 @@ describe('insertBox populates the activity clock (Spec G phase D2)', () => {
     insertBox(karmaBox(alice, 70n, 80, true));
     finishBlockJournal();
 
-    expect(getIdentityRecord(alice)).toEqual({ lastActivityBlock: 10, lastDecayBlock: 0 });
+    expect(getIdentityRecord(alice)).toEqual({ lastActivityBlock: 10, lastDecayBlock: 0, likeCarry: 0n });
   });
 
   it('a non-karma box creates no record', async () => {
@@ -217,13 +217,13 @@ describe('insertBox populates the activity clock (Spec G phase D2)', () => {
     // The two halves of the record have different writers. An activity bump
     // that reset the decay clock would hand the owner a free interval.
     const alice = owner('alice');
-    putIdentityRecord(alice, { lastActivityBlock: 5, lastDecayBlock: 33 });
+    putIdentityRecord(alice, { lastActivityBlock: 5, lastDecayBlock: 33, likeCarry: 0n });
 
     beginBlockJournal(77);
     insertBox(karmaBox(alice, 100n, 77));
     finishBlockJournal();
 
-    expect(getIdentityRecord(alice)).toEqual({ lastActivityBlock: 77, lastDecayBlock: 33 });
+    expect(getIdentityRecord(alice)).toEqual({ lastActivityBlock: 77, lastDecayBlock: 33, likeCarry: 0n });
   });
 
   it('each identity gets its own clock', async () => {
@@ -242,8 +242,8 @@ describe('insertBox populates the activity clock (Spec G phase D2)', () => {
     insertBox(karmaBox(bob, 100n, 9));
     finishBlockJournal();
 
-    expect(getIdentityRecord(alice)).toEqual({ lastActivityBlock: 3, lastDecayBlock: 0 });
-    expect(getIdentityRecord(bob)).toEqual({ lastActivityBlock: 9, lastDecayBlock: 0 });
+    expect(getIdentityRecord(alice)).toEqual({ lastActivityBlock: 3, lastDecayBlock: 0, likeCarry: 0n });
+    expect(getIdentityRecord(bob)).toEqual({ lastActivityBlock: 9, lastDecayBlock: 0, likeCarry: 0n });
   });
 
   it('the bump is journaled, after the box insert it followed', async () => {
@@ -267,7 +267,7 @@ describe('insertBox populates the activity clock (Spec G phase D2)', () => {
         kind: 'record',
         key: identityRecordKey(alice),
         identityId: alice,
-        record: { lastActivityBlock: 4, lastDecayBlock: 0 },
+        record: { lastActivityBlock: 4, lastDecayBlock: 0, likeCarry: 0n },
       },
     ]);
   });
@@ -280,7 +280,7 @@ describe('insertBox populates the activity clock (Spec G phase D2)', () => {
     initDb(':memory:');
 
     const alice = owner('alice');
-    putIdentityRecord(alice, { lastActivityBlock: 2, lastDecayBlock: 1 });
+    putIdentityRecord(alice, { lastActivityBlock: 2, lastDecayBlock: 1, likeCarry: 0n });
 
     beginBlockJournal(6);
     insertBox(karmaBox(alice, 10n, 6));
@@ -289,8 +289,8 @@ describe('insertBox populates the activity clock (Spec G phase D2)', () => {
     const records = journal.mutations.filter((m) => m.kind === 'record');
     expect(records).toHaveLength(1);
     expect(records[0]).toMatchObject({
-      record: { lastActivityBlock: 6, lastDecayBlock: 1 },
-      replaced: { lastActivityBlock: 2, lastDecayBlock: 1 },
+      record: { lastActivityBlock: 6, lastDecayBlock: 1, likeCarry: 0n },
+      replaced: { lastActivityBlock: 2, lastDecayBlock: 1, likeCarry: 0n },
     });
   });
 
@@ -323,6 +323,6 @@ describe('insertBox populates the activity clock (Spec G phase D2)', () => {
     insertBox(karmaBox(alice, 100n, 0));
     finishBlockJournal();
 
-    expect(getIdentityRecord(alice)).toEqual({ lastActivityBlock: 0, lastDecayBlock: 0 });
+    expect(getIdentityRecord(alice)).toEqual({ lastActivityBlock: 0, lastDecayBlock: 0, likeCarry: 0n });
   });
 });

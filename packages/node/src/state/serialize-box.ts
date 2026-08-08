@@ -4,11 +4,12 @@ import type { AnyBox } from '@dagsocial/types';
 // into the store module graph.
 import type { IdentityRecord } from '../store/identity-records.js';
 
-// Box type discriminators (1 byte each)
+// Box type discriminators (1 byte each).
+// 0x03 was 'like' — retired (P2-D). The tag byte stays reserved, never reuse:
+// tag bytes are AVL value bytes, committed in every stateRoot that held one.
 const BOX_TYPE_TAG: Record<AnyBox['boxType'], number> = {
   karma: 0x01,
   credit: 0x02,
-  like: 0x03,
   invite: 0x04,
   bond: 0x05,
   post_lock: 0x06,
@@ -18,7 +19,6 @@ const BOX_TYPE_TAG: Record<AnyBox['boxType'], number> = {
 const TAG_TO_BOX_TYPE: Record<number, AnyBox['boxType']> = {
   0x01: 'karma',
   0x02: 'credit',
-  0x03: 'like',
   0x04: 'invite',
   0x05: 'bond',
   0x06: 'post_lock',
@@ -31,7 +31,6 @@ const TAG_TO_BOX_TYPE: Record<number, AnyBox['boxType']> = {
  */
 const UINT8ARRAY_FIELDS = new Set([
   'owner',
-  'likerId',
   'secretHash',
   'inviterId',
   'inviteePublicKey',
@@ -121,7 +120,7 @@ export const IDENTITY_RECORD_TAG = 0x80;
 
 /**
  * Serialize an identity record to a deterministic Uint8Array.
- * Format: 0x80(1) || CBOR({ lastActivityBlock, lastDecayBlock })
+ * Format: 0x80(1) || CBOR({ lastActivityBlock, lastDecayBlock, likeCarry })
  *
  * The AVL key is `blake2b512(IDENTITY_KEY_DOMAIN ‖ identityId)[0:32]` (see
  * `store/identity-records.ts`), not part of the value — the same split boxes
@@ -133,11 +132,21 @@ export const IDENTITY_RECORD_TAG = 0x80;
  * (NODE_INTERFACE → "Two entity kinds" → 1b). Fixing it at the single encode
  * site means a record cannot acquire the field-order divergence that `post_lock`
  * has between its producer and `rowToBox`.
+ *
+ * `likeCarry` is ALWAYS PRESENT, zero included (P2-D). Conditional presence
+ * would reopen the key-set-exactness fork (contract 1a): the cbor map header
+ * counts keys, so an omit-when-zero producer and an always-write producer
+ * disagree on every zero-carry record's bytes — and therefore on the
+ * `stateRoot`. The type requires the field; do not "optimise" the zero away.
+ * bigint deliberately: cbor-x encodes bigint as a fixed 8-byte integer, so
+ * the value's width cannot drift with its magnitude, and a `number` sneaking
+ * in here would change the bytes (a 1-byte zero) — the type is the guard.
  */
 export function serializeIdentityRecord(record: IdentityRecord): Uint8Array {
   const payload = cborEncode({
     lastActivityBlock: record.lastActivityBlock,
     lastDecayBlock: record.lastDecayBlock,
+    likeCarry: record.likeCarry,
   });
 
   const out = new Uint8Array(1 + payload.length);
@@ -159,6 +168,10 @@ export function deserializeIdentityRecord(bytes: Uint8Array): IdentityRecord {
   return {
     lastActivityBlock: Number(fields.lastActivityBlock),
     lastDecayBlock: Number(fields.lastDecayBlock),
+    // BigInt(undefined) throws — bytes missing the field (pre-P2-D, or a
+    // hand-rolled conditional-presence encoding) fail loudly here rather
+    // than silently defaulting to 0n and masking a key-set fork.
+    likeCarry: BigInt(fields.likeCarry as bigint),
   };
 }
 

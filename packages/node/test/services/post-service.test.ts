@@ -72,7 +72,7 @@ function makeKarmaLockTx(): UtxoTransaction {
         originalValue: 25,
         owner: new Uint8Array(32),
         targetPostId: '',
-        guard: 'epoch_tally',
+        guard: 'block_apply',
       } as AnyBox,
     ],
     signatures: {},
@@ -96,7 +96,11 @@ describe('PostService', () => {
     expect(typeof result.postId).toBe('string');
     expect(result.expiresAtHeight).toBeGreaterThan(0);
     expect(result.subBlock).toBeDefined();
-    expect(result.subBlock.likeBoxes).toEqual([]);
+    // T2b shape pin at the producer: a sub-block carries exactly the post —
+    // no likeBoxes sidecar key (deleted; sub-block CBOR is consensus bytes).
+    expect(Object.keys(result.subBlock).sort()).toEqual(
+      ['post', 'producerId', 'protocolVersion', 'subBlockId'],
+    );
   });
 
   it('throws PostServiceError when verifyPost fails', () => {

@@ -120,7 +120,7 @@ describe('ordering-block topic validator (relay PoW gate)', () => {
     return {
       header,
       subBlockTree: { subBlockRefs: [], subBlockEntries: [], pruneEntries: [] },
-      utxoTxTree: { utxoTxIds: [], utxoTxs: [], likeBoxIds: [], coinbaseOutputs: [] },
+      utxoTxTree: { utxoTxIds: [], utxoTxs: [], coinbaseOutputs: [] },
       // 64-byte dummy — Stage 1 does not verify the validator signature.
       validatorSignature: new Uint8Array(64),
     };
@@ -356,13 +356,6 @@ describe('sub-block topic validator (Stage 1)', () => {
     const { result, peer, penaltySpy } = validateSubBlock(rest as SubBlock);
     expect(result).toBe(TopicValidatorResult.Reject);
     expect(penaltySpy).toHaveBeenCalledWith('misbehavior', peer.id, 100, 'Sub-block missing post');
-  });
-
-  it('rejects a sub-block with non-array likeBoxes', () => {
-    const sb = { ...validSubBlock, likeBoxes: 'not-array' } as unknown as SubBlock;
-    const { result, penaltySpy } = validateSubBlock(sb);
-    expect(result).toBe(TopicValidatorResult.Reject);
-    expect(penaltySpy).toHaveBeenCalledTimes(1);
   });
 });
 

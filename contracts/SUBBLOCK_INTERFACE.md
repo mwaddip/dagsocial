@@ -61,7 +61,6 @@ model), but intentionally does not adopt:
 interface SubBlock {
   subBlockId: string        // === postId (invariant: they cannot diverge)
   post: Post                // the post being published
-  likeBoxes: LikeBox[]      // pending likes attached as sidecars
   producerId: UserId        // post author (user who solved the PoW)
   protocolVersion: number   // protocol version at creation time
 }
@@ -71,10 +70,9 @@ interface SubBlock {
 
 - `subBlockId === computePostId(post)` — the sub-block IS the post. These
   identifiers cannot diverge.
-- A sub-block carries exactly one post. No multi-post sub-blocks.
-- `likeBoxes` contains pending likes queued at assembly time. These are
-  UTXO-layer objects — the ordering block deduplicates likes that appear in
-  both a sub-block sidecar and a standalone mempool UTXO entry.
+- A sub-block carries exactly one post. No multi-post sub-blocks, and nothing
+  else rides along — the `likeBoxes` sidecar field died with `LikeBox` (P2-D;
+  likes are ordinary UTXO transactions in the ordering block's `utxoTxIds`).
 - `producerId` matches `post.author`.
 - Sub-blocks are **not** validators of other sub-blocks. A sub-block's PoW
   proves the post author did work, not that they endorse any other sub-block.
