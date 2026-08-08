@@ -54,7 +54,7 @@ const testConfig = {
 
 type DbModule = {
   initDb: (path: string) => void;
-  getDb: () => Database;
+  getDb: () => Database.Database;
   closeDb: () => void;
 };
 

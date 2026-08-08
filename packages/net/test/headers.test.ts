@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { encode, decode } from 'cbor-x';
 import type { BlockHeader, OrderingBlock } from '@dagsocial/types';
-import { PROTOCOL_VERSION } from '@dagsocial/types';
+import { PROTOCOL_VERSION, CREDIT_MINER_REWARD_DELAY } from '@dagsocial/types';
 import { blockHash } from '@dagsocial/validation';
 import { HEADERS_PROTOCOL } from '../src/sync.js';
 import { mergeUint8Arrays } from '../src/util.js';
@@ -40,7 +40,19 @@ function makeMockOrderingBlock(
       utxoTxIds: [],
       utxoTxs: [],
       coinbaseOutputs: [
-        { value: 100, owner: new Uint8Array(32), lockedUntilBlock: null },
+        // Every field here was wrong, and an unchecked test tree let all three
+        // stand: `value` was a NUMBER (it became bigint with the P0 migration),
+        // `lockedUntilBlock` was `null` where the type says a block height, and
+        // `isTreasury` was missing outright. The coinbase is inert payload for
+        // this suite — every assertion is about heights, hashes and counts, and
+        // the block hash covers the header only — so correcting it changes what
+        // no test proves.
+        {
+          value: 100n,
+          owner: new Uint8Array(32),
+          lockedUntilBlock: height + CREDIT_MINER_REWARD_DELAY,
+          isTreasury: false,
+        },
       ],
     },
     validatorSignature: new Uint8Array(64),
@@ -437,7 +449,14 @@ describe('handler: requestBlocks (simulated)', () => {
     expect(returned.header.protocolVersion).toBe(PROTOCOL_VERSION);
     expect(returned.subBlockTree.subBlockRefs).toEqual([]);
     expect(returned.utxoTxTree.coinbaseOutputs.length).toBe(1);
-    expect(returned.utxoTxTree.coinbaseOutputs[0]!.value).toBe(100);
+    // `100n`, not `100`. `CoinbaseOutput.value` is bigint (P0 migration) and
+    // cbor-x round-trips a bigint back as a bigint. The fixture and this
+    // assertion were wrong TOGETHER — a number value the type forbids,
+    // pinned by an assertion expecting that same number — so they agreed
+    // with each other and the suite stayed green. What the test proves does
+    // change here: the round-trip it exercises is now the bigint encoding
+    // production actually emits, which it never covered before.
+    expect(returned.utxoTxTree.coinbaseOutputs[0]!.value).toBe(100n);
     expect(returned.validatorSignature).toBeInstanceOf(Uint8Array);
     expect(returned.validatorSignature.length).toBe(64);
   });

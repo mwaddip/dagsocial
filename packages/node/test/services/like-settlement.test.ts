@@ -55,7 +55,7 @@ const X = BigInt(LIKES_PER_KARMA_PAYOUT);
 
 type DbModule = {
   initDb: (path: string) => void;
-  getDb: () => Database;
+  getDb: () => Database.Database;
   closeDb: () => void;
 };
 
@@ -129,7 +129,7 @@ async function importAvl() {
 // leaked a record would pass)
 // ---------------------------------------------------------------------------
 
-function dumpState(db: Database) {
+function dumpState(db: Database.Database) {
   return {
     boxes: db.prepare('SELECT * FROM utxo_boxes ORDER BY id').all(),
     likeRecords: db

@@ -80,7 +80,8 @@ describe('encodeFrame / decodeFrame', () => {
     // Control: unmutated frame round-trips.
     expect(decodeFrame(TEST_MAGIC, frame, blake2b256).code).toBe(1);
     const mutated = Uint8Array.from(frame);
-    mutated[mutated.length - 1] ^= 0xff;
+    const last = mutated.length - 1;
+    mutated[last] = mutated[last]! ^ 0xff;
     expect(readerErrorCode(() => decodeFrame(TEST_MAGIC, mutated, blake2b256))).toBe('checksum-mismatch');
   });
 

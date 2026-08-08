@@ -1,12 +1,23 @@
 import { computePostId } from '@dagsocial/types';
-import type { Post } from '@dagsocial/types';
+import type { Post, Stump } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
 // Dependencies
 // ---------------------------------------------------------------------------
 
 export interface FeedServiceDeps {
-  getPost: (id: string) => unknown | null;
+  /**
+   * The store's real signature (`store/posts.ts` → `getPost`), not `unknown`.
+   *
+   * It was typed `unknown | null` — which collapses to `unknown`, so the
+   * stump arm below was invisible to the compiler and the raw `Stump` went out
+   * of `res.json` with its `authorId` serialized index-keyed
+   * (`{"0":…,"1":…}`). Naming the union makes the compiler the mutation
+   * detector for this file: re-widening this type must not typecheck the
+   * stump arm away, and a future variant added to the store's return breaks
+   * here rather than in a response body.
+   */
+  getPost: (id: string) => Post | Stump | null;
   queryPosts: (opts: {
     author?: Uint8Array;
     limit?: number;
@@ -37,8 +48,31 @@ export interface PostJson {
   likers: string[];
 }
 
+/**
+ * A pruned root's JSON form (NODE_INTERFACE → Posts, "Stump JSON shape").
+ *
+ * A stump is renderable tombstone data, not an absence, so `GET /posts/:id`
+ * stays a 200 on one. It is a DISTINCT type discriminated by an explicit
+ * `kind`, never by which of `PostJson`'s keys happen to be missing — clients
+ * test for the field's presence, and `PostJson` carries none.
+ *
+ * `author` is hex, matching `PostJson.author`'s convention. That is the whole
+ * defect this type closes: the raw `Stump` used to be returned as-is, and
+ * `res.json` serialized its `authorId` — a `Uint8Array` — index-keyed.
+ */
+export interface StumpJson {
+  kind: 'stump';
+  id: string;
+  author: string;
+  replyCount: number;
+  upvoteCount: number;
+  trigger: 'author' | 'storage_prune';
+  protocolVersion: number;
+  compactedAtBlockHeight: number;
+}
+
 export interface ThreadJson {
-  post: PostJson | null;
+  post: PostJson | StumpJson | null;
   ancestors: PostJson[];
   descendants: PostJson[];
 }
@@ -72,6 +106,37 @@ export function postToJson(
   };
 }
 
+/**
+ * Convert a Stump to its JSON form. The twin of `postToJson`, and the only
+ * place a `Stump` may cross into a response body.
+ *
+ * `id` is the `rootPostHash` — the id a client asked for when it got here,
+ * since a pruned root resolves to its stump by that hash.
+ */
+export function stumpToJson(stump: Stump): StumpJson {
+  return {
+    kind: 'stump',
+    id: stump.rootPostHash,
+    author: Buffer.from(stump.authorId).toString('hex'),
+    replyCount: stump.replyCount,
+    upvoteCount: stump.upvoteCount,
+    trigger: stump.trigger,
+    protocolVersion: stump.protocolVersion,
+    compactedAtBlockHeight: stump.compactedAtBlockHeight,
+  };
+}
+
+/**
+ * Narrow the store's `Post | Stump` union.
+ *
+ * A stump has no `content`; a live Post always does. (Do not test
+ * `'subtreeMerkleRoot' in` — that field lives on PruneIntent/PruneEntry,
+ * never on Stump, so the check can never fire.)
+ */
+function isStump(result: Post | Stump): result is Stump {
+  return !('content' in result);
+}
+
 // ---------------------------------------------------------------------------
 // Service
 // ---------------------------------------------------------------------------
@@ -85,27 +150,16 @@ export class FeedService {
 
   /**
    * Retrieve a single post by ID. Returns null if not found.
-   * Stumps are returned as-is.
+   * A pruned root comes back as `StumpJson`, a 200 either way.
    */
-  getPost(id: string): unknown | null {
+  getPost(id: string): PostJson | StumpJson | null {
     const result = this.deps.getPost(id);
     if (!result) return null;
+    if (isStump(result)) return stumpToJson(result);
 
-    // A stump has no `content`; a live Post always does. (Do not test
-    // `'subtreeMerkleRoot' in` — that field lives on PruneIntent/PruneEntry,
-    // never on Stump, so the check can never fire.)
-    if (
-      typeof result === 'object' &&
-      result !== null &&
-      !('content' in result)
-    ) {
-      return result;
-    }
-
-    const post = result as Post;
     const likeCount = this.deps.getLikeRecordCount(id);
     const likers = this.deps.getLikersForPost(id);
-    return postToJson(post, likeCount, likers);
+    return postToJson(result, likeCount, likers);
   }
 
   /**
@@ -136,19 +190,12 @@ export class FeedService {
     const result = this.deps.getPost(id);
     if (!result) return null;
 
-    // Handle Stumps — no thread context available. A stump has no `content`;
-    // a live Post always does. (Do not test `'subtreeMerkleRoot' in` — that
-    // field lives on PruneIntent/PruneEntry, never on Stump, so the check
-    // can never fire.)
-    if (
-      typeof result === 'object' &&
-      result !== null &&
-      !('content' in result)
-    ) {
-      return { post: result as unknown as PostJson, ancestors: [], descendants: [] };
+    // Stumps carry no thread context — the subtree is what pruning removed.
+    if (isStump(result)) {
+      return { post: stumpToJson(result), ancestors: [], descendants: [] };
     }
 
-    const post = result as Post;
+    const post = result;
     const likeCount = this.deps.getLikeRecordCount(id);
     const likers = this.deps.getLikersForPost(id);
     const postJson = postToJson(post, likeCount, likers);

@@ -33,6 +33,7 @@ import {
 } from '@dagsocial/types';
 import type { KarmaBox, CreditBox, InviteBox, BondBox, NetworkType, UtxoTransaction } from '@dagsocial/types';
 import { createRouter } from '../../src/routes/utxo.js';
+import { jsonToTx } from '../../src/routes/json-to-tx.js';
 import { unlinkSync } from 'fs';
 
 const TEST_DB = '/tmp/dagsocial-test-routes-utxo.sqlite';
@@ -316,6 +317,83 @@ describe('UTXO routes', () => {
         tx: { inputs: [], outputs: [{ boxType: 'credit', value: 'not-a-number' }] },
       });
       expect(res.status).toBe(400);
+    });
+
+    // -----------------------------------------------------------------------
+    // The envelope gate as the HTTP backstop (NODE_INTERFACE → "Transaction
+    // envelope shape", call sites). `jsonToTx` gives every OTHER field a
+    // friendly per-field 400, but `inputs` and `protocolVersion` ride through
+    // on bare type assertions — `(raw.inputs ?? []) as string[]` and
+    // `(raw.protocolVersion as number)`. Nothing in the route or the service
+    // looked at either, so they reached `validateTx` raw. MEASURED pre-gate:
+    // `inputs: 5` with a real credit output returned 500 {"error":"Internal
+    // error"} — the generic body L-12 mandates for an unexpected throw, i.e.
+    // the node treating attacker input as its own bug.
+    // -----------------------------------------------------------------------
+
+    const CREDIT_OUT = {
+      boxType: 'credit',
+      value: '10',
+      owner: 'ab'.repeat(32),
+      guard: 'owner_signature',
+      proofSource: -1,
+    };
+
+    it('backstops a non-array inputs with a 400, not the pre-gate 500', async () => {
+      const res = await request('/credits/transfer', 'POST', {
+        tx: { inputs: 5, outputs: [CREDIT_OUT], signatures: {}, protocolVersion: PROTOCOL_VERSION },
+      });
+      expect(res.status).toBe(400);
+      expect(String((res.data as Record<string, unknown>).error)).toContain(
+        'inputs must be an array',
+      );
+    });
+
+    it('backstops a junk protocolVersion with a 400', async () => {
+      // Pre-gate this pooled and applied end-to-end when the client signed it
+      // as such — `protocolVersion` was validated nowhere, only the block
+      // header's was.
+      const res = await request('/credits/transfer', 'POST', {
+        tx: {
+          inputs: [seededBoxId],
+          outputs: [CREDIT_OUT],
+          signatures: {},
+          protocolVersion: 'x',
+        },
+      });
+      expect(res.status).toBe(400);
+      expect(String((res.data as Record<string, unknown>).error)).toContain(
+        `protocolVersion must be ${PROTOCOL_VERSION}`,
+      );
+    });
+
+    it('backstops a non-hex input id with a 400', async () => {
+      const res = await request('/credits/transfer', 'POST', {
+        tx: {
+          inputs: ['not-a-box-id'],
+          outputs: [CREDIT_OUT],
+          signatures: {},
+          protocolVersion: PROTOCOL_VERSION,
+        },
+      });
+      expect(res.status).toBe(400);
+      expect(String((res.data as Record<string, unknown>).error)).toContain(
+        'inputs[0] must be 64 lowercase hex characters',
+      );
+    });
+
+    it('jsonToTx omits preimages rather than emitting a present-undefined key', async () => {
+      // The producer defect the gate surfaced: `preimages: … : undefined` left
+      // a present key holding `undefined` on EVERY preimage-free HTTP tx —
+      // hashed as absent by `computeTxId`, rejected as ambiguous by the gate.
+      const tx = jsonToTx({
+        inputs: [seededBoxId],
+        outputs: [CREDIT_OUT],
+        signatures: {},
+        protocolVersion: PROTOCOL_VERSION,
+      });
+      expect(Object.hasOwn(tx, 'preimages')).toBe(false);
+      expect(Object.keys(tx)).not.toContain('preimages');
     });
 
     it('rejects a forged signature with 400 — invalid tx, per the contract', async () => {

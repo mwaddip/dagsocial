@@ -148,7 +148,7 @@ describe('SyncMachine', () => {
       });
       peerActive(machine, 'peer1', 100);
       expect(sent.length).toBe(1);
-      expect(sent[0].peerId).toBe('peer1');
+      expect(sent[0]!.peerId).toBe('peer1');
     });
 
     it('removes peer from stalled set when entering syncing', () => {
@@ -173,7 +173,7 @@ describe('SyncMachine', () => {
       });
       peerActive(machine, 'peer1', 5); // peer at 5, we at 10
       expect(sent.length).toBe(1);
-      expect(sent[0].peerId).toBe('peer1');
+      expect(sent[0]!.peerId).toBe('peer1');
     });
 
     it('re-enters syncing from synced when peer reports higher height', () => {
@@ -238,7 +238,7 @@ describe('SyncMachine', () => {
         anchors: [],
       });
       expect(sent.length).toBe(1);
-      expect(sent[0].peerId).toBe('peer1');
+      expect(sent[0]!.peerId).toBe('peer1');
     });
 
     it('transitions to synced when peer reports equal height while we are syncing', () => {
@@ -335,7 +335,7 @@ describe('SyncMachine', () => {
       sendInv(machine, 'peer1', inv);
 
       expect(sent.length).toBe(1);
-      expect(sent[0].peerId).toBe('peer1');
+      expect(sent[0]!.peerId).toBe('peer1');
     });
 
     it('ignores Inv when not syncing', () => {
@@ -788,7 +788,7 @@ describe('SyncMachine', () => {
       expect(sent.length).toBe(1);
       // We can't easily decode the framed SyncInfo from the raw bytes in the test,
       // but the send happened with the right peer.
-      expect(sent[0].peerId).toBe('peer1');
+      expect(sent[0]!.peerId).toBe('peer1');
     });
   });
 
@@ -844,7 +844,7 @@ describe('SyncMachine', () => {
       // However the data field is empty Uint8Array in the current implementation.
       // The response is only sent if modifiers.length > 0.
       expect(sent.length).toBe(1);
-      expect(sent[0].peerId).toBe('peer1');
+      expect(sent[0]!.peerId).toBe('peer1');
     });
 
     it('does not respond when no blocks match', () => {
@@ -1106,7 +1106,7 @@ describe('SyncMachine', () => {
       expect(sent).toHaveLength(0);
       expect(reads).toHaveLength(0);
       expect(violations).toHaveLength(1);
-      expect(violations[0].reason).toContain(`exceeds ${MAX_INV_IDS}`);
+      expect(violations[0]!.reason).toContain(`exceeds ${MAX_INV_IDS}`);
     });
 
     it('accepts an Inv of exactly MAX_INV_IDS ids', () => {
@@ -1143,7 +1143,7 @@ describe('SyncMachine', () => {
       expect(reads).toHaveLength(0);
       expect(sent).toHaveLength(0);
       expect(violations).toHaveLength(1);
-      expect(violations[0].reason).toContain(`exceeds ${MAX_INV_IDS}`);
+      expect(violations[0]!.reason).toContain(`exceeds ${MAX_INV_IDS}`);
     });
 
     it('drops a ModifierResponse over MAX_INV_IDS without applying it', () => {
@@ -1165,7 +1165,7 @@ describe('SyncMachine', () => {
 
       expect(appended).toHaveLength(0);
       expect(violations).toHaveLength(1);
-      expect(violations[0].reason).toContain(`exceeds ${MAX_INV_IDS}`);
+      expect(violations[0]!.reason).toContain(`exceeds ${MAX_INV_IDS}`);
     });
 
     it('drops a SyncInfo with more than MAX_INV_IDS anchors', () => {
@@ -1182,7 +1182,7 @@ describe('SyncMachine', () => {
       expect(sent).toHaveLength(0);
       expect(machine.getState().phase).toBe('idle');
       expect(violations).toHaveLength(1);
-      expect(violations[0].reason).toContain(`exceeds ${MAX_INV_IDS}`);
+      expect(violations[0]!.reason).toContain(`exceeds ${MAX_INV_IDS}`);
     });
 
     // --- serve work is O(chainHeight + ids), never O(ids × chainHeight) -----
@@ -1238,7 +1238,7 @@ describe('SyncMachine', () => {
 
     function servedModifierCount(sent: SentMessage[]): number {
       expect(sent).toHaveLength(1);
-      const { code, body } = decodeFrame(testConfig.magic!, sent[0].data);
+      const { code, body } = decodeFrame(testConfig.magic!, sent[0]!.data);
       expect(code).toBe(MSG_MODIFIER_RESPONSE);
       return decodeModifierResponse(body)!.modifiers.length;
     }

@@ -70,7 +70,7 @@ const testConfig = {
 
 type DbModule = {
   initDb: (path: string) => void;
-  getDb: () => Database;
+  getDb: () => Database.Database;
   closeDb: () => void;
 };
 
@@ -223,7 +223,7 @@ interface EngineDeps {
 }
 
 function makeEngineDeps(
-  db: Database,
+  db: Database.Database,
   utxoModule: Awaited<ReturnType<typeof importUtxo>>,
 ): EngineDeps {
   return {

@@ -50,6 +50,7 @@ import {
   makeApplicableBlock,
   makePruneEntry,
   hex,
+  ZERO_HASH,
 } from '../helpers.js';
 
 // ---------------------------------------------------------------------------
@@ -81,7 +82,7 @@ const testConfig = {
 
 type DbModule = {
   initDb: (path: string) => void;
-  getDb: () => Database;
+  getDb: () => Database.Database;
   closeDb: () => void;
 };
 
@@ -766,9 +767,17 @@ describe('block-apply embedded tx re-validation', () => {
     const victimBox = makeKarmaBox(100n, victim.userId, 0);
     utxo.insertBox(victimBox);
 
-    // Well-formed, conserving, spending a box that really exists. The only
-    // thing it lacks is the victim's authorisation.
-    const forged = makeLikeTx(victim, victimBox, 'target_post');
+    // Well-formed — envelope included — conserving, and spending a box that
+    // really exists. The only thing it lacks is the victim's authorisation.
+    //
+    // The target is 64-hex because `checkTxEnvelope` (validateTx step 0) pins
+    // `likeTarget` to a post id, and the placeholder string this fixture used
+    // to carry made it envelope-invalid: the funnel skipped the transaction
+    // and the block applied, so the whole-block rejection asserted below was
+    // never reached. It need not name a post that exists — `validateTx` never
+    // looks one up; the apply-time like rules do, and step 6 refuses the
+    // missing signature long before them.
+    const forged = makeLikeTx(victim, victimBox, ZERO_HASH);
     forged.signatures = {};
     mempool.insertUtxoTx(forged, null, 1000);
 

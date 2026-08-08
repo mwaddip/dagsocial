@@ -25,7 +25,7 @@ import { config } from '../config.js';
 import { computeBlockReward, computeSubBlockRoot, computeUtxoTxRoot, clearTemplate } from './block-creator.js';
 import { expectedTarget } from './difficulty.js';
 import { DagService } from './dag-service.js';
-import { applyTx, materializeOutput, validateTx } from './utxo-engine.js';
+import { applyTx, checkTxEnvelope, materializeOutput, validateTx } from './utxo-engine.js';
 import { getSystemKeypair } from '../store/system.js';
 import {
   getKarmaBox,
@@ -846,6 +846,21 @@ function applyMutationPhase(
       tx = decodeTx(txCbor);
     } catch (err) {
       console.warn(`Failed to decode UTXO tx ${txId} from block: ${String(err)}`);
+      continue;
+    }
+
+    // Envelope gate, before `computeTxId` below hashes the decoded value and
+    // before `tx.outputs` is mapped. The tx is SKIPPED, not the block
+    // rejected: that is the decided idiom of this loop — the missing-CBOR,
+    // decode-failure and id-mismatch arms all `continue`, deterministically on
+    // every node. Before the gate a malformed envelope threw at `computeTxId`
+    // into the outer totality catch and killed the whole block, an accident of
+    // the throw path rather than a rule (NODE_INTERFACE → "Transaction
+    // envelope shape", call sites). Honest producers cannot embed one: their
+    // pool never admits it.
+    const envelopeCheck = checkTxEnvelope(tx);
+    if (!envelopeCheck.valid) {
+      console.warn(`Rejected UTXO tx ${txId} from block: ${envelopeCheck.error}`);
       continue;
     }
 

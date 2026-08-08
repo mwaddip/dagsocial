@@ -426,9 +426,14 @@ describe('verifyParentRefsCount', () => {
 // ---------------------------------------------------------------------------
 
 describe('verifySubBlockStructure', () => {
+  // A UserId is 32 raw bytes — an Ed25519 public key. These fixtures carried
+  // the display string 'user1', which no identity can ever be; the test tree
+  // was unchecked, so it typechecked as nothing.
+  const TEST_USER: Uint8Array = new Uint8Array(32).fill(1);
+
   const makeBasePost = (): Post => ({
     content: 'test',
-    author: 'user1',
+    author: TEST_USER,
     parentRefs: [],
     challenge: new Uint8Array(32),
     powNonce: 0,
@@ -441,7 +446,7 @@ describe('verifySubBlockStructure', () => {
     const sb: SubBlock = {
       subBlockId: computePostId(makeBasePost()),
       post: makeBasePost(),
-      producerId: 'user1',
+      producerId: TEST_USER,
       protocolVersion: 1,
     };
     expect(verifySubBlockStructure(sb)).toEqual({ valid: true });
@@ -451,12 +456,16 @@ describe('verifySubBlockStructure', () => {
     // Two-sided pin, after-leg. Before-leg captured on the pre-T2b tree
     // (2026-08-08): this exact shape was rejected with
     // { valid: false, error: 'Sub-block likeBoxes must be an array' }.
-    const sb = {
+    // The `as SubBlock` cast is gone with the typed test tree: once
+    // `producerId` is real bytes this object IS a complete SubBlock, which is
+    // precisely the claim — `likeBoxes` is retired, so nothing is missing. The
+    // compiler now proves that instead of being told to assume it.
+    const sb: SubBlock = {
       subBlockId: 'ab'.repeat(32),
       post: makeBasePost(),
-      producerId: 'user1',
+      producerId: TEST_USER,
       protocolVersion: 1,
-    } as SubBlock;
+    };
     expect(verifySubBlockStructure(sb)).toEqual({ valid: true });
   });
 
@@ -551,7 +560,6 @@ describe('verifyOrderingBlockStructure', () => {
     utxoTxTree: {
       utxoTxIds: [],
       utxoTxs: [],
-      likeBoxIds: [],
       coinbaseOutputs: [],
     },
     validatorSignature: new Uint8Array(64),
@@ -841,7 +849,6 @@ describe('verifyBlockChainLink', () => {
     utxoTxTree: {
       utxoTxIds: [],
       utxoTxs: [],
-      likeBoxIds: [],
       coinbaseOutputs: [],
     },
     validatorSignature: new Uint8Array(64),
@@ -1155,7 +1162,7 @@ describe('no-panic on malformed input (M-5)', () => {
   const goodBlock: OrderingBlock = {
     header: makeHeader(),
     subBlockTree: { subBlockRefs: [], subBlockEntries: [], pruneEntries: [] },
-    utxoTxTree: { utxoTxIds: [], utxoTxs: [], likeBoxIds: [], coinbaseOutputs: [] },
+    utxoTxTree: { utxoTxIds: [], utxoTxs: [], coinbaseOutputs: [] },
     validatorSignature: new Uint8Array(64),
   };
 

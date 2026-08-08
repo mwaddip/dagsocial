@@ -1511,7 +1511,7 @@ is not subject to the subpath restriction the other four get from `exports`.
 `resolve.alias` maps each workspace package name to `packages/<pkg>/src/index.ts`, declared once at
 the repo root and merged into every package's vitest config.
 
-Four rules govern it:
+Six rules govern it:
 
 1. **Uniform across all five packages.** Aliasing some and not others puts two copies of the same
    module in one process — one transpiled from `src`, one bundled inside `dist`. `instanceof` fails
@@ -1528,6 +1528,40 @@ Four rules govern it:
    stays, **gated on the resolved exclude list**: it skips while `'test/e2e/**'` sits in
    `config.exclude`, and re-arms by itself when the post-P2-D rewrite removes that exclusion. The
    gate fails safe — an exclude string it does not recognise builds rather than skips.
+5. **Test trees are typechecked.** ⚠ **PARTIAL — four of five packages.** `types`, `wire`,
+   `validation` and `net` each carry the config below wired into `typecheck`, at zero errors.
+   **`node` is the exception**: its `tsconfig.test.json` exists and is correct, but the script stays
+   `tsc --noEmit` while **409 test-tree errors** remain (58 files, zero in `src`), so that
+   `pnpm -r typecheck` keeps saying something true. Wiring it is the closing act of the paydown unit
+   (`prompts/node-test-typecheck-paydown.md`). The debt does not come apart mechanically — a bulk
+   retype of all 133 missing-provenance box literals to `CandidateOf<>` drove the count UP (409 →
+   424), because node's fixtures are stored boxes and transaction candidates wearing one shape, told
+   apart only per site. Each package
+   carries a `tsconfig.test.json` (`include: ["src", "test"]`) wired into its `typecheck` script, so
+   `pnpm -r typecheck` covers what the suites actually execute — an unchecked test tree is exactly
+   where a new *required* field (e.g. `UtxoDeps.networkType`) hides as a runtime surprise, and where
+   mocks of deleted fields rot silently (`headers.test.ts` mocked `SubBlockTree.stumpIds` units after
+   it died). Three constraints, all measured 2026-08-08: the config extends `tsconfig.base.json`
+   **directly**, not the package `tsconfig.json` — `extends` cannot *unset* the inherited
+   `rootDir: "src"`, and the cross-package `paths` files below then violate it (TS6059); it declares
+   `paths` mapping `@dagsocial/*` to `../<pkg>/src/index.ts`, mirroring the vitest alias above —
+   without it `tsc` follows `exports` to `dist` types and re-opens the stale-`dist` class this
+   section exists to kill; and node's parked `test/e2e/**` stays excluded until its post-P2-D
+   rewrite. Baseline debt at decision time: **469 errors** (types 18 · wire 1 · validation 6 ·
+   net 21 · node 423), zero in any `src`; no test file uses bare vitest globals, so no
+   `types: ["vitest/globals"]` entry is needed.
+6. **Every package declares `@types/node` itself.** Not inherited, not assumed: TypeScript resolves
+   ambient node typings by walking `node_modules` *upward without a repo boundary*, so a package that
+   omits the dependency silently typechecks against whatever copy exists further up the filesystem —
+   including one in the developer's home directory. Measured 2026-08-08: `net` and `wire` declared
+   none and were resolving `@types/node@12.20.55` (Node 12, 2021) from `/home/<user>/node_modules`,
+   231 times in a single `--traceResolution` run, while the repo pins Node ≥ 22. Consequences, both
+   real: **net's typecheck was not reproducible** on another machine or in CI — it depended on a file
+   outside the repo — and the stale typings *invented* two errors in `validation/src/verify.ts`
+   (Node 12 typed `crypto.verify` as returning `Buffer`; Node 22 returns `boolean`), which surfaced
+   as soon as rule 5's `paths` pulled sibling `src` into net's program. Both packages now declare
+   `^22.0.0` like the other three, and the two phantom errors vanished. A cross-package type error
+   is worth suspecting as a resolution artifact before it is treated as a defect.
 
 **Cost, measured 2026-08-07.** Node's suite went **11.7 s → 25.1 s**: transforming three sibling
 packages' `src` per file costs more than the `tsup` build it replaced. This is a known, accepted

@@ -29,15 +29,21 @@ import type {
   UtxoTxTree,
   OrderingBlock,
 } from '../src/block.js';
-import type { KarmaBox, UtxoTransaction } from '../src/utxo.js';
+import type { CandidateOf, KarmaBox, UtxoTransaction } from '../src/utxo.js';
 
 const challenge = new Uint8Array(32).fill(0xab);
+// A UserId is 32 raw bytes — an Ed25519 public key. These fixtures carried
+// display strings ('user123', 'validator1'), which no identity can ever be;
+// the test tree was unchecked, so they typechecked as nothing.
+const userA = new Uint8Array(32).fill(0x11);
+const userB = new Uint8Array(32).fill(0x22);
+const validatorKey = new Uint8Array(32).fill(0x33);
 const sig64 = new Uint8Array(64).fill(0xcd);
 
 function makePost(): Post {
   return {
     content: 'Hello, DAGsocial!',
-    author: 'user123',
+    author: userA,
     parentRefs: ['ref1', 'ref2'],
     challenge,
     powNonce: 12345,
@@ -50,7 +56,7 @@ function makePost(): Post {
 function makeStump(): Stump {
   return {
     rootPostHash: 'a'.repeat(64),
-    authorId: 'user456',
+    authorId: userB,
     replyCount: 7,
     upvoteCount: 12,
     trigger: 'author',
@@ -63,7 +69,7 @@ function makeSubBlock(): SubBlock {
   return {
     subBlockId: 'b'.repeat(64),
     post: makePost(),
-    producerId: 'user123',
+    producerId: userA,
     protocolVersion: 2,
   };
 }
@@ -76,7 +82,7 @@ function makeBlockHeader(): BlockHeader {
     subBlockRoot: '0'.repeat(64),
     utxoTxRoot: '0'.repeat(64),
     stateRoot: '00'.repeat(33),
-    validatorId: 'validator1',
+    validatorId: validatorKey,
     powNonce: 0,
     powTargetBits: 12,
     createdAt: 1700000000000,
@@ -110,7 +116,11 @@ function makeOrderingBlock(): OrderingBlock {
   };
 }
 
-function makeKarmaBox(): KarmaBox {
+// A CANDIDATE, not a box: `UtxoTransaction.outputs` is `AnyBoxCandidate[]`
+// (Spec G phase G3a). An output cannot carry provenance — its `txId` would be
+// the id of the transaction being built, which is circular — so the fixture is
+// typed as what it actually is rather than given invented `txId`/`index`.
+function makeKarmaBox(): CandidateOf<KarmaBox> {
   return {
     boxType: 'karma',
     value: 100n,

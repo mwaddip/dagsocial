@@ -302,4 +302,93 @@ describe('posts routes', () => {
     expect(res.status).toBe(200);
     expect(Array.isArray(res.data)).toBe(true);
   });
+
+  // -----------------------------------------------------------------------
+  // Stumps over HTTP (NODE_INTERFACE → Posts, "Stump JSON shape").
+  //
+  // The service-level shape is pinned in feed-service.test.ts; these run the
+  // response through `res.json`, which is where the defect actually showed:
+  // the raw `Stump` went out with `authorId` — a Uint8Array — serialized
+  // index-keyed as {"0":…,"1":…,…,"31":…}.
+  // -----------------------------------------------------------------------
+
+  describe('GET on a pruned root', () => {
+    const stumpScalars = {
+      replyCount: 3,
+      upvoteCount: 2,
+      trigger: 'storage_prune' as const,
+      protocolVersion: PROTOCOL_VERSION,
+      compactedAtBlockHeight: 11,
+    };
+    let stumpAuthor: Uint8Array;
+    let prunedRootId: string;
+
+    beforeAll(async () => {
+      const { pruneSubtree } = await import('../../src/store/posts.js');
+      const { insertStump } = await import('../../src/store/stumps.js');
+      const keys = generateKeyPairSync('ed25519');
+      stumpAuthor = rawPublicKey(keys.publicKey);
+
+      const root = {
+        content: 'doomed root',
+        author: stumpAuthor,
+        parentRefs: [] as string[],
+        challenge: new Uint8Array(32).fill(3),
+        powNonce: 0,
+        protocolVersion: PROTOCOL_VERSION,
+        timestamp: 1_700_000_000_000,
+        signature: new Uint8Array(64).fill(4),
+      };
+      const { computePostId } = await import('@dagsocial/types');
+      prunedRootId = computePostId(root);
+      insertPost(root, encodePost(root));
+      insertStump({ rootPostHash: prunedRootId, authorId: stumpAuthor, ...stumpScalars });
+      pruneSubtree(prunedRootId);
+    });
+
+    it('GET /posts/:id answers 200 with the exact StumpJson', async () => {
+      const res = await request(`/${prunedRootId}`, 'GET');
+      // A stump is renderable tombstone data, not an absence — never a 404.
+      expect(res.status).toBe(200);
+      expect(res.data).toEqual({
+        kind: 'stump',
+        id: prunedRootId,
+        author: Buffer.from(stumpAuthor).toString('hex'),
+        ...stumpScalars,
+      });
+      // The regression this closes: a 64-hex string, not an index-keyed object.
+      const body = res.data as Record<string, unknown>;
+      expect(typeof body['author']).toBe('string');
+      expect(body['author']).toMatch(/^[0-9a-f]{64}$/);
+      expect(body['authorId']).toBeUndefined();
+      expect(JSON.stringify(res.data)).not.toContain('"0":');
+    });
+
+    it('GET /posts/:id/thread wraps the StumpJson in an empty thread', async () => {
+      const res = await request(`/${prunedRootId}/thread`, 'GET');
+      expect(res.status).toBe(200);
+      expect(res.data).toEqual({
+        post: {
+          kind: 'stump',
+          id: prunedRootId,
+          author: Buffer.from(stumpAuthor).toString('hex'),
+          ...stumpScalars,
+        },
+        ancestors: [],
+        descendants: [],
+      });
+    });
+
+    it('GET /posts stays live-only — the stump never appears in the feed', async () => {
+      // Verified rather than assumed: `queryPosts` selects
+      // `FROM dag_posts WHERE status != 'pruned'` and maps every row through
+      // `rowToPost`, so it reads no stump table at all.
+      const res = await request('/', 'GET');
+      expect(res.status).toBe(200);
+      const feed = res.data as Array<Record<string, unknown>>;
+      expect(feed.some((p) => p['id'] === prunedRootId)).toBe(false);
+      expect(feed.some((p) => p['kind'] === 'stump')).toBe(false);
+      expect(feed.every((p) => 'content' in p)).toBe(true);
+    });
+  });
 });

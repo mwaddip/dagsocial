@@ -8,7 +8,7 @@ import {
   decodePost,
   postPowPreimage,
 } from '@dagsocial/types';
-import type { Post } from '@dagsocial/types';
+import type { Post, Stump } from '@dagsocial/types';
 import { verifyPoW, verifyPostSignature, verifyContentCharacters } from '@dagsocial/validation';
 // The post PoW target comes from the shared config singleton — the same field
 // the challenge endpoint advertises — so the node cannot claim one difficulty
@@ -68,7 +68,14 @@ export interface ChallengeRecord {
 export interface VerifierDeps {
   getActiveChallenge: (userId: Uint8Array) => ChallengeRecord | null;
   getKarmaBoxes: (owner: Uint8Array) => { value: bigint; id?: string }[];
-  getPost: (id: string) => unknown | null;
+  /**
+   * The store's real signature. Both arms are meaningful here rather than
+   * incidental: a parent ref may name a live post OR a stump, and both are
+   * valid parents (NODE_INTERFACE → Posts). The two call sites below use it
+   * as an existence check, so the union needs no narrowing — but typing it
+   * `unknown` hid that the stump case was deliberate.
+   */
+  getPost: (id: string) => Post | Stump | null;
   /** Raw CBOR bytes for a post, used for independent hash recomputation. */
   getPostRaw?: (id: string) => Uint8Array | null;
 }
