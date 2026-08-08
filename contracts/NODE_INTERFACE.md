@@ -562,9 +562,6 @@ mismatch — see Known Gaps in SESSION_CONTEXT.md).
 
 ### Output shape — the closed per-boxType schema (guard-shape pin)
 
-> ⚠ **NOT IMPLEMENTED — ahead of code, dispatched 2026-08-08.** This marker dies
-> with the unit's payoff.
-
 Transaction outputs are attacker-controlled structure (HTTP JSON through
 `jsonToTx`, gossip and block-embedded CBOR), and two of their bytes-level
 consumers hash **whatever keys the object carries**: `canonicalBoxBytes` (the id
@@ -587,7 +584,12 @@ schema for its `boxType`**:
   `bond_dual`, `post_lock` → `block_apply` — the same constants `rowToBox`
   fabricates on read. One table, engine-owned; `rowToBox` and the check must
   never disagree.
-- **Unknown `boxType` is a reject** at validation, not a throw at apply.
+- **Unknown `boxType` is a reject.** (Discovered at implementation: every
+  transition arm already rejects unknown output types on its own — the
+  karma/credit arms via totality counts, the rest via `outputs.length` pins —
+  so `insertBox`'s late extraData throw was already unreachable from user-tx
+  ingress. The shape check's unknown arm is defense-in-depth for a future
+  transition arm that forgets its pin, and is unit-tested by direct call.)
 
 **Why this is a consensus rule and not input hygiene:** an accepted lying guard
 (or stray key) produces a stored box whose committed bytes — id preimage and
@@ -611,6 +613,18 @@ site. A JSON-edge-only check would leave the CBOR paths open.
 entirely — a redundant field has no place in an id preimage. That is a format
 break (every box id moves), so it rides the bundle; when it lands, the guard
 half of this check retires and the key-set half keeps the schema closed.
+
+> ⚠ **VIOLATED — `validateTx` is not total on malformed outputs** (found by the
+> guard-shape unit, pre-existing). The karma arm dereferences
+> `Buffer.from(karmaOut.owner)` at step 6, before the shape check runs at step
+> 7, so a karma output *missing* `owner` makes `validateTx` **throw a
+> TypeError** instead of returning `{valid: false}` — violating this section's
+> own signature claim. Reachable from HTTP and CBOR ingress today; the block
+> funnel's totality catch converts it to a block rejection, HTTP paths surface
+> a 500. The fix — per-arm guards, or moving the shape check ahead of the
+> transition arms (a step-renumbering decision) — rides the field-type
+> follow-up unit together with the open field-TYPE gap (nothing yet checks
+> that `owner` is 32 bytes, `originalValue` is a bigint, etc.).
 
 ### revalidateTxInContext
 

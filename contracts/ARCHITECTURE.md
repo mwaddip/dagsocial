@@ -368,11 +368,17 @@ obligations — and journal replay and any future snapshot sync must be designed
 over **recorded bytes** (the journal's box records, a transferred tree), never
 over views re-typed from storage.
 
-> ⚠ **PARTIAL.** The outbound half runs (value fabrication fixed in P2-B;
-> `rowToBox` reproduces honest boxes byte-exactly). The inbound half is the
-> "Output shape" check in `NODE_INTERFACE`, ahead of code as of 2026-08-08 —
-> until it lands, a lying `guard` or stray output key still enters the id and
-> the `stateRoot` verbatim.
+> ⚠ **PARTIAL.** Both halves run for keys and guards: the outbound half since
+> P2-B (value fabrication fixed; `rowToBox` reproduces honest boxes
+> byte-exactly), the inbound half since the guard-shape pin landed
+> (2026-08-08: closed per-boxType key sets, canonical-guard equality, pinned
+> by `computeBoxId(rowToBox(row)) === row.id` discriminator tests — which also
+> caught a live instance: an integration fixture had carried a lying invite
+> shape since before the check existed). Still open: field **types** — nothing
+> yet checks that `owner` is 32 bytes or `originalValue` is a bigint, so a
+> malformed-typed field still enters the id and the `stateRoot` verbatim
+> (queued follow-up, with `validateTx`'s totality gap — see NODE_INTERFACE →
+> "Output shape").
 
 #### AVL+ State Root
 
