@@ -7,7 +7,7 @@ import {
   LIKE_KARMA_COST,
   VOUCH_KARMA_AMOUNT,
 } from '@dagsocial/types';
-import type { UtxoTransaction, AnyBox, AnyBoxCandidate, KarmaBox, BondBox, InviteBox, VouchBox } from '@dagsocial/types';
+import type { UtxoTransaction, AnyBox, AnyBoxCandidate, BoxGuard, KarmaBox, BondBox, InviteBox, VouchBox } from '@dagsocial/types';
 
 // A local `computeTxIdLocal` lived here — a second implementation of
 // `computeTxId` with its own cbor-x `Encoder` — and was **deleted** by Spec G
@@ -628,6 +628,157 @@ function checkOutputValues(outputs: AnyBoxCandidate[]): UtxoResult {
 }
 
 /**
+ * The one canonical guard per boxType. A guard is a pure function of the
+ * discriminant — it carries zero information of its own — so any other value
+ * on an output is a lie about the bytes, not an alternative spend policy.
+ *
+ * `rowToBox` (store/utxo.ts) fabricates these same constants when it rebuilds
+ * a box from its row. The two tables must never disagree: this one decides
+ * what enters the committed bytes (id preimage, AVL leaf), that one decides
+ * what every later read reconstructs, and the store invariant
+ * `computeBoxId(rowToBox(row)) === row.id` holds only while they match.
+ * Deliberately NOT imported from the store — the engine owns the consensus
+ * rule, the store mirrors it.
+ *
+ * Scheduled retirement (P2-C bundle): when `guard` leaves the consensus bytes
+ * entirely, this table retires with it and the key-set half of the shape
+ * check below keeps the schema closed.
+ */
+const CANONICAL_GUARD: Record<AnyBox['boxType'], BoxGuard> = {
+  karma: 'owner_signature',
+  credit: 'owner_signature',
+  vouch: 'owner_signature',
+  invite: 'hash_preimage_with_bond',
+  bond: 'bond_dual',
+  post_lock: 'block_apply',
+};
+
+/**
+ * Closed key set per boxType, in candidate form — the `@dagsocial/types` box
+ * interfaces with `id`/`txId`/`index` removed (`TYPES_INTERFACE` box
+ * definitions are authoritative). `required` keys must be present;
+ * `optional` keys may be present or absent; nothing else may appear.
+ */
+const OUTPUT_SHAPE: Record<
+  AnyBox['boxType'],
+  { required: readonly string[]; optional: readonly string[]; allowed: ReadonlySet<string> }
+> = (() => {
+  const shape = (required: readonly string[], optional: readonly string[] = []) => ({
+    required,
+    optional,
+    allowed: new Set([...required, ...optional]),
+  });
+  return {
+    karma: shape(['boxType', 'value', 'owner', 'guard', 'proofSource'], ['decayBurn']),
+    credit: shape(['boxType', 'value', 'owner', 'guard', 'proofSource'], ['lockedUntilBlock']),
+    invite: shape(['boxType', 'value', 'secretHash', 'inviterId', 'guard']),
+    bond: shape([
+      'boxType',
+      'value',
+      'inviterId',
+      'inviteOutputIndex',
+      'inviteePublicKey',
+      'probationStartBlock',
+      'probationEndBlock',
+      'guard',
+    ]),
+    post_lock: shape(['boxType', 'value', 'originalValue', 'owner', 'targetPostId', 'guard']),
+    vouch: shape(['boxType', 'value', 'voucherId', 'targetId', 'guard']),
+  };
+})();
+
+/**
+ * Output shape — the closed per-boxType schema (guard-shape pin,
+ * NODE_INTERFACE → "Output shape").
+ *
+ * Outputs are attacker-controlled structure (HTTP JSON via `jsonToTx`, gossip
+ * and block-embedded CBOR), and both bytes-level consumers hash whatever keys
+ * the object carries: `canonicalBoxBytes` (the id preimage) strips only
+ * `id`/`txId`/`index`, `serializeBox` (the AVL leaf, so the `stateRoot`)
+ * strips only `id`/`boxType`. An accepted key the schema does not pin — or a
+ * lying `guard` — becomes a committed byte that `rowToBox`'s reconstruction
+ * (canonical guard, typed columns, no stray keys) can never reproduce: the
+ * store and the tree then permanently disagree about the box's bytes, the
+ * divergence surface under journal replay and any future snapshot sync.
+ *
+ * Three rules per output:
+ * - a key outside the closed set is a REJECT, never a silent strip — a
+ *   stripped key would change the bytes the client signed, so their txId and
+ *   signature would refer to an object the node never stored;
+ * - `guard` must equal the boxType's one canonical guard;
+ * - an unknown `boxType` is a reject here, not a late throw at `insertBox`'s
+ *   extraData switch.
+ *
+ * Client-supplied `id`/`txId`/`index` keys are skipped rather than rejected:
+ * they are structurally outside every committed byte (`canonicalBoxBytes`
+ * strips them from the txId and box-id preimages, `materializeOutput` strips
+ * them before appending the real provenance), so the schema is compared in
+ * candidate form.
+ *
+ * A key that is present with the value `undefined` is a reject in both
+ * positions: cbor-x encodes the key into the id preimage (`"decayBurn" f7`),
+ * while `insertBox`/`rowToBox` treat `undefined` as absence and drop it — the
+ * exact bytes-vs-store divergence this check closes. Presence means "own
+ * enumerable key with a defined value". Field TYPE validation (owner really
+ * being 32 bytes, etc.) is deliberately not performed here.
+ *
+ * Exported for direct testing. Through `validateTx` the unknown-boxType arm is
+ * currently unreachable: every transition arm already rejects an unknown
+ * output type on its own (the karma/credit arms via totality counts, the rest
+ * via `outputs.length` pins), so that arm fires only if a future transition
+ * arm forgets its pin — which is exactly why it exists.
+ */
+export function checkOutputShape(outputs: AnyBoxCandidate[]): UtxoResult {
+  for (let i = 0; i < outputs.length; i++) {
+    const box = outputs[i] as unknown as Record<string, unknown>;
+    const boxType = box.boxType as AnyBox['boxType'];
+    const shape = (OUTPUT_SHAPE as Partial<Record<string, (typeof OUTPUT_SHAPE)['karma']>>)[
+      boxType
+    ];
+    if (!shape) {
+      return {
+        valid: false,
+        error: `Invalid output shape at index ${i}: unknown boxType ${String(box.boxType)}`,
+      };
+    }
+    for (const key of Object.keys(box)) {
+      if (key === 'id' || key === 'txId' || key === 'index') continue;
+      if (!shape.allowed.has(key)) {
+        return {
+          valid: false,
+          error: `Invalid output shape at index ${i} (${boxType}): unexpected key '${key}'`,
+        };
+      }
+      if (box[key] === undefined) {
+        return {
+          valid: false,
+          error:
+            `Invalid output shape at index ${i} (${boxType}): key '${key}' ` +
+            `is present with value undefined`,
+        };
+      }
+    }
+    for (const key of shape.required) {
+      if (box[key] === undefined) {
+        return {
+          valid: false,
+          error: `Invalid output shape at index ${i} (${boxType}): missing required key '${key}'`,
+        };
+      }
+    }
+    if (box.guard !== CANONICAL_GUARD[boxType]) {
+      return {
+        valid: false,
+        error:
+          `Invalid output shape at index ${i} (${boxType}): guard must be ` +
+          `'${CANONICAL_GUARD[boxType]}', got '${String(box.guard)}'`,
+      };
+    }
+  }
+  return { valid: true };
+}
+
+/**
  * Enforce strict face-value conservation — `sum(inputs) == sum(outputs)` for
  * **every** box type.
  *
@@ -874,7 +1025,7 @@ function checkGuards(
 /**
  * Validate a transaction without applying it (read-only).
  *
- * Performs 6 validation steps:
+ * Performs 7 validation steps:
  * 1. No duplicate input IDs
  * 2. All inputs exist and are unspent
  * 3. All inputs have the same boxType
@@ -885,6 +1036,9 @@ function checkGuards(
  * 5. Guard satisfaction (signatures)
  * 6. Legal box transitions (height-aware — bond commit and settlement;
  *    `likeTarget`-aware — the like burn shape)
+ * 7. Output shape — every output matches the closed per-boxType schema:
+ *    exact key set and the boxType's one canonical guard (guard-shape pin,
+ *    NODE_INTERFACE → "Output shape")
  *
  * Karma decay is handled by the periodic decay engine, not at transaction
  * validation time.
@@ -956,6 +1110,12 @@ export function validateTx(
     tx.likeTarget,
   );
   if (!transitionCheck.valid) return transitionCheck;
+
+  // ---- 7. Output shape: the closed per-boxType schema (guard-shape pin) ----
+  // Placed after the transition arms so a previously-rejected shape keeps its
+  // arm-specific error; only previously-ACCEPTED objects change verdict here.
+  const shapeCheck = checkOutputShape(tx.outputs);
+  if (!shapeCheck.valid) return shapeCheck;
 
   // Compute output IDs for the caller (so applyTx doesn't re-compute)
   const txId = computeTxId(tx);

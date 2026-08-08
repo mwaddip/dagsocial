@@ -550,6 +550,8 @@ Full read-only validation. Performs all checks without modifying state:
    Conservation sums are `bigint` (P0 — see "Values are BigInt")
 5. Guard satisfaction (signatures verified against tx hash)
 6. Legal box transitions (per the transition table below)
+7. Output shape: every output matches the closed per-boxType schema — exact
+   key set and the boxType's one canonical `guard` (see "Output shape" below)
 
 Returns `{ valid, error?, computedOutputs?, txId? }`. On success, `computedOutputs`
 contains boxes with pre-computed IDs (for use by `applyTx`), and `txId` is the
@@ -557,6 +559,72 @@ deterministic transaction ID.
 
 **Used at pool entry** for ideal validation (though currently gated by signing
 mismatch — see Known Gaps in SESSION_CONTEXT.md).
+
+### Output shape — the closed per-boxType schema (guard-shape pin)
+
+Transaction outputs are attacker-controlled structure (HTTP JSON through
+`jsonToTx`, gossip and block-embedded CBOR), and two of their bytes-level
+consumers hash **whatever keys the object carries**: `canonicalBoxBytes` (the id
+preimage) strips only `id`/`txId`/`index`, and `serializeBox` (the AVL leaf, so
+the `stateRoot`) strips only `id`/`boxType`. Nothing between ingress and those
+encoders constrained the shape: transition rules filter on `boxType`,
+`checkOutputValues` reads `value`, and `guard` — a field that is a pure function
+of `boxType`, carrying zero information — passed through verbatim.
+
+`validateTx` therefore rejects any output that does not match the **closed
+schema for its `boxType`**:
+
+- **Key set is exact.** Required fields present, no key outside the declared
+  set (`TYPES_INTERFACE` box definitions are authoritative; declared-optional
+  fields — `KarmaBox.decayBurn`, `CreditBox.lockedUntilBlock` — may be present
+  or absent, nothing else may vary). A key the schema does not name is a
+  reject, not a strip: a stripped key would change the bytes the client signed.
+- **`guard` equals the boxType's canonical guard.** `karma`/`credit`/`vouch` →
+  `owner_signature`, `invite` → `hash_preimage_with_bond`, `bond` →
+  `bond_dual`, `post_lock` → `block_apply` — the same constants `rowToBox`
+  fabricates on read. One table, engine-owned; `rowToBox` and the check must
+  never disagree.
+- **Unknown `boxType` is a reject.** (Discovered at implementation: every
+  transition arm already rejects unknown output types on its own — the
+  karma/credit arms via totality counts, the rest via `outputs.length` pins —
+  so `insertBox`'s late extraData throw was already unreachable from user-tx
+  ingress. The shape check's unknown arm is defense-in-depth for a future
+  transition arm that forgets its pin, and is unit-tested by direct call.)
+
+**Why this is a consensus rule and not input hygiene:** an accepted lying guard
+(or stray key) produces a stored box whose committed bytes — id preimage and
+AVL leaf both — disagree with every later reconstruction of it, because
+`rowToBox` rebuilds from the typed row (fabricated canonical guard, no stray
+keys). The store and the tree then permanently disagree about the box's bytes.
+That is the unpinned-field class (P2-B found six instances, F1 a seventh, this
+is #8), and the divergence surface under journal replay and any future
+snapshot sync. Ergo closes the whole class structurally — its wire format is a
+closed positional schema with no maps, so a stray field is unrepresentable and
+the guard *is* content (the ErgoTree itself: hashed = stored = enforced); its
+Rust implementation additionally recomputes every box id from re-serialized
+bytes at each deserialization boundary and hard-errors on mismatch. This check
+is the same move at our one open edge.
+
+Placement: `validateTx`, so pool entry, gossip relay, and block finalization
+(which re-validates every embedded tx — step 5) all inherit it from the single
+site. A JSON-edge-only check would leave the CBOR paths open.
+
+**Scheduled follow-up (P2-C bundle):** `guard` leaves the consensus bytes
+entirely — a redundant field has no place in an id preimage. That is a format
+break (every box id moves), so it rides the bundle; when it lands, the guard
+half of this check retires and the key-set half keeps the schema closed.
+
+> ⚠ **VIOLATED — `validateTx` is not total on malformed outputs** (found by the
+> guard-shape unit, pre-existing). The karma arm dereferences
+> `Buffer.from(karmaOut.owner)` at step 6, before the shape check runs at step
+> 7, so a karma output *missing* `owner` makes `validateTx` **throw a
+> TypeError** instead of returning `{valid: false}` — violating this section's
+> own signature claim. Reachable from HTTP and CBOR ingress today; the block
+> funnel's totality catch converts it to a block rejection, HTTP paths surface
+> a 500. The fix — per-arm guards, or moving the shape check ahead of the
+> transition arms (a step-renumbering decision) — rides the field-type
+> follow-up unit together with the open field-TYPE gap (nothing yet checks
+> that `owner` is 32 bytes, `originalValue` is a bigint, etc.).
 
 ### revalidateTxInContext
 

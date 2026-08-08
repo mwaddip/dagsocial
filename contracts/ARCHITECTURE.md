@@ -349,6 +349,37 @@ boxes either fully commits or fully fails. The ledger enforces:
 - Guard scripts evaluate to true for every consumed box
 - New boxes are valid under protocol rules
 
+**Canonical bytes are the record; typed views are derived.** A box's identity
+(`canonicalBoxBytes` → id) and its state commitment (`serializeBox` → AVL leaf →
+`stateRoot`) are both computed from its byte form, so the byte form is the box;
+SQLite rows, DTOs and API JSON are views of it. Two obligations follow, one per
+direction. **Inbound:** any path admitting client-supplied structure into those
+bytes must hold it to a closed schema (`NODE_INTERFACE` → "Output shape") — an
+accepted field the schema doesn't pin becomes a committed byte no reconstruction
+reproduces. **Outbound:** any path rebuilding a box from a typed view must
+reproduce the committed bytes exactly; a read path that "fixes up" a field
+(`rowToBox` once fabricated `1n`/`2n` values — both found as divergence
+surfaces in P2-B) returns an object that disagrees with its own id. This is
+Ergo's storage discipline — the node stores serialized box bytes and derives
+views, never the reverse; its Rust implementation recomputes ids from
+re-serialized bytes at every deserialization boundary and hard-errors on
+mismatch. Notis stores typed rows today, so the whole burden sits on those two
+obligations — and journal replay and any future snapshot sync must be designed
+over **recorded bytes** (the journal's box records, a transferred tree), never
+over views re-typed from storage.
+
+> ⚠ **PARTIAL.** Both halves run for keys and guards: the outbound half since
+> P2-B (value fabrication fixed; `rowToBox` reproduces honest boxes
+> byte-exactly), the inbound half since the guard-shape pin landed
+> (2026-08-08: closed per-boxType key sets, canonical-guard equality, pinned
+> by `computeBoxId(rowToBox(row)) === row.id` discriminator tests — which also
+> caught a live instance: an integration fixture had carried a lying invite
+> shape since before the check existed). Still open: field **types** — nothing
+> yet checks that `owner` is 32 bytes or `originalValue` is a bigint, so a
+> malformed-typed field still enters the id and the `stateRoot` verbatim
+> (queued follow-up, with `validateTx`'s totality gap — see NODE_INTERFACE →
+> "Output shape").
+
 #### AVL+ State Root
 
 The UTXO set is indexed by an AVL+ authenticated dictionary. Every ordering

@@ -363,12 +363,13 @@ KarmaBox extends BoxBase {
   owner: Uint8Array            // 32 raw bytes — Ed25519 public key
   guard: "owner_signature"     // Only owner may spend
   proofSource: string          // PostId | StumpHash | InviteTxId
+  decayBurn?: boolean          // Set by the decay engine on its burn outputs; gates the decay clock
 }
 ```
 
 Karma boxes are non-tradeable. They can only be consumed by the owner to:
 - Create invite boxes
-- Create like boxes
+- Burn `LIKE_KARMA_COST` in a like transaction (`likeTarget` — there is no like box, P2-D)
 - Create a new karma box for the same owner (balance change)
 - Create a post lock box (when posting)
 
@@ -427,7 +428,7 @@ BondBox extends BoxBase {
   boxType: "bond"
   value: bigint                       // D karma deposited
   inviterId: UserId                   // Owner — the inviter
-  inviteBoxId: BoxId                  // Which InviteBox this pairs with
+  inviteOutputIndex: number           // Output index of the paired InviteBox in the creating tx — (txId, index) names it until C9 pins the box id at commit
   inviteePublicKey: Uint8Array        // empty = unclaimed, 32 bytes = committed
   probationStartBlock: number         // Set during commit
   probationEndBlock: number           // probationStartBlock + INVITE_PROBATION_BLOCKS
