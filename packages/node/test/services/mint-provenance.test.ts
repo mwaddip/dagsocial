@@ -7,6 +7,7 @@ import {
   GENESIS_FAUCET_CREDITS,
   coinbaseContext,
   vouchSettleContext,
+  likePayoutContext,
   postlockUnlockContext,
   postlockRemainderContext,
   decayContext,
@@ -32,11 +33,17 @@ const ROOT_B = postId('d');
 
 const HEIGHT = 4242;
 
-/** Every reason, built at one height, in the contract's table order. */
+/** Every reason, built at one height, in the contract's table order.
+ *
+ * `likePayoutContext` and `decayContext` deliberately share OWNER: their
+ * subjects are byte-identical (one raw pubkey), so the pairwise-distinct
+ * txId test below covers the pair the reason tag alone separates.
+ */
 function allContexts(): Array<{ ctx: MintContext; bytes: number }> {
   return [
     { ctx: coinbaseContext(0), bytes: 4 },
     { ctx: vouchSettleContext(VOUCHER, TARGET), bytes: 64 },
+    { ctx: likePayoutContext(OWNER), bytes: 32 },
     { ctx: postlockUnlockContext(POST_A), bytes: 64 },
     { ctx: postlockRemainderContext(POST_A), bytes: 64 },
     { ctx: decayContext(OWNER), bytes: 32 },
@@ -54,6 +61,7 @@ describe('mint provenance — subject encodings', () => {
     expect(widths).toEqual([
       ['coinbase', 4, 4],
       ['vouch-settle', 64, 64],
+      ['like-payout', 32, 32],
       ['postlock-unlock', 64, 64],
       ['postlock-remainder', 64, 64],
       ['decay', 32, 32],
@@ -62,11 +70,16 @@ describe('mint provenance — subject encodings', () => {
     ]);
   });
 
-  it('uses no reason twice across the table', () => {
+  it('covers every MintReason exactly once — the table is the whole union', () => {
+    // Full-coverage claim, restored by T2b: `MintReason` has exactly 8 members
+    // after the retired epoch/prune-liker reasons left the union, and every one
+    // has exactly one context encoder in this table (N2b gap closed —
+    // `likePayoutContext` existed in src but was missing here).
     const reasons = allContexts().map(({ ctx }) => ctx.reason);
     const expected: MintReason[] = [
       'coinbase',
       'vouch-settle',
+      'like-payout',
       'postlock-unlock',
       'postlock-remainder',
       'decay',
@@ -74,7 +87,7 @@ describe('mint provenance — subject encodings', () => {
       'prune-refund-author',
     ];
     expect([...reasons].sort()).toEqual([...expected].sort());
-    expect(new Set(reasons).size).toBe(7);
+    expect(new Set(reasons).size).toBe(8);
   });
 
   it('hex-typed values enter as UTF-8 text, raw-typed values as raw bytes', () => {
@@ -83,6 +96,7 @@ describe('mint provenance — subject encodings', () => {
     expect(Buffer.from(postlockUnlockContext(POST_A).subject).toString()).toBe(POST_A);
 
     expect(decayContext(OWNER).subject).toEqual(OWNER);
+    expect(likePayoutContext(OWNER).subject).toEqual(OWNER);
     expect(vouchSettleContext(VOUCHER, TARGET).subject.subarray(0, 32)).toEqual(VOUCHER);
     expect(vouchSettleContext(VOUCHER, TARGET).subject.subarray(32)).toEqual(TARGET);
 

@@ -557,19 +557,6 @@ function checkTransitions(
     }
 
     // ------------------------------------------------------------------
-    // LikeBox — retired (P2-D). A like is a burn transaction named by
-    // `likeTarget`, never a box, and unlike is not a feature — so no user
-    // transaction consumes a LikeBox. Boxes left from the old system are
-    // unspendable relics until the store sweep (N4) removes them.
-    // ------------------------------------------------------------------
-    case 'like': {
-      return {
-        valid: false,
-        error: `LikeBox transitions are retired (P2-D): likes are burn transactions, and unlike is not a feature`,
-      };
-    }
-
-    // ------------------------------------------------------------------
     // PostLockBox — consumed by block application only, rejected in guard check
     // ------------------------------------------------------------------
     case 'post_lock': {
@@ -744,12 +731,9 @@ function checkGuards(
         break;
       }
 
-      case 'block_apply':
-      case 'epoch_tally': {
-        // Settlement-guarded boxes ('block_apply': PostLockBox; 'epoch_tally':
-        // LikeBox until T2b, and any pre-T2a box still on disk) are consumable
-        // only by block application — no user transaction spends them. The
-        // liker-unlike carve-out died with P2-D: unlike is not a feature.
+      case 'block_apply': {
+        // Settlement-guarded boxes (PostLockBox) are consumable only by block
+        // application — no user transaction spends them.
         return {
           valid: false,
           error: `Box with ${box.guard} guard can only be consumed by block application`,

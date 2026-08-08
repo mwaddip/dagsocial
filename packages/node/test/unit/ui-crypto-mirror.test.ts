@@ -27,7 +27,7 @@ import {
 } from '@dagsocial/types';
 import type {
   CandidateOf,
-  Post, KarmaBox, CreditBox, LikeBox, InviteBox, BondBox, PostLockBox, VouchBox,
+  Post, KarmaBox, CreditBox, InviteBox, BondBox, PostLockBox, VouchBox,
   AnyBox, UtxoTransaction,
 } from '@dagsocial/types';
 
@@ -147,11 +147,6 @@ const BYTES_SECRET = new Uint8Array(32).fill(0xa1);
 const BYTES_INVITEE = new Uint8Array(32).fill(0xb2);
 const BYTES_TARGET = new Uint8Array(32).fill(0xc3);
 
-const GOLDEN_LIKE_BOX: LikeBox = {
-  boxType: 'like', value: 2n, 
-  likerId: GOLDEN_AUTHOR, targetPostId: GOLDEN_POST_ID, guard: 'epoch_tally',
-};
-
 const GOLDEN_INVITE_BOX: InviteBox = {
   boxType: 'invite', value: 10n, 
   secretHash: BYTES_SECRET, inviterId: GOLDEN_AUTHOR, guard: 'hash_preimage_with_bond',
@@ -163,7 +158,7 @@ const GOLDEN_BOND_BOX: BondBox = {
   // Was `inviteBoxId: BoxId` — hex text, deliberately not a binary field. Now a
   // plain integer (user decision, 2026-08-06), so this fixture no longer covers
   // the "hex-string field that must NOT be treated as binary" case. `BondBox`
-  // has no such field left; `targetPostId` on like/post_lock still does, and
+  // has no such field left; `targetPostId` on post_lock still does, and
   // `ALL_BOX_TYPES` runs every type through both encoders, so the case is still
   // exercised — just not here.
   inviteOutputIndex: 1,
@@ -185,7 +180,6 @@ const GOLDEN_VOUCH_BOX: VouchBox = {
 const ALL_BOX_TYPES: ReadonlyArray<{ name: string; box: AnyBox }> = [
   { name: 'karma', box: GOLDEN_KARMA_BOX },
   { name: 'credit', box: GOLDEN_CREDIT_BOX },
-  { name: 'like', box: GOLDEN_LIKE_BOX },
   { name: 'invite', box: GOLDEN_INVITE_BOX },
   { name: 'bond', box: GOLDEN_BOND_BOX },
   { name: 'post_lock', box: GOLDEN_POST_LOCK_BOX },
@@ -595,9 +589,10 @@ describe('demo UI ↔ @dagsocial/types box-value encoding mirror (Spec B P0)', (
  * - **`computeCandidateBoxId`** is *not wired to anything*. The UI still
  *   computes legacy ids because the node still does; phase G flips both sides in
  *   one commit. Switching only the client would break the two flows that predict
- *   an id the node must later agree with — the invite flow bakes a predicted
- *   `inviteBoxId` into `bond.inviteBoxId`, and the unlike path spends a cached
- *   LikeBox id.
+ *   an id the node must later agree with — the invite flow baked a predicted
+ *   `inviteBoxId` into `bond.inviteBoxId`, and the retired unlike path spent a
+ *   cached like-box id. (Both flows are since gone: bond pairing is by output
+ *   index, and unlike is not a feature.)
  *
  * So every assertion in the preceding two blocks must keep passing untouched: a
  * moved golden vector here means the cutover happened early.

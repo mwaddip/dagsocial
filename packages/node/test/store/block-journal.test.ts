@@ -1,7 +1,7 @@
 import {
   fixtureProvenance, uid } from '../helpers.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import type { AnyBox, KarmaBox, LikeBox } from '@dagsocial/types';
+import type { AnyBox, KarmaBox, VouchBox } from '@dagsocial/types';
 
 // ---------------------------------------------------------------------------
 // Dynamic import helpers (reset module-level state between tests — the
@@ -34,13 +34,16 @@ function makeKarmaBox(id: string, value = 100n): KarmaBox {
   return { id, ...candidate, ...fixtureProvenance(candidate, 1) };
 }
 
-function makeLikeBox(id: string, liker: string, targetPostId: string): LikeBox {
+// A second, non-karma box type: proves the journal records type-agnostically,
+// and (like karma's opposite) a vouch insert bumps no activity clock, so the
+// expected mutation sequences carry no extra record entries for it.
+function makeVouchBox(id: string, voucher: string, target: string): VouchBox {
   const candidate = {
-    boxType: 'like' as const,
-    value: 2n,
-    likerId: uid(liker),
-    targetPostId,
-    guard: 'epoch_tally' as const,
+    boxType: 'vouch' as const,
+    value: 1n as const,
+    voucherId: uid(voucher),
+    targetId: uid(target),
+    guard: 'owner_signature' as const,
   };
   return { id, ...candidate, ...fixtureProvenance(candidate, 1, hashSeed(id)) };
 }
@@ -221,12 +224,12 @@ describe('block journal (store choke-point recording)', () => {
     s.initDb(':memory:');
 
     s.insertBox(makeKarmaBox('pre-existing'));
-    s.insertBox(makeLikeBox('like-z', 'liker-z', 'post-z'));
+    s.insertBox(makeVouchBox('vouch-z', 'voucher-z', 'target-z'));
 
     s.beginBlockJournal(9);
     s.insertBox(makeKarmaBox('new-1'));
     s.consumeBox('pre-existing', 9);
-    s.consumeBox('like-z', 9);
+    s.consumeBox('vouch-z', 9);
     s.insertBox(makeKarmaBox('new-2'));
     const j = s.finishBlockJournal();
 
@@ -237,7 +240,7 @@ describe('block journal (store choke-point recording)', () => {
       ['box', 'insert', 'new-1'],
       ['record', undefined, undefined],
       ['box', 'remove', 'pre-existing'],
-      ['box', 'remove', 'like-z'],
+      ['box', 'remove', 'vouch-z'],
       ['box', 'insert', 'new-2'],
       ['record', undefined, undefined],
     ]);
@@ -253,7 +256,7 @@ describe('block journal (store choke-point recording)', () => {
 
     s.insertBox(makeKarmaBox('nj-1'));
     s.consumeBox('nj-1', 1);
-    s.insertBox(makeLikeBox('nj-like', 'nj-liker', 'nj-post'));
+    s.insertBox(makeVouchBox('nj-vouch', 'nj-voucher', 'nj-target'));
     s.insertVouchCooldown(voucher, target, 50, 10n);
     s.deleteVouchCooldown(voucher, target);
 

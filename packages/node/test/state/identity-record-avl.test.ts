@@ -83,11 +83,10 @@ describe('identity records in the AVL tree (Spec G phase B3)', () => {
     const owner = new Uint8Array(randomBytes(32));
     const boxes: AnyBox[] = [
       makeKarmaBox('01'.repeat(32)),
-      { id: '02'.repeat(32), boxType: 'credit', value: 5n, 
+      { id: '02'.repeat(32), boxType: 'credit', value: 5n,
         owner, guard: 'owner_signature', proofSource: 1 },
-      { id: '03'.repeat(32), boxType: 'like', value: 2n, 
-        likerId: owner, targetPostId: 'p1', guard: 'epoch_tally' },
-      { id: '04'.repeat(32), boxType: 'invite', value: 50n, 
+      // 0x03 was 'like' — retired (P2-D), tag byte reserved.
+      { id: '04'.repeat(32), boxType: 'invite', value: 50n,
         secretHash: new Uint8Array(randomBytes(32)), inviterId: owner,
         guard: 'hash_preimage_with_bond' },
       { id: '05'.repeat(32), boxType: 'bond', value: 10n, 

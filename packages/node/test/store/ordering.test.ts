@@ -53,7 +53,6 @@ function makeOrderingBlock(
     utxoTxTree: {
       utxoTxIds: ['tx-1'],
       utxoTxs: [],
-      likeBoxIds: ['like-box-1'],
       coinbaseOutputs: [],
     },
     validatorSignature: new Uint8Array(64).fill(0xab),
@@ -111,7 +110,6 @@ describe('ordering store', () => {
       utxoTxTree: {
         utxoTxIds: ['tx-id-1'],
         utxoTxs: [],
-        likeBoxIds: ['like-id-1', 'like-id-2'],
         coinbaseOutputs: [
           {
             owner: uid('coinbase-recipient'),
@@ -149,7 +147,6 @@ describe('ordering store', () => {
 
     // utxoTxTree
     expect(result!.utxoTxTree.utxoTxIds).toEqual(['tx-id-1']);
-    expect(result!.utxoTxTree.likeBoxIds).toEqual(['like-id-1', 'like-id-2']);
     expect(result!.utxoTxTree.coinbaseOutputs).toHaveLength(1);
     expect(result!.utxoTxTree.coinbaseOutputs[0]!.value).toBe(100);
 

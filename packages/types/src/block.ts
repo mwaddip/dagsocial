@@ -1,19 +1,7 @@
 import type { UserId } from './identity.js';
 import type { Post, PostId } from './post.js';
-import type { BoxId, TxId, LikeBox, PostLockBox } from './utxo.js';
+import type { TxId } from './utxo.js';
 import type { PruneEntry } from './stump.js';
-
-// ---------------------------------------------------------------------------
-// Like reward (computed during epoch tally)
-// ---------------------------------------------------------------------------
-
-export interface LikeReward {
-  targetPostId: PostId;
-  likeCount: number;                      // count, not an amount — stays number
-  authorReward: bigint;
-  likerRefunds: Record<string, bigint>;  // likerId → net karma refund
-  postLockKarmaUnlocked?: bigint;         // Karma released from post lock this epoch
-}
 
 // ---------------------------------------------------------------------------
 // Sub-block (user-produced)
@@ -22,40 +10,18 @@ export interface LikeReward {
 export interface SubBlock {
   subBlockId: PostId;         // = post.postId (the post IS the sub-block)
   post: Post;                 // The post (with PoW = sub-block proof)
-  likeBoxes: LikeBox[];       // Pending likes riding as sidecars
   producerId: UserId;         // = post.author
   protocolVersion: number;
 }
 
 /** Construct a SubBlock from a Post, deriving producerId and protocolVersion. */
-export function subBlockFromPost(
-  post: Post,
-  subBlockId: string,
-  likeBoxes: LikeBox[] = [],
-): SubBlock {
+export function subBlockFromPost(post: Post, subBlockId: string): SubBlock {
   return {
     subBlockId,
     post,
-    likeBoxes,
     producerId: post.author,
     protocolVersion: post.protocolVersion,
   };
-}
-
-// ---------------------------------------------------------------------------
-// Epoch tally
-// ---------------------------------------------------------------------------
-
-export interface EpochTally {
-  rewards: Record<PostId, LikeReward>;
-  /** Locked like box IDs to mark as tallied (prevents double-counting). */
-  talliedLockedLikeBoxIds: string[];
-  /** Free like row IDs to mark as processed. */
-  processedFreeLikeIds: string[];
-  /** Post lock box IDs consumed during this epoch tally. */
-  consumedPostLockBoxIds: string[];
-  /** Replacement post lock boxes with reduced locked values (empty if fully unlocked). */
-  newPostLockBoxes: PostLockBox[];
 }
 
 // ---------------------------------------------------------------------------
@@ -124,9 +90,7 @@ export interface SubBlockTree {
 export interface UtxoTxTree {
   utxoTxIds: TxId[];            // UTXO transactions
   utxoTxs: Uint8Array[];        // CBOR-encoded UtxoTransactions (aligned with utxoTxIds)
-  likeBoxIds: BoxId[];          // standalone likes (no sub-block to ride)
   coinbaseOutputs: CoinbaseOutput[];
-  epochTallyResults?: EpochTally;
 }
 
 // ---------------------------------------------------------------------------

@@ -41,7 +41,6 @@ function buildEnv(config: NodeConfig): Record<string, string> {
     KARMA_DECAY_INTERVAL_BLOCKS: '3',
     KARMA_DECAY_AMOUNT: '5',
     KARMA_MINIMUM: '10',
-    EPOCH_BLOCKS: '10',
     CHALLENGE_WINDOW_BLOCKS: '100',
     ORDERING_BLOCK_POW_TARGET_BITS: '4',
     // NOTE: POST_POW_TARGET_BITS is intentionally NOT overridden here.

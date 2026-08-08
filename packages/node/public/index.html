@@ -859,8 +859,9 @@ function buildKarmaLockTx(karmaBox, lockAmount, targetPostId, pubKeyHex) {
 /**
  * Build a like tx (P2-D): karma boxes in, ONE karma box out at
  * `total − LIKE_KARMA_COST`, `likeTarget` naming the post. The burn is the
- * deficit — there is no LikeBox, and the target sits inside the signed bytes
- * (the `like:` tail in computeTxId), so a relay cannot re-point the like.
+ * deficit — a like is a transaction, never a box, and the target sits inside
+ * the signed bytes (the `like:` tail in computeTxId), so a relay cannot
+ * re-point the like.
  */
 function buildLikeTx(karmaBox, targetPostId, pubKeyHex) {
   const selected = selectBoxes(karmaBox.boxes, LIKE_KARMA_COST);

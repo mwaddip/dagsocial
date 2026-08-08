@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { createHash } from 'crypto';
+import { subBlockFromPost } from '../src/block.js';
 import {
   encodePost,
   decodePost,
@@ -61,7 +63,6 @@ function makeSubBlock(): SubBlock {
   return {
     subBlockId: 'b'.repeat(64),
     post: makePost(),
-    likeBoxes: [],
     producerId: 'user123',
     protocolVersion: 2,
   };
@@ -96,7 +97,6 @@ function makeUtxoTxTree(): UtxoTxTree {
   return {
     utxoTxIds: ['f'.repeat(64)],
     utxoTxs: [encodeTx(makeTx())],
-    likeBoxIds: ['e'.repeat(64)],
     coinbaseOutputs: [],
   };
 }
@@ -177,6 +177,34 @@ describe('CBOR serialization', () => {
 
     it('decodeSubBlock throws on garbage bytes', () => {
       expect(() => decodeSubBlock(new Uint8Array([0x00, 0x01]))).toThrow();
+    });
+
+    it('T2b consensus pin: sub-block CBOR carries no likeBoxes key and moved off the old shape', () => {
+      // Two-sided pin over a fully deterministic sub-block. Before-leg captured
+      // on the pre-T2b tree (2026-08-08): the same post content with the field
+      // (`likeBoxes: []`) encoded to 441 bytes containing the key, hashing to
+      // OLD_SHAPE_ID. Deleting `SubBlock.likeBoxes` is a consensus change —
+      // every hash over sub-block bytes moves; fresh-chain gate, no shims.
+      const OLD_SHAPE_ID = '586ff286a6309e50e07f429cff6bccb026ccf3d6e1b67b7036e654c8c2a487cc';
+      const NEW_SHAPE_ID = '9a1155ead5ddfb05d495a34df1f4be31482e2df4f9094925ba135b4679e0d114';
+      const post: Post = {
+        content: 'T2b consensus pin: sub-block CBOR shape',
+        author: new Uint8Array(32).fill(7),
+        parentRefs: [],
+        challenge: new Uint8Array(32).fill(9),
+        powNonce: 424242,
+        protocolVersion: 1,
+        timestamp: 1754600000000,
+        signature: new Uint8Array(64).fill(3),
+      };
+      const sb = subBlockFromPost(post, 'ab'.repeat(32));
+      expect(Object.keys(sb)).toEqual(['subBlockId', 'post', 'producerId', 'protocolVersion']);
+      const bytes = encodeSubBlock(sb);
+      const hex = Buffer.from(bytes).toString('hex');
+      expect(hex).not.toContain(Buffer.from('likeBoxes', 'utf8').toString('hex'));
+      const id = createHash('blake2b512').update(bytes).digest().subarray(0, 32).toString('hex');
+      expect(id).not.toBe(OLD_SHAPE_ID);
+      expect(id).toBe(NEW_SHAPE_ID);
     });
   });
 

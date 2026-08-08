@@ -19,7 +19,6 @@ import type {
   UtxoTransaction,
   AnyBox,
   Post,
-  LikeBox,
   KarmaBox,
   BlockHeader,
   OrderingBlock,
@@ -172,24 +171,6 @@ export function seedAsOneTx(candidates: object[], seedHeight = 1, nonce = 0): An
   });
 }
 
-export function makeLikeBox(
-  likerId: Uint8Array,
-  targetPostId: string,
-  seedHeight: number,
-  nonce = 0,
-): LikeBox {
-  const candidate = {
-    boxType: 'like' as const,
-    value: 2n,
-    likerId,
-    targetPostId,
-    guard: 'epoch_tally' as const,
-  };
-  const box: LikeBox = { ...candidate, ...fixtureProvenance(candidate, seedHeight, nonce) };
-  box.id = computeBoxId(box);
-  return box;
-}
-
 export function makeKarmaBox(
   value: bigint,
   owner: Uint8Array,
@@ -212,7 +193,7 @@ export function makeKarmaBox(
  * Build a signed like transaction — the P2-D burn shape a real client submits:
  * the liker's karma box is consumed into a single karma change box at
  * `−LIKE_KARMA_COST`, with `likeTarget` naming the post inside the signed
- * bytes. No LikeBox exists.
+ * bytes. A like is a transaction, never a box.
  *
  * Block application re-validates every embedded tx in full, so a fixture that
  * omitted the signature or mis-stated the deficit would be indistinguishable
@@ -389,7 +370,6 @@ export async function makeApplicableBlock(
   const utxoTxTree = {
     utxoTxIds: embeddedTxs.map((tx) => computeTxId(tx)),
     utxoTxs: embeddedTxs.map((tx) => encodeTx(tx)),
-    likeBoxIds: [],
     coinbaseOutputs: (
       opts.coinbaseSplit ?? [
         { owner: miner.userId, value: computeBlockReward(height), isTreasury: false },

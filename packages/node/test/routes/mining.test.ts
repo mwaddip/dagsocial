@@ -33,7 +33,6 @@ function makeTemplate(): OrderingBlock {
     utxoTxTree: {
       utxoTxIds: [],
       utxoTxs: [],
-      likeBoxIds: [],
       coinbaseOutputs: [
         {
           owner: new Uint8Array(32).fill(0x55),

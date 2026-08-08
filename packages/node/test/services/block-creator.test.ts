@@ -18,12 +18,11 @@ import {
   computeBoxId,
   computePostId,
   PROTOCOL_VERSION,
-  LIKE_COST,
+  LIKE_KARMA_COST,
 } from '@dagsocial/types';
 import { blockHash } from '@dagsocial/validation';
 import type {
   Post,
-  LikeBox,
   KarmaBox,
   OrderingBlock,
   UtxoTransaction,
@@ -211,10 +210,10 @@ function makeKarmaBox(
 
 /**
  * A signed, value-conserving UTXO transaction used purely as inclusion
- * plumbing by the assembly tests below. It still builds the retired LikeBox
- * split shape (legal while the LikeBox type exists, until T2); the live burn
- * shape is `helpers.makeLikeTx`. Assembly does not validate transactions, so
- * any conserving payload exercises the same paths.
+ * plumbing by the assembly tests below — the live burn shape (P2-D): one
+ * karma change output at −LIKE_KARMA_COST, `likeTarget` naming the post.
+ * Assembly does not validate transactions, so any conserving payload
+ * exercises the same paths.
  */
 function makeLikeTx(
   liker: TestIdentity,
@@ -226,21 +225,15 @@ function makeLikeTx(
     outputs: [
       {
         boxType: 'karma',
-        value: karmaBox.value - LIKE_COST,
+        value: karmaBox.value - LIKE_KARMA_COST,
         owner: liker.userId,
         guard: 'owner_signature',
         proofSource: 'like_op',
       } as KarmaBox,
-      {
-        boxType: 'like',
-        value: LIKE_COST,
-        likerId: liker.userId,
-        targetPostId,
-        guard: 'epoch_tally',
-      } as LikeBox,
     ],
     signatures: {},
     protocolVersion: PROTOCOL_VERSION,
+    likeTarget: targetPostId,
   };
   signTransaction(tx, liker.privateKey, Buffer.from(liker.userId).toString('hex'));
   return tx;
@@ -404,10 +397,10 @@ describe('block-creator', () => {
   });
 
   // -----------------------------------------------------------------------
-  // 5. Template assembly carries no retired fields (P2-D N3a)
+  // 5. Template assembly carries no retired fields (P2-D N3a; T2b deleted them)
   // -----------------------------------------------------------------------
 
-  it('template assembly emits likeBoxIds: [] and no epochTallyResults', async () => {
+  it('template assembly carries exactly the live utxoTxTree keys', async () => {
     const db = await importDb();
     db.initDb(':memory:');
     const posts = await importPosts();
@@ -430,12 +423,13 @@ describe('block-creator', () => {
     const block = bc.createOrderingBlock();
 
     expect(block).not.toBeNull();
-    // The type fields stay until T2, but the creator only ever writes the
-    // empty constants: nothing fills likeBoxIds, nothing attaches a tally.
-    expect(block!.utxoTxTree.likeBoxIds).toEqual([]);
-    expect(block!.utxoTxTree.epochTallyResults).toBeUndefined();
-    // Strict absence, not an undefined-valued key.
-    expect('epochTallyResults' in block!.utxoTxTree).toBe(false);
+    // T2b: the retired fields are deleted from the type itself; the produced
+    // tree carries exactly the live keys. Exact-set, so a retired key
+    // sneaking back in — or a new one added untested — fails here (block
+    // body CBOR is consensus-visible bytes).
+    expect(Object.keys(block!.utxoTxTree).sort()).toEqual(
+      ['coinbaseOutputs', 'utxoTxIds', 'utxoTxs'],
+    );
   });
 
   // -----------------------------------------------------------------------
@@ -450,7 +444,7 @@ describe('block-creator', () => {
 
     bc.startBlockCreator(testConfig);
 
-    // Drive the real creator+apply across the retired EPOCH_BLOCKS=60
+    // Drive the real creator+apply across the retired 60-block epoch
     // boundary. Under the retired trigger the tally rode the block after a
     // currentHeight % 60 === 0 chain tip (height 61), so cover both readings
     // of "the boundary": 60 and 61.
@@ -462,8 +456,9 @@ describe('block-creator', () => {
     for (const height of [59, 60, 61]) {
       const stored = ordering.getOrderingBlock(height);
       expect(stored).not.toBeNull();
-      expect(stored!.utxoTxTree.likeBoxIds).toEqual([]);
-      expect(stored!.utxoTxTree.epochTallyResults).toBeUndefined();
+      expect(Object.keys(stored!.utxoTxTree).sort()).toEqual(
+        ['coinbaseOutputs', 'utxoTxIds', 'utxoTxs'],
+      );
     }
   });
 

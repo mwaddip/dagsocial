@@ -7,7 +7,6 @@ import { ClientError } from '../services/client-error.js';
  */
 const BINARY_BOX_FIELDS = new Set([
   'owner',            // KarmaBox, CreditBox, PostLockBox
-  'likerId',          // LikeBox
   'secretHash',       // InviteBox
   'inviterId',        // InviteBox, BondBox
   'inviteePublicKey', // BondBox

@@ -64,13 +64,15 @@ function concat(...parts: Uint8Array[]): Uint8Array {
 // reviewable in one place instead of at every call site.
 //
 // Each returns a whole `MintContext` rather than bare bytes, so "right subject,
-// wrong reason" is unrepresentable at a call site. That pairing is load-bearing
-// for exactly two pairs, both of which mint the same value to the same key at
-// the same height and are separated by nothing but the reason tag:
-// `author-reward`/`postlock-unlock` at epoch tally, and
-// `prune-refund-author`/`prune-refund-liker` for a user who both authored and
-// liked inside one pruned subtree. Getting one wrong produces a box-id
-// collision, not an error.
+// wrong reason" is unrepresentable at a call site. The pairing is load-bearing
+// wherever two same-height mints can land on one recipient: `like-payout` and
+// `postlock-unlock` both mint to an author at one height, separated by reason
+// (and, as it happens, subject shape — NODE_INTERFACE → reason/subject table);
+// `like-payout` and `decay` share exact subject bytes — one raw pubkey — with
+// the tag as the only separator. Getting one wrong produces a box-id
+// collision, not an error. (The epoch-tally and prune-liker reason pairs this
+// comment used to cite are retired, P2-D; their strings stay reserved in
+// types' MintReason tombstone.)
 //
 // Byte forms follow TYPES_INTERFACE → "Pinned byte forms": a hex-typed value
 // (`PostId`) enters as the UTF-8 bytes of its hex text, a `Uint8Array`-typed
@@ -99,7 +101,7 @@ export function likePayoutContext(author: Uint8Array): MintContext {
   return { reason: 'like-payout', subject: Uint8Array.from(author) };
 }
 
-/** `postlock-unlock` — 64 bytes. Distinguished from `author-reward` only by the tag. */
+/** `postlock-unlock` — 64 bytes: the vested post's id as hex text. */
 export function postlockUnlockContext(targetPostId: PostId): MintContext {
   return { reason: 'postlock-unlock', subject: utf8.encode(targetPostId) };
 }
@@ -157,7 +159,7 @@ export function pruneRefundAuthorContext(rootPostHash: PostId, owner: Uint8Array
 /**
  * The single site where a mint's synthetic transaction id is derived.
  *
- * `mintKarma`, `mintCredits` and the direct producers (decay, the epoch
+ * `mintKarma`, `mintCredits` and the direct producers (decay, the vesting
  * remainder post-lock, genesis) all route through here, so the height that
  * reaches `computeMintTxId` is always the height the box settles at.
  */

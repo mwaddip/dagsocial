@@ -48,7 +48,6 @@ function blockToJson(block: OrderingBlock): Record<string, unknown> {
       // CBOR fields omitted from JSON — UTXO tx CBOR has no meaningful
       // textual representation.
       utxoTxs: [],
-      likeBoxIds: block.utxoTxTree.likeBoxIds,
       coinbaseOutputs: block.utxoTxTree.coinbaseOutputs.map((o) => ({
         owner: Buffer.from(o.owner).toString('hex'),
         value: o.value.toString(),

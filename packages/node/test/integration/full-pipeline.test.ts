@@ -306,7 +306,7 @@ describe('full-pipeline', () => {
     expect(bc.createOrderingBlock()).not.toBeNull();
 
     // Build and sign the burn-shape like tx (P2-D): one karma output at
-    // −LIKE_KARMA_COST, likeTarget inside the signed bytes, no LikeBox.
+    // −LIKE_KARMA_COST, likeTarget inside the signed bytes, no box output.
     const changeVal = karmaBox.value - LIKE_KARMA_COST;
     const likeTx: UtxoTransaction = {
       inputs: [karmaBox.id!],

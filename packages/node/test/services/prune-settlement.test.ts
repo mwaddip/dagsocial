@@ -567,12 +567,14 @@ describe('settlePruneUtxo — refund provenance', () => {
     expect(insertedIds(journal).length).toBe(2);
   });
 
-  // N3b: the liker leg is gone — a like's karma was burned at cast and is
-  // deliberately unrecoverable, so a prune refunds no liker. Trivially no
-  // LikeBox exists post-N1, but the subtree's post WAS liked (like-record
-  // seeded), so a stray liker mint — whatever it were derived from — would
-  // land in this table and fail the exact-set assertion below.
-  it('mints no prune-refund-liker for a subtree whose posts were liked', async () => {
+  // N3b/T2b: the liker leg is gone — a like's karma was burned at cast and is
+  // deliberately unrecoverable, so a prune refunds no liker. The subtree's
+  // post WAS liked (like-record seeded), so a stray liker mint — whatever it
+  // were derived from — would land in this table and fail the exact-set
+  // assertion below. (The named-id tripwire that stood here until T2b died
+  // with the retired reason: its mint id is no longer derivable. The
+  // exact-set assertion subsumes it.)
+  it('a liked subtree settles to exactly the author mint — no liker leg', async () => {
     const { getDb } = await importDb();
     const utxo = await importUtxo();
     const likes = await importLikes();
@@ -587,18 +589,12 @@ describe('settlePruneUtxo — refund provenance', () => {
 
     await journaled(10, () => settlePruneUtxo(root, [root], 10));
 
-    // Exactly one mint: the author's. Pinned against the exact id a stray
-    // liker leg would derive, so the assertion names what must not exist.
+    // Exactly one mint: the author's — an exact-set assertion, so any stray
+    // second mint fails it regardless of what it would be derived from.
     const rows = karmaRows(getDb());
     expect(rows.map((r) => r.tx_id)).toEqual([
       computeMintTxId(10, 'prune-refund-author', expectedSubject(root, authorId)),
     ]);
-    expect(
-      rows.some(
-        (r) =>
-          r.tx_id === computeMintTxId(10, 'prune-refund-liker', expectedSubject(root, likerId)),
-      ),
-    ).toBe(false);
   });
 });
 

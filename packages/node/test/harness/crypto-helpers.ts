@@ -158,7 +158,7 @@ export function postLockTx(
 /**
  * Like tx (P2-D burn shape) — karma(total) → karma(total − LIKE_KARMA_COST),
  * `likeTarget` naming the post inside the signed bytes. The deficit IS the
- * like; there is no LikeBox and no unlike.
+ * like; a like is a transaction, never a box, and unlike is not a feature.
  */
 export function likeTx(
   boxes: { boxId: string; value: string }[],

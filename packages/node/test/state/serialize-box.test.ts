@@ -37,16 +37,11 @@ describe('serializeBox', () => {
     expect(deserializeBoxWithId(box.id, serializeBox(box))).toEqual(box);
   });
 
-  it('roundtrips a LikeBox', () => {
-    const box = {
-      id: 'ef'.repeat(32),
-      boxType: 'like' as const,
-      value: 2n,
-      likerId: new Uint8Array(32).fill(0x11),
-      targetPostId: 'post-1',
-      guard: 'epoch_tally' as const,
-    };
-    expect(deserializeBoxWithId(box.id, serializeBox(box))).toEqual(box);
+  it('the retired like tag byte 0x03 stays reserved — decode rejects it', () => {
+    // T2b: the 'like' box type is deleted and its AVL tag byte reserved, so
+    // bytes carrying it must fail loudly rather than decode as some other type.
+    const bytes = new Uint8Array([0x03, 0xa0]); // reserved tag + empty CBOR map
+    expect(() => deserializeBox(bytes)).toThrow(/Unknown box type tag/);
   });
 
   it('roundtrips an InviteBox', () => {

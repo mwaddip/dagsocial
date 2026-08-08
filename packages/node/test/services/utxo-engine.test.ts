@@ -13,7 +13,6 @@ import {
   computeCandidateBoxId,
   computeBoxId,
   computeTxId,
-  LIKE_COST,
   LIKE_KARMA_COST,
   POST_LOCK_THREAD_COST,
   VOUCH_KARMA_AMOUNT,
@@ -23,7 +22,6 @@ import {
 import type {
   AnyBox,
   KarmaBox,
-  LikeBox,
   InviteBox,
   BondBox,
   PostLockBox,
@@ -897,11 +895,11 @@ describe('validateAndApplyTx', () => {
   // block-application paths, never inside a user transaction.
   // ---------------------------------------------------------------------------
   describe('value conservation (audit C-1, L-11)', () => {
-    it('rejects self-signed K(v) -> K(v) + Like(2) (mints karma from nothing)', () => {
+    it('rejects self-signed K(v) -> K(v) + K(2) (mints karma from nothing)', () => {
       const karma = createAndInsertKarma(ownerPubKey, 100n, 1);
 
-      // The C-1 exploit: the change box keeps the full balance while a
-      // LikeBox conjures 2 more karma.
+      // The C-1 exploit: the change box keeps the full balance while a second
+      // box conjures 2 more karma.
       const newKarma: KarmaBox = {
         boxType: 'karma',
         value: 100n,
@@ -909,17 +907,17 @@ describe('validateAndApplyTx', () => {
         guard: 'owner_signature',
         proofSource: 'test',
       };
-      const likeBox: LikeBox = {
-        boxType: 'like',
-        value: LIKE_COST,
-        likerId: ownerUserId,
-        targetPostId: 'cc'.repeat(32),
-        guard: 'epoch_tally',
+      const conjured: KarmaBox = {
+        boxType: 'karma',
+        value: 2n,
+        owner: ownerPubKey,
+        guard: 'owner_signature',
+        proofSource: 'test',
       };
 
       const tx = buildSignedTx(
         [karma.id!],
-        [newKarma, likeBox],
+        [newKarma, conjured],
         ownerPrivKey,
         ownerPubKey,
       );
@@ -928,7 +926,7 @@ describe('validateAndApplyTx', () => {
       expect(result.valid).toBe(false);
       expect(result.error).toContain('Value non-conservation');
       expect(result.error).toContain('inputs=100');
-      expect(result.error).toContain(`outputs=${100n + LIKE_COST}`);
+      expect(result.error).toContain('outputs=102');
 
       // Nothing applied.
       expect(deps.getBox(karma.id!)).not.toBeNull();
@@ -991,7 +989,7 @@ describe('validateAndApplyTx', () => {
       });
     }
 
-    it('rejects a negative value that balances the sum (K(10) -> K(15) + Like(-5))', () => {
+    it('rejects a negative value that balances the sum (K(10) -> K(15) + K(-5))', () => {
       const karma = createAndInsertKarma(ownerPubKey, 10n, 1);
 
       // 15 + (-5) == 10, so a sum-only check would pass this — yet it hands
@@ -1003,17 +1001,17 @@ describe('validateAndApplyTx', () => {
         guard: 'owner_signature',
         proofSource: 'test',
       };
-      const likeBox = {
-        boxType: 'like',
+      const negative = {
+        boxType: 'karma',
         value: -5,
-        likerId: ownerUserId,
-        targetPostId: 'ee'.repeat(32),
-        guard: 'epoch_tally',
-      } as unknown as LikeBox;
+        owner: ownerPubKey,
+        guard: 'owner_signature',
+        proofSource: 'test',
+      } as unknown as KarmaBox;
 
       const tx = buildSignedTx(
         [karma.id!],
-        [newKarma, likeBox],
+        [newKarma, negative],
         ownerPrivKey,
         ownerPubKey,
       );
@@ -1607,48 +1605,26 @@ describe('validateAndApplyTx', () => {
 
     // --- the retired arms stay dead ----------------------------------------
 
-    it('a LikeBox-type output is an illegal karma transition (the old cast shape)', () => {
+    it("a retired 'like'-typed output is an illegal karma transition (the old cast shape stays dead)", () => {
+      // T2b deleted the box type; JS clients are untyped, so the old cast
+      // shape can still arrive as JSON. The karma transition arm rejects any
+      // non-karma output, retired types included.
       const karma = createAndInsertKarma(ownerPubKey, 100n, 1);
-      const likeBox: LikeBox = {
+      const relic = {
         boxType: 'like',
         value: 2n,
         likerId: ownerUserId,
         targetPostId: TARGET,
         guard: 'epoch_tally',
-      };
+      } as never;
       const tx = buildSignedTx(
         [karma.id!],
-        [karmaOut(98n, ownerPubKey), likeBox],
+        [karmaOut(98n, ownerPubKey), relic],
         ownerPrivKey, ownerPubKey,
       );
       const result = validateTx(deps, tx, 10);
       expect(result.valid).toBe(false);
       expect(result.error).toContain('Illegal karma transition');
-    });
-
-    it('spending a LikeBox (the old unlike shape) is rejected at the guard', () => {
-      const likeBox: LikeBox = {
-        boxType: 'like',
-        value: 2n,
-        likerId: ownerUserId,
-        targetPostId: TARGET,
-        guard: 'epoch_tally',
-      };
-      Object.assign(likeBox, fixtureProvenance(likeBox, 1));
-      const likeBoxId = computeBoxId(likeBox);
-      storeInsertBox({ ...likeBox, id: likeBoxId } as AnyBox);
-
-      // The liker's own signature no longer opens the box — the carve-out died
-      // with unlike. Conservation passes (2 in, 2 out), so what this pins is
-      // the guard rejection specifically.
-      const tx = buildSignedTx(
-        [likeBoxId],
-        [karmaOut(2n, ownerPubKey)],
-        ownerPrivKey, ownerPubKey,
-      );
-      const result = validateTx(deps, tx, 10);
-      expect(result.valid).toBe(false);
-      expect(result.error).toContain('guard can only be consumed by block application');
     });
 
     it('spending a block_apply-guarded PostLockBox is rejected at the guard (T2a)', () => {

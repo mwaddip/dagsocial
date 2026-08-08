@@ -141,7 +141,7 @@ export function computeCandidateBoxId(candidate: BoxCandidate, txId: TxId, index
 
 /**
  * Why a box created by block application rather than by a user transaction
- * still has one — coinbase, karma mints, decay, epoch post-locks, genesis,
+ * still has one — coinbase, karma mints, decay, post-lock vesting, genesis,
  * prune settlement. The discriminant is semantic, never positional: deriving it
  * from journal position would put ordering back into *identity*, which is the
  * failure class M-12 closed for the AVL feed.
@@ -152,30 +152,25 @@ export function computeCandidateBoxId(candidate: BoxCandidate, txId: TxId, index
  * `reason ‖ subject` carries no length prefix — which is test-pinned over the
  * whole set rather than left to inspection.
  *
- * The two `prune-refund-*` tags are **two, not one**: the same user can be both
- * an author and a liker within one pruned subtree, so a single tag would give
- * both of `settlePruneUtxo`'s mints the same `(height, reason, subject)` and
- * collide — exactly why `author-reward` and `liker-refund` are separate at epoch
- * tally. They describe today's prune settlement and are expected to be retired
- * by the karma-economics track.
- *
  * `like-payout` is P2-D's per-block like settlement (one mint per author per
- * block, subject = the raw author key). It supersedes the epoch pair
- * `author-reward`/`liker-refund`, which stay members until the epoch machinery
- * they serve is deleted; retired names stay reserved.
+ * block, subject = the raw author key).
+ *
+ * Retired members — strings reserved, never reuse (P2-D): `'author-reward'`
+ * and `'liker-refund'` (the epoch-tally pair `like-payout` superseded), and
+ * `'prune-refund-liker'` (likes are one-way burns; prune settlement refunds
+ * no liker). A reason is hashed into every mint txId — and through it into
+ * box-id preimages — so a reused string would collide with the retired
+ * world's ids.
  */
 export type MintReason =
   | 'coinbase'
   | 'vouch-settle'
-  | 'author-reward'
-  | 'liker-refund'
   | 'like-payout'
   | 'postlock-unlock'
   | 'postlock-remainder'
   | 'decay'
   | 'genesis'
-  | 'prune-refund-author'
-  | 'prune-refund-liker';
+  | 'prune-refund-author';
 
 /**
  * Synthetic transaction id for a mint event:
@@ -227,19 +222,20 @@ export function computeBoxId(box: Omit<BoxBase, 'id'>): BoxId {
 // Box types
 // ---------------------------------------------------------------------------
 
-// 'block_apply' replaces 'epoch_tally' (P2-D): the meaning was always
-// "consumable only by block application", and there is no epoch. Both stay
-// members while consumers still compile against the old name; when
-// 'epoch_tally' goes, the string stays reserved — guard strings are box
+// 'block_apply' replaced 'epoch_tally' (P2-D): the meaning was always
+// "consumable only by block application", and there is no epoch. The retired
+// 'epoch_tally' string stays reserved — never reuse: guard strings are box
 // content, inside the box-id preimage.
-export type BoxGuard = 'owner_signature' | 'epoch_tally' | 'block_apply' | 'hash_preimage' | 'inviter_signature' | 'bond_dual' | 'hash_preimage_with_bond';
+export type BoxGuard = 'owner_signature' | 'block_apply' | 'hash_preimage' | 'inviter_signature' | 'bond_dual' | 'hash_preimage_with_bond';
 
 /**
  * The creator-chosen fields — what a client builds and what `computeTxId`
  * hashes. No `id`, no provenance.
  */
 export interface BoxCandidate {
-  boxType: 'karma' | 'credit' | 'like' | 'invite' | 'bond' | 'post_lock' | 'vouch';
+  // boxType 'like' retired (P2-D) — string reserved, never reuse: boxType is
+  // box content, inside the box-id preimage.
+  boxType: 'karma' | 'credit' | 'invite' | 'bond' | 'post_lock' | 'vouch';
   value: bigint;        // integer base units, uniform across box types; value < 2^64 keeps the CBOR uint64 form
   // `createdAtBlock` was here and is **deleted** (Spec G phase G3b, D3). It was
   // the only apply-mutated field, and its presence is what made the id
@@ -302,16 +298,6 @@ export interface CreditBox extends BoxBase {
   lockedUntilBlock?: number;  // Block height before which credits cannot be spent
 }
 
-// --- Like ---
-
-export interface LikeBox extends BoxBase {
-  boxType: 'like';
-  value: 2n;                  // LIKE_COST — always 2n
-  likerId: UserId;
-  targetPostId: PostId;
-  guard: 'epoch_tally';       // Locked until epoch tally
-}
-
 // --- Invite ---
 
 export interface InviteBox extends BoxBase {
@@ -357,7 +343,7 @@ export interface BondBox extends BoxBase {
 
 export interface PostLockBox extends BoxBase {
   boxType: 'post_lock';
-  value: bigint;              // Current locked karma (decreases each epoch as likes accumulate)
+  value: bigint;              // Current locked karma (vests per block as likes accumulate)
   originalValue: bigint;      // Initial lock amount (POST_LOCK_THREAD_COST or POST_LOCK_REPLY_COST)
   owner: Uint8Array;          // 32 raw bytes — post author's Ed25519 public key
   targetPostId: PostId;       // The post this lock secures
@@ -378,13 +364,12 @@ export interface VouchBox extends BoxBase {
 // Union type
 // ---------------------------------------------------------------------------
 
-export type AnyBox = KarmaBox | CreditBox | LikeBox | InviteBox | BondBox | PostLockBox | VouchBox;
+export type AnyBox = KarmaBox | CreditBox | InviteBox | BondBox | PostLockBox | VouchBox;
 
 /** Every box type in its creator-built form — no `id`, no provenance. */
 export type AnyBoxCandidate =
   | CandidateOf<KarmaBox>
   | CandidateOf<CreditBox>
-  | CandidateOf<LikeBox>
   | CandidateOf<InviteBox>
   | CandidateOf<BondBox>
   | CandidateOf<PostLockBox>

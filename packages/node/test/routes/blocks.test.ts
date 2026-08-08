@@ -42,7 +42,6 @@ function makeBlock(height: number, hash: string): OrderingBlock {
     utxoTxTree: {
       utxoTxIds: [],
       utxoTxs: [],
-      likeBoxIds: [],
       coinbaseOutputs: [],
     },
     validatorSignature: new Uint8Array(64),

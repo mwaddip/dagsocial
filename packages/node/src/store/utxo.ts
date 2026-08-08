@@ -10,7 +10,6 @@ import type {
   AnyBox,
   KarmaBox,
   CreditBox,
-  LikeBox,
   InviteBox,
   BondBox,
   PostLockBox,
@@ -49,11 +48,6 @@ interface KarmaExtra {
 interface CreditExtra {
   proofSource: number;
   lockedUntilBlock?: number;
-}
-
-interface LikeExtra {
-  likerId: string;       // hex-encoded pubkey in JSON (Uint8Array in code)
-  targetPostId: string;
 }
 
 interface InviteExtra {
@@ -182,30 +176,6 @@ function rowToBox(row: UtxoRow): AnyBox {
         cb.lockedUntilBlock = e.lockedUntilBlock;
       }
       return cb;
-    }
-
-    case 'like': {
-      const e = extra as LikeExtra;
-      return {
-        id: row.id,
-        boxType: 'like',
-        // The row's real value, NOT the literal 2n this used to fabricate.
-        // The box id hashes `canonicalBoxBytes` — value included — so a store
-        // that rewrites the value on read returns a box whose bytes no longer
-        // match its own id, and an AVL prover re-bootstrapped from SQLite
-        // would diverge from one fed at insert time. Unlike vouch there is no
-        // cast-time value pin (LIKE_COST is what every production builder
-        // uses, but outputs arrive as client CBOR, and P2-D deletes the box
-        // rather than pinning it); the store's job is to round-trip what is
-        // actually on disk. The `as` cast bridges LikeBox's literal `2n`
-        // value type, which documents the builders' constant rather than a
-        // storage guarantee.
-        value: row.value as LikeBox['value'],
-        likerId: hexToPubkey(e.likerId),
-        targetPostId: e.targetPostId,
-        guard: 'epoch_tally',
-        ...prov,
-      };
     }
 
     case 'invite':
@@ -516,9 +486,10 @@ export function getLikersForPost(targetPostId: string): string[] {
 }
 
 /**
- * Return all unspent post lock boxes for epoch tally.
+ * Return all unspent post lock boxes for per-block vesting.
  *
- * Ordered by box id, for the same reason as the like boxes above.
+ * Ordered by box id — consensus code iterates the result, so the order must
+ * be deterministic across nodes.
  */
 export function getUnspentPostLockBoxes(): PostLockBox[] {
   const db = getDb();
@@ -636,14 +607,6 @@ export function insertBox(box: AnyBox): void {
       extraData = ce satisfies CreditExtra;
       owner = Buffer.from(c.owner);
       proofSource = String(c.proofSource);
-      break;
-    }
-    case 'like': {
-      const l = box as LikeBox;
-      extraData = {
-        likerId: pubkeyToHex(l.likerId),
-        targetPostId: l.targetPostId,
-      } satisfies LikeExtra;
       break;
     }
     case 'invite': {

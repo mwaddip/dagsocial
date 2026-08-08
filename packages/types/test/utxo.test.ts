@@ -19,7 +19,7 @@ import {
   encodeTx,
   decodeTx,
 } from '../src/index.js';
-import type { CandidateOf, KarmaBox, CreditBox, LikeBox, InviteBox, BondBox, UtxoTransaction, MintReason } from '../src/index.js';
+import type { CandidateOf, KarmaBox, CreditBox, InviteBox, BondBox, UtxoTransaction, MintReason } from '../src/index.js';
 
 const owner = new Uint8Array(32).fill(0xaa);
 
@@ -41,16 +41,6 @@ function makeCreditBox(): CreditBox {
     owner,
     guard: 'owner_signature',
     proofSource: 42,
-  };
-}
-
-function makeLikeBox(): LikeBox {
-  return {
-    boxType: 'like',
-    value: 2n,
-    likerId: 'user123',
-    targetPostId: 'a'.repeat(64),
-    guard: 'epoch_tally',
   };
 }
 
@@ -116,7 +106,6 @@ describe('boxes', () => {
 
     it('works for all box types', () => {
       expect(() => computeBoxId(makeCreditBox())).not.toThrow();
-      expect(() => computeBoxId(makeLikeBox())).not.toThrow();
       expect(() => computeBoxId(makeInviteBox())).not.toThrow();
       expect(() => computeBoxId(makeBondBox())).not.toThrow();
     });
@@ -140,7 +129,7 @@ describe('boxes', () => {
       //
       // Same boxes, opposite claim — moving the same `(txId, index)` pair must
       // move the id, and two indices under one txId must not collide.
-      for (const bare of [makeKarmaBox(), makeCreditBox(), makeLikeBox(), makeInviteBox(), makeBondBox()]) {
+      for (const bare of [makeKarmaBox(), makeCreditBox(), makeInviteBox(), makeBondBox()]) {
         const at3 = { ...bare, txId: GOLDEN_TX_ID, index: 3 };
         const at4 = { ...bare, txId: GOLDEN_TX_ID, index: 4 };
         const otherTx = { ...bare, txId: 'a'.repeat(64), index: 3 };
@@ -295,15 +284,12 @@ function u32BEMirror(n: number): Uint8Array {
 const ALL_MINT_REASONS: MintReason[] = [
   'coinbase',
   'vouch-settle',
-  'author-reward',
-  'liker-refund',
   'like-payout',
   'postlock-unlock',
   'postlock-remainder',
   'decay',
   'genesis',
   'prune-refund-author',
-  'prune-refund-liker',
 ];
 
 /**
@@ -513,31 +499,16 @@ describe('computeMintTxId', () => {
     expect(computeMintTxId(70000, 'decay', new Uint8Array(32).fill(0xff))).not.toBe(base);
   });
 
-  it('separates author-reward from postlock-unlock for the same subject', () => {
-    // The two mints that otherwise land on the same author, for the same post,
-    // at the same height — the collision the `reason` tag exists to prevent.
+  it('separates like-payout from postlock-unlock for the same subject bytes', () => {
+    // The reason tag is the only separator when two same-height mints share
+    // subject bytes — under P2-D the accrual payout and a lock vesting unlock
+    // both land on an author in one block's settlement.
     const subject = new Uint8Array(32).fill(0x11);
-    expect(computeMintTxId(70000, 'author-reward', subject))
+    expect(computeMintTxId(70000, 'like-payout', subject))
       .not.toBe(computeMintTxId(70000, 'postlock-unlock', subject));
   });
 
-  it('separates the two prune-refund legs for the same subject', () => {
-    // The collision the second prune reason exists to prevent: one user who both
-    // authored and liked inside a single pruned subtree gets two refund mints at
-    // the same height, from the same `settlePruneUtxo` call, with the same
-    // `(rootPostHash, owner)` subject. One reason would derive one txId twice at
-    // index 0, trip UNIQUE(tx_id, output_index) and reject a legitimate block.
-    //
-    // Subject shape is node's (NODE_INTERFACE → reason/subject table), built
-    // here only so the scenario is the real one: utf8(rootPostHash) ‖ raw(owner).
-    const subject = new Uint8Array(96);
-    subject.set(Buffer.from('c'.repeat(64), 'utf8'), 0);
-    subject.set(new Uint8Array(32).fill(0x22), 64);
-    expect(computeMintTxId(70000, 'prune-refund-author', subject))
-      .not.toBe(computeMintTxId(70000, 'prune-refund-liker', subject));
-  });
-
-  it('the two prune-refund reasons are distinct from every other reason', () => {
+  it('every reason derives a distinct mint id for the same subject', () => {
     // Widening the set must not let a new tag land on an existing mint id.
     const subject = new Uint8Array(96).fill(0x33);
     const ids = ALL_MINT_REASONS.map((r) => computeMintTxId(70000, r, subject));

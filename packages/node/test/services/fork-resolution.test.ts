@@ -342,7 +342,7 @@ describe('extendsOurTip', () => {
         createdAt: Date.now(),
       },
       subBlockTree: { subBlockRefs: [], subBlockEntries: [], stumpIds: [] },
-      utxoTxTree: { utxoTxIds: [], utxoTxs: [], likeBoxIds: [], coinbaseOutputs: [] },
+      utxoTxTree: { utxoTxIds: [], utxoTxs: [], coinbaseOutputs: [] },
       validatorSignature: new Uint8Array(64),
     };
 
@@ -368,7 +368,7 @@ describe('extendsOurTip', () => {
         createdAt: Date.now(),
       },
       subBlockTree: { subBlockRefs: [], subBlockEntries: [], stumpIds: [] },
-      utxoTxTree: { utxoTxIds: [], utxoTxs: [], likeBoxIds: [], coinbaseOutputs: [] },
+      utxoTxTree: { utxoTxIds: [], utxoTxs: [], coinbaseOutputs: [] },
       validatorSignature: new Uint8Array(64),
     };
 

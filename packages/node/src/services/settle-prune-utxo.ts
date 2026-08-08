@@ -13,8 +13,7 @@ import { pruneRefundAuthorContext } from '../mint-provenance.js';
  * Consumes the subtree's PostLockBoxes, mints refund karma to their authors,
  * and deletes the subtree's like-records. There is no liker leg: a like burns
  * its karma at cast and the burn is deliberately unrecoverable, so a prune
- * has nothing to refund a liker (P2-D deleted `LikeBox` and retired
- * `prune-refund-liker`).
+ * has nothing to refund a liker (P2-D).
  *
  * Key properties:
  * - Deterministic: given the same postIds, UTXO state, and like-records,
@@ -29,11 +28,10 @@ import { pruneRefundAuthorContext } from '../mint-provenance.js';
  *   subtree's records come back exactly.
  *
  * The refund mint carries provenance under `prune-refund-author`
- * (`NODE_INTERFACE.md` → "Box Identity and Mint Provenance"). Settlement now
- * has **one reason, not two**: the second (`prune-refund-liker`, kept apart
- * from the author leg so that a user who both authored and liked in one
- * subtree derived two distinct mint ids) died with the liker leg — only
- * authors are minted to, so that collision cannot arise.
+ * (`NODE_INTERFACE.md` → "Box Identity and Mint Provenance"). Settlement has
+ * **one reason**: only authors are minted to, so the author/liker mint-id
+ * collision the retired second reason existed to prevent cannot arise (the
+ * retired string stays reserved in types' MintReason tombstone).
  *
  * **The subject still names the prune entry, not the post.** Refunds are
  * aggregated per author across the whole subtree, so no single postId is

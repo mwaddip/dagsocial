@@ -4,11 +4,12 @@ import type { AnyBox } from '@dagsocial/types';
 // into the store module graph.
 import type { IdentityRecord } from '../store/identity-records.js';
 
-// Box type discriminators (1 byte each)
+// Box type discriminators (1 byte each).
+// 0x03 was 'like' — retired (P2-D). The tag byte stays reserved, never reuse:
+// tag bytes are AVL value bytes, committed in every stateRoot that held one.
 const BOX_TYPE_TAG: Record<AnyBox['boxType'], number> = {
   karma: 0x01,
   credit: 0x02,
-  like: 0x03,
   invite: 0x04,
   bond: 0x05,
   post_lock: 0x06,
@@ -18,7 +19,6 @@ const BOX_TYPE_TAG: Record<AnyBox['boxType'], number> = {
 const TAG_TO_BOX_TYPE: Record<number, AnyBox['boxType']> = {
   0x01: 'karma',
   0x02: 'credit',
-  0x03: 'like',
   0x04: 'invite',
   0x05: 'bond',
   0x06: 'post_lock',
@@ -31,7 +31,6 @@ const TAG_TO_BOX_TYPE: Record<number, AnyBox['boxType']> = {
  */
 const UINT8ARRAY_FIELDS = new Set([
   'owner',
-  'likerId',
   'secretHash',
   'inviterId',
   'inviteePublicKey',

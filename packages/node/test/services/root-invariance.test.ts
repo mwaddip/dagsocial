@@ -8,17 +8,21 @@ import {
 // ---------------------------------------------------------------------------
 // P2-D N3a root invariance — the empty-list proof.
 //
-// N3a deletes the `leafHash('likebox', …)` and `leafHash('epoch', …)` arms
-// from computeUtxoTxRoot along with the epoch machinery. Post-N1 every
-// produced block carries `likeBoxIds: []` and no `epochTallyResults`, so
-// neither arm ever contributed a leaf — deleting them must not move a single
-// root byte, or every existing chain forks at resync.
+// N3a deleted the retired like-box and epoch leaf arms from computeUtxoTxRoot
+// along with the epoch machinery. Post-N1 every produced block carried the
+// empty-list constants, so neither arm ever contributed a leaf — deleting
+// them must not move a single root byte, or every existing chain forks at
+// resync.
 //
 // The constants below were captured from the PRE-deletion
 // computeUtxoTxRoot/computeSubBlockRoot (commit 8e75122, before the arm
 // deletions) and this test ran green against that code first. It running
 // green after the deletions is the two-sided pin: same fixture, same bytes,
 // before and after.
+//
+// T2b extends the same proof one step: the retired UtxoTxTree fields are now
+// deleted from the type itself, and the roots still match — the fields were
+// never leaves, so the type demolition moves block CBOR but no root.
 //
 // Fixtures are fully deterministic — fixed hex ids, fixed owner bytes, a
 // bigint value serialized canonically — so the pinned hex is stable across
@@ -30,7 +34,6 @@ const FIXED_OWNER = new Uint8Array(32).fill(7);
 const utxoFixture: UtxoTxTree = {
   utxoTxIds: ['ab'.repeat(32), 'cd'.repeat(32)],
   utxoTxs: [], // carried CBOR is not part of the root
-  likeBoxIds: [], // the post-N1 constant — required by the type until T2
   coinbaseOutputs: [
     {
       owner: FIXED_OWNER,
@@ -39,7 +42,6 @@ const utxoFixture: UtxoTxTree = {
       isTreasury: false,
     },
   ],
-  // no epochTallyResults — the post-N1 constant
 };
 
 const subBlockFixture: SubBlockTree = {
@@ -59,8 +61,8 @@ const PINNED_UTXO_TX_ROOT =
 const PINNED_SUB_BLOCK_ROOT =
   '49d3958c701a62cb6eb42293ae9852b4d21a578e92f4738bbf8dafd13d5cfe3c';
 
-describe('N3a root invariance (pre/post epoch-arm deletion)', () => {
-  it('utxoTxRoot over a likeBoxIds:[] / no-tally tree is byte-identical to the pre-deletion root', () => {
+describe('N3a/T2b root invariance (pre/post epoch-arm and field deletion)', () => {
+  it('utxoTxRoot over the post-T2b tree is byte-identical to the pre-deletion root', () => {
     expect(computeUtxoTxRoot(utxoFixture)).toBe(PINNED_UTXO_TX_ROOT);
   });
 

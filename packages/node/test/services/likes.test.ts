@@ -13,7 +13,7 @@ import {
   MEMPOOL_EXPIRY_BLOCKS,
   PROTOCOL_VERSION,
 } from '@dagsocial/types';
-import type { KarmaBox, LikeBox, Post, Stump, UtxoTransaction, AnyBox } from '@dagsocial/types';
+import type { KarmaBox, Post, Stump, UtxoTransaction, AnyBox } from '@dagsocial/types';
 import Database from 'better-sqlite3';
 
 import {
@@ -76,29 +76,6 @@ function createTestPost(authorId: Uint8Array): string {
   const postId = computePostId(post);
   insertPost(post, encodePost(post));
   return postId;
-}
-
-/**
- * Insert an old-world locked LikeBox directly. Since N4a the gateway dedup
- * reads `like_records` — the same source apply reads — so a box like this
- * must NOT block a like. It exists to pin the repoint's direction.
- */
-function insertLockedLikeBox(
-  likerId: Uint8Array,
-  targetPostId: string,
-  seed: number,
-): string {
-  const box: Omit<LikeBox, 'id'> & { id?: string } = {
-    boxType: 'like',
-    value: 2n,
-    likerId,
-    targetPostId,
-    guard: 'epoch_tally',
-  };
-  Object.assign(box, fixtureProvenance(box, seed));
-  const id = computeBoxId(box);
-  insertBox({ ...box, id, boxType: 'like', guard: 'epoch_tally' } as LikeBox);
-  return id;
 }
 
 // ---------------------------------------------------------------------------
@@ -279,19 +256,6 @@ describe('likes service (P2-D: the like is a burn transaction)', () => {
 
     const tx = buildBurnLikeTx(karma, postId);
     expect(() => castLike(deps, tx, 5)).toThrow('Already liked');
-  });
-
-  it('an old-world LikeBox no longer blocks the gateway — dedup reads like_records, matching apply', () => {
-    const karma = createKarmaBox(likerPubKey, 100n, 1);
-    const postId = createTestPost(likerId);
-
-    // Box present, record absent. On a v2 schema no such box can exist on a
-    // real chain (the like is a burn; schema version gates old DBs), so the
-    // gateway consulting it would be reading a retired source.
-    insertLockedLikeBox(likerId, postId, 1);
-
-    const tx = buildBurnLikeTx(karma, postId);
-    expect(castLike(deps, tx, 5).castLikeResult).toBe('pending');
   });
 
   it('castLike fails if already liked (pending in mempool)', () => {

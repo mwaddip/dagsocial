@@ -20,9 +20,9 @@ import { uid, makeKarmaBox } from '../helpers.js';
 // two nodes therefore bootstrap the identical box set in opposite orders,
 // and an unsorted feed builds two differently-shaped AVL trees.
 //
-// (Until P2-D N3a this scenario ran on seeded LikeBoxes spent by the epoch
-// tally; the epoch is deleted, so the divergently-ordered set is now plain
-// karma boxes that nothing spends. The property under test is unchanged.)
+// (Until P2-D N3a this scenario ran on the retired like/epoch machinery; that
+// world is deleted, so the divergently-ordered set is now plain karma boxes
+// that nothing spends. The property under test is unchanged.)
 //
 // Fixture discipline, learned by measuring an unsorted prover: the box ids
 // must be FIXED, not random. Whether two insertion orders of the same keys

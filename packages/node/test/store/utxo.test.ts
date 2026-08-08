@@ -8,7 +8,6 @@ import type {
   AnyBox,
   KarmaBox,
   CreditBox,
-  LikeBox,
   InviteBox,
   BondBox,
 } from '@dagsocial/types';
@@ -80,18 +79,6 @@ function makeCreditBox(overrides: Partial<CreditBox> = {}): CreditBox {
     owner: OWNER_A,
     guard: 'owner_signature' as const,
     proofSource: 1,
-    ...overrides,
-  };
-  return { id: '', ...candidate, ...fixtureProvenance(candidate, 1) };
-}
-
-function makeLikeBox(overrides: Partial<LikeBox> = {}): LikeBox {
-  const candidate = {
-    boxType: 'like' as const,
-    value: 2n,
-    likerId: uid('liker123'),
-    targetPostId: 'post456',
-    guard: 'epoch_tally' as const,
     ...overrides,
   };
   return { id: '', ...candidate, ...fixtureProvenance(candidate, 1) };
@@ -205,50 +192,21 @@ describe('utxo store', () => {
     expect(result.proofSource).toBe(42);
   });
 
-  it('insertBox + getBox round-trip for LikeBox', async () => {
+  it("insertBox throws on the retired 'like' box type — the store has no like arm (T2b)", async () => {
     const { initDb } = await importDbFresh();
-    const { insertBox, getBox } = await importUtxoFresh();
-    const { computeBoxId } = await importTypes();
+    const { insertBox } = await importUtxoFresh();
 
     initDb(':memory:');
 
-    const box = makeLikeBox({ likerId: uid('user-liker'), targetPostId: 'post-target-1' });
-    Object.assign(box, fixtureProvenance(box, 1));
-    box.id = computeBoxId(box);
-    insertBox(box);
-
-    const result = getBox(box.id!) as LikeBox;
-    expect(result).not.toBeNull();
-    expect(result.boxType).toBe('like');
-    expect(result.value).toBe(2n);
-    expect(result.likerId).toEqual(uid('user-liker'));
-    expect(result.targetPostId).toBe('post-target-1');
-    expect(result.guard).toBe('epoch_tally');
-  });
-
-  it('insertBox + getBox round-trips a non-standard LikeBox value — no read fabrication', async () => {
-    const { initDb } = await importDbFresh();
-    const { insertBox, getBox } = await importUtxoFresh();
-    const { computeBoxId } = await importTypes();
-
-    initDb(':memory:');
-
-    // Nothing pins a LikeBox's value at validation time: LIKE_COST is what
-    // every production builder uses, but outputs arrive as client CBOR, so a
-    // conserving like at value 5 (karma 10 → karma 5 + like 5) validates and
-    // stores 5. The read used to fabricate 2n over it, returning a box whose
-    // bytes no longer hashed to its own id — the vouch arm's divergence,
-    // fixed the same way (P2-B phase 3, carrying phase 2's §7 residual).
-    const box = makeLikeBox({ value: 5n as LikeBox['value'], likerId: uid('user-liker-5') });
-    Object.assign(box, fixtureProvenance(box, 1));
-    box.id = computeBoxId(box);
-    insertBox(box);
-
-    const result = getBox(box.id!) as LikeBox;
-    expect(result).not.toBeNull();
-    expect(result.value).toBe(5n);
-    // Bytes match the id again: the reconstruction hashes to its own key.
-    expect(computeBoxId(result)).toBe(result.id);
+    // Adversarial shape: the type is deleted, but JS callers are untyped.
+    // The switch's default must fail loudly, never write a row it cannot
+    // read back.
+    const relic = {
+      boxType: 'like', value: 2n, likerId: uid('liker123'),
+      targetPostId: 'post456', guard: 'epoch_tally',
+      txId: 'aa'.repeat(32), index: 0, id: 'bb'.repeat(32),
+    };
+    expect(() => insertBox(relic as never)).toThrow(/Unknown box type/);
   });
 
   it('insertBox + getBox round-trip for InviteBox', async () => {

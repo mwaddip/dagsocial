@@ -33,7 +33,6 @@ import type {
   UtxoTxTree,
   CoinbaseOutput,
   Post,
-  LikeBox,
 } from '@dagsocial/types';
 import type { Config } from '../config.js';
 import { expectedTarget } from './difficulty.js';
@@ -288,7 +287,7 @@ export function createOrderingBlock(): OrderingBlock | null {
   );
 
   // 4. Resolve sub-block metadata from dag_posts (mempool now stores postId, not CBOR)
-  const resolvedSubBlocks: Array<{ subBlockId: string; post: Post; likeBoxes: LikeBox[] }> = [];
+  const resolvedSubBlocks: Array<{ subBlockId: string; post: Post }> = [];
   for (const entry of subBlockEntries) {
     if (!entry.subblockId) continue;
     const post = getPost(entry.subblockId);
@@ -296,7 +295,6 @@ export function createOrderingBlock(): OrderingBlock | null {
     resolvedSubBlocks.push({
       subBlockId: entry.subblockId,
       post,
-      likeBoxes: [],
     });
   }
 
@@ -400,7 +398,6 @@ export function createOrderingBlock(): OrderingBlock | null {
   const utxoTxTree: UtxoTxTree = {
     utxoTxIds,
     utxoTxs: utxoTxCbors,
-    likeBoxIds: [],
     coinbaseOutputs,
   };
 

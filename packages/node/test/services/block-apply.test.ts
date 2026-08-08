@@ -386,7 +386,6 @@ describe('block-apply journal recording', () => {
       utxoTxTree: {
         utxoTxIds: [],
         utxoTxs: [],
-        likeBoxIds: [],
         coinbaseOutputs: [],
       },
       validatorSignature: new Uint8Array(64),
@@ -434,7 +433,6 @@ describe('block-apply journal recording', () => {
       utxoTxTree: {
         utxoTxIds: [],
         utxoTxs: [],
-        likeBoxIds: [],
         coinbaseOutputs: [],
       },
       validatorSignature: new Uint8Array(64),
@@ -478,7 +476,6 @@ describe('block-apply journal recording', () => {
       utxoTxTree: {
         utxoTxIds: [],
         utxoTxs: [],
-        likeBoxIds: [],
         coinbaseOutputs: [],
       },
       validatorSignature: new Uint8Array(64),
@@ -524,7 +521,6 @@ describe('block-apply journal recording', () => {
     const utxoTxTree = {
       utxoTxIds: [],
       utxoTxs: [],
-      likeBoxIds: [],
       coinbaseOutputs: [
         // The scheduled maturity lock, so the value is the only thing wrong:
         // a non-numeric `lockedUntilBlock` is now a structure rejection, which

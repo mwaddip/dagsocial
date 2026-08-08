@@ -108,7 +108,8 @@ describe('leaf/node domain separation (L-9)', () => {
 
   it('no leaf domain in use can begin with the node tag', () => {
     // Every leafHash call site in the monorepo passes one of these literals.
-    for (const d of ['stump', 'subblock', 'prune', 'utxotx', 'likebox', 'coinbase', 'epoch']) {
+    // ('likebox' and 'epoch' retired P2-D — reserved, never reuse.)
+    for (const d of ['stump', 'subblock', 'prune', 'utxotx', 'coinbase']) {
       expect(new TextEncoder().encode(d + '\0')[0]).not.toBe(0x00);
     }
   });

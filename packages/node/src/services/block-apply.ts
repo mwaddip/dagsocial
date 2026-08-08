@@ -666,7 +666,8 @@ function applyMutationPhase(
   //   2. Verify Ed25519 author signature over (rootPostHash || subtreeMerkleRoot)
   //   3. Verify postId set against block_topology (deterministic, no DAG walk)
   //   4. Verify Merkle root from entry.subtreePostIds
-  //   5. Settle UTXO — consume PostLockBox + LikeBox, mint refund karma
+  //   5. Settle UTXO — consume PostLockBoxes, mint prune-refund-author karma,
+  //      delete the subtree's like-records (journalled)
   //   6. Prune DAG content, insert simplified Stump for historical record
   for (const entry of block.subBlockTree.pruneEntries) {
     // 1. Authorship binding (H-3)
@@ -761,7 +762,7 @@ function applyMutationPhase(
       rootPostHash: entry.rootPostHash,
       authorId: entry.authorId,
       replyCount: entry.subtreePostIds.length - 1, // exclude root
-      upvoteCount: 0, // can be derived from like boxes if needed
+      upvoteCount: 0, // not captured — the subtree's like-records are deleted at settlement (step 5)
       trigger: entry.trigger,
       protocolVersion: PROTOCOL_VERSION,
       compactedAtBlockHeight: height,
