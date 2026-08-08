@@ -1465,7 +1465,7 @@ so a node started against an old DB fails loudly at startup.
 | `getPendingInvites(inviterId)` | `(UserId) => InviteBox[]` — unclaimed, unexpired |
 | `getPendingInviteCount(inviterId)` | `(UserId) => number` |
 | `getBondBoxes(inviterId)` | `(UserId) => BondBox[]` — active bonds |
-| `getLikersForPost(postId)` | `(string) => string[]` — hex user IDs who liked; reads `like_records` (P2-D) |
+| `getLikersForPost(postId)` | `(string) => string[]` — hex user IDs who liked; reads `like_records` (P2-D), `ORDER BY liker_id` so the listing is a function of state, not row order (N4a ratification) |
 | `getUnspentPostLockBoxes()` | `() => PostLockBox[]` |
 | `getPostLockBox(targetPostId)` | `(string) => PostLockBox \| null` |
 | `insertBox(box)` | `(AnyBox) => void` — writes the provenance columns; records `{kind:'box', op:'insert', boxId, box}` while a block journal is open |
