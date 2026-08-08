@@ -1,4 +1,3 @@
-import { uid } from '../helpers.js';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   generateKeyPairSync,
@@ -23,6 +22,8 @@ import {
   getDb,
   insertPost,
   getPost as storeGetPost,
+  insertStump,
+  pruneSubtree,
 } from '../../src/store/index.js';
 import { executePrune } from '../../src/services/stump-engine.js';
 
@@ -330,5 +331,63 @@ describe('stump-engine', () => {
     expect(entry.rootPostHash).toBe(rootId);
     expect(entry.subtreePostIds).toEqual([rootId]);
     expect(entry.authorId).toEqual(authorId);
+  });
+
+  // -----------------------------------------------------------------------
+  // 9. executePrune on an already-pruned root throws the 400
+  // -----------------------------------------------------------------------
+  it('executePrune on an already-pruned root throws 400 "Post already pruned"', () => {
+    const rootPost = makePost('Root', authorId, []);
+    const rootId = insertTestPost(rootPost);
+    insertTestPost(makePost('Reply', authorId, [rootId]));
+
+    // Build the intent while the subtree is live, then settle the prune
+    // exactly as block-apply settlement step 6 does: insertStump, then
+    // pruneSubtree. Re-submitting the same intent is the realistic re-prune.
+    const intent = signPruneIntent(rootId, authorId, authorPrivKey);
+    insertStump({
+      rootPostHash: rootId,
+      authorId,
+      replyCount: 1,
+      upvoteCount: 0,
+      trigger: 'author',
+      protocolVersion: PROTOCOL_VERSION,
+      compactedAtBlockHeight: 7,
+    });
+    pruneSubtree(rootId);
+
+    let thrown: (Error & { statusCode?: number }) | null = null;
+    try {
+      executePrune(intent);
+    } catch (e) {
+      thrown = e as Error & { statusCode?: number };
+    }
+    expect(thrown).not.toBeNull();
+    expect(thrown!.message).toBe('Post already pruned');
+    expect(thrown!.statusCode).toBe(400);
+  });
+
+  // -----------------------------------------------------------------------
+  // 10. Live-post control: a stump elsewhere does not block a live prune
+  // -----------------------------------------------------------------------
+  it('executePrune succeeds on a live post while another root is pruned', () => {
+    // Settle a prune on root A.
+    const rootA = insertTestPost(makePost('Root A', authorId, []));
+    insertStump({
+      rootPostHash: rootA,
+      authorId,
+      replyCount: 0,
+      upvoteCount: 0,
+      trigger: 'author',
+      protocolVersion: PROTOCOL_VERSION,
+      compactedAtBlockHeight: 7,
+    });
+    pruneSubtree(rootA);
+
+    // Root B stays live — its prune must pass the already-pruned gate.
+    const rootB = insertTestPost(makePost('Root B', authorId, []));
+    const intentB = signPruneIntent(rootB, authorId, authorPrivKey);
+    const entry = executePrune(intentB);
+    expect(entry.rootPostHash).toBe(rootB);
   });
 });

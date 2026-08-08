@@ -5,7 +5,7 @@ import {
   hexToBuf,
   MEMPOOL_EXPIRY_BLOCKS,
 } from '@dagsocial/types';
-import type { PruneEntry, PruneIntent, Post } from '@dagsocial/types';
+import type { PruneEntry, PruneIntent } from '@dagsocial/types';
 import {
   getPost,
   getSubtree,
@@ -35,13 +35,16 @@ import { createHash, createPublicKey, verify } from 'crypto';
  */
 export function executePrune(intent: PruneIntent): PruneEntry {
   // 1. Verify post exists
-  const post = getPost(intent.rootPostHash) as Post | null;
+  const post = getPost(intent.rootPostHash);
   if (!post) {
     throw Object.assign(new Error('Post not found'), { statusCode: 404 });
   }
 
-  // 2. Check not already pruned
-  if ('subtreeMerkleRoot' in post) {
+  // 2. Check not already pruned. A stump has no `content`; a live Post always
+  // does — and the check narrows `Post | Stump` to `Post` for the steps below.
+  // (Do not test `'subtreeMerkleRoot' in` — that field lives on
+  // PruneIntent/PruneEntry, never on Stump, so the check can never fire.)
+  if (!('content' in post)) {
     throw Object.assign(new Error('Post already pruned'), { statusCode: 400 });
   }
 
