@@ -57,8 +57,8 @@ export function castLike(
   }
   // A stump has no `content`; a live Post always does. (The previous check
   // tested `'subtreeMerkleRoot' in post`, a field no Stump ever carried — it
-  // could never fire. Same latent bug at feed-service.ts:98,141 and
-  // stump-engine.ts:44, out of this phase's scope.)
+  // could never fire. The same dead check was removed from feed-service and
+  // stump-engine in the NX follow-up.)
   if (!('content' in post)) {
     throw new ClientError('Cannot like a pruned post');
   }

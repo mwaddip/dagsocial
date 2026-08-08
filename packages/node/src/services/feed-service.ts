@@ -85,17 +85,19 @@ export class FeedService {
 
   /**
    * Retrieve a single post by ID. Returns null if not found.
-   * Stumps (posts with subtreeMerkleRoot) are returned as-is.
+   * Stumps are returned as-is.
    */
   getPost(id: string): unknown | null {
     const result = this.deps.getPost(id);
     if (!result) return null;
 
-    // Check if it's a Stump (has subtreeMerkleRoot)
+    // A stump has no `content`; a live Post always does. (Do not test
+    // `'subtreeMerkleRoot' in` — that field lives on PruneIntent/PruneEntry,
+    // never on Stump, so the check can never fire.)
     if (
       typeof result === 'object' &&
       result !== null &&
-      'subtreeMerkleRoot' in result
+      !('content' in result)
     ) {
       return result;
     }
@@ -134,11 +136,14 @@ export class FeedService {
     const result = this.deps.getPost(id);
     if (!result) return null;
 
-    // Handle Stumps — no thread context available
+    // Handle Stumps — no thread context available. A stump has no `content`;
+    // a live Post always does. (Do not test `'subtreeMerkleRoot' in` — that
+    // field lives on PruneIntent/PruneEntry, never on Stump, so the check
+    // can never fire.)
     if (
       typeof result === 'object' &&
       result !== null &&
-      'subtreeMerkleRoot' in result
+      !('content' in result)
     ) {
       return { post: result as unknown as PostJson, ancestors: [], descendants: [] };
     }
