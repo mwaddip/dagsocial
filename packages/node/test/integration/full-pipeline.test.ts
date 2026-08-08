@@ -34,7 +34,6 @@ import {
 import type {
   Post,
   KarmaBox,
-  LikeBox,
   InviteBox,
   BondBox,
   UtxoTransaction,
@@ -100,7 +99,6 @@ async function importUtxo() {
     getBox: (id: string) => AnyBox | null;
     getKarmaBox: (owner: Uint8Array) => KarmaBox | null;
     consumeBox: (boxId: string, consumedAtBlock: number) => void;
-    getUnprocessedLockedLikeBoxes: () => LikeBox[];
   };
 }
 
@@ -343,9 +341,6 @@ describe('full-pipeline', () => {
     expect(blockHeight).toBe(2);
 
     // ---- Step 3: Verify confirmed state (UTXO txs applied by block creator) ----
-    // No LikeBox is ever produced — the burn is the like.
-    expect(utxo.getUnprocessedLockedLikeBoxes()).toEqual([]);
-
     // Old karma box consumed (check via deps, which filters by spent_at_block)
     expect(deps.getBox(karmaBox.id!)).toBeNull();
 
@@ -436,9 +431,8 @@ describe('full-pipeline', () => {
     const confirmedPost = posts.getPost(postId);
     expect(confirmedPost).not.toBeNull();
 
-    // No LikeBox produced (UTXO path is a pure burn); the change box carries
-    // the deficit and the input is spent.
-    expect(utxo.getUnprocessedLockedLikeBoxes()).toEqual([]);
+    // The UTXO path is a pure burn: the change box carries the deficit and
+    // the input is spent.
     const newKarma = utxo.getKarmaBox(liker.userId);
     expect(newKarma).not.toBeNull();
     expect(newKarma!.value).toBe(changeVal);

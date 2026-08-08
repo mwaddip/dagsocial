@@ -23,7 +23,6 @@ import {
 import { verifyOrderingBlockPoW, blockHash } from '@dagsocial/validation';
 import type {
   Post,
-  LikeBox,
   KarmaBox,
   BondBox,
   PostLockBox,
@@ -147,7 +146,6 @@ async function importUtxo() {
     getCreditBoxes: (owner: Uint8Array) => AnyBox[];
     getBox: (boxId: string) => unknown;
     consumeBox: (boxId: string, consumedAtBlock: number) => void;
-    getUnprocessedLockedLikeBoxes: () => LikeBox[];
   };
 }
 

@@ -10,7 +10,6 @@ import {
   unconsumeBox,
   deleteBox,
   unconfirmPost,
-  markFreeLikesUnprocessed,
   deleteLikeRecord,
   restoreLikeRecord,
   insertUtxoTx,
@@ -129,9 +128,6 @@ export function revertBlock(height: number): PruneEntry[] {
   // 2. Side-record inverses
   for (const subBlockId of journal.confirmedSubBlockIds) {
     unconfirmPost(subBlockId);
-  }
-  if (journal.processedFreeLikeIds.length > 0) {
-    markFreeLikesUnprocessed(journal.processedFreeLikeIds);
   }
   // Like-record inverses (P2-D). Order between the two arrays is immaterial:
   // a record cannot be both inserted and prune-deleted in one block — the

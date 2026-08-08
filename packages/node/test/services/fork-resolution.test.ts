@@ -14,7 +14,6 @@ import {
 import { blockHash } from '@dagsocial/validation';
 import type {
   Post,
-  LikeBox,
   KarmaBox,
   OrderingBlock,
   UtxoTransaction,
@@ -123,7 +122,6 @@ async function importUtxo() {
     getKarmaBox: (owner: Uint8Array) => KarmaBox | null;
     getBox: (boxId: string) => unknown;
     consumeBox: (boxId: string, consumedAtBlock: number) => void;
-    getUnprocessedLockedLikeBoxes: () => LikeBox[];
     getCreditBox: (owner: Uint8Array) => unknown;
   };
 }

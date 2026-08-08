@@ -108,21 +108,7 @@ const MIGRATIONS = [
     like_carry INTEGER NOT NULL DEFAULT 0
   )`,
 
-  // Free likes (beyond LIKE_FREE_THRESHOLD * LIKE_THRESHOLD)
-  //
-  // RETIRED (P2-D): the free tier is gone from the contract; this table and
-  // its functions run the retired system until N4 drops them. Do not add
-  // readers.
-  `CREATE TABLE IF NOT EXISTS dag_likes (
-    id TEXT PRIMARY KEY,
-    target_post_id TEXT NOT NULL,
-    liker_id BLOB NOT NULL,            -- 32-byte Ed25519 public key
-    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-    processed INTEGER NOT NULL DEFAULT 0,  -- 0 = pending, 1 = processed at epoch
-    UNIQUE(target_post_id, liker_id)
-  )`,
-
-  // Like-records (P2-D — replaces dag_likes): (liker, targetPostId) pairs,
+  // Like-records (P2-D): (liker, targetPostId) pairs,
   // written ONLY at block application, never by an HTTP route. Content-layer
   // consensus state (the block_topology tier): deterministic by replay,
   // journalled with exact inverses, not in the stateRoot. Records die with

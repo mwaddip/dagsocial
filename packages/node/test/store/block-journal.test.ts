@@ -79,7 +79,6 @@ describe('block journal (store choke-point recording)', () => {
     expect(j.mutations).toEqual([]);
     expect(j.confirmedSubBlockIds).toEqual([]);
     expect(j.appliedUtxoTxs).toEqual([]);
-    expect(j.processedFreeLikeIds).toEqual([]);
     expect(j.likeRecordInsertions).toEqual([]);
     expect(j.likeRecordDeletions).toEqual([]);
     expect(j.vouchCooldownInsertions).toEqual([]);
@@ -151,44 +150,6 @@ describe('block journal (store choke-point recording)', () => {
     const j = s.finishBlockJournal();
 
     expect(j.mutations).toEqual([{ kind: 'box', op: 'remove', boxId: 'box-k2' }]);
-  });
-
-  it('markLikeBoxesTallied records one remove per box id and keeps the -1 sentinel', async () => {
-    const s = await importAll();
-    s.initDb(':memory:');
-
-    s.insertBox(makeLikeBox('like-1', 'liker-a', 'post-1'));
-    s.insertBox(makeLikeBox('like-2', 'liker-b', 'post-1'));
-
-    s.beginBlockJournal(3);
-    s.markLikeBoxesTallied(['like-1', 'like-2']);
-    const j = s.finishBlockJournal();
-
-    expect(j.mutations).toEqual([
-      { kind: 'box', op: 'remove', boxId: 'like-1' },
-      { kind: 'box', op: 'remove', boxId: 'like-2' },
-    ]);
-    for (const id of ['like-1', 'like-2']) {
-      const row = s
-        .getDb()
-        .prepare('SELECT spent_at_block FROM utxo_boxes WHERE id = ?')
-        .get(id) as { spent_at_block: number };
-      expect(row.spent_at_block).toBe(-1);
-    }
-  });
-
-  it('markFreeLikesProcessed records the processed like ids while open', async () => {
-    const s = await importAll();
-    s.initDb(':memory:');
-
-    const id1 = s.insertLike('post-1', uid('fl-a'));
-    const id2 = s.insertLike('post-2', uid('fl-b'));
-
-    s.beginBlockJournal(4);
-    s.markFreeLikesProcessed([id1, id2]);
-    const j = s.finishBlockJournal();
-
-    expect(j.processedFreeLikeIds).toEqual([id1, id2]);
   });
 
   it('insertVouchCooldown on a fresh pair records the side-record without replaced', async () => {
@@ -265,7 +226,7 @@ describe('block journal (store choke-point recording)', () => {
     s.beginBlockJournal(9);
     s.insertBox(makeKarmaBox('new-1'));
     s.consumeBox('pre-existing', 9);
-    s.markLikeBoxesTallied(['like-z']);
+    s.consumeBox('like-z', 9);
     s.insertBox(makeKarmaBox('new-2'));
     const j = s.finishBlockJournal();
 
@@ -293,9 +254,6 @@ describe('block journal (store choke-point recording)', () => {
     s.insertBox(makeKarmaBox('nj-1'));
     s.consumeBox('nj-1', 1);
     s.insertBox(makeLikeBox('nj-like', 'nj-liker', 'nj-post'));
-    s.markLikeBoxesTallied(['nj-like']);
-    const likeId = s.insertLike('nj-post-2', uid('nj-fl'));
-    s.markFreeLikesProcessed([likeId]);
     s.insertVouchCooldown(voucher, target, 50, 10n);
     s.deleteVouchCooldown(voucher, target);
 
@@ -303,44 +261,24 @@ describe('block journal (store choke-point recording)', () => {
     s.beginBlockJournal(10);
     const j = s.finishBlockJournal();
     expect(j.mutations).toEqual([]);
-    expect(j.processedFreeLikeIds).toEqual([]);
     expect(j.vouchCooldownInsertions).toEqual([]);
     expect(j.vouchCooldownDeletions).toEqual([]);
   });
 
-  it('deleteBox, unconsumeBox, markFreeLikesUnprocessed never record even while open', async () => {
+  it('deleteBox, unconsumeBox never record even while open', async () => {
     const s = await importAll();
     s.initDb(':memory:');
 
     s.insertBox(makeKarmaBox('inv-1'));
     s.consumeBox('inv-1', 1);
     s.insertBox(makeKarmaBox('inv-2'));
-    const likeId = s.insertLike('inv-post', uid('inv-fl'));
-    s.markFreeLikesProcessed([likeId]);
 
     s.beginBlockJournal(11);
     s.unconsumeBox('inv-1');
     s.deleteBox('inv-2');
-    s.markFreeLikesUnprocessed([likeId]);
     const j = s.finishBlockJournal();
 
     expect(j.mutations).toEqual([]);
-    expect(j.processedFreeLikeIds).toEqual([]);
-  });
-
-  it('markFreeLikesUnprocessed is the exact inverse of markFreeLikesProcessed', async () => {
-    const s = await importAll();
-    s.initDb(':memory:');
-
-    const id1 = s.insertLike('p1', uid('u1'));
-    const id2 = s.insertLike('p2', uid('u2'));
-    s.markFreeLikesProcessed([id1, id2]);
-    expect(s.getUnprocessedFreeLikes()).toHaveLength(0);
-
-    s.markFreeLikesUnprocessed([id1]);
-    const unprocessed = s.getUnprocessedFreeLikes();
-    expect(unprocessed).toHaveLength(1);
-    expect(unprocessed[0].id).toBe(id1);
   });
 
   // --- insertBox missing-id guard -------------------------------------------

@@ -21,7 +21,6 @@ const EXPECTED_TABLES = [
   'dag_posts',
   'dag_parent_refs',
   'dag_stumps',
-  'dag_likes',
   'like_records',
   'mempool',
   'ordering_blocks',

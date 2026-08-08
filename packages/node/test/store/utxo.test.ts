@@ -38,11 +38,8 @@ async function importUtxoFresh() {
     getPendingInvites: (inviterId: Uint8Array) => InviteBox[];
     getPendingInviteCount: (inviterId: Uint8Array) => number;
     getBondBoxes: (inviterId: Uint8Array) => BondBox[];
-    getLockedLikeBoxes: (targetPostId: string) => LikeBox[];
-    getUnprocessedLockedLikeBoxes: () => LikeBox[];
     insertBox: (box: AnyBox) => void;
     consumeBox: (boxId: string, consumedAtBlock: number) => void;
-    markLikeBoxesTallied: (boxIds: string[]) => void;
   };
 }
 
@@ -471,69 +468,6 @@ describe('utxo store', () => {
     expect(none).toHaveLength(0);
   });
 
-  // --- getLockedLikeBoxes returns likes for a target post -------------------
-
-  it('getLockedLikeBoxes returns like boxes for a specific target post', async () => {
-    const { initDb } = await importDbFresh();
-    const { insertBox, getLockedLikeBoxes } = await importUtxoFresh();
-    const { computeBoxId } = await importTypes();
-
-    initDb(':memory:');
-
-    const like1 = makeLikeBox({ targetPostId: 'post-aaa', likerId: uid('user1') });
-    Object.assign(like1, fixtureProvenance(like1, 1));
-    like1.id = computeBoxId(like1);
-    insertBox(like1);
-
-    const like2 = makeLikeBox({ targetPostId: 'post-aaa', likerId: uid('user2') });
-    Object.assign(like2, fixtureProvenance(like2, 1));
-    like2.id = computeBoxId(like2);
-    insertBox(like2);
-
-    const like3 = makeLikeBox({ targetPostId: 'post-bbb', likerId: uid('user3') });
-    Object.assign(like3, fixtureProvenance(like3, 1));
-    like3.id = computeBoxId(like3);
-    insertBox(like3);
-
-    const forAaa = getLockedLikeBoxes('post-aaa');
-    expect(forAaa).toHaveLength(2);
-    expect(forAaa.map((l) => l.likerId).sort()).toEqual([uid('user1'), uid('user2')].sort());
-
-    const forBbb = getLockedLikeBoxes('post-bbb');
-    expect(forBbb).toHaveLength(1);
-    expect(forBbb[0].likerId).toEqual(uid('user3'));
-
-    const forNone = getLockedLikeBoxes('post-zzz');
-    expect(forNone).toHaveLength(0);
-  });
-
-  // --- getUnprocessedLockedLikeBoxes returns pending epoch likes ------------
-
-  it('getUnprocessedLockedLikeBoxes returns only unspent like boxes', async () => {
-    const { initDb } = await importDbFresh();
-    const { insertBox, getUnprocessedLockedLikeBoxes, consumeBox } = await importUtxoFresh();
-    const { computeBoxId } = await importTypes();
-
-    initDb(':memory:');
-
-    const like1 = makeLikeBox({ targetPostId: 'p1', likerId: uid('u1') });
-    Object.assign(like1, fixtureProvenance(like1, 1));
-    like1.id = computeBoxId(like1);
-    insertBox(like1);
-
-    const like2 = makeLikeBox({ targetPostId: 'p2', likerId: uid('u2') });
-    Object.assign(like2, fixtureProvenance(like2, 1));
-    like2.id = computeBoxId(like2);
-    insertBox(like2);
-
-    // Consume like2
-    consumeBox(like2.id!, 12);
-
-    const unprocessed = getUnprocessedLockedLikeBoxes();
-    expect(unprocessed).toHaveLength(1);
-    expect(unprocessed[0].likerId).toEqual(uid('u1'));
-  });
-
   // --- consumeBox marks as spent --------------------------------------------
 
   it('consumeBox marks a box as spent', async () => {
@@ -555,60 +489,6 @@ describe('utxo store', () => {
       .get(box.id!) as { spent_at_block: number } | undefined;
     expect(row).toBeDefined();
     expect(row!.spent_at_block).toBe(99);
-  });
-
-  // --- markLikeBoxesTallied bulk-consumes -----------------------------------
-
-  it('markLikeBoxesTallied bulk-marks like boxes as tallied', async () => {
-    const { initDb, getDb } = await importDbFresh();
-    const { insertBox, markLikeBoxesTallied } = await importUtxoFresh();
-    const { computeBoxId } = await importTypes();
-
-    initDb(':memory:');
-
-    const like1 = makeLikeBox({ likerId: uid('u1') });
-    Object.assign(like1, fixtureProvenance(like1, 1));
-    like1.id = computeBoxId(like1);
-    insertBox(like1);
-
-    const like2 = makeLikeBox({ likerId: uid('u2') });
-    Object.assign(like2, fixtureProvenance(like2, 1));
-    like2.id = computeBoxId(like2);
-    insertBox(like2);
-
-    const like3 = makeLikeBox({ likerId: uid('u3') });
-    Object.assign(like3, fixtureProvenance(like3, 1));
-    like3.id = computeBoxId(like3);
-    insertBox(like3);
-
-    // Bulk-consume like1 and like3
-    markLikeBoxesTallied([like1.id!, like3.id!]);
-
-    // like1 and like3 should be spent
-    for (const id of [like1.id!, like3.id!]) {
-      const row = getDb()
-        .prepare('SELECT spent_at_block FROM utxo_boxes WHERE id = ?')
-        .get(id) as { spent_at_block: number } | undefined;
-      expect(row!.spent_at_block).toBe(-1);
-    }
-
-    // like2 should still be unspent
-    const row2 = getDb()
-      .prepare('SELECT spent_at_block FROM utxo_boxes WHERE id = ?')
-      .get(like2.id!) as { spent_at_block: number | null } | undefined;
-    expect(row2!.spent_at_block).toBeNull();
-  });
-
-  // --- markLikeBoxesTallied handles empty array -----------------------------
-
-  it('markLikeBoxesTallied handles empty array gracefully', async () => {
-    const { initDb } = await importDbFresh();
-    const { markLikeBoxesTallied } = await importUtxoFresh();
-
-    initDb(':memory:');
-
-    // Should not throw
-    expect(() => markLikeBoxesTallied([])).not.toThrow();
   });
 
   // --- getKarmaBoxes returns all unspent karma boxes sorted by value desc -----

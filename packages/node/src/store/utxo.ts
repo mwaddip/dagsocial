@@ -516,60 +516,6 @@ export function getLikersForPost(targetPostId: string): string[] {
 }
 
 /**
- * Return all unspent (unconsumed) like boxes targeting the given post.
- * Used by prune settlement to refund likers' locked karma.
- */
-export function getUnspentLikeBoxes(targetPostId: string): LikeBox[] {
-  const db = getDb();
-  const rows = db
-    .prepare(
-      `SELECT * FROM utxo_boxes
-       WHERE box_type = 'like'
-         AND json_extract(extra_data, '$.targetPostId') = ?
-         AND spent_at_block IS NULL`,
-    )
-    .safeIntegers()
-    .all(targetPostId) as UtxoRow[];
-  return rows.map(rowToBox) as LikeBox[];
-}
-
-/**
- * Return all locked like boxes targeting the given post.
- */
-export function getLockedLikeBoxes(targetPostId: string): LikeBox[] {
-  const db = getDb();
-  const rows = db
-    .prepare(
-      `SELECT * FROM utxo_boxes
-       WHERE box_type = 'like'
-         AND json_extract(extra_data, '$.targetPostId') = ?`,
-    )
-    .safeIntegers()
-    .all(targetPostId) as UtxoRow[];
-  return rows.map((r) => rowToBox(r) as LikeBox);
-}
-
-/**
- * Return all unprocessed (unspent) locked like boxes.
- *
- * Retired-epoch leftover: its tally caller and that caller's canonical
- * serializer were deleted in P2-D N3a; this function follows in N4. Ordered
- * by box id — content-derived, deterministic on every node.
- */
-export function getUnprocessedLockedLikeBoxes(): LikeBox[] {
-  const db = getDb();
-  const rows = db
-    .prepare(
-      `SELECT * FROM utxo_boxes
-       WHERE box_type = 'like' AND spent_at_block IS NULL
-       ORDER BY id`,
-    )
-    .safeIntegers()
-    .all() as UtxoRow[];
-  return rows.map((r) => rowToBox(r) as LikeBox);
-}
-
-/**
  * Return all unspent post lock boxes for epoch tally.
  *
  * Ordered by box id, for the same reason as the like boxes above.
@@ -603,29 +549,6 @@ export function getPostLockBox(targetPostId: string): PostLockBox | null {
     .get(targetPostId) as UtxoRow | undefined;
   if (!row) return null;
   return rowToBox(row) as PostLockBox;
-}
-
-/**
- * Return the total lifetime like count for a post.
- * Counts ALL like boxes (including spent/tallied) plus ALL free likes
- * (including processed). This is needed because post lock unlocking is
- * cumulative — past likes still count.
- */
-export function getPostTotalLikes(targetPostId: string): number {
-  const db = getDb();
-  const likeRow = db
-    .prepare(
-      `SELECT COUNT(*) AS cnt FROM utxo_boxes
-       WHERE box_type = 'like'
-         AND json_extract(extra_data, '$.targetPostId') = ?`,
-    )
-    .get(targetPostId) as { cnt: number };
-  const freeRow = db
-    .prepare(
-      'SELECT COUNT(*) AS cnt FROM dag_likes WHERE target_post_id = ?',
-    )
-    .get(targetPostId) as { cnt: number };
-  return likeRow.cnt + freeRow.cnt;
 }
 
 /**
@@ -843,22 +766,4 @@ export function getUnspentBoxes(): AnyBox[] {
     .safeIntegers()
     .all() as UtxoRow[];
   return rows.map(rowToBox);
-}
-
-/**
- * Bulk-mark like boxes as tallied (spent) in a single statement.
- *
- * Uses a temporary table-less approach with a variable number of ? placeholders.
- * For an empty array this is a no-op.
- */
-export function markLikeBoxesTallied(boxIds: string[]): void {
-  if (boxIds.length === 0) return;
-  const db = getDb();
-  const placeholders = boxIds.map(() => '?').join(', ');
-  db.prepare(
-    `UPDATE utxo_boxes SET spent_at_block = -1 WHERE id IN (${placeholders})`,
-  ).run(...boxIds);
-  for (const boxId of boxIds) {
-    recordBoxRemove(boxId);
-  }
 }

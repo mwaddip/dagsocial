@@ -331,19 +331,4 @@ describe('like-records store (P2-D N2a)', () => {
     expect(back.likeRecordInsertions).toEqual([]);
     expect(back.likeRecordDeletions).toEqual([]);
   });
-
-  // --- The free-like tier keeps working until N4 -----------------------------
-
-  it('like_records and dag_likes are independent tables', async () => {
-    const s = await importAll();
-    s.initDb(':memory:');
-
-    s.insertLike('post-1', LIKER_A);          // retired free-like row
-    s.insertLikeRecord('post-1', LIKER_A, 1); // P2-D record
-
-    // The record insert did not trip dag_likes' UNIQUE, and each side counts
-    // its own rows.
-    expect(s.getLikeRecordCount('post-1')).toBe(1);
-    expect(s.getLikeCount('post-1').free).toBe(1);
-  });
 });

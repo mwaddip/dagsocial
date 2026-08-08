@@ -65,8 +65,6 @@ export interface BlockJournal {
   confirmedSubBlockIds: string[];
   /** Mempool re-insertion only. */
   appliedUtxoTxs: Array<{ txId: string; txCbor: Uint8Array }>;
-  /** Inverse: markFreeLikesUnprocessed. RETIRED tier — stays until P2-D N4. */
-  processedFreeLikeIds: string[];
   /** Inverse: deleteLikeRecord (P2-D). */
   likeRecordInsertions: Array<{ targetPostId: string; likerId: UserId }>;
   /**
@@ -102,13 +100,12 @@ export interface BlockJournal {
 //
 // Module-level singleton: block application is synchronous single-threaded
 // better-sqlite3, so at most one journal is ever open. While open, the store
-// mutation primitives (insertBox, consumeBox, markLikeBoxesTallied,
-// putIdentityRecord, markFreeLikesProcessed, insertLikeRecord,
-// deleteLikeRecordsForPosts, insertVouchCooldown, deleteVouchCooldown) record
-// automatically — call sites never maintain parallel mutation bookkeeping.
-// The rollback inverses (deleteBox, unconsumeBox, deleteIdentityRecord,
-// markFreeLikesUnprocessed, deleteLikeRecord, restoreLikeRecord) never
-// record.
+// mutation primitives (insertBox, consumeBox, putIdentityRecord,
+// insertLikeRecord, deleteLikeRecordsForPosts, insertVouchCooldown,
+// deleteVouchCooldown) record automatically — call sites never maintain
+// parallel mutation bookkeeping. The rollback inverses (deleteBox,
+// unconsumeBox, deleteIdentityRecord, deleteLikeRecord, restoreLikeRecord)
+// never record.
 // ---------------------------------------------------------------------------
 
 let openJournal: BlockJournal | null = null;
@@ -128,7 +125,6 @@ export function beginBlockJournal(height: number): void {
     mutations: [],
     confirmedSubBlockIds: [],
     appliedUtxoTxs: [],
-    processedFreeLikeIds: [],
     likeRecordInsertions: [],
     likeRecordDeletions: [],
     vouchCooldownInsertions: [],
@@ -194,7 +190,7 @@ export function recordBoxInsert(box: AnyBox): void {
   openJournal.mutations.push({ kind: 'box', op: 'insert', boxId: box.id, box });
 }
 
-/** Record a box spend (consumeBox, markLikeBoxesTallied). */
+/** Record a box spend (consumeBox). */
 export function recordBoxRemove(boxId: string): void {
   if (openJournal === null) return;
   openJournal.mutations.push({ kind: 'box', op: 'remove', boxId });
@@ -222,12 +218,6 @@ export function recordIdentityRecordPut(
     entry.replaced = replaced;
   }
   openJournal.mutations.push(entry);
-}
-
-/** Record free-like ids flipped to processed. RETIRED tier — until P2-D N4. */
-export function recordFreeLikesProcessed(likeIds: string[]): void {
-  if (openJournal === null) return;
-  openJournal.processedFreeLikeIds.push(...likeIds);
 }
 
 /** Record an applied like-record insertion (insertLikeRecord — P2-D). */

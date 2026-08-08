@@ -86,24 +86,6 @@ export function vouchSettleContext(voucherId: Uint8Array, targetId: Uint8Array):
   return { reason: 'vouch-settle', subject: concat(voucherId, targetId) };
 }
 
-/** `author-reward` — 64 bytes: the post id as hex text. */
-export function authorRewardContext(targetPostId: PostId): MintContext {
-  return { reason: 'author-reward', subject: utf8.encode(targetPostId) };
-}
-
-/**
- * `liker-refund` — 96 bytes: post id as hex text, then the liker's 32 raw
- * pubkey bytes.
- *
- * The only two-part encoding whose parts are not both fixed-width by type. It
- * is still unambiguous because the *suffix* is: a 32-byte pubkey pins the split
- * point from the right regardless of what precedes it, so no two
- * `(postId, likerId)` pairs concatenate to the same bytes.
- */
-export function likerRefundContext(targetPostId: PostId, likerId: Uint8Array): MintContext {
-  return { reason: 'liker-refund', subject: concat(utf8.encode(targetPostId), likerId) };
-}
-
 /**
  * `like-payout` — 32 bytes: the credited author's raw pubkey (P2-D per-block
  * like settlement). Fixed length, so the injectivity rule holds by
@@ -152,8 +134,8 @@ export function genesisContext(which: number): MintContext {
 
 /**
  * `prune-refund-author` — 96 bytes: the pruned subtree's root post id as hex
- * text, then the refunded author's 32 raw pubkey bytes. Unambiguous by the same
- * argument as `likerRefundContext`: the 32-byte suffix pins the split point.
+ * text, then the refunded author's 32 raw pubkey bytes. Unambiguous because
+ * the 32-byte suffix pins the split point.
  *
  * The subject names the **prune entry**, not the post the karma was locked
  * against — refunds are aggregated per user across the whole subtree, so no
@@ -166,19 +148,6 @@ export function genesisContext(which: number): MintContext {
  */
 export function pruneRefundAuthorContext(rootPostHash: PostId, owner: Uint8Array): MintContext {
   return { reason: 'prune-refund-author', subject: concat(utf8.encode(rootPostHash), owner) };
-}
-
-/**
- * `prune-refund-liker` — 96 bytes, the same encoding against the liker.
- *
- * Two reasons rather than one, for the same reason `author-reward` and
- * `liker-refund` are two at epoch tally: the same user can be both an author
- * and a liker within one pruned subtree — they replied in a thread they also
- * liked — and a single tag would give both of that user's mints an identical
- * `(height, reason, subject)`.
- */
-export function pruneRefundLikerContext(rootPostHash: PostId, likerId: Uint8Array): MintContext {
-  return { reason: 'prune-refund-liker', subject: concat(utf8.encode(rootPostHash), likerId) };
 }
 
 // ---------------------------------------------------------------------------

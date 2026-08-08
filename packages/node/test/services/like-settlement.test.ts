@@ -951,7 +951,6 @@ describe('per-block like settlement (P2-D N2b)', () => {
       mutations: [],
       confirmedSubBlockIds: [],
       appliedUtxoTxs: [],
-      processedFreeLikeIds: [],
       likeRecordInsertions: [{ targetPostId: likedPost, likerId: likerB.userId }],
       likeRecordDeletions: [
         { targetPostId: prunedPost, likerId: likerA.userId, appliedAtBlock: 3 },

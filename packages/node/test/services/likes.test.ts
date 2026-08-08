@@ -273,8 +273,8 @@ describe('likes service (P2-D: the like is a burn transaction)', () => {
     const postId = createTestPost(likerId);
 
     // The state a confirmed like leaves behind since N2b: a like-record,
-    // no box. Until N4a the gateway read old-world boxes (`hasLiked`) and
-    // accepted this re-like; apply would then reject it as invalid.
+    // no box. Until N4a the gateway read old-world boxes and accepted this
+    // re-like; apply would then reject it as invalid.
     insertLikeRecord(postId, likerId, 3);
 
     const tx = buildBurnLikeTx(karma, postId);

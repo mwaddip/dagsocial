@@ -100,10 +100,10 @@ describe('mint producers attach provenance (Spec G phase C1)', () => {
     const { initDb } = await importDbFresh();
     const { getBox } = await importUtxoFresh();
     const { mintKarma } = await import('../../src/services/karma.js');
-    const { authorRewardContext } = await import('../../src/mint-provenance.js');
+    const { postlockUnlockContext } = await import('../../src/mint-provenance.js');
     initDb(':memory:');
 
-    const minted = mintKarma(user(0x01), 40n, HEIGHT, authorRewardContext(POST_A));
+    const minted = mintKarma(user(0x01), 40n, HEIGHT, postlockUnlockContext(POST_A));
     const stored = getBox(minted)!;
 
     // Inverted by phase G3b. This asserted the opposite — that stripping
@@ -129,14 +129,14 @@ describe('mint producers attach provenance (Spec G phase C1)', () => {
     const { initDb } = await importDbFresh();
     const { getBox } = await importUtxoFresh();
     const { mintKarma } = await import('../../src/services/karma.js');
-    const { authorRewardContext } = await import('../../src/mint-provenance.js');
+    const { postlockUnlockContext } = await import('../../src/mint-provenance.js');
     initDb(':memory:');
 
-    const ctx = authorRewardContext(POST_A);
+    const ctx = postlockUnlockContext(POST_A);
     const boxId = mintKarma(user(0x02), 10n, HEIGHT, ctx);
 
     const stored = getBox(boxId)!;
-    expect(stored.txId).toBe(computeMintTxId(HEIGHT, 'author-reward', ctx.subject));
+    expect(stored.txId).toBe(computeMintTxId(HEIGHT, 'postlock-unlock', ctx.subject));
     expect(stored.index).toBe(0);
   });
 
@@ -173,7 +173,7 @@ describe('mint producers attach provenance (Spec G phase C1)', () => {
     const { mintKarma } = await import('../../src/services/karma.js');
     const { mintCredits } = await import('../../src/services/credits.js');
     const {
-      authorRewardContext,
+      postlockUnlockContext,
       coinbaseContext,
       decayContext,
     } = await import('../../src/mint-provenance.js');
@@ -181,7 +181,7 @@ describe('mint producers attach provenance (Spec G phase C1)', () => {
 
     // Distinct owners, so no mint merge-consumes another's box.
     const produced = await producedBoxes(HEIGHT, () => {
-      mintKarma(user(0x11), 10n, HEIGHT, authorRewardContext(POST_A));
+      mintKarma(user(0x11), 10n, HEIGHT, postlockUnlockContext(POST_A));
       mintKarma(user(0x12), 20n, HEIGHT, decayContext(user(0x12)));
       mintCredits(user(0x13), 30n, HEIGHT, coinbaseContext(0));
       mintCredits(user(0x14), 40n, HEIGHT, coinbaseContext(1), HEIGHT + 5);
@@ -210,14 +210,14 @@ describe('mint producers attach provenance (Spec G phase C1)', () => {
     const { mintKarma } = await import('../../src/services/karma.js');
     const { mintCredits } = await import('../../src/services/credits.js');
     const {
-      authorRewardContext,
+      postlockUnlockContext,
       coinbaseContext,
       decayContext,
     } = await import('../../src/mint-provenance.js');
     initDb(':memory:');
 
     const produced = await producedBoxes(HEIGHT, () => {
-      mintKarma(user(0x21), 10n, HEIGHT, authorRewardContext(POST_A));
+      mintKarma(user(0x21), 10n, HEIGHT, postlockUnlockContext(POST_A));
       mintKarma(user(0x22), 20n, HEIGHT, decayContext(user(0x22)));
       mintCredits(user(0x23), 30n, HEIGHT, coinbaseContext(0));
       mintCredits(user(0x24), 40n, HEIGHT, coinbaseContext(1), HEIGHT + 5);
@@ -241,32 +241,32 @@ describe('mint producers attach provenance (Spec G phase C1)', () => {
 
   // --- the pair the reason tag exists for ----------------------------------
 
-  it('author-reward and postlock-unlock to one author, one post, one height differ', async () => {
+  it('postlock-unlock and postlock-remainder to one author, one post, one height differ', async () => {
     const { initDb } = await importDbFresh();
     const { mintKarma } = await import('../../src/services/karma.js');
-    const { authorRewardContext, postlockUnlockContext } = await import(
+    const { postlockUnlockContext, postlockRemainderContext } = await import(
       '../../src/mint-provenance.js'
     );
     initDb(':memory:');
 
     const author = user(0x31);
-    // Both legs, exactly as `applyMutationPhase` runs them: same author, same
-    // post, same height. The second merge-consumes the first, so both boxes are
-    // visible only through the journal.
+    // Both legs: same author, same post, same height. The second
+    // merge-consumes the first, so both boxes are visible only through the
+    // journal.
     const produced = await producedBoxes(HEIGHT, () => {
-      mintKarma(author, 3n, HEIGHT, authorRewardContext(POST_A));
-      mintKarma(author, 5n, HEIGHT, postlockUnlockContext(POST_A));
+      mintKarma(author, 3n, HEIGHT, postlockUnlockContext(POST_A));
+      mintKarma(author, 5n, HEIGHT, postlockRemainderContext(POST_A));
     });
 
     expect(produced.length).toBe(2);
-    const [reward, unlock] = produced;
-    expect(reward!.txId).toBeDefined();
+    const [unlock, remainder] = produced;
     expect(unlock!.txId).toBeDefined();
+    expect(remainder!.txId).toBeDefined();
     // Same (height, subject); only the reason tag separates them. Equal txIds
     // here would mean a `UNIQUE(tx_id, output_index)` violation in one block —
     // and, from phase G, two boxes claiming one identity.
-    expect(unlock!.txId).not.toBe(reward!.txId);
-    expect(reward!.id).not.toBe(unlock!.id);
+    expect(remainder!.txId).not.toBe(unlock!.txId);
+    expect(unlock!.id).not.toBe(remainder!.id);
   });
 });
 
@@ -315,13 +315,13 @@ describe('direct mint producers attach provenance (Spec G phase C2)', () => {
     const { getBox } = await importUtxoFresh();
     const { mintKarma } = await import('../../src/services/karma.js');
     const { applyKarmaDecay } = await import('../../src/services/decay.js');
-    const { authorRewardContext, decayContext } = await import(
+    const { postlockUnlockContext, decayContext } = await import(
       '../../src/mint-provenance.js'
     );
     initDb(':memory:');
 
     const owner = user(0x41);
-    mintKarma(owner, 50n, 1, authorRewardContext(POST_A));
+    mintKarma(owner, 50n, 1, postlockUnlockContext(POST_A));
 
     const entries = applyKarmaDecay(await decayDeps(), HEIGHT, DECAY_CFG);
     expect(entries.length).toBe(1);
@@ -339,7 +339,7 @@ describe('direct mint producers attach provenance (Spec G phase C2)', () => {
     const { getBox } = await importUtxoFresh();
     const { mintKarma } = await import('../../src/services/karma.js');
     const { applyKarmaDecay } = await import('../../src/services/decay.js');
-    const { authorRewardContext } = await import('../../src/mint-provenance.js');
+    const { postlockUnlockContext } = await import('../../src/mint-provenance.js');
     initDb(':memory:');
 
     // The across-heights adjacency: a decay box replacing an earlier mint's box
@@ -349,7 +349,7 @@ describe('direct mint producers attach provenance (Spec G phase C2)', () => {
     // `processVouchCooldowns` runs after `applyKarmaDecay` in the mutation
     // phase. That case is covered separately below.)
     const owner = user(0x42);
-    const mintedId = mintKarma(owner, 50n, 1, authorRewardContext(POST_A));
+    const mintedId = mintKarma(owner, 50n, 1, postlockUnlockContext(POST_A));
     const minted = getBox(mintedId)!;
 
     const deps = await decayDeps();
@@ -372,10 +372,10 @@ describe('direct mint producers attach provenance (Spec G phase C2)', () => {
     );
     const { mintKarma } = await import('../../src/services/karma.js');
     const { applyKarmaDecay } = await import('../../src/services/decay.js');
-    const { authorRewardContext } = await import('../../src/mint-provenance.js');
+    const { postlockUnlockContext } = await import('../../src/mint-provenance.js');
     initDb(':memory:');
 
-    mintKarma(user(0x43), 50n, 1, authorRewardContext(POST_A));
+    mintKarma(user(0x43), 50n, 1, postlockUnlockContext(POST_A));
     const deps = await decayDeps();
     const produced = await producedBoxes(HEIGHT, () => {
       applyKarmaDecay(deps, HEIGHT, DECAY_CFG);

@@ -43,8 +43,8 @@ import {
 // hand-built fixture. Reverts go through the real reorg path. Three
 // assertions per class:
 //
-//   1. DB identity — utxo_boxes plus the side tables (vouch_cooldowns,
-//      dag_likes processed flags) equal their pre-block rows exactly.
+//   1. DB identity — utxo_boxes plus the side tables (vouch_cooldowns)
+//      equal their pre-block rows exactly.
 //   2. Digest identity — with the ACTIVE prover singleton (the instance
 //      tryGetAvlProver() hands to block-apply §13), the digest after revert
 //      equals the pre-block digest.
@@ -180,7 +180,6 @@ function dumpState(db: Database) {
     vouches: db
       .prepare('SELECT * FROM vouch_cooldowns ORDER BY voucher_id, target_id')
       .all(),
-    freeLikes: db.prepare('SELECT * FROM dag_likes ORDER BY id').all(),
     // P2-D N3b: prune settlement deletes the subtree's like-records, so "DB
     // identity after revert" has to cover the table (mirrors the
     // like-settlement suite's dumpState).
