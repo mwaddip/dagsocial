@@ -87,10 +87,9 @@ export function getLikeCount(postId: string): { locked: number; free: number } {
 /**
  * Return all unprocessed free likes (processed = 0).
  *
- * Ordered by like id so the epoch tally walks them identically on every node
- * whatever order they arrived in.  Defence in depth: the consensus-relevant
- * serialization is canonicalized (`epoch-canonical.ts`), never left to rely on
- * rowid order.
+ * Retired-epoch leftover: its tally caller and that caller's canonical
+ * serializer were deleted in P2-D N3a; this function and the dag_likes table
+ * follow in N4. Ordered by like id for a deterministic walk.
  */
 export function getUnprocessedFreeLikes(): Array<{
   id: string;

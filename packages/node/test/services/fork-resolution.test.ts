@@ -44,7 +44,6 @@ const testConfig = {
   orderingBlockIntervalMs: 60000,
   orderingBlockMinSubBlocks: 1,
   maxSubBlocksPerBlock: 1000,
-  epochBlocks: 100, // High to avoid epoch triggers during simple tests
   miningMode: 'internal' as const,
   orderingBlockPowTargetBits: 12,
   creditTreasuryPct: 10,
@@ -832,7 +831,7 @@ describe('reorg', () => {
     const posts = await importPosts();
     const mempool = await importMempoolFresh();
     const bc = await importBlockCreator();
-    bc.startBlockCreator(testConfig); // epochBlocks = 100 (no epoch)
+    bc.startBlockCreator(testConfig);
 
     // Build 3 blocks
     for (let i = 0; i < 3; i++) {

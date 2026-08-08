@@ -7,15 +7,12 @@ import {
   vi,
 } from 'vitest';
 import {
-  computeBoxId,
   computePostId,
   encodePost,
   encodeOrderingBlock,
   decodeOrderingBlock,
   PROTOCOL_VERSION,
   LIKE_KARMA_COST,
-  LIKE_THRESHOLD,
-  LIKE_MAX_AUTHOR_REWARD,
   KARMA_STALE_THRESHOLD_BLOCKS,
   CREDIT_MINER_REWARD_DELAY,
   EMPTY_STATE_ROOT,
@@ -35,8 +32,6 @@ import type {
   SubBlockEntry,
   PruneEntry,
   UtxoTransaction,
-  EpochTally,
-  LikeReward,
 } from '@dagsocial/types';
 import type { BlockJournal, BoxMutation } from '../../src/store/journal.js';
 import type { AnyBox } from '@dagsocial/types';
@@ -44,12 +39,10 @@ import type { DecayJournalEntry } from '../../src/services/decay.js';
 import type Database from 'better-sqlite3';
 import type { TestIdentity } from '../helpers.js';
 import {
-  fixtureProvenance,
   seedProvenance,
   signTransaction,
   makeTestIdentity,
   makePost,
-  makeLikeBox,
   makeKarmaBox,
   makeLikeTx,
   changeBoxOf,
@@ -61,7 +54,7 @@ import {
 } from '../helpers.js';
 
 // ---------------------------------------------------------------------------
-// Test config (small epoch for boundary testing)
+// Test config
 // ---------------------------------------------------------------------------
 
 const testConfig = {
@@ -74,7 +67,6 @@ const testConfig = {
   orderingBlockIntervalMs: 60000,
   orderingBlockMinSubBlocks: 1,
   maxSubBlocksPerBlock: 1000,
-  epochBlocks: 2, // Trigger epoch every 2 blocks for easy testing
   miningMode: 'internal' as const,
   orderingBlockPowTargetBits: 12,
   creditTreasuryPct: 10,
@@ -156,17 +148,6 @@ async function importUtxo() {
     getBox: (boxId: string) => unknown;
     consumeBox: (boxId: string, consumedAtBlock: number) => void;
     getUnprocessedLockedLikeBoxes: () => LikeBox[];
-  };
-}
-
-async function importLikes() {
-  return (await import('../../src/store/likes.js')) as {
-    insertLike: (targetPostId: string, likerId: Uint8Array) => string;
-    getUnprocessedFreeLikes: () => Array<{
-      id: string;
-      targetPostId: string;
-      likerId: Uint8Array;
-    }>;
   };
 }
 
@@ -306,148 +287,6 @@ describe('block-apply journal recording', () => {
     const saved = journal.getBlockJournal(1);
     expect(saved).not.toBeNull();
     expect(saved!.confirmedSubBlockIds).toContain(postId);
-  });
-
-  // -----------------------------------------------------------------------
-  // 3. Epoch like tally records the spent like boxes as removes (H-5)
-  // -----------------------------------------------------------------------
-
-  it('epoch like tally records tallied like boxes as removes (H-5)', async () => {
-    const db = await importDb();
-    db.initDb(':memory:');
-
-    const author = makeTestIdentity();
-    const ids = await importIdentities();
-
-    const { encodePost } = await import('@dagsocial/types');
-    const utxo = await importUtxo();
-
-    // Create a post
-    const post = makePost(author.userId, 'like journal test');
-    const postId = computePostId(post);
-    const posts = await importPosts();
-    posts.insertPost(post, encodePost(post));
-
-    // Enough locked likes that the epoch tally spends them
-    // (talliedLockedLikeBoxIds requires ≥ 2×LIKE_THRESHOLD likes on the post)
-    const likeBoxes: LikeBox[] = [];
-    for (let i = 0; i < 2 * LIKE_THRESHOLD; i++) {
-      const liker = makeTestIdentity();
-      utxo.insertBox(makeKarmaBox(10n, liker.publicKey, 0));
-      const likeBox = makeLikeBox(liker.userId, postId, 0);
-      utxo.insertBox(likeBox);
-      likeBoxes.push(likeBox);
-    }
-
-    const mempool = await importMempoolFresh();
-    const bc = await importBlockCreator();
-    bc.startBlockCreator(testConfig); // epochBlocks = 2
-
-    // Fast-forward 2 blocks; the block after height 2 carries the tally
-    for (let i = 0; i < 2; i++) {
-      const dp = makePost(author.userId, `ff ${i}`);
-      const dpId = computePostId(dp);
-      posts.insertPost(dp, encodePost(dp));
-      mempool.insertSubBlock(dpId, 1000);
-      bc.createOrderingBlock();
-    }
-    const dp = makePost(author.userId, 'epoch trigger');
-    const dpId = computePostId(dp);
-    posts.insertPost(dp, encodePost(dp));
-    mempool.insertSubBlock(dpId, 1000);
-    bc.createOrderingBlock();
-
-    // The old journal copied the block header's likeBoxIds list; the actual
-    // spend performed by markLikeBoxesTallied was invisible to the AVL feed
-    // (H-5). The record-once journal carries each tallied box as a remove.
-    const journal = await importJournalStore();
-    const saved = journal.getBlockJournal(3);
-    expect(saved).not.toBeNull();
-    const removed = removedIds(saved!);
-    for (const likeBox of likeBoxes) {
-      expect(removed).toContain(likeBox.id);
-      expect(utxo.getBox(likeBox.id!)).toBeNull(); // really spent in the DB
-    }
-  });
-
-  // -----------------------------------------------------------------------
-  // 4. Epoch tally mint journals the merge-consumed originals + merged box
-  // -----------------------------------------------------------------------
-
-  it('epoch tally mint journals the merge-consumed karma originals', async () => {
-    const db = await importDb();
-    db.initDb(':memory:');
-
-    const author = makeTestIdentity();
-    const ids = await importIdentities();
-
-    const { encodePost } = await import('@dagsocial/types');
-    const utxo = await importUtxo();
-
-    // Give author some initial karma — the epoch mint will merge it in
-    const authorStartBox = makeKarmaBox(100n, author.publicKey, 0);
-    utxo.insertBox(authorStartBox);
-
-    // Create target post
-    const post = makePost(author.userId, 'epoch journal test');
-    const postId = computePostId(post);
-    const posts = await importPosts();
-    posts.insertPost(post, encodePost(post));
-
-    // Create 6 locked likes (enough for 1 author reward: floor(6/5)=1)
-    for (let i = 0; i < 6; i++) {
-      const liker = makeTestIdentity();
-      utxo.insertBox(makeKarmaBox(10n, liker.publicKey, 0));
-      const likeBox = makeLikeBox(liker.userId, postId, 0);
-      utxo.insertBox(likeBox);
-    }
-
-    const mempool = await importMempoolFresh();
-    const bc = await importBlockCreator();
-    bc.startBlockCreator(testConfig); // epochBlocks = 2
-
-    // Fast-forward 2 blocks to trigger epoch on block 3
-    for (let i = 0; i < 2; i++) {
-      const dp = makePost(author.userId, `ff ${i}`);
-      const dpId = computePostId(dp);
-      posts.insertPost(dp, encodePost(dp));
-      mempool.insertSubBlock(dpId, 1000);
-      bc.createOrderingBlock();
-    }
-
-    // Epoch block (height 3)
-    const dp = makePost(author.userId, 'epoch trigger');
-    const dpId = computePostId(dp);
-    posts.insertPost(dp, encodePost(dp));
-    mempool.insertSubBlock(dpId, 1000);
-
-    bc.createOrderingBlock();
-
-    // Verify journal at height 3 (epoch block). The mint consumed the
-    // author's pre-existing box and created one merged box — BOTH sides must
-    // be in the journal: the old shape recorded only the new box, so revert
-    // deleted it without un-consuming the originals (value-loss on reorg).
-    const journal = await importJournalStore();
-    const saved = journal.getBlockJournal(3);
-    expect(saved).not.toBeNull();
-
-    expect(removedIds(saved!)).toContain(authorStartBox.id);
-
-    const authorInserts = boxInserts(
-      saved!,
-      (b) =>
-        b.boxType === 'karma' &&
-        Buffer.from((b as KarmaBox).owner).equals(Buffer.from(author.userId)),
-    );
-    expect(authorInserts.length).toBe(1);
-    // Merged value: the 100n original plus the epoch author reward
-    expect((authorInserts[0]!.box as KarmaBox).value).toBeGreaterThan(100n);
-
-    // The merged box is what the store now holds, at the journal's value
-    const held = utxo.getKarmaBox(author.userId);
-    expect(held).not.toBeNull();
-    expect(held!.id).toBe(authorInserts[0]!.boxId);
-    expect(held!.value).toBe((authorInserts[0]!.box as KarmaBox).value);
   });
 
   // -----------------------------------------------------------------------
@@ -1258,158 +1097,6 @@ describe('block-apply embedded tx re-validation', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Epoch tally acceptance across differing row orders (audit C-6)
-// ---------------------------------------------------------------------------
-
-describe('block-apply epoch tally ordering', () => {
-  beforeEach(async () => {
-    vi.resetModules();
-  });
-
-  afterEach(async () => {
-    try {
-      const bc = await importBlockCreator();
-      bc.stopBlockCreator();
-    } catch {
-      // Module might not have been imported
-    }
-    vi.resetModules();
-  });
-
-  /**
-   * The same logical tally as held by a node that received every like in the
-   * opposite order: each map rebuilt in reverse key order, each array
-   * reversed. Nothing about the reward set changes — only the order the rows
-   * came out of that node's database in.
-   */
-  function reverseTallyOrder(tally: EpochTally): EpochTally {
-    const rewards: Record<string, LikeReward> = {};
-    for (const postId of Object.keys(tally.rewards).reverse()) {
-      const reward = tally.rewards[postId]!;
-      const likerRefunds: Record<string, bigint> = {};
-      for (const likerId of Object.keys(reward.likerRefunds).reverse()) {
-        likerRefunds[likerId] = reward.likerRefunds[likerId]!;
-      }
-      rewards[postId] = { ...reward, likerRefunds };
-    }
-    return {
-      ...tally,
-      rewards,
-      talliedLockedLikeBoxIds: [...tally.talliedLockedLikeBoxIds].reverse(),
-      processedFreeLikeIds: [...tally.processedFreeLikeIds].reverse(),
-      consumedPostLockBoxIds: [...tally.consumedPostLockBoxIds].reverse(),
-      newPostLockBoxes: [...tally.newPostLockBoxes].reverse(),
-    };
-  }
-
-  /**
-   * A peer's epoch block: built from the peer's own tally ordering, with its
-   * own Merkle root over that ordering — exactly what arrives over gossip from
-   * an honest second miner whose like rows sit in a different order.
-   */
-  it('accepts a peer epoch block whose tally was assembled in a different order', async () => {
-    const db = await importDb();
-    db.initDb(':memory:');
-
-    const posts = await importPosts();
-    const utxo = await importUtxo();
-    const { encodePost } = await import('@dagsocial/types');
-
-    // Three posts with different like counts, so the tally carries three
-    // reward entries and the busiest one clears the refund threshold
-    // (2 × LIKE_THRESHOLD) and so has a populated likerRefunds map.
-    const author = makeTestIdentity();
-    const likeCounts = [2 * LIKE_THRESHOLD, LIKE_THRESHOLD + 1, 2];
-    for (let i = 0; i < likeCounts.length; i++) {
-      const post = makePost(author.userId, `epoch ordering post ${i}`);
-      const postId = computePostId(post);
-      posts.insertPost(post, encodePost(post));
-      for (let n = 0; n < likeCounts[i]!; n++) {
-        utxo.insertBox(makeLikeBox(makeTestIdentity().userId, postId, 1));
-      }
-    }
-
-    // Two ordinary blocks; with epochBlocks = 2 the next one carries the tally.
-    const bc = await importBlockCreator();
-    bc.startBlockCreator(testConfig);
-    bc.createOrderingBlock();
-    bc.createOrderingBlock();
-
-    const ordering = await importOrdering();
-    expect(ordering.getCurrentHeight()).toBe(2);
-
-    const { computeEpochTally, computeSubBlockRoot, computeUtxoTxRoot, computeBlockReward } =
-      await import('../../src/services/block-creator.js');
-
-    const height = 3;
-    const localTally = computeEpochTally(height);
-    expect(Object.keys(localTally.rewards).length).toBe(3);
-    // Exactly the busiest post cleared the refund threshold. Which key that is
-    // depends on box ids, so assert over the set rather than a position.
-    const withRefunds = Object.values(localTally.rewards).filter(
-      (reward) => Object.keys(reward.likerRefunds).length > 0,
-    );
-    expect(withRefunds.length).toBe(1);
-    expect(Object.keys(withRefunds[0]!.likerRefunds).length).toBe(2 * LIKE_THRESHOLD);
-
-    const peerTally = reverseTallyOrder(localTally);
-
-    // Vacuity guard: under the insertion-order `JSON.stringify` this check used
-    // to use, these two tallies are different strings — so the acceptance below
-    // is not passing for want of a difference between them. (Bigint-safe
-    // replacer: reward amounts don't survive a plain JSON.stringify.)
-    const naiveJson = (v: unknown): string =>
-      JSON.stringify(v, (_k, x) => (typeof x === 'bigint' ? x.toString() : x));
-    expect(naiveJson(peerTally.rewards)).not.toBe(naiveJson(localTally.rewards));
-
-    const subBlockTree = { subBlockRefs: [], subBlockEntries: [], pruneEntries: [] };
-    const miner = makeTestIdentity();
-    const utxoTxTree = {
-      utxoTxIds: [],
-      utxoTxs: [],
-      likeBoxIds: [],
-      coinbaseOutputs: [
-        {
-          owner: miner.userId,
-          value: computeBlockReward(height),
-          lockedUntilBlock: height + CREDIT_MINER_REWARD_DELAY,
-          isTreasury: false,
-        },
-      ],
-      epochTallyResults: peerTally,
-    };
-
-    const { expectedTarget } = await import('../../src/services/difficulty.js');
-    const peerHeader = {
-      protocolVersion: PROTOCOL_VERSION,
-      height,
-      prevBlockHash: blockHash(ordering.getOrderingBlock(2)!.header),
-      subBlockRoot: computeSubBlockRoot(subBlockTree),
-      utxoTxRoot: computeUtxoTxRoot(utxoTxTree),
-      stateRoot: '0000000000000000000000000000000000000000000000000000000000000000',
-      validatorId: miner.userId,
-      powNonce: 0,
-      // Mined at the scheduled target: PoW is not what is under test, but a
-      // block off the difficulty schedule no longer reaches the tally check.
-      powTargetBits: expectedTarget(height),
-      createdAt: Date.now(),
-    } as BlockHeader;
-    peerHeader.powNonce = solveHeaderPow(peerHeader);
-
-    const peerBlock = {
-      header: peerHeader,
-      subBlockTree,
-      utxoTxTree,
-      validatorSignature: signHeader(peerHeader, miner.privateKey),
-    } as unknown as OrderingBlock;
-
-    const blockApply = await importBlockApply();
-    expect(blockApply.applyOrderingBlock(peerBlock)).toBe(true);
-    expect(ordering.getCurrentHeight()).toBe(3);
-  });
-});
-
-// ---------------------------------------------------------------------------
 // Mint provenance at the apply path (Spec G phase C1)
 //
 // These exercise the *wiring* rather than the encoders: which context each
@@ -1473,94 +1160,6 @@ describe('block-apply mint provenance', () => {
     expect(minerBox!.txId).not.toBe(treasuryBox!.txId);
     expect(minerBox!.index).toBe(0);
     expect(treasuryBox!.index).toBe(0);
-  });
-
-  it('author-reward and postlock-unlock legs fire together and do not collide', async () => {
-    const db = await importDb();
-    db.initDb(':memory:');
-
-    const posts = await importPosts();
-    const utxo = await importUtxo();
-    const journalStore = await importJournalStore();
-    const { encodePost, POST_LOCK_UNLOCK_PER_LIKES } = await import('@dagsocial/types');
-
-    // One post carrying both legs at once: enough likes to clear the author
-    // reward threshold, and a PostLockBox with karma left to unlock. This is
-    // the fixture the reason tag exists for — both mints go to the same author,
-    // for the same post, at the same height.
-    const author = makeTestIdentity();
-    const post = makePost(author.userId, 'both legs of the epoch tally');
-    const postId = computePostId(post);
-    posts.insertPost(post, encodePost(post));
-
-    const likeCount = Math.max(LIKE_THRESHOLD, POST_LOCK_UNLOCK_PER_LIKES);
-    for (let n = 0; n < likeCount; n++) {
-      utxo.insertBox(makeLikeBox(makeTestIdentity().userId, postId, 1));
-    }
-
-    const lockBox: PostLockBox = {
-      boxType: 'post_lock',
-      value: 10n,
-      originalValue: 10n,
-      owner: author.userId,
-      targetPostId: postId,
-      guard: 'epoch_tally',
-    };
-    Object.assign(lockBox, fixtureProvenance(lockBox, 1));
-    lockBox.id = computeBoxId(lockBox);
-    utxo.insertBox(lockBox);
-
-    // Two ordinary blocks; with epochBlocks = 2 the third carries the tally.
-    const bc = await importBlockCreator();
-    bc.startBlockCreator(testConfig);
-    bc.createOrderingBlock();
-    bc.createOrderingBlock();
-
-    const { computeEpochTally } = await import('../../src/services/block-creator.js');
-    const height = 3;
-    const tally = computeEpochTally(height);
-    const reward = tally.rewards[postId];
-
-    // Vacuity guard: without BOTH legs populated this test proves nothing about
-    // the discriminant, because only one mint would run.
-    expect(reward).toBeDefined();
-    expect(reward!.authorReward).toBeGreaterThan(0n);
-    expect(reward!.postLockKarmaUnlocked).toBeGreaterThan(0n);
-
-    const blockApply = await importBlockApply();
-    const block = await makeApplicableBlock({ height });
-    (block.utxoTxTree as { epochTallyResults?: EpochTally }).epochTallyResults = tally;
-    // The tally is inside the Merkle root, so the header must be rebuilt over it.
-    const { computeUtxoTxRoot } = await import('../../src/services/block-creator.js');
-    block.header.utxoTxRoot = computeUtxoTxRoot(block.utxoTxTree);
-    block.header.powNonce = solveHeaderPow(block.header);
-    const validator = makeTestIdentity();
-    block.header.validatorId = validator.userId;
-    block.header.powNonce = solveHeaderPow(block.header);
-    (block as { validatorSignature: Uint8Array }).validatorSignature = signHeader(
-      block.header,
-      validator.privateKey,
-    );
-
-    expect(blockApply.applyOrderingBlock(block)).toBe(true);
-
-    // Both mints landed in the same block journal. The second merge-consumes
-    // the first, so only the journal shows both boxes.
-    const journal = journalStore.getBlockJournal(height)!;
-    const authorHex = hex(author.userId);
-    const karmaMints = journal.mutations
-      .filter((m): m is BoxMutation => m.kind === 'box' && m.op === 'insert')
-      .map((m) => m.box as AnyBox)
-      .filter(
-        (b) => b.boxType === 'karma' && hex((b as KarmaBox).owner) === authorHex,
-      );
-
-    expect(karmaMints.length).toBe(2);
-    const txIds = karmaMints.map((b) => b.txId);
-    expect(txIds[0]).toBeDefined();
-    expect(txIds[1]).toBeDefined();
-    // Same author, same post, same height — only the reason tag separates them.
-    expect(new Set(txIds).size).toBe(2);
   });
 
   it('a decay box consumed by a vouch settlement in the same block gets a distinct outpoint', async () => {

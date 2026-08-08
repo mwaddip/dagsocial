@@ -3,10 +3,8 @@ import * as validation from '@dagsocial/validation';
 import { mintKarma } from './karma.js';
 import { mintCredits } from './credits.js';
 import {
-  authorRewardContext,
   coinbaseContext,
   likePayoutContext,
-  likerRefundContext,
   postlockRemainderContext,
   postlockUnlockContext,
   vouchSettleContext,
@@ -24,9 +22,8 @@ import { VOUCH_COOLDOWN_BLOCKS } from '@dagsocial/types';
 import { settlePruneUtxo } from './settle-prune-utxo.js';
 import type { DecayDeps } from './decay.js';
 import { config } from '../config.js';
-import { computeBlockReward, computeSubBlockRoot, computeUtxoTxRoot, clearTemplate, computeEpochTally } from './block-creator.js';
+import { computeBlockReward, computeSubBlockRoot, computeUtxoTxRoot, clearTemplate } from './block-creator.js';
 import { expectedTarget } from './difficulty.js';
-import { canonicalRewardsJson } from './epoch-canonical.js';
 import { DagService } from './dag-service.js';
 import { applyTx, materializeOutput, validateTx } from './utxo-engine.js';
 import { getSystemKeypair } from '../store/system.js';
@@ -43,8 +40,6 @@ import {
   consumeBox,
   confirmPost,
   pruneSubtree,
-  markLikeBoxesTallied,
-  markFreeLikesProcessed,
   getCurrentHeight,
   createOrderingBlock as storeCreateOrderingBlock,
   getOrderingBlock,
@@ -119,8 +114,8 @@ class BlockRejected extends Error {}
  * Apply an ordering block — all of it, or none of it.
  *
  * A block is a single unit of state transition, so every mutation it makes
- * (coinbase mint, sub-block confirmation, prune settlement, epoch tally, UTXO
- * transactions, decay) lives in one SQLite transaction. Any rejection — at any
+ * (coinbase mint, sub-block confirmation, prune settlement, UTXO transactions,
+ * per-block like settlement, decay) lives in one SQLite transaction. Any rejection — at any
  * step — rolls the whole thing back, leaving the node on the state it had
  * before the block arrived. Returns false for a rejected block; `reorg()`
  * nests this inside its own transaction, which SQLite handles as a savepoint.
@@ -310,28 +305,6 @@ function applyBlockBody(block: OrderingBlock, dagService?: DagService): boolean 
       console.warn(
         `Rejected block height=${block.header.height}: coinbase lockedUntilBlock ` +
         `${out.lockedUntilBlock} != expected ${expectedLock}`,
-      );
-      abortBlockJournal();
-      return false;
-    }
-  }
-
-  // 5. Verify epoch tally results (before storing the block)
-  // The Merkle root commits to epochTallyResults, so they can't be
-  // fabricated.  But we must also verify the results are correct for
-  // the current UTXO state — a malicious miner could commit to valid
-  // (Merkle-matching) but incorrect (state-divergent) results.
-  //
-  // Compared canonically: the miner's key order is its own gossip/row order,
-  // and it arrives here through a CBOR round-trip that preserves it, so an
-  // insertion-order compare rejects logically identical tallies (audit C-6).
-  if (block.utxoTxTree.epochTallyResults) {
-    const localTally = computeEpochTally(block.header.height);
-    const blockRewards = canonicalRewardsJson(block.utxoTxTree.epochTallyResults.rewards);
-    const localRewards = canonicalRewardsJson(localTally.rewards);
-    if (blockRewards !== localRewards) {
-      console.warn(
-        `Rejected block height=${block.header.height}: epoch tally mismatch`,
       );
       abortBlockJournal();
       return false;
@@ -798,79 +771,6 @@ function applyMutationPhase(
     } catch (err) {
       console.warn(`Failed to prune DAG subtree for ${entry.rootPostHash}: ${String(err)}`);
       // Non-fatal — DAG content may not be present
-    }
-  }
-
-  // 9. Standalone like boxes are tallied by computeEpochTally at epoch
-  // boundaries.  The computation was verified before block storage (§5);
-  // here we apply the karma mints and the UTXO/bookkeeping side effects.
-
-  // 10. Apply epoch tally results
-  if (block.utxoTxTree.epochTallyResults) {
-    const tally = computeEpochTally(height);
-    const rewards = tally.rewards;
-
-    for (const postId of Object.keys(rewards)) {
-      const reward = rewards[postId];
-      if (!reward) continue;
-
-      // Author reward — the choke point journals the merge-consumed
-      // pre-existing karma boxes and the minted box.
-      if (reward.authorReward > 0n) {
-        const post = getPost(postId);
-        if (post && 'author' in post) {
-          mintKarma(post.author, reward.authorReward, height, authorRewardContext(postId));
-        }
-      }
-
-      // Liker refunds (locked likes that met threshold)
-      for (const likerId of Object.keys(reward.likerRefunds)) {
-        const refund = reward.likerRefunds[likerId];
-        if (refund !== undefined && refund !== 0n) {
-          const likerBytes = new Uint8Array(Buffer.from(likerId, "hex"));
-          mintKarma(likerBytes, refund, height, likerRefundContext(postId, likerBytes));
-        }
-      }
-
-      // Post lock karma unlocked.
-      //
-      // This and the author reward above mint to the **same author, for the
-      // same post, at the same height**. The `reason` tag is the only thing
-      // separating them, which is why the context constructors pair reason with
-      // subject: swapping them here would produce a box-id collision, not an
-      // error.
-      if (reward.postLockKarmaUnlocked && reward.postLockKarmaUnlocked > 0n) {
-        const post = getPost(postId);
-        if (post && 'author' in post) {
-          mintKarma(
-            post.author,
-            reward.postLockKarmaUnlocked,
-            height,
-            postlockUnlockContext(postId),
-          );
-        }
-      }
-    }
-
-    // Apply side effects that were previously only run on the miner's node.
-    // These must run on every node so the UTXO state stays consistent.
-
-    // Mark like boxes as tallied (prevents double-counting in later epochs)
-    if (tally.talliedLockedLikeBoxIds.length > 0) {
-      markLikeBoxesTallied(tally.talliedLockedLikeBoxIds);
-    }
-
-    // Mark free likes as processed
-    if (tally.processedFreeLikeIds.length > 0) {
-      markFreeLikesProcessed(tally.processedFreeLikeIds);
-    }
-
-    // Consume old post lock boxes and insert replacement boxes
-    for (const boxId of tally.consumedPostLockBoxIds) {
-      consumeBox(boxId, height);
-    }
-    for (const newBox of tally.newPostLockBoxes) {
-      insertBox(newBox);
     }
   }
 

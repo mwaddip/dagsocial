@@ -1,6 +1,5 @@
 import {
   CHALLENGE_WINDOW_BLOCKS,
-  EPOCH_BLOCKS,
   CREDIT_TREASURY_PCT,
   KARMA_DECAY_AMOUNT,
   KARMA_MINIMUM,
@@ -34,7 +33,6 @@ export interface Config {
   orderingBlockIntervalMs: number;
   orderingBlockMinSubBlocks: number;
   maxSubBlocksPerBlock: number;
-  epochBlocks: number;
   /** Hard mempool bound — inserts are rejected at the cap, never evicted (audit M-8). */
   maxMempoolEntries: number;
   // Mining
@@ -91,10 +89,6 @@ export function loadConfig(): Readonly<Config> {
     ),
     maxSubBlocksPerBlock: parseInt(
       process.env['MAX_SUB_BLOCKS_PER_BLOCK'] ?? '1000',
-      10,
-    ),
-    epochBlocks: parseInt(
-      process.env['EPOCH_BLOCKS'] ?? String(EPOCH_BLOCKS),
       10,
     ),
     maxMempoolEntries: parseInt(

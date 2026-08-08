@@ -15,7 +15,6 @@ const TEST_KEYS = [
   'ORDERING_BLOCK_MIN_SUB_BLOCKS',
   'MAX_SUB_BLOCKS_PER_BLOCK',
   'MAX_MEMPOOL_ENTRIES',
-  'EPOCH_BLOCKS',
   'NETWORK_TYPE',
   'MINING_SECRET',
   'MINING_MODE',
@@ -58,7 +57,6 @@ describe('config', () => {
       expect(cfg.orderingBlockIntervalMs).toBe(60000);
       expect(cfg.orderingBlockMinSubBlocks).toBe(1);
       expect(cfg.maxSubBlocksPerBlock).toBe(1000);
-      expect(cfg.epochBlocks).toBe(60);
       expect(cfg.maxMempoolEntries).toBe(10000);
       expect(cfg.networkType).toBe('testnet');
       // toEqual, not toBe: vi.resetModules() gives the dynamically imported
@@ -77,7 +75,6 @@ describe('config', () => {
       process.env['ORDERING_BLOCK_INTERVAL_MS'] = '30000';
       process.env['ORDERING_BLOCK_MIN_SUB_BLOCKS'] = '3';
       process.env['MAX_SUB_BLOCKS_PER_BLOCK'] = '500';
-      process.env['EPOCH_BLOCKS'] = '120';
       process.env['MAX_MEMPOOL_ENTRIES'] = '25';
       process.env['NETWORK_TYPE'] = 'mainnet';
       process.env['MINING_SECRET'] = 'sekret';
@@ -91,7 +88,6 @@ describe('config', () => {
       expect(cfg.orderingBlockIntervalMs).toBe(30000);
       expect(cfg.orderingBlockMinSubBlocks).toBe(3);
       expect(cfg.maxSubBlocksPerBlock).toBe(500);
-      expect(cfg.epochBlocks).toBe(120);
       expect(cfg.maxMempoolEntries).toBe(25);
       expect(cfg.networkType).toBe('mainnet');
       expect(cfg.miningSecret).toBe('sekret');

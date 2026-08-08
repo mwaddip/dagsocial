@@ -3,7 +3,6 @@ import Database from 'better-sqlite3';
 import { computeBoxId, computeMintTxId } from '@dagsocial/types';
 import type { AnyBox } from '@dagsocial/types';
 import type { BlockJournal, BoxMutation } from '../../src/store/journal.js';
-import { fixtureProvenance } from '../helpers.js';
 
 /**
  * Spec G phase C1 — the mint producers attach provenance.
@@ -439,54 +438,5 @@ describe('direct mint producers attach provenance (Spec G phase C2)', () => {
         Buffer.from(serializeBox(box)).toString('hex'),
       );
     }
-  });
-
-  it('the epoch remainder PostLockBox carries postlock-remainder provenance', async () => {
-    const { initDb } = await importDbFresh();
-    const { insertBox } = await import('../../src/store/utxo.js');
-    const { insertLike } = await import('../../src/store/likes.js');
-    const { computeBoxId, POST_LOCK_UNLOCK_PER_LIKES } = await import('@dagsocial/types');
-    const { computeEpochTally } = await import('../../src/services/block-creator.js');
-    const { postlockRemainderContext } = await import(
-      '../../src/mint-provenance.js'
-    );
-    initDb(':memory:');
-
-    // value 10 with 1 karma unlockable at POST_LOCK_UNLOCK_PER_LIKES likes
-    // leaves 9 locked — the branch that emits a replacement box.
-    const owner = user(0x61);
-    const lockBox = {
-      boxType: 'post_lock' as const,
-      value: 10n,
-      originalValue: 10n,
-      owner,
-      targetPostId: POST_A,
-      guard: 'epoch_tally' as const,
-      id: '',
-    };
-    Object.assign(lockBox, fixtureProvenance(lockBox, 1));
-    lockBox.id = computeBoxId(lockBox);
-    insertBox(lockBox);
-    for (let n = 0; n < POST_LOCK_UNLOCK_PER_LIKES; n++) {
-      insertLike(POST_A, user(0x70 + n));
-    }
-
-    const tally = computeEpochTally(HEIGHT);
-    expect(tally.newPostLockBoxes.length).toBe(1);
-
-    const remainder = tally.newPostLockBoxes[0]!;
-    expect(remainder.value).toBe(9n);
-    expect(remainder.txId).toBe(
-      computeMintTxId(HEIGHT, 'postlock-remainder', postlockRemainderContext(POST_A).subject),
-    );
-    expect(remainder.index).toBe(0);
-
-    // Provenance last. Byte-identity against `rowToBox` is deliberately NOT
-    // asserted here: `post_lock` has a pre-existing producer-vs-store field
-    // order divergence (`originalValue`/`createdAtBlock` swapped) that phase G
-    // owns (contract 1b). Appending provenance last leaves it untouched rather
-    // than compounding it.
-    const keys = Object.keys(remainder).filter((k) => k !== 'id');
-    expect(keys.slice(-2)).toEqual(['txId', 'index']);
   });
 });

@@ -19,8 +19,6 @@ import {
   computePostId,
   PROTOCOL_VERSION,
   LIKE_COST,
-  LIKE_THRESHOLD,
-  LIKE_MAX_AUTHOR_REWARD,
 } from '@dagsocial/types';
 import { blockHash } from '@dagsocial/validation';
 import type {
@@ -34,7 +32,7 @@ import type {
 import type Database from 'better-sqlite3';
 
 // ---------------------------------------------------------------------------
-// Test config (small epoch for boundary testing)
+// Test config
 // ---------------------------------------------------------------------------
 
 const testConfig = {
@@ -47,7 +45,6 @@ const testConfig = {
   orderingBlockIntervalMs: 60000,
   orderingBlockMinSubBlocks: 1,
   maxSubBlocksPerBlock: 1000,
-  epochBlocks: 2, // Trigger epoch every 2 blocks for easy testing
   // Mining
   miningMode: 'internal' as const,
   orderingBlockPowTargetBits: 12,
@@ -98,14 +95,6 @@ async function importPosts() {
   };
 }
 
-async function importSubblocks() {
-  return (await import('../../src/store/subblocks.js')) as {
-    insertSubBlock: (sb: any) => void;
-    getPendingSubBlocks: (limit: number) => any[];
-    confirmSubBlock: (subBlockId: string, blockHeight: number) => void;
-  };
-}
-
 async function importMempoolFresh() {
   const mod = await import('../../src/store/mempool.js');
   return mod as {
@@ -139,17 +128,6 @@ async function importUtxo() {
     getKarmaBox: (owner: Uint8Array) => KarmaBox | null;
     consumeBox: (boxId: string, consumedAtBlock: number) => void;
     getUnprocessedLockedLikeBoxes: () => LikeBox[];
-  };
-}
-
-async function importLikes() {
-  return (await import('../../src/store/likes.js')) as {
-    insertLike: (targetPostId: string, likerId: Uint8Array) => string;
-    getUnprocessedFreeLikes: () => Array<{
-      id: string;
-      targetPostId: string;
-      likerId: Uint8Array;
-    }>;
   };
 }
 
@@ -214,30 +192,6 @@ function makePost(authorId: Uint8Array, content = 'test post'): Post {
   };
 }
 
-function makeLikeBox(
-  likerId: Uint8Array,
-  targetPostId: string,
-  seed: number,
-): LikeBox {
-  const box: LikeBox = {
-    boxType: 'like',
-    value: 2n,
-    likerId,
-    targetPostId,
-    guard: 'epoch_tally',
-  };
-  Object.assign(box, fixtureProvenance(box, seed));
-  const id = computeBoxId(box);
-  box.id = id;
-  return box;
-}
-
-/** Consensus author-reward formula: min(floor(likes / threshold), cap). */
-function expectedAuthorReward(likeCount: number): bigint {
-  const steps = BigInt(Math.floor(likeCount / LIKE_THRESHOLD));
-  return steps < LIKE_MAX_AUTHOR_REWARD ? steps : LIKE_MAX_AUTHOR_REWARD;
-}
-
 function makeKarmaBox(
   value: bigint,
   owner: Uint8Array,
@@ -257,13 +211,11 @@ function makeKarmaBox(
 }
 
 /**
- * Build a signed, value-conserving like transaction — the shape a real client
- * submits: the liker's karma box is consumed and split into a karma change box
- * and the LikeBox.
- *
- * A fixture that emitted only the LikeBox would burn `karmaBox.value −
- * LIKE_COST` inside a user tx. The node rejects that, so such a tx could never
- * reach a block and the assembly this file exercises would never see it.
+ * A signed, value-conserving UTXO transaction used purely as inclusion
+ * plumbing by the assembly tests below. It still builds the retired LikeBox
+ * split shape (legal while the LikeBox type exists, until T2); the live burn
+ * shape is `helpers.makeLikeTx`. Assembly does not validate transactions, so
+ * any conserving payload exercises the same paths.
  */
 function makeLikeTx(
   liker: TestIdentity,
@@ -453,374 +405,67 @@ describe('block-creator', () => {
   });
 
   // -----------------------------------------------------------------------
-  // 5. Epoch tally runs only at epoch boundaries
+  // 5. Template assembly carries no retired fields (P2-D N3a)
   // -----------------------------------------------------------------------
 
-  it('epoch tally runs only at epoch boundaries (height % epochBlocks === 0)', async () => {
+  it('template assembly emits likeBoxIds: [] and no epochTallyResults', async () => {
     const db = await importDb();
     db.initDb(':memory:');
-
-    const author = makeTestIdentity();
-    const ids = await importIdentities();
-
-    const { encodePost } = await import('@dagsocial/types');
     const posts = await importPosts();
+    const utxo = await importUtxo();
     const mempool = await importMempoolFresh();
-
     const bc = await importBlockCreator();
-    bc.startBlockCreator(testConfig); // epochBlocks = 2
-
-    // --- Block 1 (height 1): currentHeight=0, not epoch ---
-    const post1 = makePost(author.userId, 'block 1');
-    const postId1 = computePostId(post1);
-    posts.insertPost(post1, encodePost(post1));
-    mempool.insertSubBlock(postId1, 1000);
-
-    const block1 = bc.createOrderingBlock();
-    expect(block1).not.toBeNull();
-    expect(block1!.header.height).toBe(1);
-    expect(block1!.utxoTxTree.epochTallyResults).toBeUndefined();
-
-    // --- Block 2 (height 2): currentHeight=1, 1 % 2 = 1, not epoch ---
-    const post2 = makePost(author.userId, 'block 2');
-    const postId2 = computePostId(post2);
-    posts.insertPost(post2, encodePost(post2));
-    mempool.insertSubBlock(postId2, 1000);
-
-    const block2 = bc.createOrderingBlock();
-    expect(block2).not.toBeNull();
-    expect(block2!.header.height).toBe(2);
-    expect(block2!.utxoTxTree.epochTallyResults).toBeUndefined();
-
-    // --- Block 3 (height 3): currentHeight=2, 2 % 2 = 0, IS epoch ---
-    const post3 = makePost(author.userId, 'block 3');
-    const postId3 = computePostId(post3);
-    posts.insertPost(post3, encodePost(post3));
-    mempool.insertSubBlock(postId3, 1000);
-
-    const block3 = bc.createOrderingBlock();
-    expect(block3).not.toBeNull();
-    expect(block3!.header.height).toBe(3);
-    expect(block3!.utxoTxTree.epochTallyResults).toBeDefined();
-    // Empty tally since no likes
-    expect(block3!.utxoTxTree.epochTallyResults!.rewards).toEqual({});
-  });
-
-  // -----------------------------------------------------------------------
-  // 6. Epoch tally processes locked + free likes, computes author reward
-  // -----------------------------------------------------------------------
-
-  it('epoch tally processes locked+free likes and computes author reward', async () => {
-    const db = await importDb();
-    db.initDb(':memory:');
 
     const author = makeTestIdentity();
-    const ids = await importIdentities();
-
-    // Give author some initial karma
-    const { encodePost } = await import('@dagsocial/types');
-    const utxo = await importUtxo();
-    const authorKarmaBox = makeKarmaBox(100n, author.publicKey, 0);
-    utxo.insertBox(authorKarmaBox);
-
-    // Create target post
-    const post = makePost(author.userId, 'epoch test post');
+    const post = makePost(author.userId, 'template shape');
     const postId = computePostId(post);
-    const posts = await importPosts();
-    posts.insertPost(post, encodePost(post));
-
-    // Create 6 locked likes (enough for 1 author reward: floor(6/5)=1)
-    const likers: TestIdentity[] = [];
-    for (let i = 0; i < 6; i++) {
-      const liker = makeTestIdentity();
-      // Give liker karma
-      utxo.insertBox(makeKarmaBox(10n, liker.publicKey, 0));
-      // Create like box
-      const likeBox = makeLikeBox(liker.userId, postId, 0);
-      utxo.insertBox(likeBox);
-      likers.push(liker);
-    }
-
-    // Add one free like
-    const freeLiker = makeTestIdentity();
-    utxo.insertBox(makeKarmaBox(10n, freeLiker.publicKey, 0));
-    const likesStore = await importLikes();
-    likesStore.insertLike(postId, freeLiker.userId);
-
-    // Fast-forward: create 2 blocks so height is 2 (next block triggers epoch)
-    // Block 1
-    const dummyPost1 = makePost(author.userId, 'dummy 1');
-    const d1Id = computePostId(dummyPost1);
-    posts.insertPost(dummyPost1, encodePost(dummyPost1));
-    const mempool = await importMempoolFresh();
-    mempool.insertSubBlock(d1Id, 1000);
-
-    // Block 2
-    const dummyPost2 = makePost(author.userId, 'dummy 2');
-    const d2Id = computePostId(dummyPost2);
-    posts.insertPost(dummyPost2, encodePost(dummyPost2));
-    mempool.insertSubBlock(d2Id, 1000);
-
-    const bc = await importBlockCreator();
-    bc.startBlockCreator(testConfig);
-    bc.createOrderingBlock(); // height 1
-    bc.createOrderingBlock(); // height 2
-
-    // Block 3: epoch should fire (currentHeight=2, newHeight=3)
-    const dummyPost3 = makePost(author.userId, 'dummy 3');
-    const d3Id = computePostId(dummyPost3);
-    posts.insertPost(dummyPost3, encodePost(dummyPost3));
-    mempool.insertSubBlock(d3Id, 1000);
-
-    const block3 = bc.createOrderingBlock();
-    expect(block3).not.toBeNull();
-    expect(block3!.utxoTxTree.epochTallyResults).toBeDefined();
-
-    const rewards = block3!.utxoTxTree.epochTallyResults!.rewards;
-    expect(rewards[postId]).toBeDefined();
-    expect(rewards[postId].likeCount).toBe(7); // 6 locked + 1 free
-    // authorReward = min(floor(7/5), 10) = min(1, 10) = 1
-    expect(rewards[postId].authorReward).toBe(1n);
-
-    // Liker refunds: totalLikes=7, below 2x threshold, likes stay locked — no refunds
-    const refunds = rewards[postId].likerRefunds;
-    for (const liker of likers) {
-      expect(refunds[Buffer.from(liker.userId).toString('hex')]).toBeUndefined(); // not unlocked yet
-    }
-    // Free liker should NOT have a refund entry
-    expect(refunds[Buffer.from(freeLiker.userId).toString('hex')]).toBeUndefined();
-  });
-
-  // -----------------------------------------------------------------------
-  // 7. Liker refund tiers: 0 (<5 likes), 1 (5-9), 2 (>=10)
-  // -----------------------------------------------------------------------
-
-  it('liker refund: only unlocks at 2x threshold (>=10), rolls over below', async () => {
-    const db = await importDb();
-    db.initDb(':memory:');
-
-    const author = makeTestIdentity();
-    const ids = await importIdentities();
-
     const { encodePost } = await import('@dagsocial/types');
-    const utxo = await importUtxo();
-
-    // Give author karma
-    const authorKarmaBox = makeKarmaBox(100n, author.publicKey, 0);
-    utxo.insertBox(authorKarmaBox);
-
-    const posts = await importPosts();
-
-    // --- Post A: 3 locked likes → refund tier 0 (total < 5) ---
-    const postA = makePost(author.userId, 'post A - 3 likes');
-    const postAId = computePostId(postA);
-    posts.insertPost(postA, encodePost(postA));
-    const likersA: TestIdentity[] = [];
-    for (let i = 0; i < 3; i++) {
-      const liker = makeTestIdentity();
-      utxo.insertBox(makeKarmaBox(10n, liker.publicKey, 0));
-      const likeBox = makeLikeBox(liker.userId, postAId, 0);
-      utxo.insertBox(likeBox);
-      likersA.push(liker);
-    }
-
-    // --- Post B: 7 locked likes → refund tier 1 (total >= 5, < 10) ---
-    const postB = makePost(author.userId, 'post B - 7 likes');
-    const postBId = computePostId(postB);
-    posts.insertPost(postB, encodePost(postB));
-    const likersB: TestIdentity[] = [];
-    for (let i = 0; i < 7; i++) {
-      const liker = makeTestIdentity();
-      utxo.insertBox(makeKarmaBox(10n, liker.publicKey, 0));
-      const likeBox = makeLikeBox(liker.userId, postBId, 0);
-      utxo.insertBox(likeBox);
-      likersB.push(liker);
-    }
-
-    // --- Post C: 12 locked likes → refund tier 2 (total >= 10) ---
-    const postC = makePost(author.userId, 'post C - 12 likes');
-    const postCId = computePostId(postC);
-    posts.insertPost(postC, encodePost(postC));
-    const likersC: TestIdentity[] = [];
-    for (let i = 0; i < 12; i++) {
-      const liker = makeTestIdentity();
-      utxo.insertBox(makeKarmaBox(10n, liker.publicKey, 0));
-      const likeBox = makeLikeBox(liker.userId, postCId, 0);
-      utxo.insertBox(likeBox);
-      likersC.push(liker);
-    }
-
-    // Fast-forward 2 blocks to trigger epoch on block 3
-    const mempool = await importMempoolFresh();
-    const bc = await importBlockCreator();
-    bc.startBlockCreator(testConfig);
-
-    for (let i = 0; i < 2; i++) {
-      const dp = makePost(author.userId, `dummy fast-forward ${i}`);
-      const dpId = computePostId(dp);
-      posts.insertPost(dp, encodePost(dp));
-      mempool.insertSubBlock(dpId, 1000);
-      bc.createOrderingBlock();
-    }
-
-    // Now epoch block (height 3)
-    const dp = makePost(author.userId, 'dummy epoch trigger');
-    const dpId = computePostId(dp);
-    posts.insertPost(dp, encodePost(dp));
-    mempool.insertSubBlock(dpId, 1000);
-
-    const epochBlock = bc.createOrderingBlock();
-    expect(epochBlock).not.toBeNull();
-    expect(epochBlock!.utxoTxTree.epochTallyResults).toBeDefined();
-
-    const rewards = epochBlock!.utxoTxTree.epochTallyResults!.rewards;
-
-    // Post A: 3 likes, below threshold — likes stay locked, no refund
-    expect(rewards[postAId]).toBeDefined();
-    expect(rewards[postAId].likeCount).toBe(3);
-    expect(rewards[postAId].authorReward).toBe(0n); // floor(3/5) = 0
-    for (const liker of likersA) {
-      expect(rewards[postAId].likerRefunds[Buffer.from(liker.userId).toString('hex')]).toBeUndefined(); // not unlocked
-    }
-
-    // Post B: 7 likes, below threshold — likes stay locked, no refund
-    expect(rewards[postBId]).toBeDefined();
-    expect(rewards[postBId].likeCount).toBe(7);
-    expect(rewards[postBId].authorReward).toBe(1n); // floor(7/5) = 1
-    for (const liker of likersB) {
-      expect(rewards[postBId].likerRefunds[Buffer.from(liker.userId).toString('hex')]).toBeUndefined(); // not unlocked
-    }
-
-    // Post C: 12 likes, threshold met — all locked likes unlocked, net 0
-    expect(rewards[postCId]).toBeDefined();
-    expect(rewards[postCId].likeCount).toBe(12);
-    expect(rewards[postCId].authorReward).toBe(
-      expectedAuthorReward(12),
-    ); // floor(12/5)=2, capped at 10
-    for (const liker of likersC) {
-      expect(rewards[postCId].likerRefunds[Buffer.from(liker.userId).toString('hex')]).toBe(0n);
-    }
-  });
-
-  // -----------------------------------------------------------------------
-  // 8. Free likes don't generate refunds
-  // -----------------------------------------------------------------------
-
-  it('free likes count toward total but do not generate refund entries', async () => {
-    const db = await importDb();
-    db.initDb(':memory:');
-
-    const author = makeTestIdentity();
-    const ids = await importIdentities();
-
-    const { encodePost } = await import('@dagsocial/types');
-    const utxo = await importUtxo();
-    utxo.insertBox(makeKarmaBox(100n, author.publicKey, 0));
-
-    const post = makePost(author.userId, 'free likes test');
-    const postId = computePostId(post);
-    const posts = await importPosts();
     posts.insertPost(post, encodePost(post));
+    mempool.insertSubBlock(postId, 1000);
 
-    // 12 locked likes — enough to meet 2x threshold (10) on their own
-    const lockedLikers: TestIdentity[] = [];
-    for (let i = 0; i < 12; i++) {
-      const liker = makeTestIdentity();
-      utxo.insertBox(makeKarmaBox(10n, liker.publicKey, 0));
-      const likeBox = makeLikeBox(liker.userId, postId, 0);
-      utxo.insertBox(likeBox);
-      lockedLikers.push(liker);
-    }
+    const karmaBox = makeKarmaBox(100n, author.userId, 0);
+    utxo.insertBox(karmaBox);
+    mempool.insertUtxoTx(makeLikeTx(author, karmaBox, postId), null, 1000);
 
-    // 5 free likes — additional, push total to 17. Free likes never get refunds.
-    const likesStore = await importLikes();
-    for (let i = 0; i < 5; i++) {
-      const freeLiker = makeTestIdentity();
-      utxo.insertBox(makeKarmaBox(10n, freeLiker.publicKey, 0));
-      likesStore.insertLike(postId, freeLiker.userId);
-    }
-
-    // Fast-forward 2 blocks
-    const mempool = await importMempoolFresh();
-    const bc = await importBlockCreator();
-    bc.startBlockCreator(testConfig);
-    for (let i = 0; i < 2; i++) {
-      const dp = makePost(author.userId, `ff ${i}`);
-      const dpId = computePostId(dp);
-      posts.insertPost(dp, encodePost(dp));
-      mempool.insertSubBlock(dpId, 1000);
-      bc.createOrderingBlock();
-    }
-
-    // Epoch block
-    const dp = makePost(author.userId, 'epoch');
-    const dpId = computePostId(dp);
-    posts.insertPost(dp, encodePost(dp));
-    mempool.insertSubBlock(dpId, 1000);
-
-    const epochBlock = bc.createOrderingBlock();
-    const rewards = epochBlock!.utxoTxTree.epochTallyResults!.rewards;
-
-    expect(rewards[postId]).toBeDefined();
-    expect(rewards[postId].likeCount).toBe(17); // 12 locked + 5 free
-    expect(rewards[postId].authorReward).toBe(
-      expectedAuthorReward(17),
-    ); // floor(17/5)=3
-
-    // Only 12 locked likers should appear in refunds — free likers never do
-    const refundKeys = Object.keys(rewards[postId].likerRefunds);
-    expect(refundKeys).toHaveLength(12);
-    // Each locked liker gets full refund at 2x threshold: net 0
-    for (const key of refundKeys) {
-      expect(rewards[postId].likerRefunds[key]).toBe(0n);
-    }
-  });
-
-  // -----------------------------------------------------------------------
-  // 9. Deduplication: like box in both sub-block and standalone skipped
-  // -----------------------------------------------------------------------
-
-  it('deduplicates like boxes appearing in both sub-blocks and standalone pool', async () => {
-    const db = await importDb();
-    db.initDb(':memory:');
-
-    const author = makeTestIdentity();
-    const ids = await importIdentities();
-
-    const { encodePost } = await import('@dagsocial/types');
-    const utxo = await importUtxo();
-    utxo.insertBox(makeKarmaBox(100n, author.publicKey, 0));
-
-    const post = makePost(author.userId, 'dedup test');
-    const postId = computePostId(post);
-    const posts = await importPosts();
-    posts.insertPost(post, encodePost(post));
-
-    // Create 2 like boxes
-    const liker1 = makeTestIdentity();
-    utxo.insertBox(makeKarmaBox(10n, liker1.publicKey, 0));
-    const likeBox1 = makeLikeBox(liker1.userId, postId, 0);
-    utxo.insertBox(likeBox1);
-
-    const liker2 = makeTestIdentity();
-    utxo.insertBox(makeKarmaBox(10n, liker2.publicKey, 0));
-    const likeBox2 = makeLikeBox(liker2.userId, postId, 0);
-    utxo.insertBox(likeBox2);
-
-    // Both are unprocessed in UTXO (standalone pool has both)
-    // likeBox1 should be deduped from standalone pool
-    const bc = await importBlockCreator();
     bc.startBlockCreator(testConfig);
     const block = bc.createOrderingBlock();
 
     expect(block).not.toBeNull();
-    // Standalone likeBoxIds should only contain likeBox2 (likeBox1 deduped by standaloneLikes)
-    // Both are in the standalone UTXO pool and neither is attached to a sub-block here,
-    // so both appear unless there's dedup from sub-block attachments
-    // Actually, there's no sub-block in mempool for this test, so no dedup from sub-blocks
-    expect(block!.utxoTxTree.likeBoxIds).toContain(likeBox1.id);
-    expect(block!.utxoTxTree.likeBoxIds).toContain(likeBox2.id);
-    expect(block!.utxoTxTree.likeBoxIds).toHaveLength(2);
+    // The type fields stay until T2, but the creator only ever writes the
+    // empty constants: nothing fills likeBoxIds, nothing attaches a tally.
+    expect(block!.utxoTxTree.likeBoxIds).toEqual([]);
+    expect(block!.utxoTxTree.epochTallyResults).toBeUndefined();
+    // Strict absence, not an undefined-valued key.
+    expect('epochTallyResults' in block!.utxoTxTree).toBe(false);
+  });
+
+  // -----------------------------------------------------------------------
+  // 6. Former epoch boundaries are ordinary heights (P2-D N3a)
+  // -----------------------------------------------------------------------
+
+  it('a block at a former epoch boundary (height % 60 === 0) carries no tally and applies like any other height', async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+    const bc = await importBlockCreator();
+    const ordering = await importOrdering();
+
+    bc.startBlockCreator(testConfig);
+
+    // Drive the real creator+apply across the retired EPOCH_BLOCKS=60
+    // boundary. Under the retired trigger the tally rode the block after a
+    // currentHeight % 60 === 0 chain tip (height 61), so cover both readings
+    // of "the boundary": 60 and 61.
+    for (let i = 0; i < 61; i++) {
+      expect(bc.createOrderingBlock()).not.toBeNull();
+    }
+    expect(ordering.getCurrentHeight()).toBe(61); // every block applied
+
+    for (const height of [59, 60, 61]) {
+      const stored = ordering.getOrderingBlock(height);
+      expect(stored).not.toBeNull();
+      expect(stored!.utxoTxTree.likeBoxIds).toEqual([]);
+      expect(stored!.utxoTxTree.epochTallyResults).toBeUndefined();
+    }
   });
 
   // -----------------------------------------------------------------------
@@ -889,8 +534,7 @@ describe('block-creator', () => {
     // Insert sub-block ID into mempool
     mempool.insertSubBlock(postId, 1000);
 
-    // Set up: standalone UTXO transaction in mempool (like targeting an
-    // unrelated post, so it won't be attached to any sub-block)
+    // Set up: standalone UTXO transaction in mempool
     const karmaBox = makeKarmaBox(100n, author.userId, 0);
     utxo.insertBox(karmaBox);
     const likeTx = makeLikeTx(author, karmaBox, 'some_post_id_not_matching');
@@ -916,58 +560,6 @@ describe('block-creator', () => {
     }
 
     // Confirmed entries removed from mempool
-    const remaining = mempool.getPendingEntries(100);
-    expect(remaining).toHaveLength(0);
-  });
-
-  // -----------------------------------------------------------------------
-  // 12. standalone likes with matching post get attached to sub-block
-  // -----------------------------------------------------------------------
-
-  it('attaches standalone like UTXO transactions to matching sub-blocks', async () => {
-    const db = await importDb();
-    db.initDb(':memory:');
-    const ids = await importIdentities();
-    const posts = await importPosts();
-    const utxo = await importUtxo();
-    const mempool = await importMempoolFresh();
-    const bc = await importBlockCreator();
-
-    // Set up identity
-    const author = makeTestIdentity();
-
-    // Create and insert a post
-    const post = makePost(author.userId, 'like attachment test');
-    const postId = computePostId(post);
-    const { encodePost, computeTxId } = await import('@dagsocial/types');
-    posts.insertPost(post, encodePost(post));
-
-    // Insert sub-block ID into mempool
-    mempool.insertSubBlock(postId, 1000);
-
-    // Create a like tx that targets THIS post (matching)
-    const karmaBox = makeKarmaBox(100n, author.userId, 0);
-    utxo.insertBox(karmaBox);
-    const matchingLikeTx = makeLikeTx(author, karmaBox, postId);
-    mempool.insertUtxoTx(matchingLikeTx, null, 1000);
-
-    // Create another like tx targeting an unrelated post (standalone → utxoTxIds)
-    const karmaBox2 = makeKarmaBox(50n, author.userId, 0);
-    utxo.insertBox(karmaBox2);
-    const standaloneLikeTx = makeLikeTx(author, karmaBox2, 'unrelated_post');
-    mempool.insertUtxoTx(standaloneLikeTx, null, 1000);
-
-    bc.startBlockCreator(testConfig);
-    const block = bc.createOrderingBlock();
-
-    expect(block).not.toBeNull();
-    // The matching like IS in utxoTxIds (it needs to be applied by the UTXO engine)
-    expect(block!.utxoTxTree.utxoTxIds).toContain(computeTxId(matchingLikeTx));
-    // The standalone like SHOULD be in utxoTxIds
-    expect(block!.utxoTxTree.utxoTxIds).toContain(computeTxId(standaloneLikeTx));
-    // The sub-block now has the attached like box
-    expect(block!.subBlockTree.subBlockRefs).toContain(postId);
-    // Mempool should be empty
     const remaining = mempool.getPendingEntries(100);
     expect(remaining).toHaveLength(0);
   });

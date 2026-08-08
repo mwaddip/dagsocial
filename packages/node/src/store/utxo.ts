@@ -549,12 +549,11 @@ export function getLockedLikeBoxes(targetPostId: string): LikeBox[] {
 }
 
 /**
- * Return all unprocessed (unspent) locked like boxes for epoch tally.
+ * Return all unprocessed (unspent) locked like boxes.
  *
- * Ordered by box id — content-derived, so every node walks these in the same
- * order regardless of the order it received the likes in.  Defence in depth
- * for the epoch tally: the consensus-relevant serialization is canonicalized
- * (`epoch-canonical.ts`), never left to rely on rowid order.
+ * Retired-epoch leftover: its tally caller and that caller's canonical
+ * serializer were deleted in P2-D N3a; this function follows in N4. Ordered
+ * by box id — content-derived, deterministic on every node.
  */
 export function getUnprocessedLockedLikeBoxes(): LikeBox[] {
   const db = getDb();

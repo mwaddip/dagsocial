@@ -1167,13 +1167,13 @@ encoding added to the table above, and an argument at the call site that
 3. Separate sub-blocks from standalone UTXO transactions (`batch_id IS NULL`)
 4. Decode sub-blocks from CBOR
 5. Resolve batch entries — UTXO payloads linked to sub-blocks via `batch_id`
-6. Attach standalone likes to matching sub-blocks by `targetPostId`
-7. Remaining standalone UTXO entries → `utxoTxIds`
+6.–11. *(Retired by P2-D. Standalone-like sidecar attachment (old step 6), like
+    collection, like dedup and the epoch-boundary check are gone — likes are ordinary
+    mempool UTXO transactions, so they flow through steps 7–8 like any other tx; dedup is
+    the like-record's existence, enforced at apply; there is no epoch. Numbering kept so
+    later step references stay stable.)*
+7. Standalone UTXO entries → `utxoTxIds` (likes included — no sidecar diversion)
 8. Batch-linked UTXO entries → `utxoTxIds`
-9.–11. *(Retired by P2-D. Like collection, like dedup and the epoch-boundary check are
-    gone — likes are ordinary mempool UTXO transactions, already pulled by the earlier
-    steps; dedup is the like-record's existence, enforced at apply; there is no epoch.
-    Numbering kept so later step references stay stable.)*
 12. Always produce a block — miners need coinbase rewards even when there
     is no user work.  Empty blocks carry credit emission.
     ⚠ **One exception, and only one (P2-B phase 1c): a body its own mutation

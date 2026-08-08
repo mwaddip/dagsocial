@@ -120,16 +120,6 @@ describe('ordering store', () => {
             isTreasury: false,
           },
         ],
-        epochTallyResults: {
-          rewards: {
-            'post-1': {
-              targetPostId: 'post-1',
-              likeCount: 5,
-              authorReward: 10,
-              likerRefunds: { 'user-a': 2, 'user-b': 1 },
-            },
-          },
-        },
       },
       validatorSignature: new Uint8Array(64).fill(0xcd),
     });
@@ -162,16 +152,6 @@ describe('ordering store', () => {
     expect(result!.utxoTxTree.likeBoxIds).toEqual(['like-id-1', 'like-id-2']);
     expect(result!.utxoTxTree.coinbaseOutputs).toHaveLength(1);
     expect(result!.utxoTxTree.coinbaseOutputs[0]!.value).toBe(100);
-
-    // epochTallyResults
-    expect(result!.utxoTxTree.epochTallyResults).toBeDefined();
-    const rewards = result!.utxoTxTree.epochTallyResults!.rewards;
-    expect(rewards['post-1']!.likeCount).toBe(5);
-    expect(rewards['post-1']!.authorReward).toBe(10);
-    expect(rewards['post-1']!.likerRefunds).toEqual({
-      'user-a': 2,
-      'user-b': 1,
-    });
 
     // getCurrentHeight should reflect the inserted block
     const { getCurrentHeight } = await importOrderingFresh();
