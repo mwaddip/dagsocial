@@ -457,14 +457,20 @@ describe('full-pipeline', () => {
 
     // ---- Setup ----
     const inviter = makeTestIdentity();
-    const invitee = makeTestIdentity();
-
 
     const utxo = await importUtxo();
     const karmaBox = makeKarmaBox(100n, inviter.userId, 0);
     utxo.insertBox(karmaBox);
 
-    // Build invite tx with 3 outputs: karma change + invite + bond
+    // Build invite tx with 3 outputs: karma change + invite + bond.
+    //
+    // This fixture used to carry the exact lying shape the guard-shape pin
+    // rejects: a stray `inviteeId` key on the invite (no such field exists on
+    // InviteBox — the invitee is unknown until commit), plus the unreachable
+    // guard strings 'hash_preimage'/'inviter_signature'-era values instead of
+    // the canonical 'hash_preimage_with_bond'/'bond_dual'. It passed only
+    // while nothing validated output shape, and the boxes it stored disagreed
+    // with every reconstruction of them.
     const changeVal = 100n - INVITE_KARMA_AMOUNT - INVITE_BOND_KARMA;
     const inviteTx: UtxoTransaction = {
       inputs: [karmaBox.id!],
@@ -480,9 +486,8 @@ describe('full-pipeline', () => {
           boxType: 'invite',
           value: INVITE_KARMA_AMOUNT,
           inviterId: inviter.userId,
-          inviteeId: invitee.userId,
           secretHash: new Uint8Array(32),
-          guard: 'hash_preimage',
+          guard: 'hash_preimage_with_bond',
         } as InviteBox,
         {
           boxType: 'bond',
@@ -493,7 +498,7 @@ describe('full-pipeline', () => {
           inviteePublicKey: new Uint8Array(0), // unset until claimed
           probationStartBlock: 0,
           probationEndBlock: 0,
-          guard: 'owner_signature',
+          guard: 'bond_dual',
         } as BondBox,
       ],
       signatures: {},
