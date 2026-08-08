@@ -23,6 +23,7 @@ import {
   getKarmaBox,
   getKarmaBoxes,
   insertBox,
+  insertLikeRecord,
   insertPost,
   insertStump,
   getBox as storeGetBox,
@@ -78,9 +79,9 @@ function createTestPost(authorId: Uint8Array): string {
 }
 
 /**
- * Insert an old-world locked LikeBox directly. `hasLiked` still reads these
- * (the accepted dedup window until N2's like-records land), so the gateway
- * must keep rejecting duplicates against them.
+ * Insert an old-world locked LikeBox directly. Since N4a the gateway dedup
+ * reads `like_records` — the same source apply reads — so a box like this
+ * must NOT block a like. It exists to pin the repoint's direction.
  */
 function insertLockedLikeBox(
   likerId: Uint8Array,
@@ -267,14 +268,30 @@ describe('likes service (P2-D: the like is a burn transaction)', () => {
   // -----------------------------------------------------------------------
   // 4. Dedup
   // -----------------------------------------------------------------------
-  it('castLike fails if already liked (old-world LikeBox in the store)', () => {
+  it('castLike rejects a (liker, post) that already holds a like-record — the N1→N2 window closed (N4a)', () => {
     const karma = createKarmaBox(likerPubKey, 100n, 1);
     const postId = createTestPost(likerId);
 
-    insertLockedLikeBox(likerId, postId, 1);
+    // The state a confirmed like leaves behind since N2b: a like-record,
+    // no box. Until N4a the gateway read old-world boxes (`hasLiked`) and
+    // accepted this re-like; apply would then reject it as invalid.
+    insertLikeRecord(postId, likerId, 3);
 
     const tx = buildBurnLikeTx(karma, postId);
     expect(() => castLike(deps, tx, 5)).toThrow('Already liked');
+  });
+
+  it('an old-world LikeBox no longer blocks the gateway — dedup reads like_records, matching apply', () => {
+    const karma = createKarmaBox(likerPubKey, 100n, 1);
+    const postId = createTestPost(likerId);
+
+    // Box present, record absent. On a v2 schema no such box can exist on a
+    // real chain (the like is a burn; schema version gates old DBs), so the
+    // gateway consulting it would be reading a retired source.
+    insertLockedLikeBox(likerId, postId, 1);
+
+    const tx = buildBurnLikeTx(karma, postId);
+    expect(castLike(deps, tx, 5).castLikeResult).toBe('pending');
   });
 
   it('castLike fails if already liked (pending in mempool)', () => {

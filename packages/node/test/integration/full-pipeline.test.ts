@@ -104,6 +104,23 @@ async function importUtxo() {
   };
 }
 
+/** The read path as server.ts wires it (N4a): counts and likers from like_records. */
+async function importFeedReadPath() {
+  const posts = await import('../../src/store/posts.js');
+  const utxo = await import('../../src/store/utxo.js');
+  const likes = await import('../../src/store/likes.js');
+  const feed = await import('../../src/services/feed-service.js');
+  return {
+    queryPosts: posts.queryPosts,
+    getAncestors: posts.getAncestors,
+    getSubtree: posts.getSubtree,
+    getLikersForPost: utxo.getLikersForPost,
+    getLikeRecordCount: likes.getLikeRecordCount,
+    hasLikeRecord: likes.hasLikeRecord,
+    FeedService: feed.FeedService,
+  };
+}
+
 async function importMempool() {
   return (await import('../../src/store/mempool.js')) as {
     insertUtxoTx: (tx: UtxoTransaction, batchId: string | null, expiresAtHeight: number) => number;
@@ -337,6 +354,22 @@ describe('full-pipeline', () => {
     const newKarma = utxo.getKarmaBox(liker.userId);
     expect(newKarma).not.toBeNull();
     expect(newKarma!.value).toBe(changeVal);
+
+    // ---- Step 4 (N4a): the feed/read path reports the applied like-record ----
+    // Apply wrote the record; the API's likeCount and likers must come from it.
+    const f = await importFeedReadPath();
+    expect(f.hasLikeRecord(postId, liker.userId)).toBe(true);
+    const feed = new f.FeedService({
+      getPost: posts.getPost,
+      queryPosts: f.queryPosts,
+      getLikeRecordCount: f.getLikeRecordCount,
+      getLikersForPost: f.getLikersForPost,
+      getAncestors: f.getAncestors,
+      getSubtree: f.getSubtree,
+    });
+    const postJson = feed.getPost(postId) as { likeCount: number; likers: string[] };
+    expect(postJson.likeCount).toBe(1);
+    expect(postJson.likers).toEqual([likerPubHex]);
   });
 
   // -------------------------------------------------------------------------

@@ -213,7 +213,7 @@ export function createApp(config: Config): express.Express {
       getActiveChallenge: store.getActiveChallenge,
       getKarmaBoxes: store.getKarmaBoxes,
       getCurrentHeight: store.getCurrentHeight,
-      getLikeCount: store.getLikeCount,
+      getLikeRecordCount: store.getLikeRecordCount,
       getLikersForPost: store.getLikersForPost,
       getAncestors: store.getAncestors,
       getSubtree: store.getSubtree,

@@ -20,7 +20,11 @@ async function importAll() {
   const db = await import('../../src/store/db.js');
   const journal = await import('../../src/store/journal.js');
   const likes = await import('../../src/store/likes.js');
-  return { ...db, ...journal, ...likes } as typeof db & typeof journal & typeof likes;
+  const utxo = await import('../../src/store/utxo.js');
+  return { ...db, ...journal, ...likes, ...utxo } as typeof db &
+    typeof journal &
+    typeof likes &
+    typeof utxo;
 }
 
 const LIKER_A = uid('lr-liker-a');
@@ -99,6 +103,22 @@ describe('like-records store (P2-D N2a)', () => {
     s.insertLikeRecord('post-1', LIKER_A, 1);
     expect(() => s.deleteLikeRecordsForPosts([])).not.toThrow();
     expect(s.getLikeRecordCount('post-1')).toBe(1);
+  });
+
+  it('getLikersForPost returns exactly the record-holders as hex ids (N4a repoint)', async () => {
+    const s = await importAll();
+    s.initDb(':memory:');
+
+    s.insertLikeRecord('post-1', LIKER_A, 1);
+    s.insertLikeRecord('post-1', LIKER_B, 2);
+    s.insertLikeRecord('post-2', LIKER_C, 3);
+
+    const hexOf = (u: Uint8Array) => Buffer.from(u).toString('hex');
+    // Rows come back ordered by liker_id bytes; hex encoding preserves that
+    // order, so sorting the expected hexes states the same order.
+    expect(s.getLikersForPost('post-1')).toEqual([hexOf(LIKER_A), hexOf(LIKER_B)].sort());
+    expect(s.getLikersForPost('post-2')).toEqual([hexOf(LIKER_C)]);
+    expect(s.getLikersForPost('post-none')).toEqual([]);
   });
 
   // --- Inverses --------------------------------------------------------------

@@ -498,20 +498,21 @@ export function getBondBoxes(inviterId: Uint8Array): BondBox[] {
 }
 
 /**
- * Return the hex-encoded liker IDs for all unspent LikeBoxes targeting
- * the given post. Used by the feed API to tell clients who has liked.
+ * Return the hex-encoded liker IDs for everyone holding a like-record on
+ * the given post (N4a — reads `like_records`, the source of truth since
+ * per-block settlement). Used by the feed API to tell clients who has liked.
+ * Ordered by liker id so the listing is a function of state, not row order.
  */
 export function getLikersForPost(targetPostId: string): string[] {
   const db = getDb();
   const rows = db
     .prepare(
-      `SELECT DISTINCT json_extract(extra_data, '$.likerId') AS likerId FROM utxo_boxes
-       WHERE box_type = 'like'
-         AND json_extract(extra_data, '$.targetPostId') = ?
-         AND spent_at_block IS NULL`,
+      `SELECT liker_id FROM like_records
+       WHERE target_post_id = ?
+       ORDER BY liker_id`,
     )
-    .all(targetPostId) as { likerId: string }[];
-  return rows.map((r) => r.likerId);
+    .all(targetPostId) as { liker_id: Buffer }[];
+  return rows.map((r) => r.liker_id.toString('hex'));
 }
 
 /**

@@ -10,7 +10,7 @@ import { insertPost, getPost, getPostRaw, queryPosts, getAncestors, getSubtree }
 import { consumeChallenge, getActiveChallenge } from '../../src/store/challenges.js';
 import { getCurrentHeight } from '../../src/store/ordering.js';
 import { getKarmaBox, getKarmaBoxes, insertBox, getBox as storeGetBox } from '../../src/store/utxo.js';
-import { getLikeCount } from '../../src/store/likes.js';
+import { getLikeRecordCount } from '../../src/store/likes.js';
 import { getLikersForPost } from '../../src/store/utxo.js';
 import { metaPut, metaGet } from '../../src/store/meta.js';
 import { insertSubBlock as insertMempoolSubBlock, insertUtxoTx, getPendingEntries } from '../../src/store/mempool.js';
@@ -54,7 +54,7 @@ async function request(
       getActiveChallenge,
       getKarmaBoxes,
       getKarmaBox,
-      getLikeCount,
+      getLikeRecordCount,
       getLikersForPost,
       getAncestors,
       getSubtree,

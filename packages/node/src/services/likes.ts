@@ -2,7 +2,7 @@ import { computeTxId, MEMPOOL_EXPIRY_BLOCKS } from '@dagsocial/types';
 import type { UtxoTransaction } from '@dagsocial/types';
 import {
   getPost,
-  hasLiked,
+  hasLikeRecord,
   hasPendingLike,
   insertUtxoTx,
 } from '../store/index.js';
@@ -30,9 +30,10 @@ const LIKE_TARGET_RE = /^[0-9a-f]{64}$/;
  * application. The liker is the karma inputs' owner — no separate liker field
  * exists anywhere.
  *
- * Known window (until N2's like-records land): dedup against *confirmed*
- * new-style likes has a gap — `hasPendingLike` covers the mempool and
- * `hasLiked` covers old-world boxes only.
+ * Dedup matches apply since N4a: `hasLikeRecord` reads the same
+ * like-record the consensus dedup checks at block application, and
+ * `hasPendingLike` covers the mempool. A re-like of an already-recorded
+ * `(liker, post)` is rejected here, not just at apply.
  *
  * @returns `{ castLikeResult: 'pending', txId, expiresAtHeight, tx }`
  */
@@ -74,7 +75,7 @@ export function castLike(
     );
   }
   const likerHex = signerHexes[0]!;
-  if (hasLiked(likeTarget, Buffer.from(likerHex, 'hex'))) {
+  if (hasLikeRecord(likeTarget, Buffer.from(likerHex, 'hex'))) {
     throw new ClientError('Already liked this post');
   }
   if (hasPendingLike(likeTarget, likerHex)) {
