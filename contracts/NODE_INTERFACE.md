@@ -108,9 +108,40 @@ Challenge is upserted — requesting a new challenge replaces any existing one
 | Method | Path | Request | Response | Errors |
 |--------|------|---------|----------|--------|
 | `POST` | `/posts` | Post fields (hex) + `karmaLockTx` (JSON-serialized UtxoTransaction) | `{ postId, status: "pending", expiresAtHeight, txId }` (200) | 400 on validation failure |
-| `GET` | `/posts/:id` | — | Post object (`id`, `status`, `likeCount`, `likers`) or Stump object | 404 |
-| `GET` | `/posts/:id/thread` | — | `{ post, ancestors, descendants }` — full thread context | 404 |
-| `GET` | `/posts` | `?author=hex&limit=50&offset=0` | Post[] (`id`, `status`, `likeCount`, `likers`, live only, no stumps) | — |
+| `GET` | `/posts/:id` | — | `PostJson` (`id`, `status`, `likeCount`, `likers`) or `StumpJson` (below) | 404 |
+| `GET` | `/posts/:id/thread` | — | `{ post, ancestors, descendants }` — full thread context; `post` is `PostJson` or `StumpJson` | 404 |
+| `GET` | `/posts` | `?author=hex&limit=50&offset=0` | PostJson[] (`id`, `status`, `likeCount`, `likers`, live only, no stumps) | — |
+
+**Stump JSON shape (decided 2026-08-08).** A pruned root stays a 200 on
+`GET /posts/:id` — a stump is real, renderable tombstone data, not an absence.
+The response is a distinct `StumpJson`, discriminated by an explicit `kind`
+field rather than by which keys happen to be missing:
+
+```
+StumpJson = {
+  kind: 'stump',
+  id: rootPostHash,          // the pruned root's post id (64-hex)
+  author: hex(authorId),     // 32-byte Ed25519 key as hex — PostJson.author's convention
+  replyCount: number,
+  upvoteCount: number,
+  trigger: 'author' | 'storage_prune',
+  protocolVersion: number,
+  compactedAtBlockHeight: number
+}
+```
+
+`PostJson` carries no `kind` field; clients discriminate on its presence.
+`GET /posts/:id/thread` on a stump returns
+`{ post: StumpJson, ancestors: [], descendants: [] }`. The feed listing
+(`GET /posts`) remains live-posts-only — no stumps, unchanged.
+
+> ⚠ **AHEAD OF CODE — rides the tx-envelope bundle.** Today the raw `Stump`
+> object is returned as-is: `res.json` serializes `authorId` (a `Uint8Array`)
+> index-keyed (`{"0":…,"1":…}`), and `getThread` casts the raw stump to
+> `PostJson`. `FeedServiceDeps.getPost` is typed `unknown | null` while the
+> store's `getPost` is `Post | Stump | null` — the bundle types the dep to the
+> store's signature so the stump arm is compiler-checked (the NX
+> compiler-as-mutation-detector pattern), and adds a `stumpToJson`.
 
 **Post submission flow (mempool-based):**
 
@@ -256,6 +287,29 @@ cooldown check (no re-vouch of the same target during its cooldown) is
 mempool-side mirror of the apply-time gate, not the only enforcement (see
 "Vouch transition rules"). The single-active-vouch and pending-vouch checks
 above remain service-layer policy.
+
+> ⚠ **NOT IMPLEMENTED (recorded 2026-08-08) — the demo UI's vouch controls do
+> not construct transactions.** Both mutating routes require a client-signed
+> `tx` (P2-B phase 2), but the UI's vouch button still POSTs
+> `{userId, targetId}` and the unvouch button DELETEs with `{userId}` — both
+> die at the routes' `tx required` 400 before `jsonToTx` runs. The UI was
+> never migrated when vouches became transactions; it has `signTxId` builders
+> for karma-lock, like, transfer, and invite commit/reveal, but none for
+> vouch/unvouch. Invisible to the suite: vouch coverage is service-level only
+> (raw `Uint8Array` objects) — the JSON edge has zero route tests. **Restoring
+> the UI flow is its own recorded follow-up phase (user decision 2026-08-08);
+> the tx-envelope bundle restores the JSON edge underneath it and stops
+> there.**
+
+**The JSON edge (rides the tx-envelope bundle):** `jsonToTx`'s
+`BINARY_BOX_FIELDS` lacks `voucherId`/`targetId`, so even a correctly built
+vouch-cast tx arrives with those two fields as hex *strings* and dies at the
+step-4 schema (`bytes32`) — the cast is inexpressible over HTTP JSON. The
+bundle adds both entries (sender+receiver: the UI's `canonicalBoxBytes`
+mirror already lists them) plus route tests through the JSON edge for cast
+and unvouch. `GET /vouches?voucher=X` gains a `boxId` per entry — the future
+unvouch builder must name the VouchBox it spends, and no read surface exposes
+box ids today.
 
 **Route error policy (L-12):** services signal intentional, client-safe
 rejections with a typed client-error class; route handlers return its message
@@ -691,22 +745,102 @@ tree collapse into clean rejections:
    (a string `owner` becomes a char-array becomes zero-bytes;
    `-0` becomes `0`), breaking `computeBoxId(rowToBox(row)) === row.id`.
 
-> ⚠ **NOT IMPLEMENTED — the tx envelope has no structural gate.** The
-> totality claim above is scoped to `tx.outputs`. A decoded CBOR tx whose
-> *envelope* is malformed still throws: `inputs: null` dies at step 1
-> (`tx.inputs.length`), a missing `signatures` map dies in `checkGuards`
-> (`tx.signatures[hexKey]`), and `preimages`/`likeTarget` carry no type gate.
-> HTTP ingress is shielded (`jsonToTx` constructs the envelope); gossip and
-> block-embedded CBOR are not. An envelope-shape gate (inputs: array of
-> strings; outputs: array; signatures: record of 64-byte values; likeTarget:
-> string or absent) is a queued follow-up unit — deliberately not part of the
-> field-type pin.
-
 **Scheduled follow-up (P2-C bundle):** `guard` leaves the consensus bytes
 entirely — a redundant field has no place in an id preimage. That is a format
 break (every box id moves), so it rides the bundle; when it lands, the guard
 half of this check retires and the key-set half keeps the schema closed.
 
+### Transaction envelope shape (`checkTxEnvelope`)
+
+> ⚠ **AHEAD OF CODE — contracted for the tx-envelope bundle; the gate does not
+> exist yet.** Until it lands, the totality claim above is scoped to
+> `tx.outputs`; the envelope itself still throws, re-derived 2026-08-08:
+> `inputs: null` at step 1 (`tx.inputs.length`); a missing/`null` `signatures`
+> map in `checkGuards` (`tx.signatures[hexKey]`); `outputs: null` inside
+> `checkOutputShape` itself (`.length`), while a non-array `outputs` *object*
+> slips past it to conservation's `.reduce`; `likeTarget: null` passes
+> conservation's `!== undefined` presence test and then throws at
+> `h.update(null)` inside `computeTxId` — which `checkGuards` calls on its
+> FIRST line, so the whole envelope reaches the hasher at step 6; non-`Uint8Array`
+> `preimages` values throw there the same way. And `tx.protocolVersion` is not
+> validated anywhere — only the block header's is — so a tx with
+> `protocolVersion: "x"` validates, pools, and applies end-to-end with the
+> string `String()`-coerced into its id preimage.
+
+`checkTxEnvelope(tx: unknown): UtxoResult` — **exported** from the engine.
+**Total**: returns `{valid: false}` and never throws for any decoded-CBOR
+value (error strings quote input via the total `describeValue`, never bare
+`String(v)`). The envelope's key set is **closed** — an unknown key rejects.
+`computeTxId` hashes only the known fields, so an extra envelope key would
+otherwise be free malleability: two distinct CBOR byte strings carrying the
+same txId.
+
+The checks:
+
+1. `tx` is a plain non-null, non-array object.
+2. **Closed key set**: `inputs`, `outputs`, `signatures`, `protocolVersion`,
+   optionally `preimages` and `likeTarget`. Any other key rejects. A present
+   key with value `undefined` rejects (mirrors the output schema's
+   present-undefined rule — CBOR encodes `undefined`, and `computeTxId`'s
+   presence test is `!== undefined`, so a present-`undefined` `likeTarget`
+   would hash as absent; the gate refuses the ambiguity).
+3. `inputs`: an array; every entry a 64-char lowercase-hex string (the closed
+   live set — `computeBoxId` emits nothing else). Emptiness remains step 1's
+   rule ("at least one input"), not the gate's.
+4. `outputs`: an array. Entries are NOT typed here — that is step 4's closed
+   per-boxType schema. The gate only guarantees the iteration/reduce sites
+   are total.
+5. `signatures`: a plain object; every key a 64-char lowercase-hex string
+   (an Ed25519 public key), every value a `Uint8Array` of length 64. An
+   empty map is legal — the uncommitted-bond cancel path is guard-satisfied
+   by preimage alone. Extra well-formed keys are shape-legal (guards only
+   look up, nothing iterates; the like path's exactly-one-signature rule is
+   `castLike`/gate-metadata policy, unchanged).
+6. `preimages`: absent, or a plain **non-empty** object with 64-char
+   lowercase-hex keys and `Uint8Array` values. Present-but-empty rejects:
+   `computeTxId` guards on truthiness then iterates, so `{}` contributes
+   nothing to the hash — `preimages: {}` and absence would be two CBOR
+   encodings of one txId (the malleability rule 2 exists to kill), and
+   `jsonToTx` already normalizes `{}` to absent on the HTTP edge. No length
+   bound on values — the bytes are already in memory post-decode, and secret
+   length was never a consensus rule.
+7. `protocolVersion`: an integer strictly equal to `PROTOCOL_VERSION`
+   (decided 2026-08-08). Same strict-equality posture as posts and block
+   headers — no version-keyed dispatch exists (repo-root warning), and this
+   gate does not pretend otherwise. Rider: `jsonToTx`'s `?? 1` default
+   becomes `?? PROTOCOL_VERSION`, so the HTTP edge cannot mint
+   stale-version txs after a future bump.
+8. `likeTarget`: absent, or a 64-char lowercase-hex string.
+
+**Call sites (all of them, or the guarantee is path-dependent):**
+
+- `validateTx` **step 0** — ahead of every other read of `tx`.
+- The block funnel, immediately after `decodeTx` (`block-apply.ts`) — the
+  funnel computes `computeTxId(tx)` for its id-equality check BEFORE
+  `validateTx` runs, and only `decodeTx` sits inside its local try today: a
+  malformed envelope currently rejects the WHOLE block via the outer totality
+  catch (misleading "unexpected failure" log). With the gate the tx is
+  **skipped** (`continue`), matching its siblings in the same loop — decode
+  failure and id mismatch both skip the tx and apply the block without it,
+  deterministically on every node. (Whole-block rejection was the
+  throw-path's accident, not a decided rule; skip is the loop's decided
+  idiom. Honest producers cannot embed one — their pool never admits it.)
+- HTTP keeps `jsonToTx`'s friendlier per-field `ClientError` 400s; the gate
+  backstops the two fields that today pass through on bare type assertions
+  (`inputs`, `protocolVersion`) — the field-type pin's "HTTP ingress is
+  shielded" claim was overstated.
+
+Gossip needs no separate call: its intake reaches `validateTx`. (Today a
+malformed gossiped tx throws into `gossip.ts`'s topic-dispatch catch and is
+silently swallowed under a comment attributing it to decode failure; with the
+gate it becomes a logged rejection like any other.) `fork-resolution`'s
+mempool reinsert decodes CBOR the node itself produced from once-valid txs —
+outside the gate's call list, deliberately.
+
+**Consensus scope:** a validation tightening in the same class as the
+guard-shape and field-type pins — honest bytes unmoved; txs that previously
+applied while carrying envelope garbage (junk `protocolVersion`, stray keys)
+become rejections. Covered by the standing fresh-chain gate.
 
 ### revalidateTxInContext
 

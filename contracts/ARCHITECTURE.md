@@ -1511,7 +1511,7 @@ is not subject to the subpath restriction the other four get from `exports`.
 `resolve.alias` maps each workspace package name to `packages/<pkg>/src/index.ts`, declared once at
 the repo root and merged into every package's vitest config.
 
-Four rules govern it:
+Five rules govern it:
 
 1. **Uniform across all five packages.** Aliasing some and not others puts two copies of the same
    module in one process — one transpiled from `src`, one bundled inside `dist`. `instanceof` fails
@@ -1528,6 +1528,20 @@ Four rules govern it:
    stays, **gated on the resolved exclude list**: it skips while `'test/e2e/**'` sits in
    `config.exclude`, and re-arms by itself when the post-P2-D rewrite removes that exclusion. The
    gate fails safe — an exclude string it does not recognise builds rather than skips.
+5. **Test trees are typechecked.** ⚠ **AHEAD OF CODE — rides the tx-envelope bundle.** Each package
+   carries a `tsconfig.test.json` (`include: ["src", "test"]`) wired into its `typecheck` script, so
+   `pnpm -r typecheck` covers what the suites actually execute — an unchecked test tree is exactly
+   where a new *required* field (e.g. `UtxoDeps.networkType`) hides as a runtime surprise, and where
+   mocks of deleted fields rot silently (`headers.test.ts` mocked `SubBlockTree.stumpIds` units after
+   it died). Three constraints, all measured 2026-08-08: the config extends `tsconfig.base.json`
+   **directly**, not the package `tsconfig.json` — `extends` cannot *unset* the inherited
+   `rootDir: "src"`, and the cross-package `paths` files below then violate it (TS6059); it declares
+   `paths` mapping `@dagsocial/*` to `../<pkg>/src/index.ts`, mirroring the vitest alias above —
+   without it `tsc` follows `exports` to `dist` types and re-opens the stale-`dist` class this
+   section exists to kill; and node's parked `test/e2e/**` stays excluded until its post-P2-D
+   rewrite. Baseline debt at decision time: **471 errors** (types 18 · wire 1 · validation 6 ·
+   net 23 · node 423), zero in any `src`; no test file uses bare vitest globals, so no
+   `types: ["vitest/globals"]` entry is needed.
 
 **Cost, measured 2026-08-07.** Node's suite went **11.7 s → 25.1 s**: transforming three sibling
 packages' `src` per file costs more than the `tsup` build it replaced. This is a known, accepted
