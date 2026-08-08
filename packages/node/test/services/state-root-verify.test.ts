@@ -19,7 +19,7 @@ import {
 
 type DbModule = {
   initDb: (path: string) => void;
-  getDb: () => Database;
+  getDb: () => Database.Database;
   closeDb: () => void;
 };
 
@@ -56,7 +56,7 @@ async function importJournalStore() {
   };
 }
 
-function dumpBoxes(db: Database) {
+function dumpBoxes(db: Database.Database) {
   return db.prepare('SELECT * FROM utxo_boxes ORDER BY id').all();
 }
 

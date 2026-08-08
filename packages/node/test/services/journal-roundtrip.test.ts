@@ -83,7 +83,7 @@ const plainConfig = {
 
 type DbModule = {
   initDb: (path: string) => void;
-  getDb: () => Database;
+  getDb: () => Database.Database;
   closeDb: () => void;
 };
 
@@ -174,7 +174,7 @@ async function importOrdering() {
 // ---------------------------------------------------------------------------
 
 /** utxo_boxes + every side table a mutation class touches, in stable order. */
-function dumpState(db: Database) {
+function dumpState(db: Database.Database) {
   return {
     boxes: db.prepare('SELECT * FROM utxo_boxes ORDER BY id').all(),
     vouches: db
@@ -197,7 +197,7 @@ function dumpState(db: Database) {
 }
 
 /** Persisted journal rows — the speculative state-root run must add none. */
-function journalHeights(db: Database): number[] {
+function journalHeights(db: Database.Database): number[] {
   return (
     db.prepare('SELECT block_height FROM block_journal ORDER BY block_height').all() as Array<{
       block_height: number;

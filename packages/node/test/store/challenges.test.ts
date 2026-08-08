@@ -23,7 +23,7 @@ async function importDbFresh() {
   const mod = await import('../../src/store/db.js');
   return mod as {
     initDb: (path: string) => void;
-    getDb: () => Database;
+    getDb: () => Database.Database;
     closeDb: () => void;
   };
 }

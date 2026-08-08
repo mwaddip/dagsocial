@@ -25,7 +25,7 @@ async function importDb() {
   const mod = await import('../../src/store/db.js');
   return mod as {
     initDb: (path: string) => void;
-    getDb: () => Database;
+    getDb: () => Database.Database;
     closeDb: () => void;
   };
 }
@@ -162,7 +162,7 @@ function makeKarmaBox(
 const AUTHOR_HEX = 'ab'.repeat(32);
 
 /** Check if a box ID is spent in the utxo_boxes table. */
-function boxIsSpent(db: Database, boxId: string): boolean {
+function boxIsSpent(db: Database.Database, boxId: string): boolean {
   const row = db
     .prepare('SELECT spent_at_block FROM utxo_boxes WHERE id = ?')
     .get(boxId) as { spent_at_block: number | null } | undefined;
@@ -506,7 +506,7 @@ function expectedSubject(rootPostHash: string, key: Uint8Array): Uint8Array {
 }
 
 /** Every karma row the settlement left behind, oldest insert first. */
-function karmaRows(db: Database): Array<{
+function karmaRows(db: Database.Database): Array<{
   tx_id: string | null;
   output_index: number | null;
   value: number;
