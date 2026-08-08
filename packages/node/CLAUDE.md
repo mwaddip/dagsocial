@@ -22,7 +22,7 @@ Node.js ≥ 22.
 
 ## This package (`@dagsocial/node`)
 The full node: Express HTTP API, PoW verifier, SQLite store, UTXO engine, block creator + application,
-epoch tally, decay, invites/vouch, faucet, prune settlement, AVL+ state, and the demo UI
+per-block like settlement, decay, invites/vouch, faucet, prune settlement, AVL+ state, and the demo UI
 (`public/index.html`).
 
 - **Owns:** `src/server.ts`, `src/routes/*`, `src/services/*`, `src/store/*`, `src/state/*` (AVL+),
@@ -42,7 +42,9 @@ epoch tally, decay, invites/vouch, faucet, prune settlement, AVL+ state, and the
 - **Report back** to the main session via kitty `send-text` when a phase/task is complete.
 
 ## Node-relevant invariants (full set in ARCHITECTURE.md)
-- **Value conservation** — user txs conserve value; karma/credits are minted or burned only in explicit
+- **Value conservation** — user txs conserve value, with exactly one carve-out: the like
+  transaction burns `LIKE_KARMA_COST` (`likeTarget` present ⟺ that exact deficit — the engine's
+  biconditional, P2-D). All other karma/credit mints and burns happen only in explicit
   block-application paths, never inside a user tx. Enforced since P2-B phase 3: `validateTx` checks
   per-type face-value conservation, block application re-validates every embedded tx, and the last
   direct-mutation HTTP path (`sendCredits`) is gone — every user-value mutation rides mempool → block.

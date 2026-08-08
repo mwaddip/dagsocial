@@ -143,10 +143,6 @@ and its karma lock are applied when an ordering block includes the batch.
 
 ### Likes
 
-> Status: **CONTRACT AHEAD OF CODE — P2-D in flight.** Normative target
-> (`ARCHITECTURE §Likes`); the code runs the retired locked/free/unlike system until
-> P2-D's node phases land. P2-D's final phase deletes this marker.
-
 | Method | Path | Request | Response | Errors |
 |--------|------|---------|----------|--------|
 | `POST` | `/likes` | `{ tx: UtxoTransaction }` — client-signed like tx (`likeTarget` set) | `{ status: "pending", txId, expiresAtHeight }` | 400 if `likeTarget` missing/malformed, post unknown or pruned, insufficient karma, already liked, or tx invalid |
@@ -1332,10 +1328,7 @@ duration-ratio adjustment was removed because it made the target a function of
 local wall time (audit M-2). Normative spec: `MINING_INTERFACE.md`
 ("Difficulty Schedule").
 
-### Per-block like settlement (P2-D — replaces the epoch tally)
-
-> Status: **CONTRACT AHEAD OF CODE — P2-D in flight.** The code runs the retired epoch
-> tally until P2-D's node phases land; the final phase deletes this marker.
+### Per-block like settlement (P2-D — replaced the epoch tally)
 
 Runs at the end of **every** block's mutation phase. Entirely **derived** — nothing rides
 in the block (compare the retired `EpochTallyResults`, which had to be carried and
@@ -2248,7 +2241,7 @@ the handler.
 | `invites.ts` | Invite lifecycle (create, commit, claim, cancel) | Bond box internals |
 | `faucet-service.ts` | Faucet allocation from system keypair | Credit system design |
 | `block-creator.ts` | Block creation, mining, template assembly | Post validation |
-| `block-apply.ts` | Block application, UTXO settlement, epoch tally | Block creation |
+| `block-apply.ts` | Block application, UTXO settlement, per-block like settlement | Block creation |
 | `utxo-engine.ts` | UTXO transaction validation and application | Block structure |
 | `stump-engine.ts` | Verifiable prune execution | DAG content |
 | `content-sweep.ts` | Placeholder resolution (missing post content pulled from peers) | Post creation |
@@ -2448,7 +2441,7 @@ operator may safely change, and four consensus parameters were environment-tunab
 | `BOOTSTRAP_PEERS` | `operational` | `[]` | Comma-separated libp2p multiaddrs |
 | `LISTEN_ADDRS` | `operational` | `/ip4/0.0.0.0/tcp/0` | libp2p listen addresses |
 | `PUBLIC_URL` | `operational` | `/` | Base path where the demo UI is served |
-| ~~`EPOCH_BLOCKS`~~ | **removed** | ~~`60`~~ | Epoch interval — **the epoch is deleted**; accrual and settlement are per-block. ⚠ The code still reads `process.env['EPOCH_BLOCKS']` (`config.epochBlocks`) — P2-D (in flight) deletes the read; this row was written ahead of that |
+| ~~`EPOCH_BLOCKS`~~ | **removed** | ~~`60`~~ | Epoch interval — **the epoch is deleted** (P2-D); accrual and settlement are per-block. No env read, no constant remains; the name is retired-reserved |
 
 > ⚠ **The karma decay constants are documented for a block time the node does not use.**
 > `constants.ts` annotates `KARMA_STALE_THRESHOLD_BLOCKS = 20160` as "28 days at 2m blocks" and

@@ -594,12 +594,6 @@ userId → walk DAG for active username claim
 
 ## Likes
 
-> Status: **CONTRACT AHEAD OF CODE — P2-D in flight.** This section is the decided design
-> (`docs/site/economy`, `tmp/karmanomics.md`, design track §5.3–§5.5), replacing the retired
-> two-phase locked/free system (epoch tally, refunds, unlike, free tier, `LikeBox`). The
-> code runs the retired system until P2-D's phases land; P2-D's final phase deletes this
-> marker.
-
 Likes live in the value layer, not the content DAG. **A like costs the liker
 `LIKE_KARMA_COST` (1 karma) and it does not come back** — one-way, no unlike, no free tier.
 A free like is cheap talk; a like that cost something is a signal.
@@ -1160,14 +1154,11 @@ forever. A node rejects objects with an unsupported protocol version.
 ### Cross-layer
 
 - Karma is non-tradeable — only moves via invites, likes, earning, decay, or burn
-  > ⚠ **VIOLATED — one route left of five. This was the most load-bearing false invariant
-  > in the document.** The rule is correct and stays: it is the premise the karma↔credit
-  > firewall rests on, asserted in four places here and on two published pages.
-  >
-  > **Still open (1):** the `like` transition checks only that every output is a karma box,
-  > with **no owner constraint**, and the liker may consume their own LikeBox — so
-  > like-then-unlike moves karma to an arbitrary recipient. **Closes by feature removal in
-  > P2-D**; unlike is not a feature in the current design.
+  > **Holds since P2-D** (previously the most load-bearing false invariant in the
+  > document — five transfer routes existed). The rule is the premise the karma↔credit
+  > firewall rests on, asserted in four places here and on two published pages. The fifth
+  > and final route (like-then-unlike moved karma to an arbitrary recipient) closed by
+  > feature removal: unlike is not a feature and `LikeBox` no longer exists.
   >
   > **Closed by P2-B (4):** the committed invitee spending the BondBox to their own karma box
   > (phase 1 — settlement now pays only `bond.inviterId`, under a spend-time unlock, and no
@@ -1191,17 +1182,15 @@ forever. A node rejects objects with an unsupported protocol version.
 - A post's cryptographic identity (hash) survives pruning — parent refs remain valid
 - The DAG's merkle integrity is independent of content availability
 - The UTXO ledger's correctness is independent of the DAG's index state
-  > ⚠ **FALSE AS DESIGNED, not as implemented.** The epoch tally's author reward is a
-  > function of a `dag_likes` row count — a DAG index read inside a consensus mutation.
-  > **Resolved by the per-block accumulator** (design track §5.3), which reads a committed
-  > per-identity record instead. Until that lands, this invariant does not hold.
+  > **Holds since P2-D** (was FALSE AS DESIGNED: the epoch tally's author reward read a
+  > `dag_likes` row count — a DAG index read inside a consensus mutation). Settlement now
+  > reads the per-identity `likeCarry` in the `stateRoot` and `like_records` — consensus
+  > state written only at block application (`block_topology` tier), never by a route.
 - Stumps are the sole bridge: DAG compaction → karma issuance
-- Like boxes live in the UTXO layer — they are not DAG objects
-  > ⚠ **SUPERSEDED — `LikeBox` is being removed entirely** (design track §5.4). With the
-  > karma burned at like time there is no held value, so a like becomes a burn transaction
-  > plus a `(liker, post)` record. True of the object as it stands; the free-like tier the
-  > §Likes section describes contradicted it by minting from `dag_likes`, and that tier is
-  > also gone.
+- A like is a burn transaction plus a `(liker, post)` like-record — no box, no held
+  value. Like-records are content-layer consensus state (`block_topology` tier):
+  deterministic by replay, journalled with exact inverses, deleted with the post at
+  prune, not in the `stateRoot`. (`LikeBox` and the free-like tier are retired — P2-D.)
 
 ### Cryptographic
 
@@ -1265,10 +1254,6 @@ forever. A node rejects objects with an unsupported protocol version.
   a hand-kept mirror of it had already diverged once) and exactly two burns: **decay**, and
   **the like burn** — `LIKE_KARMA_COST` leaves the liker per like, `x−1` per `x` returns
   via `like-payout`, net 1 burned per `LIKES_PER_KARMA_PAYOUT` likes.
-  > ⚠ **AHEAD OF CODE — P2-D in flight.** The like burn and `like-payout` do not exist
-  > yet; the code runs the retired epoch/refund machinery until P2-D's node phases land.
-  > (The bullet this replaced was FALSE against its own era's code too — a hand-kept
-  > three-term supply equation beside a ten-reason mint table.)
 - Total credit supply = genesis + ordering block rewards - future sinks
   > ⚠ **QUALIFIED — true in shape, but "total" is currently unbounded.** The reward
   > function has **no terminus**: it floors at `CREDIT_TAIL_REWARD` and mints 2 credits per
@@ -1282,10 +1267,9 @@ forever. A node rejects objects with an unsupported protocol version.
   > Conservation is **enforced** since P2-B (`checkValueConservation` per transaction,
   > full re-validation at apply; the unvouch and `sendCredits` violations closed in its
   > phases 2–3) — this entry's previous `⚠ UNENFORCED` marker had outlived its defect.
-  > The like exception is **AHEAD OF CODE — P2-D in flight**: until P2-D's node phases
-  > land, the code enforces conservation with no exception and the like deficit does not
-  > yet exist. P2-B being done first is what makes the carve-out safe to add — a deficit
-  > rule only means something once conservation is otherwise enforced.
+  > The like carve-out is enforced since P2-D N1 (the biconditional lives in the engine's
+  > like arm). P2-B landing first is what made it safe to add — a deficit rule only means
+  > something once conservation is otherwise enforced.
 - Box `value` and all value/amount arithmetic are `bigint` integer base units
   (`value < 2⁶⁴`); **no float math in any consensus value path** — floats are
   non-deterministic across platforms and credit sums exceed 2⁵³ (Spec B P0)
@@ -1300,8 +1284,9 @@ forever. A node rejects objects with an unsupported protocol version.
   store choke point (`insertBox`, `consumeBox`) while a block journal is open.
   Call sites never maintain parallel mutation bookkeeping; every box mutation
   a block makes appears in the log exactly once, in application order.
-  (P2-D deletes the third choke point, `markLikeBoxesTallied`, together with
-  the epoch; the code still records there until P2-D's node phases land.)
+  (P2-D deleted the third choke point, `markLikeBoxesTallied`, together with
+  the epoch; the like-record side-records journal through their own hooks,
+  with exact inverses.)
 - **Accounting-agnostic.** The log carries no per-mutation-class fields.
   Future mutation classes (invite/post bonds, one-way like accounting,
   storage rent, coinbase splits) journal through the same log unchanged.
@@ -1328,9 +1313,6 @@ See `SUBBLOCK_INTERFACE.md` for the full contract.
 - Ordering blocks anchor sub-blocks via Merkle digest
 - Like dedup is structural: the `(liker, post)` like-record exists or it does not
 - Like accrual and settlement happen every block — there is no epoch (P2-D)
-  > ⚠ **The first, third and fourth bullets are AHEAD OF CODE — P2-D in flight.** The
-  > code still attaches like-box sidecars, dedups at ordering time and tallies at epoch
-  > boundaries until P2-D's phases land. The second bullet is verified true.
 
 ### Network identity
 
@@ -1439,8 +1421,9 @@ These invariants are adopted from production-grade Ergo Rust node practices:
   > **Decision 2026-08-06: replace, do not specify.** Move to a length-prefixed canonical
   > encoding — the pattern `postFieldBytes` already uses, which is the M-1 fix and is
   > verified injective. Two supporting reasons: the format is **already straining**
-  > (`canonicalEpochTallyJson` exists precisely because JSON insertion order was not
-  > deterministic enough for one leaf), and it is protocol-breaking either way, so it costs
+  > (`canonicalEpochTallyJson` existed precisely because JSON insertion order was not
+  > deterministic enough for one leaf — retired with the epoch, P2-D), and it is
+  > protocol-breaking either way, so it costs
   > nothing extra folded into the id-moving bundle (`computeTxId` length-prefixing, post
   > typing) rather than as a second coordinated break later.
   >
@@ -1571,8 +1554,9 @@ fresh. Namespacing keeps the option open to split into separate stores later
 
 - Sovereign subtrees with author-controlled pruning
 - UTXO ledger: karma (non-tradeable) + credits (tradeable)
-  > ⚠ **karma non-tradeable is VIOLATED three ways; credits are tradeable only on one
-  > node's disk** (`sendCredits` bypasses block application). See §Invariants → Cross-layer.
+  > Both halves hold: the karma-transfer routes closed across P2-B (vouch/co-sign) and
+  > P2-D (unlike, by feature removal), and `sendCredits` rides block application since
+  > P2-B phase 3. See §Invariants → Cross-layer.
 - ~~Like system: locked likes (karma staking) + free likes (post-50), epoch tally~~
   > ⚠ **SUPERSEDED.** Likes are one-way at 1 karma with no refund, no free tier and no
   > epoch. The **free-like tier has no producer anywhere in the node** — correctly never
