@@ -592,9 +592,10 @@ schema for its `boxType`**:
   never disagree.
 - **Field types are pinned** (field-type pin). Every present field's runtime
   type matches its `TYPES_INTERFACE` box definition:
-  - `value` (every boxType): `bigint`, `0 ≤ v < 2⁶⁴` — the bound absorbed
-    from `checkOutputValues`, which retires with this pin (one owner per
-    rule; `json-to-tx`'s `assertValidBoxValue` stays as the HTTP-edge twin).
+  - `bigint`, `0 ≤ v < 2⁶⁴`: `value` (every boxType) **and `originalValue`
+    (post_lock — the read-poison field)**. The bound is absorbed from
+    `checkOutputValues`, which retired with this pin (one owner per rule;
+    `json-to-tx`'s `assertValidBoxValue` stays as the HTTP-edge twin).
   - 32-byte `Uint8Array`: `owner` (karma, credit, post_lock), `secretHash`
     (invite), `inviterId` (invite, bond), `voucherId`, `targetId` (vouch).
   - `inviteePublicKey` (bond): `Uint8Array` of length 0 **or** 32. Which of
@@ -602,11 +603,18 @@ schema for its `boxType`**:
     transition-arm rule — the schema pins the type, not the state.
   - Non-negative safe integer, and never `-0`: `inviteOutputIndex` (bond,
     additionally `≤ 0xFFFFFFFF` — it is a u32 output position),
-    `probationStartBlock`, `probationEndBlock` (bond), `proofSource`
-    (credit — a block height), `lockedUntilBlock` (credit, when present).
-    `-0` is called out because it is JSON- and CBOR-reachable and breaks
-    byte round-trips: cbor-x encodes it as a float where the store's
-    JSON round-trip returns integer `0`.
+    `probationStartBlock`, `probationEndBlock` (bond), `lockedUntilBlock`
+    (credit, when present). `-0` is called out because it is JSON- and
+    CBOR-reachable and breaks byte round-trips: cbor-x encodes it as a float
+    where the store's JSON round-trip returns integer `0`.
+  - `proofSource` (credit): a block height **or `-1`, the transfer sentinel**
+    — the closed live value set (`heightOrTransfer`). The pin's first draft
+    said "a block height" alone; the implementing unit found every user-path
+    credit transfer and faucet grant stamps `-1` (`routes/utxo.ts` documents
+    the convention), and enforcing non-negativity broke 13 honest-path tests
+    — the invariance pin outranks a drafted bullet. Recorded in
+    `TYPES_INTERFACE` §CreditBox; the sentinel retires with P2-C row C8
+    (`proofSource` leaves the consensus bytes).
   - `string`: `proofSource` (karma), `targetPostId` (post_lock). Type only —
     format/length pins (hex-64 ids, byte caps) are a recorded rider, not
     this pin.
@@ -671,7 +679,13 @@ tree collapse into clean rejections:
    `Buffer.from`s them mid-block-apply (e.g. a numeric `post_lock.owner`).
 3. **Read-time throws** — a stored lie poisons the row: `rowToBox` does
    `BigInt(e.originalValue)`, so `originalValue: "x"` crashes **every later
-   read of that box**, including block-application paths that scan live locks.
+   read of that box**. Measured on the pre-pin tree: the poison block APPLIED
+   through the real funnel, and the first like-settlement or prune touching
+   the target post then threw mid-apply — caught by the funnel (block
+   rejected, node survives), but every node stored the same poison, so the
+   post becomes unlikeable and unprunable network-wide, a permanent per-post
+   landmine. Restart recovers the process (the startup box scan died with
+   P2-B phase 4) but never the row.
 4. **Committed-byte lies** — a mistyped field enters the id preimage and the
    AVL leaf but round-trips differently through the store's JSON `extra_data`
    (a string `owner` becomes a char-array becomes zero-bytes;
@@ -693,15 +707,6 @@ entirely — a redundant field has no place in an id preimage. That is a format
 break (every box id moves), so it rides the bundle; when it lands, the guard
 half of this check retires and the key-set half keeps the schema closed.
 
-> ⚠ **AHEAD OF CODE — the field-type pin.** The field-type bullet, the step-4
-> placement, the own-property lookup, `checkOutputValues`'s retirement, and
-> the totality claim describe the contract, not the current tree. On the tree
-> the shape check still runs at step 7 (key set + guard only), the karma arm
-> still throws a TypeError on a karma output missing `owner` (the old
-> `⚠ VIOLATED` totality finding, which this pin's design replaces), and
-> `OUTPUT_SHAPE[boxType]` is a prototype-chain read. The node unit
-> `prompts/node-field-type-pin.md` makes this text true; this marker dies at
-> its payoff.
 
 ### revalidateTxInContext
 

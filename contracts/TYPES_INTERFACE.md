@@ -389,10 +389,19 @@ CreditBox extends BoxBase {
   boxType: "credit"
   owner: Uint8Array            // 32 raw bytes
   guard: "owner_signature"
-  proofSource: number          // Ordering block height that minted these credits
+  proofSource: number          // Minting block height, OR -1: the transfer sentinel
   lockedUntilBlock?: number    // Block height before which credits cannot be spent
 }
 ```
+
+`proofSource` on a credit box is **a block height or `-1`, nothing else** —
+the closed value set the field-type pin enforces (`heightOrTransfer`). Mint
+paths stamp the ordering-block height; every user-path transfer and faucet
+grant stamps `-1`, the "transfer" convention `routes/utxo.ts` documents. (This
+contract said "block height" alone until 2026-08-08; the field-type pin's
+executor found the live `-1` producers, and the sentinel is now the recorded
+rule. P2-C row **C8** deletes `proofSource` from the consensus bytes entirely,
+retiring the sentinel with it.)
 
 Credits are freely transferable between any accounts. Locked credits (from
 coinbase) cannot be spent until `lockedUntilBlock` passes.
