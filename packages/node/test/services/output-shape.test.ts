@@ -590,15 +590,17 @@ describe('validateTx output shape (integration)', () => {
     expect(r.error).toMatch(/present with value undefined/);
   });
 
-  // ---- unknown boxType: today the transition arms reject it first ----
-  // This is a CONTROL documenting current double-coverage, not a shape-check
-  // rejection test: it stays green when the shape check is disabled, because
-  // the karma arm's totality count fires at step 6 before shape runs at step 7.
-  it('rejects an unknown output boxType (via the transition arm today; the shape check backstops it)', () => {
+  // ---- unknown boxType: the step-4 schema rejects it first ----
+  // Inverted by the field-type pin: the shape check now runs at step 4, ahead
+  // of the transition arms, so ITS unknown-boxType arm is the primary gate
+  // and the karma arm's totality count is the defense-in-depth layer behind
+  // it. The tightened assertion doubles as the placement pin — moving the
+  // check back behind the arms resurfaces the arm's wording and fails here.
+  it('rejects an unknown output boxType at the shape gate (the transition arm backstops it)', () => {
     const karma = seedKarma(100n);
     const alien = { boxType: 'wat', value: 10n, guard: 'owner_signature' };
     const r = validateTx(deps, signedTx([karma.id!], [{ ...karmaChange(90n) }, alien]), 10);
     expect(r.valid).toBe(false);
-    expect(r.error).toMatch(/Illegal karma transition|unknown boxType/);
+    expect(r.error).toMatch(/unknown boxType wat/);
   });
 });
