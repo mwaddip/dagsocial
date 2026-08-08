@@ -135,13 +135,20 @@ StumpJson = {
 `{ post: StumpJson, ancestors: [], descendants: [] }`. The feed listing
 (`GET /posts`) remains live-posts-only — no stumps, unchanged.
 
-> ⚠ **AHEAD OF CODE — rides the tx-envelope bundle.** Today the raw `Stump`
-> object is returned as-is: `res.json` serializes `authorId` (a `Uint8Array`)
-> index-keyed (`{"0":…,"1":…}`), and `getThread` casts the raw stump to
-> `PostJson`. `FeedServiceDeps.getPost` is typed `unknown | null` while the
-> store's `getPost` is `Post | Stump | null` — the bundle types the dep to the
-> store's signature so the stump arm is compiler-checked (the NX
-> compiler-as-mutation-detector pattern), and adds a `stumpToJson`.
+**Implemented 2026-08-08** (`stumpToJson`, beside `postToJson`). What it
+replaced: the raw `Stump` went out as-is, so `res.json` serialized `authorId`
+— a `Uint8Array` — index-keyed as `{"0":…,"1":…}`, and `getThread` cast the raw
+stump through `as unknown as PostJson`.
+
+The enabler was the dependency typing, and it ran deeper than the unit expected.
+`FeedServiceDeps.getPost` was `unknown | null`, which **collapses to `unknown`**,
+so the stump arm was invisible to the compiler. Naming the store's real
+signature (`Post | Stump | null`) made the compiler force the same correction
+through `VerifierDeps` and `PostServiceDeps`, which carried the identical
+`unknown` and which nothing had thought to look at. All three now name the
+union, with zero casts — so re-widening any of them cannot silently typecheck
+the stump arm away, and a future variant in the store's return breaks at the
+boundary instead of in a response body.
 
 **Post submission flow (mempool-based):**
 
@@ -752,20 +759,25 @@ half of this check retires and the key-set half keeps the schema closed.
 
 ### Transaction envelope shape (`checkTxEnvelope`)
 
-> ⚠ **AHEAD OF CODE — contracted for the tx-envelope bundle; the gate does not
-> exist yet.** Until it lands, the totality claim above is scoped to
-> `tx.outputs`; the envelope itself still throws, re-derived 2026-08-08:
-> `inputs: null` at step 1 (`tx.inputs.length`); a missing/`null` `signatures`
-> map in `checkGuards` (`tx.signatures[hexKey]`); `outputs: null` inside
-> `checkOutputShape` itself (`.length`), while a non-array `outputs` *object*
-> slips past it to conservation's `.reduce`; `likeTarget: null` passes
-> conservation's `!== undefined` presence test and then throws at
-> `h.update(null)` inside `computeTxId` — which `checkGuards` calls on its
-> FIRST line, so the whole envelope reaches the hasher at step 6; non-`Uint8Array`
-> `preimages` values throw there the same way. And `tx.protocolVersion` is not
-> validated anywhere — only the block header's is — so a tx with
-> `protocolVersion: "x"` validates, pools, and applies end-to-end with the
-> string `String()`-coerced into its id preimage.
+**Implemented 2026-08-08.** The pre-gate behaviour it replaced, all measured
+rather than reasoned: `inputs: null` threw at step 1 (`tx.inputs.length`),
+`inputs: 5` at `new Set(5)`, `inputs: [{}]` at the SQLite bind inside `getBox`;
+a missing or `null` `signatures` map threw at `tx.signatures[hexKey]`;
+`outputs: null` threw inside `checkOutputShape` itself, while a non-array
+`outputs` *object* slipped that loop (its `length` is `undefined`) and threw at
+conservation's `.reduce`; `likeTarget: null` passed conservation's
+`!== undefined` presence test and threw at `h.update(null)` inside
+`computeTxId` — which `checkGuards` calls on its FIRST line, so the whole
+envelope reached the hasher at step 6 — and non-`Uint8Array` `preimages` values
+threw there the same way. Every one was an HTTP 500 or, through the block
+funnel, a whole-block rejection logged as an unexpected failure.
+
+Two holes this contract had missed before the code was written, both measured
+during it: **`protocolVersion` was validated nowhere** in the transaction path
+(only block headers checked theirs), so a tx signed with
+`protocolVersion: "x"` validated, pooled and applied end-to-end with the string
+`String()`-coerced into its own id preimage; and an **unknown envelope key was
+free malleability**, invisible to `computeTxId`.
 
 `checkTxEnvelope(tx: unknown): UtxoResult` — **exported** from the engine.
 **Total**: returns `{valid: false}` and never throws for any decoded-CBOR
@@ -777,7 +789,20 @@ same txId.
 
 The checks:
 
-1. `tx` is a plain non-null, non-array object.
+1. `tx` is a **plain** object: non-null, non-array, and its prototype is
+   `Object.prototype` or `null`. The prototype clause is load-bearing and was
+   added by the implementation, then ratified here: presence is decided with
+   `Object.hasOwn`, while every downstream read (`tx.likeTarget`,
+   `tx.signatures[hexKey]`) is a plain property access that walks the chain.
+   Pinning the prototype is what makes the two agree — without it an object
+   carrying the four required keys but *inheriting* a `likeTarget` passes a
+   `hasOwn`-based gate and still drives `computeTxId` and the conservation
+   carve-out off the inherited value. Note this does NOT rest on decoder
+   behaviour: measured 2026-08-08, cbor-x does not set the prototype from a
+   `__proto__` map key — it renames the key to `__proto_`, which lands in the
+   closed-key-set rejection below — and `JSON.parse` defines `__proto__` as an
+   own key. The clause closes the class structurally rather than trusting
+   either decoder's sanitizing to stay as it is.
 2. **Closed key set**: `inputs`, `outputs`, `signatures`, `protocolVersion`,
    optionally `preimages` and `likeTarget`. Any other key rejects. A present
    key with value `undefined` rejects (mirrors the output schema's

@@ -1528,7 +1528,15 @@ Six rules govern it:
    stays, **gated on the resolved exclude list**: it skips while `'test/e2e/**'` sits in
    `config.exclude`, and re-arms by itself when the post-P2-D rewrite removes that exclusion. The
    gate fails safe — an exclude string it does not recognise builds rather than skips.
-5. **Test trees are typechecked.** ⚠ **AHEAD OF CODE — rides the tx-envelope bundle.** Each package
+5. **Test trees are typechecked.** ⚠ **PARTIAL — four of five packages.** `types`, `wire`,
+   `validation` and `net` each carry the config below wired into `typecheck`, at zero errors.
+   **`node` is the exception**: its `tsconfig.test.json` exists and is correct, but the script stays
+   `tsc --noEmit` while **409 test-tree errors** remain (58 files, zero in `src`), so that
+   `pnpm -r typecheck` keeps saying something true. Wiring it is the closing act of the paydown unit
+   (`prompts/node-test-typecheck-paydown.md`). The debt does not come apart mechanically — a bulk
+   retype of all 133 missing-provenance box literals to `CandidateOf<>` drove the count UP (409 →
+   424), because node's fixtures are stored boxes and transaction candidates wearing one shape, told
+   apart only per site. Each package
    carries a `tsconfig.test.json` (`include: ["src", "test"]`) wired into its `typecheck` script, so
    `pnpm -r typecheck` covers what the suites actually execute — an unchecked test tree is exactly
    where a new *required* field (e.g. `UtxoDeps.networkType`) hides as a runtime surprise, and where
