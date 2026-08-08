@@ -13,7 +13,7 @@
  * the door shut.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { generateKeyPairSync, sign as cryptoSign, type KeyObject } from 'crypto';
+import { generateKeyPairSync, sign as cryptoSign, createHash, type KeyObject } from 'crypto';
 import {
   computeBoxId,
   computeTxId,
@@ -21,10 +21,11 @@ import {
   VOUCH_KARMA_AMOUNT,
   INVITE_KARMA_AMOUNT,
   INVITE_BOND_KARMA,
+  INVITE_PROBATION_BLOCKS,
 } from '@dagsocial/types';
 import type { AnyBox, KarmaBox, CreditBox, UtxoTransaction } from '@dagsocial/types';
 import Database from 'better-sqlite3';
-import { fixtureProvenance } from '../helpers.js';
+import { fixtureProvenance, seedAsOneTx, makeTestIdentity } from '../helpers.js';
 import {
   initDb,
   closeDb,
@@ -268,5 +269,134 @@ describe('guard-shape pin: id integrity of accepted outputs', () => {
     expect(r.valid, r.error).toBe(true);
     applyTx(deps, tx, r.computedOutputs!, 10);
     for (const o of r.computedOutputs!) expectIdClean(o.id!);
+  });
+
+  // -------------------------------------------------------------------------
+  // Field-type pin: the class-4 committed-byte-lie mutants, fed to the same
+  // discriminator. Each was ACCEPTED on the pre-pin tree (the before-leg
+  // probes): the store then either round-tripped different bytes than the id
+  // committed to (4a), silently changed the value's encoding (4b), or kept a
+  // wrong-typed field forever behind a clean id (4c).
+  // -------------------------------------------------------------------------
+
+  it('class-4a mutant, now closed: hex-string post_lock owner is rejected, nothing applied', () => {
+    const karma = seedKarma(100n);
+    const lyingLock = {
+      boxType: 'post_lock',
+      value: POST_LOCK_THREAD_COST,
+      originalValue: POST_LOCK_THREAD_COST,
+      owner: Buffer.from(ownerPubKey).toString('hex'), // 64-char string, not bytes
+      targetPostId: 'a'.repeat(64),
+      guard: 'block_apply',
+    };
+    const r = validateTx(
+      deps,
+      signedTx([karma.id!], [karmaChange(100n - POST_LOCK_THREAD_COST), lyingLock]),
+      10,
+    );
+    expect(r.valid).toBe(false);
+    expect(r.error).toMatch(/\(post_lock\): field 'owner' must be a 32-byte Uint8Array/);
+    // On the pre-pin tree this box was stored and its row reconstructed to
+    // DIFFERENT bytes (Array.from over the string, chars coerced to numbers) —
+    // computeBoxId(rowToBox(row)) !== row.id, permanently. Now: no row at all.
+    expect(deps.getBox(karma.id!)).not.toBeNull();
+    const locks = db
+      .prepare("SELECT COUNT(*) AS n FROM utxo_boxes WHERE box_type = 'post_lock'")
+      .get() as { n: number | bigint };
+    expect(Number(locks.n)).toBe(0);
+  });
+
+  it('class-4b mutant, now closed: -0 in a number field is rejected (cbor float at insert, JSON 0 on read)', () => {
+    const credit = seedCredit(40n);
+    const out = {
+      boxType: 'credit',
+      value: 40n,
+      owner: ownerPubKey,
+      guard: 'owner_signature',
+      proofSource: 1,
+      lockedUntilBlock: -0,
+    };
+    const r = validateTx(deps, signedTx([credit.id!], [out]), 10);
+    expect(r.valid).toBe(false);
+    expect(r.error).toMatch(/field 'lockedUntilBlock'.*got -0/);
+  });
+
+  it('class-4c mutant, now closed: bond commit with string probation fields is rejected; the honest commit round-trips id-clean', () => {
+    const inviter = makeTestIdentity();
+    const invitee = makeTestIdentity();
+    const secret = new Uint8Array(32).fill(7);
+    const secretHash = new Uint8Array(
+      createHash('blake2b512').update(secret).digest().subarray(0, 32),
+    );
+    const invite = {
+      boxType: 'invite' as const,
+      value: 25n,
+      secretHash,
+      inviterId: inviter.userId,
+      guard: 'hash_preimage_with_bond' as const,
+    };
+    const bond = {
+      boxType: 'bond' as const,
+      value: 25n,
+      inviterId: inviter.userId,
+      inviteOutputIndex: 0,
+      inviteePublicKey: new Uint8Array(0),
+      probationStartBlock: 0,
+      probationEndBlock: 0,
+      guard: 'bond_dual' as const,
+    };
+    const [seededInvite, seededBond] = seedAsOneTx([invite, bond]);
+    storeInsertBox(seededInvite!);
+    storeInsertBox(seededBond!);
+
+    const commitOut = (probationStartBlock: unknown, probationEndBlock: unknown) => ({
+      boxType: 'bond',
+      value: 25n,
+      inviterId: inviter.userId,
+      inviteOutputIndex: 0,
+      inviteePublicKey: invitee.userId,
+      probationStartBlock,
+      probationEndBlock,
+      guard: 'bond_dual',
+    });
+    const commitTx = (out: unknown): UtxoTransaction => {
+      const tx: UtxoTransaction = {
+        inputs: [seededBond!.id!],
+        outputs: [out] as unknown as UtxoTransaction['outputs'],
+        signatures: {},
+        preimages: { [seededBond!.id!]: secret },
+        protocolVersion: 1,
+      };
+      const hash = Buffer.from(computeTxId(tx), 'hex');
+      tx.signatures[Buffer.from(invitee.userId).toString('hex')] = new Uint8Array(
+        cryptoSign(null, hash, invitee.privateKey),
+      );
+      return tx;
+    };
+
+    // The before-leg P4 shape: strings pass the arm's arithmetic by coercion
+    // ("1025" - "25" === INVITE_PROBATION_BLOCKS) and committed a wrong-typed
+    // bond whose id round-tripped CLEAN — an undetectable lie. Now the schema
+    // rejects it before the arm can coerce.
+    const lying = validateTx(
+      deps,
+      commitTx(commitOut('25', String(25 + INVITE_PROBATION_BLOCKS))),
+      100,
+    );
+    expect(lying.valid).toBe(false);
+    expect(lying.error).toMatch(/field 'probationStartBlock' must be a non-negative safe integer/);
+    // The stored bond is still uncommitted.
+    const row = db
+      .prepare('SELECT extra_data FROM utxo_boxes WHERE id = ?')
+      .get(seededBond!.id!) as { extra_data: string };
+    expect(JSON.parse(row.extra_data).inviteePublicKey).toBeNull();
+
+    // The honest commit — same shape, typed numbers — validates, applies,
+    // and its output satisfies the discriminator.
+    const honestOut = commitOut(25, 25 + INVITE_PROBATION_BLOCKS);
+    const honest = validateTx(deps, commitTx(honestOut), 100);
+    expect(honest.valid, honest.error).toBe(true);
+    applyTx(deps, commitTx(honestOut), honest.computedOutputs!, 100);
+    for (const o of honest.computedOutputs!) expectIdClean(o.id!);
   });
 });

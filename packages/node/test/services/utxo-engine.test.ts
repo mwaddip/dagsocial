@@ -960,7 +960,9 @@ describe('validateAndApplyTx', () => {
     });
 
     // -----------------------------------------------------------------------
-    // L-11 — box `value` must be a non-negative integer
+    // L-11 — box `value` must be a non-negative integer. The rule moved from
+    // `checkOutputValues` into the step-4 schema (field-type pin), so the
+    // rejection is shape-worded now; the bound is the same.
     // -----------------------------------------------------------------------
     for (const [label, badValue] of [
       ['negative', -1],
@@ -984,7 +986,7 @@ describe('validateAndApplyTx', () => {
         const result = validateAndApplyTx(deps, tx, 10);
 
         expect(result.valid).toBe(false);
-        expect(result.error).toContain('Invalid box value');
+        expect(result.error).toContain("field 'value' must be a non-negative bigint < 2^64");
         expect(deps.getBox(karma.id!)).not.toBeNull();
       });
     }
@@ -1018,7 +1020,7 @@ describe('validateAndApplyTx', () => {
       const result = validateAndApplyTx(deps, tx, 10);
 
       expect(result.valid).toBe(false);
-      expect(result.error).toContain('Invalid box value');
+      expect(result.error).toContain("field 'value' must be a non-negative bigint < 2^64");
       expect(deps.getKarmaBox(ownerPubKey)!.value).toBe(10n);
     });
 
@@ -1243,7 +1245,10 @@ describe('validateAndApplyTx', () => {
         value: 100n,
         owner: ownerPubKey,
         guard: 'owner_signature' as const,
-        proofSource: 'test',
+        // A number, per TYPES_INTERFACE — this fixture carried the string
+        // 'test' (karma's convention) until the field-type pin started
+        // checking credit proofSource's runtime type.
+        proofSource: 1,
       };
       Object.assign(creditBox, fixtureProvenance(creditBox, 1));
       const creditBoxId = computeBoxId(creditBox);
@@ -1605,10 +1610,11 @@ describe('validateAndApplyTx', () => {
 
     // --- the retired arms stay dead ----------------------------------------
 
-    it("a retired 'like'-typed output is an illegal karma transition (the old cast shape stays dead)", () => {
+    it("a retired 'like'-typed output is rejected (the old cast shape stays dead)", () => {
       // T2b deleted the box type; JS clients are untyped, so the old cast
-      // shape can still arrive as JSON. The karma transition arm rejects any
-      // non-karma output, retired types included.
+      // shape can still arrive as JSON. The step-4 schema rejects the unknown
+      // boxType first (field-type pin); the karma arm's totality count is the
+      // defense-in-depth layer behind it.
       const karma = createAndInsertKarma(ownerPubKey, 100n, 1);
       const relic = {
         boxType: 'like',
@@ -1624,7 +1630,7 @@ describe('validateAndApplyTx', () => {
       );
       const result = validateTx(deps, tx, 10);
       expect(result.valid).toBe(false);
-      expect(result.error).toContain('Illegal karma transition');
+      expect(result.error).toContain('unknown boxType like');
     });
 
     it('spending a block_apply-guarded PostLockBox is rejected at the guard (T2a)', () => {

@@ -118,8 +118,8 @@ function coerceBoxValue(raw: unknown, field: string): bigint {
  * A box `value` must be a non-negative bigint below 2^64 — negative values
  * break conservation arithmetic, and at/above 2^64 the CBOR encoding leaves
  * the uniform uint64 form. Rejecting here gives the client a clear 400;
- * `validateTx` (`checkOutputValues`) enforces the same tight bound for txs
- * arriving over gossip or inside a block.
+ * `validateTx`'s step-4 output schema (the `u64` field type) enforces the
+ * same tight bound for txs arriving over gossip or inside a block.
  */
 function assertValidBoxValue(value: unknown, field = 'value'): void {
   if (typeof value !== 'bigint' || value < 0n || value >= (1n << 64n)) {
