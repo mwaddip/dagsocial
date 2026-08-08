@@ -380,7 +380,7 @@ try {
       if (!HEX64.test(postId)) continue;
       const post = getPost(postId);
       if (!post || !('content' in post) || !post.content) continue;
-      entries.push({ postId, post, likeBoxes: [] });
+      entries.push({ postId, post });
     }
     return entries;
   });
