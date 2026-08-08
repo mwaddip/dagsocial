@@ -27,7 +27,6 @@ import {
   signTransaction,
   makeTestIdentity,
   makePost,
-  makeLikeBox,
   makeKarmaBox,
   makeApplicableBlock,
   makePruneEntry,
@@ -182,6 +181,12 @@ function dumpState(db: Database) {
       .prepare('SELECT * FROM vouch_cooldowns ORDER BY voucher_id, target_id')
       .all(),
     freeLikes: db.prepare('SELECT * FROM dag_likes ORDER BY id').all(),
+    // P2-D N3b: prune settlement deletes the subtree's like-records, so "DB
+    // identity after revert" has to cover the table (mirrors the
+    // like-settlement suite's dumpState).
+    likeRecords: db
+      .prepare('SELECT * FROM like_records ORDER BY target_post_id, liker_id')
+      .all(),
     // Spec G phase D: identity records are the second **committed** entity, so
     // "DB identity after revert" has to cover them. Every class that mints
     // non-decay karma now writes one, which is most of them — leaving this out
@@ -428,12 +433,14 @@ describe('journal round-trip per mutation class (P1 acceptance)', () => {
   });
 
   // -----------------------------------------------------------------------
-  // Prune settlement — consumes PostLockBox + LikeBox and merge-mints the
-  // refunds; revert restores the settled rows exactly. (Extends the Phase B
+  // Prune settlement — consumes the PostLockBox, merge-mints the author
+  // refund, and deletes the subtree's like-records (P2-D N3b: no liker leg —
+  // a like's karma was burned at cast and nothing is refunded); revert
+  // restores the settled rows and the records exactly. (Extends the Phase B
   // block-apply revert test with digest + re-apply identity.)
   // -----------------------------------------------------------------------
 
-  it('prune settlement: settled boxes and merge-consumed karma restored', async () => {
+  it('prune settlement: settled boxes, merge-consumed karma, and like-records restored', async () => {
     const db = await importDb();
     db.initDb(':memory:');
 
@@ -441,13 +448,17 @@ describe('journal round-trip per mutation class (P1 acceptance)', () => {
     const liker = makeTestIdentity();
     const utxo = await importUtxo();
     const posts = await importPosts();
+    const likes = (await import('../../src/store/likes.js')) as {
+      insertLikeRecord: (targetPostId: string, likerId: Uint8Array, blockHeight: number) => void;
+      hasLikeRecord: (targetPostId: string, likerId: Uint8Array) => boolean;
+    };
 
     const post = makePost(author.userId, 'prune round-trip victim');
     const postId = computePostId(post);
     posts.insertPost(post, encodePost(post));
 
-    // Everything a settlement touches, seeded before bootstrap: the author's
-    // karma (merge target), the post's lock box, and a locked like.
+    // Everything the UTXO leg touches, seeded before bootstrap: the author's
+    // karma (merge target) and the post's lock box.
     const authorKarma = makeKarmaBox(20n, author.userId, 0);
     utxo.insertBox(authorKarma);
     const lockBox: PostLockBox = {
@@ -461,8 +472,6 @@ describe('journal round-trip per mutation class (P1 acceptance)', () => {
     Object.assign(lockBox, fixtureProvenance(lockBox, 1));
     lockBox.id = computeBoxId(lockBox);
     utxo.insertBox(lockBox);
-    const likeBox = makeLikeBox(liker.userId, postId, 0);
-    utxo.insertBox(likeBox);
 
     const handle = await activateProver();
     const blockApply = await importBlockApply();
@@ -472,6 +481,9 @@ describe('journal round-trip per mutation class (P1 acceptance)', () => {
       subBlockEntries: [{ postId, parentRefs: [], author: hex(author.userId) }],
     });
     expect(blockApply.applyOrderingBlock(confirmBlock)).toBe(true);
+    // A like applied at block 1 — seeded with no journal open, so the
+    // seeding records nothing. Part of the pre-state the revert must restore.
+    likes.insertLikeRecord(postId, liker.userId, 1);
     const pre = takeSnapshot(db, handle, 1);
 
     const classBlock = await makeApplicableBlock({
@@ -480,14 +492,15 @@ describe('journal round-trip per mutation class (P1 acceptance)', () => {
     });
     expect(blockApply.applyOrderingBlock(classBlock)).toBe(true);
 
-    // Settled: lock + like + the author's pre-existing karma all consumed.
+    // Settled: lock + the author's pre-existing karma consumed; the liker got
+    // nothing (the burn is unrecoverable); the like-record died with the post.
     expect(utxo.getBox(lockBox.id!)).toBeNull();
-    expect(utxo.getBox(likeBox.id!)).toBeNull();
     expect(utxo.getBox(authorKarma.id!)).toBeNull();
-    // Refunds minted: author 20+30 merged, liker 2.
     expect(utxo.getKarmaBox(author.userId)!.value).toBe(50n);
-    expect(utxo.getKarmaBox(liker.userId)!.value).toBe(2n);
-    // All three consumptions are in the journal the revert below replays.
+    expect(utxo.getKarmaBox(liker.userId)).toBeNull();
+    expect(likes.hasLikeRecord(postId, liker.userId)).toBe(false);
+    // Both consumptions and the record deletion are in the journal the revert
+    // below replays.
     const journalStore = (await import('../../src/store/journal.js')) as {
       getBlockJournal: (h: number) => import('../../src/store/journal.js').BlockJournal | null;
     };
@@ -496,13 +509,17 @@ describe('journal round-trip per mutation class (P1 acceptance)', () => {
       saved.mutations
         .filter((m) => m.kind === 'box' && m.op === 'remove')
         .map((m) => (m as { boxId: string }).boxId),
-    ).toEqual(expect.arrayContaining([lockBox.id, likeBox.id, authorKarma.id]));
+    ).toEqual(expect.arrayContaining([lockBox.id, authorKarma.id]));
+    expect(saved.likeRecordDeletions).toEqual([
+      { targetPostId: postId, likerId: liker.userId, appliedAtBlock: 1 },
+    ]);
 
     await assertRoundTrip(db, handle, pre, classBlock);
 
     // The re-applied block leaves the same settled state again.
     expect(utxo.getKarmaBox(author.userId)!.value).toBe(50n);
     expect(utxo.getBox(lockBox.id!)).toBeNull();
+    expect(likes.hasLikeRecord(postId, liker.userId)).toBe(false);
   });
 
   // -----------------------------------------------------------------------

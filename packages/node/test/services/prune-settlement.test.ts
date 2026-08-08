@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { computeBoxId, computeMintTxId, PROTOCOL_VERSION } from '@dagsocial/types';
 import type {
   PostLockBox,
-  LikeBox,
   KarmaBox,
   OrderingBlock,
   Post,
@@ -52,8 +51,15 @@ async function importUtxo() {
     insertBox: (box: unknown) => void;
     getBox: (boxId: string) => unknown;
     getPostLockBox: (targetPostId: string) => PostLockBox | null;
-    getUnspentLikeBoxes: (targetPostId: string) => LikeBox[];
     consumeBox: (boxId: string, consumedAtBlock: number) => void;
+  };
+}
+
+async function importLikes() {
+  const mod = await import('../../src/store/likes.js');
+  return mod as {
+    insertLikeRecord: (targetPostId: string, likerId: Uint8Array, blockHeight: number) => void;
+    hasLikeRecord: (targetPostId: string, likerId: Uint8Array) => boolean;
   };
 }
 
@@ -127,23 +133,6 @@ function makePostLockBox(
     value,
     originalValue: value,
     owner,
-    targetPostId,
-    guard: 'epoch_tally',
-  };
-  Object.assign(box, fixtureProvenance(box, seed));
-  box.id = computeBoxId(box);
-  return box;
-}
-
-function makeLikeBox(
-  likerId: Uint8Array,
-  targetPostId: string,
-  seed: number,
-): LikeBox {
-  const box: LikeBox = {
-    boxType: 'like',
-    value: 2,
-    likerId,
     targetPostId,
     guard: 'epoch_tally',
   };
@@ -358,31 +347,6 @@ describe('settlePruneUtxo', () => {
     expect((mintedKarma!.box as KarmaBox).value).toBe(140n);
   });
 
-  it('consumes LikeBox and mints refund karma for liker', async () => {
-    const { getDb } = await importDb();
-    const utxo = await importUtxo();
-    const { settlePruneUtxo } = await importSettlePruneUtxo();
-
-    const rootPostId = 'b'.repeat(64);
-    const likerId = makeUserId('liker1');
-
-    // Insert a LikeBox
-    const likeBox = makeLikeBox(likerId, rootPostId, 1);
-    utxo.insertBox(likeBox);
-
-    const journal = await journaled(10, () => settlePruneUtxo(rootPostId, [rootPostId], 10));
-
-    // LikeBox consumed
-    expect(removedIds(journal)).toContain(likeBox.id);
-
-    // LikeBox marked spent in DB
-    const db = getDb();
-    expect(boxIsSpent(db, likeBox.id!)).toBe(true);
-
-    // Karma refund box created for liker
-    expect(insertedIds(journal).length).toBeGreaterThanOrEqual(1);
-  });
-
   it('handles empty postId list', async () => {
     const { settlePruneUtxo } = await importSettlePruneUtxo();
 
@@ -410,26 +374,7 @@ describe('settlePruneUtxo', () => {
     expect(journal.mutations.length).toBe(0);
   });
 
-  it('skips already-spent LikeBoxes', async () => {
-    const { getDb } = await importDb();
-    const utxo = await importUtxo();
-    const { settlePruneUtxo } = await importSettlePruneUtxo();
-
-    const rootPostId = 'd'.repeat(64);
-    const likerId = makeUserId('liker2');
-
-    // Insert a LikeBox and spend it beforehand
-    const likeBox = makeLikeBox(likerId, rootPostId, 1);
-    utxo.insertBox(likeBox);
-    utxo.consumeBox(likeBox.id!, 3); // Already spent
-
-    const journal = await journaled(10, () => settlePruneUtxo(rootPostId, [rootPostId], 10));
-
-    expect(removedIds(journal)).not.toContain(likeBox.id);
-    expect(journal.mutations.length).toBe(0);
-  });
-
-  it('aggregates refunds per user across multiple posts', async () => {
+  it('aggregates refunds per author across multiple posts', async () => {
     const { getDb } = await importDb();
     const utxo = await importUtxo();
     const { settlePruneUtxo } = await importSettlePruneUtxo();
@@ -437,7 +382,6 @@ describe('settlePruneUtxo', () => {
     const postId1 = 'p'.repeat(64);
     const postId2 = 'q'.repeat(64);
     const authorId = makeUserId('author3');
-    const likerId = makeUserId('liker3');
 
     // Two PostLockBoxes for the same author on two posts
     const lb1 = makePostLockBox(100, authorId, postId1, 1);
@@ -445,48 +389,25 @@ describe('settlePruneUtxo', () => {
     utxo.insertBox(lb1);
     utxo.insertBox(lb2);
 
-    // Two LikeBoxes from the same liker on two posts
-    const like1 = makeLikeBox(likerId, postId1, 1);
-    const like2 = makeLikeBox(likerId, postId2, 1);
-    utxo.insertBox(like1);
-    utxo.insertBox(like2);
-
     const journal = await journaled(10, () =>
       settlePruneUtxo(postId1, [postId1, postId2], 10),
     );
 
-    // All four boxes consumed
+    // Both lock boxes consumed
     expect(removedIds(journal)).toContain(lb1.id);
     expect(removedIds(journal)).toContain(lb2.id);
-    expect(removedIds(journal)).toContain(like1.id);
-    expect(removedIds(journal)).toContain(like2.id);
 
-    // Refund karma created (one per user, values aggregated)
-    // Author: 100 + 50 = 150, Liker: 2 + 2 = 4
-    expect(insertedIds(journal).length).toBeGreaterThanOrEqual(2);
-
-    // Verify the created karma box values
+    // One refund box for the author, values aggregated: 100 + 50 = 150
+    expect(insertedIds(journal).length).toBe(1);
     const db = getDb();
-    for (const boxId of insertedIds(journal)) {
-      const row = db
-        .prepare(
-          "SELECT value, owner FROM utxo_boxes WHERE id = ? AND box_type = 'karma'",
-        )
-        .get(boxId) as { value: number; owner: Buffer } | undefined;
-      if (row) {
-        const ownerHex = Buffer.from(row.owner).toString('hex');
-        const authorHex = Buffer.from(authorId).toString('hex');
-        const likerHex = Buffer.from(likerId).toString('hex');
-        if (ownerHex === authorHex) {
-          expect(row.value).toBe(150);
-        } else if (ownerHex === likerHex) {
-          expect(row.value).toBe(4);
-        }
-      }
-    }
+    const row = db
+      .prepare("SELECT value, owner FROM utxo_boxes WHERE id = ? AND box_type = 'karma'")
+      .get(insertedIds(journal)[0]!) as { value: number; owner: Buffer };
+    expect(row.value).toBe(150);
+    expect(Buffer.from(row.owner).equals(Buffer.from(authorId))).toBe(true);
   });
 
-  it('handles posts with no PostLockBox or LikeBoxes', async () => {
+  it('handles posts with no PostLockBox', async () => {
     const { settlePruneUtxo } = await importSettlePruneUtxo();
 
     const postId = 'e'.repeat(64);
@@ -512,28 +433,61 @@ describe('settlePruneUtxo', () => {
     expect(journal.mutations.length).toBe(0);
   });
 
-  it('LikeBoxes from different posts are not cross-consumed', async () => {
-    const { getDb } = await importDb();
-    const utxo = await importUtxo();
+  // N3b: the subtree's like-records die with the prune, and every doomed row
+  // is captured as a `likeRecordDeletions` side-record so a reverted prune
+  // restores them exactly.
+  it("deletes the subtree's like-records and journals every deleted row", async () => {
+    const likes = await importLikes();
     const { settlePruneUtxo } = await importSettlePruneUtxo();
 
-    const targetPostId = 'g'.repeat(64);
-    const otherPostId = 'h'.repeat(64);
-    const likerId = makeUserId('liker4');
+    const rootId = 'a'.repeat(64);
+    const replyId = 'b'.repeat(64);
+    const likerA = makeUserId('likerA');
+    const likerB = makeUserId('likerB');
 
-    // Insert a LikeBox targeting a different post
-    const otherLikeBox = makeLikeBox(likerId, otherPostId, 1);
-    utxo.insertBox(otherLikeBox);
+    // Applied by "earlier blocks": seeded outside any journal, so the
+    // seeding itself records nothing.
+    likes.insertLikeRecord(rootId, likerA, 3);
+    likes.insertLikeRecord(rootId, likerB, 5);
+    likes.insertLikeRecord(replyId, likerA, 7);
 
     const journal = await journaled(10, () =>
-      settlePruneUtxo(targetPostId, [targetPostId], 10),
+      settlePruneUtxo(rootId, [rootId, replyId], 10),
     );
 
-    // LikeBox for otherPostId should not be consumed
-    expect(removedIds(journal)).not.toContain(otherLikeBox.id);
-    // Box should remain unspent
-    const db = getDb();
-    expect(boxIsSpent(db, otherLikeBox.id!)).toBe(false);
+    // Records died with the prune
+    expect(likes.hasLikeRecord(rootId, likerA)).toBe(false);
+    expect(likes.hasLikeRecord(rootId, likerB)).toBe(false);
+    expect(likes.hasLikeRecord(replyId, likerA)).toBe(false);
+
+    // Every doomed row captured, all three columns, capture order pinned by
+    // the primary key
+    expect(journal.likeRecordDeletions).toEqual([
+      { targetPostId: rootId, likerId: likerA, appliedAtBlock: 3 },
+      { targetPostId: rootId, likerId: likerB, appliedAtBlock: 5 },
+      { targetPostId: replyId, likerId: likerA, appliedAtBlock: 7 },
+    ]);
+  });
+
+  it('leaves like-records outside the subtree alone and journals exactly the subtree rows', async () => {
+    const likes = await importLikes();
+    const { settlePruneUtxo } = await importSettlePruneUtxo();
+
+    const prunedId = 'a'.repeat(64);
+    const otherId = 'f'.repeat(64);
+    const liker = makeUserId('liker5');
+
+    likes.insertLikeRecord(prunedId, liker, 2);
+    likes.insertLikeRecord(otherId, liker, 4);
+
+    const journal = await journaled(10, () => settlePruneUtxo(prunedId, [prunedId], 10));
+
+    // The unrelated post's record survives, unjournalled; the subtree row is
+    // the exact deletion set.
+    expect(likes.hasLikeRecord(otherId, liker)).toBe(true);
+    expect(journal.likeRecordDeletions).toEqual([
+      { targetPostId: prunedId, likerId: liker, appliedAtBlock: 2 },
+    ]);
   });
 });
 
@@ -613,47 +567,38 @@ describe('settlePruneUtxo — refund provenance', () => {
     expect(insertedIds(journal).length).toBe(2);
   });
 
-  // The other half of the pair: one entry, one user, both legs.
-  it('a user who both authored and liked in one subtree gets two distinct mints', async () => {
+  // N3b: the liker leg is gone — a like's karma was burned at cast and is
+  // deliberately unrecoverable, so a prune refunds no liker. Trivially no
+  // LikeBox exists post-N1, but the subtree's post WAS liked (like-record
+  // seeded), so a stray liker mint — whatever it were derived from — would
+  // land in this table and fail the exact-set assertion below.
+  it('mints no prune-refund-liker for a subtree whose posts were liked', async () => {
     const { getDb } = await importDb();
     const utxo = await importUtxo();
+    const likes = await importLikes();
     const { settlePruneUtxo } = await importSettlePruneUtxo();
 
     const root = 'c'.repeat(64);
-    const user = makeUserId('author-and-liker');
+    const authorId = makeUserId('author-liked');
+    const likerId = makeUserId('liker-liked');
 
-    utxo.insertBox(makePostLockBox(100, user, root, 1));
-    utxo.insertBox(makeLikeBox(user, root, 1));
+    utxo.insertBox(makePostLockBox(100, authorId, root, 1));
+    likes.insertLikeRecord(root, likerId, 3);
 
     await journaled(10, () => settlePruneUtxo(root, [root], 10));
 
-    // Author leg mints 100; the liker leg merges it and mints 100 + 2.
+    // Exactly one mint: the author's. Pinned against the exact id a stray
+    // liker leg would derive, so the assertion names what must not exist.
     const rows = karmaRows(getDb());
-    expect(rows.map((r) => r.value)).toEqual([100, 102]);
     expect(rows.map((r) => r.tx_id)).toEqual([
-      computeMintTxId(10, 'prune-refund-author', expectedSubject(root, user)),
-      computeMintTxId(10, 'prune-refund-liker', expectedSubject(root, user)),
+      computeMintTxId(10, 'prune-refund-author', expectedSubject(root, authorId)),
     ]);
-  });
-
-  it('the liker leg carries the liker key, not the pruned post author', async () => {
-    const { getDb } = await importDb();
-    const utxo = await importUtxo();
-    const { settlePruneUtxo } = await importSettlePruneUtxo();
-
-    const root = 'd'.repeat(64);
-    const likerId = makeUserId('liker-only');
-
-    utxo.insertBox(makeLikeBox(likerId, root, 1));
-
-    await journaled(10, () => settlePruneUtxo(root, [root], 10));
-
-    const rows = karmaRows(getDb());
-    expect(rows.length).toBe(1);
-    expect(rows[0]!.tx_id).toBe(
-      computeMintTxId(10, 'prune-refund-liker', expectedSubject(root, likerId)),
-    );
-    expect(rows[0]!.output_index).toBe(0);
+    expect(
+      rows.some(
+        (r) =>
+          r.tx_id === computeMintTxId(10, 'prune-refund-liker', expectedSubject(root, likerId)),
+      ),
+    ).toBe(false);
   });
 });
 
@@ -672,7 +617,7 @@ describe('Full prune lifecycle (UTXO settlement path)', () => {
     vi.resetModules();
   });
 
-  it('full lifecycle: create posts, like, prune, verify refunds', async () => {
+  it('full lifecycle: create posts, prune, verify author refund', async () => {
     const { getDb } = await importDb();
     const utxo = await importUtxo();
     const topology = await importTopology();
@@ -681,7 +626,6 @@ describe('Full prune lifecycle (UTXO settlement path)', () => {
     const rootId = 'a'.repeat(64);
     const replyId = 'b'.repeat(64);
     const authorId = makeUserId('author1');
-    const likerId = makeUserId('liker1');
 
     // 1. Seed block_topology: root has no parents, reply has root as parent
     const authorHex = Buffer.from(authorId).toString('hex');
@@ -692,13 +636,11 @@ describe('Full prune lifecycle (UTXO settlement path)', () => {
     const subtree = topology.getSubtreeTopology(rootId);
     expect(subtree).toEqual(new Set([rootId, replyId]));
 
-    // 3. Seed UTXO: PostLockBox for each post + LikeBox on root
+    // 3. Seed UTXO: PostLockBox for each post
     const lb1 = makePostLockBox(50, authorId, rootId, 1);
     const lb2 = makePostLockBox(50, authorId, replyId, 1);
-    const lk1 = makeLikeBox(likerId, rootId, 1);
     utxo.insertBox(lb1);
     utxo.insertBox(lb2);
-    utxo.insertBox(lk1);
 
     // 4. Apply settlement
     const journal = await journaled(10, () =>
@@ -709,10 +651,7 @@ describe('Full prune lifecycle (UTXO settlement path)', () => {
     expect(removedIds(journal)).toContain(lb1.id);
     expect(removedIds(journal)).toContain(lb2.id);
 
-    // 6. Verify LikeBox consumed
-    expect(removedIds(journal)).toContain(lk1.id);
-
-    // 7. Verify karma refunded: author gets 50+50=100, liker gets 2
+    // 6. Verify karma refunded: author gets 50+50=100
     const db = getDb();
     const createdBoxes = insertedIds(journal).map(
       (boxId) =>
@@ -728,25 +667,16 @@ describe('Full prune lifecycle (UTXO settlement path)', () => {
     const authorBox = createdBoxes.find(
       (b) => b && Buffer.from(b.owner).equals(Buffer.from(authorId)),
     );
-    const likerBox = createdBoxes.find(
-      (b) => b && Buffer.from(b.owner).equals(Buffer.from(likerId)),
-    );
     expect(authorBox).toBeDefined();
     expect(authorBox!.value).toBe(100);
-    expect(likerBox).toBeDefined();
-    expect(likerBox!.value).toBe(2);
 
-    // 8. Verify all original boxes are marked spent
+    // 7. Verify all original boxes are marked spent
     expect(boxIsSpent(db, lb1.id!)).toBe(true);
     expect(boxIsSpent(db, lb2.id!)).toBe(true);
-    expect(boxIsSpent(db, lk1.id!)).toBe(true);
 
-    // 9. Verify getPostLockBox returns null (box now spent)
+    // 8. Verify getPostLockBox returns null (box now spent)
     expect(utxo.getPostLockBox(rootId)).toBeNull();
     expect(utxo.getPostLockBox(replyId)).toBeNull();
-
-    // 10. Verify getUnspentLikeBoxes returns empty (like now spent)
-    expect(utxo.getUnspentLikeBoxes(rootId)).toEqual([]);
   });
 });
 
@@ -884,5 +814,110 @@ describe('prune settlement stump insert (P2-F F1)', () => {
     const stump = getStump(rootId);
     expect(stump).not.toBeNull();
     expect(stump!.compactedAtBlockHeight).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: prune apply → revert restores like-records (P2-D N3b)
+// ---------------------------------------------------------------------------
+
+describe('prune apply-then-revert (P2-D N3b, real settle path)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    vi.resetModules();
+  });
+
+  async function importBlockApply() {
+    return (await import('../../src/services/block-apply.js')) as {
+      applyOrderingBlock: (block: OrderingBlock) => boolean;
+    };
+  }
+
+  async function importForkResolution() {
+    return (await import('../../src/services/fork-resolution.js')) as {
+      revertBlock: (height: number) => unknown;
+    };
+  }
+
+  // N2b pinned the likeRecordDeletions inverse against a hand-built journal;
+  // this closes the loop end-to-end: the journal is produced by the REAL
+  // prune path (applyOrderingBlock → settlePruneUtxo →
+  // deleteLikeRecordsForPosts), then revertBlock replays it and the exact
+  // rows return.
+  it("a reverted prune block restores the subtree's like-records exactly (all three columns)", async () => {
+    const db = await importDb();
+    db.initDb(':memory:');
+
+    const author = makeTestIdentity();
+    const likerA = makeTestIdentity();
+    const likerB = makeTestIdentity();
+    const rootId = 'd4'.repeat(32);
+    const replyId = 'e5'.repeat(32);
+
+    const blockApply = await importBlockApply();
+    const likes = await importLikes();
+    const forkResolution = await importForkResolution();
+
+    // Height 1 confirms root + reply as consensus entries.
+    const confirmBlock = await makeApplicableBlock({
+      subBlockEntries: [
+        { postId: rootId, parentRefs: [], author: hex(author.userId) },
+        { postId: replyId, parentRefs: [rootId], author: hex(author.userId) },
+      ],
+    });
+    expect(blockApply.applyOrderingBlock(confirmBlock)).toBe(true);
+
+    // Like-records applied by earlier blocks — seeded via the store with no
+    // journal open, exactly the state a node holds before the prune block.
+    likes.insertLikeRecord(rootId, likerA.userId, 1);
+    likes.insertLikeRecord(rootId, likerB.userId, 1);
+    likes.insertLikeRecord(replyId, likerA.userId, 1);
+
+    // Height 2 prunes the subtree through the real apply path.
+    const pruneBlock = await makeApplicableBlock({
+      height: 2,
+      pruneEntries: [makePruneEntry(rootId, [rootId, replyId], author)],
+    });
+    expect(blockApply.applyOrderingBlock(pruneBlock)).toBe(true);
+
+    // The subtree's records died with the prune.
+    expect(likes.hasLikeRecord(rootId, likerA.userId)).toBe(false);
+    expect(likes.hasLikeRecord(rootId, likerB.userId)).toBe(false);
+    expect(likes.hasLikeRecord(replyId, likerA.userId)).toBe(false);
+
+    // Revert the prune block: the journalled deletions replay through
+    // restoreLikeRecord and the exact rows return.
+    forkResolution.revertBlock(2);
+
+    const rows = db
+      .getDb()
+      .prepare(
+        'SELECT target_post_id, liker_id, applied_at_block FROM like_records ORDER BY target_post_id, liker_id',
+      )
+      .all() as Array<{ target_post_id: string; liker_id: Buffer; applied_at_block: number }>;
+    const restored = rows.map((r) => ({
+      targetPostId: r.target_post_id,
+      likerId: r.liker_id.toString('hex'),
+      appliedAtBlock: r.applied_at_block,
+    }));
+    // Liker keys are random, so sort the expectation the way the query sorts
+    // rows (hex order = BLOB byte order).
+    const expected = [
+      { targetPostId: rootId, likerId: hex(likerA.userId), appliedAtBlock: 1 },
+      { targetPostId: rootId, likerId: hex(likerB.userId), appliedAtBlock: 1 },
+      { targetPostId: replyId, likerId: hex(likerA.userId), appliedAtBlock: 1 },
+    ].sort((a, b) =>
+      a.targetPostId !== b.targetPostId
+        ? a.targetPostId < b.targetPostId
+          ? -1
+          : 1
+        : a.likerId < b.likerId
+          ? -1
+          : 1,
+    );
+    expect(restored).toEqual(expected);
   });
 });
