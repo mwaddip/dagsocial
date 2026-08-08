@@ -4,13 +4,16 @@ import type { PruneEntry } from '../src/stump.js';
 
 const sig64 = new Uint8Array(64).fill(0xcd);
 const merkleRoot32 = new Uint8Array(32).fill(0x11);
+// A UserId is 32 raw bytes — an Ed25519 public key, never a display string.
+const authorKey = new Uint8Array(32).fill(0x44);
+const otherAuthorKey = new Uint8Array(32).fill(0x55);
 
 function makePruneEntry(overrides: Partial<PruneEntry> = {}): PruneEntry {
   return {
     rootPostHash: 'a'.repeat(64),
     subtreePostIds: ['bb'.repeat(32), 'cc'.repeat(32)],
     subtreeMerkleRoot: merkleRoot32,
-    authorId: 'user456',
+    authorId: authorKey,
     authorSignature: sig64,
     trigger: 'author',
     ...overrides,
@@ -45,7 +48,7 @@ describe('stump', () => {
 
     it('changes with different authorId', () => {
       const a = makePruneEntry();
-      const b = makePruneEntry({ authorId: 'different-author' });
+      const b = makePruneEntry({ authorId: otherAuthorKey });
       expect(computePruneEntryId(a)).not.toBe(computePruneEntryId(b));
     });
   });

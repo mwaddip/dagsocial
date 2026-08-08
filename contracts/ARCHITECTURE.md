@@ -1511,7 +1511,7 @@ is not subject to the subpath restriction the other four get from `exports`.
 `resolve.alias` maps each workspace package name to `packages/<pkg>/src/index.ts`, declared once at
 the repo root and merged into every package's vitest config.
 
-Five rules govern it:
+Six rules govern it:
 
 1. **Uniform across all five packages.** Aliasing some and not others puts two copies of the same
    module in one process — one transpiled from `src`, one bundled inside `dist`. `instanceof` fails
@@ -1539,9 +1539,21 @@ Five rules govern it:
    `paths` mapping `@dagsocial/*` to `../<pkg>/src/index.ts`, mirroring the vitest alias above —
    without it `tsc` follows `exports` to `dist` types and re-opens the stale-`dist` class this
    section exists to kill; and node's parked `test/e2e/**` stays excluded until its post-P2-D
-   rewrite. Baseline debt at decision time: **471 errors** (types 18 · wire 1 · validation 6 ·
-   net 23 · node 423), zero in any `src`; no test file uses bare vitest globals, so no
+   rewrite. Baseline debt at decision time: **469 errors** (types 18 · wire 1 · validation 6 ·
+   net 21 · node 423), zero in any `src`; no test file uses bare vitest globals, so no
    `types: ["vitest/globals"]` entry is needed.
+6. **Every package declares `@types/node` itself.** Not inherited, not assumed: TypeScript resolves
+   ambient node typings by walking `node_modules` *upward without a repo boundary*, so a package that
+   omits the dependency silently typechecks against whatever copy exists further up the filesystem —
+   including one in the developer's home directory. Measured 2026-08-08: `net` and `wire` declared
+   none and were resolving `@types/node@12.20.55` (Node 12, 2021) from `/home/<user>/node_modules`,
+   231 times in a single `--traceResolution` run, while the repo pins Node ≥ 22. Consequences, both
+   real: **net's typecheck was not reproducible** on another machine or in CI — it depended on a file
+   outside the repo — and the stale typings *invented* two errors in `validation/src/verify.ts`
+   (Node 12 typed `crypto.verify` as returning `Buffer`; Node 22 returns `boolean`), which surfaced
+   as soon as rule 5's `paths` pulled sibling `src` into net's program. Both packages now declare
+   `^22.0.0` like the other three, and the two phantom errors vanished. A cross-package type error
+   is worth suspecting as a resolution artifact before it is treated as a defect.
 
 **Cost, measured 2026-08-07.** Node's suite went **11.7 s → 25.1 s**: transforming three sibling
 packages' `src` per file costs more than the `tsup` build it replaced. This is a known, accepted

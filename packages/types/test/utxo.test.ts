@@ -22,6 +22,13 @@ import {
 import type { CandidateOf, KarmaBox, CreditBox, InviteBox, BondBox, UtxoTransaction, MintReason } from '../src/index.js';
 
 const owner = new Uint8Array(32).fill(0xaa);
+// A UserId is 32 raw bytes; `inviterId` is one. The fixtures below carried
+// the display string 'user456'.
+const inviter = new Uint8Array(32).fill(0x56);
+// Provenance is REQUIRED on every box (Spec G phase G3a) — `computeBoxId`
+// takes `Omit<BoxBase, 'id'>` and derives the id from `txId ‖ index`, so a
+// fixture without it is not a box at all. These predate G3a.
+const FIXTURE_TX_ID = 'e'.repeat(64);
 
 function makeKarmaBox(overrides: Partial<KarmaBox> = {}): KarmaBox {
   return {
@@ -30,6 +37,8 @@ function makeKarmaBox(overrides: Partial<KarmaBox> = {}): KarmaBox {
     owner,
     guard: 'owner_signature',
     proofSource: 'genesis',
+    txId: FIXTURE_TX_ID,
+    index: 0,
     ...overrides,
   };
 }
@@ -41,6 +50,8 @@ function makeCreditBox(): CreditBox {
     owner,
     guard: 'owner_signature',
     proofSource: 42,
+    txId: FIXTURE_TX_ID,
+    index: 1,
   };
 }
 
@@ -49,8 +60,13 @@ function makeInviteBox(): InviteBox {
     boxType: 'invite',
     value: 10n,
     secretHash: new Uint8Array(32).fill(0xbb),
-    inviterId: 'user456',
-    guard: 'hash_preimage',
+    inviterId: inviter,
+    // RETIRED guard string. The InviteBox guard is `hash_preimage_with_bond` —
+    // the rename happened when a reveal started requiring a paired BondBox
+    // input. This fixture named a guard the engine has no arm for.
+    guard: 'hash_preimage_with_bond',
+    txId: FIXTURE_TX_ID,
+    index: 2,
   };
 }
 
@@ -58,11 +74,21 @@ function makeBondBox(): BondBox {
   return {
     boxType: 'bond',
     value: 20n,
-    inviterId: 'user456',
+    inviterId: inviter,
     inviteePublicKey: new Uint8Array(32).fill(0xcc),
+    // REQUIRED since P2-B phase 1 and absent from this fixture: the bond
+    // resolves its paired InviteBox by `(bond.txId, bond.inviteOutputIndex)`.
+    // A newly-required field silently missing from a mock is exactly the rot
+    // an unchecked test tree hides.
+    inviteOutputIndex: 2,
     probationStartBlock: 17,
     probationEndBlock: 1017,
-    guard: 'inviter_signature',
+    // RETIRED guard string. The BondBox guard is `bond_dual` — the rename
+    // happened when the bond gained its three satisfaction paths (inviter
+    // signature, committed-invitee signature, preimage commit).
+    guard: 'bond_dual',
+    txId: FIXTURE_TX_ID,
+    index: 3,
   };
 }
 
@@ -135,8 +161,15 @@ describe('boxes', () => {
         const otherTx = { ...bare, txId: 'a'.repeat(64), index: 3 };
         expect(computeBoxId(at3)).not.toBe(computeBoxId(at4));
         expect(computeBoxId(at3)).not.toBe(computeBoxId(otherTx));
-        // The stored `id` field is not part of its own preimage.
-        expect(computeBoxId({ ...at3, id: 'f'.repeat(64) })).toBe(computeBoxId(at3));
+        // The stored `id` field is not part of its own preimage. Bound to a
+        // variable first: `computeBoxId` takes `Omit<BoxBase, 'id'>`, and
+        // excess-property checking rejects an `id` written into a fresh
+        // literal at the call site while accepting the identical value
+        // through a variable — which is the real call shape, since every
+        // STORED box carries an id and `stored.id === computeBoxId(stored)`
+        // is the invariant. Same value, same claim, no cast.
+        const withStoredId = { ...at3, id: 'f'.repeat(64) };
+        expect(computeBoxId(withStoredId)).toBe(computeBoxId(at3));
       }
     });
   });
@@ -663,10 +696,14 @@ describe('transactions', () => {
     it('excludes output id from hash (idempotent with assigned ids)', () => {
       const tx1: UtxoTransaction = { inputs: [], outputs: [makeKarmaBox()], signatures: {}, protocolVersion: 2 };
       const id1 = computeTxId(tx1);
-      // Assign an id to the output — shouldn't change tx id
+      // Assign an id to the output — shouldn't change tx id. Bound to a
+      // variable for the same reason as above: `AnyBoxCandidate` forbids an
+      // `id` key, and proving `computeTxId` STRIPS one means constructing a
+      // value the candidate type does not describe.
+      const outputWithId = { ...makeKarmaBox(), id: computeBoxId(makeKarmaBox()) };
       const tx2: UtxoTransaction = {
         inputs: [],
-        outputs: [{ ...makeKarmaBox(), id: computeBoxId(makeKarmaBox()) }],
+        outputs: [outputWithId],
         signatures: {},
         protocolVersion: 2,
       };
