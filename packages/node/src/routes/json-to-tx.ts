@@ -1,3 +1,4 @@
+import { PROTOCOL_VERSION } from '@dagsocial/types';
 import type { AnyBox, UtxoTransaction } from '@dagsocial/types';
 import { ClientError } from '../services/client-error.js';
 
@@ -43,7 +44,12 @@ export function jsonToTx(raw: Record<string, unknown>): UtxoTransaction {
   const outputs = rawOutputs.map(convertBox) as unknown as AnyBox[];
 
   // ---- protocolVersion ----
-  const protocolVersion = (raw.protocolVersion as number) ?? 1;
+  // `PROTOCOL_VERSION`, never a hard-coded 1: after a version bump the literal
+  // would have this edge mint stale-version txs that `checkTxEnvelope`'s
+  // strict-equality clause then rejects. The value still passes through when
+  // the client supplies one — the gate owns the equality check, this owns only
+  // the default.
+  const protocolVersion = (raw.protocolVersion as number) ?? PROTOCOL_VERSION;
 
   // ---- likeTarget (P2-D) ----
   // Carried through only when present — presence is `!== undefined`, matching
@@ -59,7 +65,14 @@ export function jsonToTx(raw: Record<string, unknown>): UtxoTransaction {
     inputs: (raw.inputs ?? []) as string[],
     outputs,
     signatures,
-    preimages: Object.keys(preimages).length > 0 ? preimages : undefined,
+    // A conditional SPREAD, not `: undefined` — the same idiom `likeTarget`
+    // uses one line below, and for the same reason. `preimages: undefined`
+    // leaves a present key holding `undefined`, which `computeTxId` hashes as
+    // absent (falsy) but `checkTxEnvelope` rejects as the CBOR-reachable
+    // ambiguity it is. Every preimage-free HTTP transaction carried one until
+    // the envelope gate measured it, so the contract's claim that this edge
+    // "normalizes {} to absent" was true only in effect, never in structure.
+    ...(Object.keys(preimages).length > 0 ? { preimages } : {}),
     protocolVersion,
     ...(likeTarget !== undefined ? { likeTarget } : {}),
   };

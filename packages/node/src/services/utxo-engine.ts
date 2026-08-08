@@ -5,6 +5,7 @@ import {
   INVITE_KARMA_THRESHOLD,
   INVITE_PROBATION_BLOCKS,
   LIKE_KARMA_COST,
+  PROTOCOL_VERSION,
   VOUCH_KARMA_AMOUNT,
 } from '@dagsocial/types';
 import type { UtxoTransaction, AnyBox, AnyBoxCandidate, BoxGuard, KarmaBox, BondBox, InviteBox, VouchBox } from '@dagsocial/types';
@@ -729,6 +730,260 @@ function describeValue(v: unknown): string {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Transaction envelope shape — the step-0 gate
+// ---------------------------------------------------------------------------
+
+/**
+ * 64 lowercase hex characters — the closed live set of ids. `computeBoxId`,
+ * `computeTxId` and `computePostId` all emit `digest().subarray(0,32)` as
+ * lowercase hex and nothing else, so an uppercase or short id names no box
+ * that can ever exist.
+ */
+const HEX64 = /^[0-9a-f]{64}$/;
+
+const ENVELOPE_REQUIRED = ['inputs', 'outputs', 'signatures', 'protocolVersion'] as const;
+
+/** Closed: `computeTxId` hashes only these, so any other key is free malleability. */
+const ENVELOPE_ALLOWED: ReadonlySet<string> = new Set<string>([
+  ...ENVELOPE_REQUIRED,
+  'preimages',
+  'likeTarget',
+]);
+
+/**
+ * A plain object: not null, not an array, and its prototype is
+ * `Object.prototype` or null.
+ *
+ * The prototype clause is load-bearing, not decoration. Every downstream read
+ * is `tx.likeTarget` / `tx.signatures[hexKey]` / `tx.preimages?.[id]` — plain
+ * property reads that walk the prototype chain — while this gate decides
+ * presence with `Object.hasOwn`. Pinning the prototype is what makes those two
+ * agree: without it an object carrying the four required keys but inheriting a
+ * `likeTarget` would pass a hasOwn-based gate and still drive `computeTxId`
+ * and the conservation carve-out off the inherited value.
+ *
+ * Measured (2026-08-08), correcting the contracted rationale: cbor-x does NOT
+ * set the prototype from a `__proto__` map key — it renames the key to
+ * `__proto_` on decode, leaving `Object.prototype` intact. So the CBOR path
+ * lands in the closed-key-set reject below, and `JSON.parse` (Express's body
+ * parser) likewise defines `__proto__` as an own key rather than assigning it.
+ * Both clauses stay anyway: they close the class structurally instead of
+ * resting on a decoder's internal sanitizing staying the way it is today.
+ */
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
+  const proto = Object.getPrototypeOf(v) as unknown;
+  return proto === Object.prototype || proto === null;
+}
+
+/**
+ * Shared shape for the two hex-keyed byte maps: `signatures` (values exactly
+ * 64 bytes — a raw Ed25519 signature) and `preimages` (values any length —
+ * the bytes are already in memory post-decode and secret length was never a
+ * consensus rule).
+ */
+function checkHexKeyedByteMap(
+  map: Record<string, unknown>,
+  field: 'signatures' | 'preimages',
+  byteLength: number | null,
+): UtxoResult {
+  for (const key of Object.keys(map)) {
+    if (!HEX64.test(key)) {
+      return {
+        valid: false,
+        error: `Invalid tx envelope: ${field} key must be 64 lowercase hex characters, got ${describeValue(key)}`,
+      };
+    }
+    const value = map[key];
+    if (!(value instanceof Uint8Array)) {
+      return {
+        valid: false,
+        error: `Invalid tx envelope: ${field}['${key}'] must be a Uint8Array, got ${describeValue(value)}`,
+      };
+    }
+    if (byteLength !== null && value.length !== byteLength) {
+      return {
+        valid: false,
+        error:
+          `Invalid tx envelope: ${field}['${key}'] must be ${byteLength} bytes, ` +
+          `got ${describeValue(value)}`,
+      };
+    }
+  }
+  return { valid: true };
+}
+
+/**
+ * Transaction envelope shape (NODE_INTERFACE → "Transaction envelope shape").
+ *
+ * The outer twin of `checkOutputShape`: that check pins what is INSIDE
+ * `tx.outputs`, this one pins that `tx` has the four fields at all and that
+ * every one of them is the type its readers assume. Both exist for the same
+ * reason — the transaction is attacker-controlled structure arriving over HTTP
+ * JSON, gossip CBOR, and block-embedded CBOR — and until this gate landed the
+ * envelope was the half nobody checked: measured on the pre-gate tree,
+ * `inputs: null` threw at step 1's `.length`, `inputs: 5` at `new Set(5)`,
+ * `inputs: [{}]` at the SQLite bind inside `getBox`, `outputs: null` inside
+ * `checkOutputShape` itself, a non-array `outputs` OBJECT slipped that loop
+ * (`length` undefined) and threw at conservation's `.reduce`, a missing or
+ * `null` `signatures` threw at `tx.signatures[hexKey]`, and `likeTarget: null`
+ * plus non-`Uint8Array` `preimages` values threw inside `computeTxId` — which
+ * `checkGuards` calls on its first line, so the whole envelope reached the
+ * hasher. Every one was an HTTP 500 or, through the block funnel, a
+ * whole-block rejection logged as an unexpected failure.
+ *
+ * **Total**: returns `{valid: false}` and never throws for any decoded-CBOR
+ * value. Error strings quote input through `describeValue`, never bare
+ * `String(v)` — which would invoke a caller-controlled `toString`.
+ *
+ * The key set is **closed**. `computeTxId` hashes only the known fields, so an
+ * extra envelope key is free malleability: two distinct CBOR byte strings
+ * carrying one txId. Measured pre-gate — `{…, bogusKey: 'free'}` and the clean
+ * tx hash identically, and the junk rode through validation into the store.
+ * A key present with the value `undefined` rejects for the twin reason: CBOR
+ * encodes `undefined`, `computeTxId`'s presence test is `!== undefined`, so a
+ * present-`undefined` `likeTarget` hashes as absent (also measured) — the gate
+ * refuses the ambiguity rather than picking a side.
+ *
+ * Presence is decided with `Object.hasOwn`, never truthiness or `in` — see
+ * `isPlainObject` for what that buys and what it does not.
+ *
+ * Exported for direct testing. Call sites are `validateTx` step 0 and the
+ * block funnel in `block-apply.ts`; gossip and the HTTP routes inherit it
+ * through `validateTx`.
+ */
+export function checkTxEnvelope(tx: unknown): UtxoResult {
+  // ---- 1. A plain, non-null, non-array object ----
+  if (!isPlainObject(tx)) {
+    return {
+      valid: false,
+      error: `Invalid tx envelope: expected a plain object, got ${
+        Array.isArray(tx) ? 'array' : describeValue(tx)
+      }`,
+    };
+  }
+
+  // ---- 2. Closed key set; a present-undefined key rejects ----
+  for (const key of Object.keys(tx)) {
+    if (!ENVELOPE_ALLOWED.has(key)) {
+      return { valid: false, error: `Invalid tx envelope: unexpected key '${key}'` };
+    }
+    if (tx[key] === undefined) {
+      return {
+        valid: false,
+        error: `Invalid tx envelope: key '${key}' is present with value undefined`,
+      };
+    }
+  }
+  for (const key of ENVELOPE_REQUIRED) {
+    if (!Object.hasOwn(tx, key)) {
+      return { valid: false, error: `Invalid tx envelope: missing required key '${key}'` };
+    }
+  }
+
+  // ---- 3. inputs: an array of box ids ----
+  // Emptiness is step 1's rule ("at least one input"), not the gate's — the
+  // gate owns shape, `validateTx` owns the semantic minimum.
+  const inputs = tx.inputs;
+  if (!Array.isArray(inputs)) {
+    return {
+      valid: false,
+      error: `Invalid tx envelope: inputs must be an array, got ${describeValue(inputs)}`,
+    };
+  }
+  for (let i = 0; i < inputs.length; i++) {
+    const id: unknown = inputs[i];
+    if (typeof id !== 'string' || !HEX64.test(id)) {
+      return {
+        valid: false,
+        error:
+          `Invalid tx envelope: inputs[${i}] must be 64 lowercase hex characters, ` +
+          `got ${describeValue(id)}`,
+      };
+    }
+  }
+
+  // ---- 4. outputs: an array ----
+  // Entries are NOT typed here — that is step 4's closed per-boxType schema.
+  // This clause only guarantees the iteration and `.reduce` sites are total.
+  if (!Array.isArray(tx.outputs)) {
+    return {
+      valid: false,
+      error: `Invalid tx envelope: outputs must be an array, got ${describeValue(tx.outputs)}`,
+    };
+  }
+
+  // ---- 5. signatures: a hex-keyed map of 64-byte signatures ----
+  // An EMPTY map is legal: the uncommitted-bond cancel path is guard-satisfied
+  // by preimage alone. Extra well-formed keys are shape-legal too — guards only
+  // look keys up, nothing iterates, and the like path's exactly-one-signature
+  // rule is `castLike` policy, not envelope shape.
+  const signatures = tx.signatures;
+  if (!isPlainObject(signatures)) {
+    return {
+      valid: false,
+      error: `Invalid tx envelope: signatures must be a plain object, got ${describeValue(signatures)}`,
+    };
+  }
+  const sigCheck = checkHexKeyedByteMap(signatures, 'signatures', 64);
+  if (!sigCheck.valid) return sigCheck;
+
+  // ---- 6. preimages: absent, or a NON-EMPTY hex-keyed map of byte strings ----
+  // Present-but-empty rejects: `computeTxId` guards on truthiness then
+  // iterates, so `{}` contributes nothing to the hash — measured pre-gate,
+  // `preimages: {}` and absence produce the identical txId, the same
+  // malleability clause 2 exists to kill. `jsonToTx` already normalizes `{}`
+  // to absent on the HTTP edge, so this closes the CBOR paths behind it.
+  if (Object.hasOwn(tx, 'preimages')) {
+    const preimages = tx.preimages;
+    if (!isPlainObject(preimages)) {
+      return {
+        valid: false,
+        error: `Invalid tx envelope: preimages must be a plain object, got ${describeValue(preimages)}`,
+      };
+    }
+    if (Object.keys(preimages).length === 0) {
+      return {
+        valid: false,
+        error: 'Invalid tx envelope: preimages is present but empty (omit it instead)',
+      };
+    }
+    const preimageCheck = checkHexKeyedByteMap(preimages, 'preimages', null);
+    if (!preimageCheck.valid) return preimageCheck;
+  }
+
+  // ---- 7. protocolVersion: strictly PROTOCOL_VERSION ----
+  // The same strict-equality posture as posts and block headers. No
+  // version-keyed dispatch exists (repo-root CLAUDE.md warning) and this gate
+  // does not pretend otherwise. Measured pre-gate: a tx SIGNED with
+  // `protocolVersion: "x"` validated, pooled and applied end-to-end, with the
+  // string `String()`-coerced into its own id preimage.
+  if (tx.protocolVersion !== PROTOCOL_VERSION) {
+    return {
+      valid: false,
+      error:
+        `Invalid tx envelope: protocolVersion must be ${PROTOCOL_VERSION}, ` +
+        `got ${describeValue(tx.protocolVersion)}`,
+    };
+  }
+
+  // ---- 8. likeTarget: absent, or a post id ----
+  if (Object.hasOwn(tx, 'likeTarget')) {
+    const likeTarget = tx.likeTarget;
+    if (typeof likeTarget !== 'string' || !HEX64.test(likeTarget)) {
+      return {
+        valid: false,
+        error:
+          `Invalid tx envelope: likeTarget must be 64 lowercase hex characters, ` +
+          `got ${describeValue(likeTarget)}`,
+      };
+    }
+  }
+
+  return { valid: true };
+}
+
 /**
  * Closed key set and per-field runtime types per boxType, in candidate form —
  * the `@dagsocial/types` box interfaces with `id`/`txId`/`index` removed
@@ -1179,7 +1434,13 @@ function checkGuards(
 /**
  * Validate a transaction without applying it (read-only).
  *
- * Performs 7 validation steps:
+ * Performs 8 validation steps:
+ * 0. Transaction envelope shape — `tx` is a plain object with the closed key
+ *    set, hex input ids, array outputs, a hex-keyed 64-byte signature map, a
+ *    non-empty preimage map if present, and `protocolVersion` strictly equal
+ *    to `PROTOCOL_VERSION` (NODE_INTERFACE → "Transaction envelope shape").
+ *    Ahead of every other read of `tx`, so steps 1–7 dereference envelope
+ *    fields under a shape guarantee.
  * 1. No duplicate input IDs
  * 2. All inputs exist and are unspent
  * 3. All inputs have the same boxType
@@ -1188,10 +1449,7 @@ function checkGuards(
  *    and every field's runtime type (guard-shape pin + field-type pin,
  *    NODE_INTERFACE → "Output shape"). This is the first step that reads
  *    `tx.outputs`, so steps 5–7 dereference output fields under a schema
- *    guarantee — with it, this function returns `{valid: false}` and never
- *    throws for ANY contents of `tx.outputs`, provided the tx envelope itself
- *    is structurally well-formed (the envelope gate is a queued follow-up:
- *    `inputs: null` still throws at step 1).
+ *    guarantee.
  * 5. Face-value conservation — sum(in) == sum(out) for every box type (two
  *    carve-outs: the P2-D like burn — `likeTarget` present ⟺ deficit exactly
  *    LIKE_KARMA_COST — and the zero-output VouchBox spend). The `value` TYPE
@@ -1211,6 +1469,13 @@ export function validateTx(
   tx: UtxoTransaction,
   currentBlockHeight: number,
 ): UtxoResult {
+  // ---- 0. Transaction envelope shape ----
+  // Ahead of every other read of `tx`: steps 1–7 index `tx.inputs`, iterate
+  // `tx.outputs`, and hash the whole envelope inside `computeTxId`, all of
+  // which were throw sites for a malformed envelope before this gate.
+  const envelopeCheck = checkTxEnvelope(tx);
+  if (!envelopeCheck.valid) return envelopeCheck;
+
   // ---- 1. No duplicate input box IDs ----
   const inputSet = new Set(tx.inputs);
   if (inputSet.size !== tx.inputs.length) {
