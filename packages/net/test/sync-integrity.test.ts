@@ -410,8 +410,8 @@ describe('sync integrity (audit M-10)', () => {
       sendInv(machine, 'peerA', ['w']);
       const reqs = sentRequests(sent);
       expect(reqs).toHaveLength(1);
-      expect(reqs[0].peerId).toBe('peerA');
-      expect(reqs[0].req.ids).toEqual(['w']);
+      expect(reqs[0]!.peerId).toBe('peerA');
+      expect(reqs[0]!.req.ids).toEqual(['w']);
 
       sendResponse(machine, 'peerA', [mod('w', 1)]);
       expect(appended).toHaveLength(1);
@@ -425,7 +425,7 @@ describe('sync integrity (audit M-10)', () => {
       sendInv(machine, 'peerA', ['x', 'x', 'y']);
       const reqs = sentRequests(sent);
       expect(reqs).toHaveLength(1);
-      expect(reqs[0].req.ids).toEqual(['x', 'y']);
+      expect(reqs[0]!.req.ids).toEqual(['x', 'y']);
     });
 
     // PRE-FIX: FAILS — the second request re-asked for x.
@@ -437,7 +437,7 @@ describe('sync integrity (audit M-10)', () => {
       sendInv(machine, 'peerA', ['x', 'y']); // x already outstanding
       const reqs = sentRequests(sent);
       expect(reqs).toHaveLength(2);
-      expect(reqs[1].req.ids).toEqual(['y']);
+      expect(reqs[1]!.req.ids).toEqual(['y']);
     });
   });
 
@@ -466,7 +466,7 @@ describe('sync integrity (audit M-10)', () => {
 
       const lengths = sentRequests(sent).map((r) => r.req.ids.length);
       expect(lengths).toEqual([MAX_INV_IDS, MAX_INV_IDS, MAX_INV_IDS, 300, OUTSTANDING_CAP - 1500]);
-      expect(sentRequests(sent)[4].req.ids).toEqual(batch('e', MAX_INV_IDS).slice(0, OUTSTANDING_CAP - 1500));
+      expect(sentRequests(sent)[4]!.req.ids).toEqual(batch('e', MAX_INV_IDS).slice(0, OUTSTANDING_CAP - 1500));
 
       // Acceptance frees budget: answer the trimmed batch, then a new Inv
       // produces a request again.
@@ -477,7 +477,7 @@ describe('sync integrity (audit M-10)', () => {
       sendInv(machine, 'peerA', batch('g', 50));
       const after = sentRequests(sent);
       expect(after).toHaveLength(6);
-      expect(after[5].req.ids).toEqual(batch('g', 50));
+      expect(after[5]!.req.ids).toEqual(batch('g', 50));
     });
   });
 });

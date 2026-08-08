@@ -82,7 +82,8 @@ describe('handshake', () => {
       // raw-CBOR parser, which read the corrupt frame bytes as a handshake
       // and misclassified the peer as malformed.
       const frame = buildHandshakeFrame(MAGIC_TESTNET, testMsg);
-      frame[frame.length - 1] ^= 0xff;
+      const last = frame.length - 1;
+      frame[last] = frame[last]! ^ 0xff;
       expect(decodeHandshakePayload(MAGIC_TESTNET, frame))
         .toEqual({ kind: 'reject', code: 'checksum-mismatch' });
     });

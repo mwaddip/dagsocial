@@ -18,7 +18,8 @@ describe('net frame', () => {
 
   it('rejects corrupted frame', () => {
     const frame = encodeFrame(MAGIC_TESTNET, 5, new Uint8Array([42]));
-    frame[frame.length - 1] ^= 0xff;
+    const last = frame.length - 1;
+    frame[last] = frame[last]! ^ 0xff;
     expect(() => decodeFrame(MAGIC_TESTNET, frame)).toThrow('checksum');
   });
 });
