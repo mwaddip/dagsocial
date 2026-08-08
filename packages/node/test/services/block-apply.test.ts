@@ -474,10 +474,14 @@ describe('block-apply journal recording', () => {
     // Insert sub-block ID
     mempool.insertSubBlock(postId, 1000);
 
-    // Insert a standalone UTXO transaction in mempool
+    // Insert a standalone UTXO transaction in mempool. The like targets the
+    // post this same block confirms — N2b's apply rules reject a like on an
+    // unconfirmed target, and topology lands (§8b) before the tx loop (§11),
+    // so confirm-and-like-in-one-block is the valid shape. A self-like is
+    // legal (and uneconomical) by contract.
     const karmaBox = makeKarmaBox(100n, author.userId, 0);
     utxo.insertBox(karmaBox);
-    const likeTx = makeLikeTx(author, karmaBox, 'unrelated_post_id');
+    const likeTx = makeLikeTx(author, karmaBox, postId);
     mempool.insertUtxoTx(likeTx, null, 1000);
 
     bc.startBlockCreator(testConfig);
@@ -1014,6 +1018,7 @@ describe('block-apply embedded tx re-validation', () => {
     db.initDb(':memory:');
 
     const utxo = await importUtxo();
+    const posts = await importPosts();
     const mempool = await importMempoolFresh();
     const { computeTxId } = await import('@dagsocial/types');
 
@@ -1024,8 +1029,20 @@ describe('block-apply embedded tx re-validation', () => {
     utxo.insertBox(aliceBox);
     utxo.insertBox(bobBox);
 
-    const aliceTx = makeLikeTx(alice, aliceBox, 'post_a');
-    const bobTx = makeLikeTx(bob, bobBox, 'post_b');
+    // N2b: likes need confirmed live targets — real posts, confirmed by this
+    // same block (topology at §8b precedes the tx loop at §11).
+    const author = makeTestIdentity();
+    const postA = makePost(author.userId, 'valid-txs target a');
+    const postB = makePost(author.userId, 'valid-txs target b');
+    const postAId = computePostId(postA);
+    const postBId = computePostId(postB);
+    posts.insertPost(postA, encodePost(postA));
+    posts.insertPost(postB, encodePost(postB));
+    mempool.insertSubBlock(postAId, 1000);
+    mempool.insertSubBlock(postBId, 1000);
+
+    const aliceTx = makeLikeTx(alice, aliceBox, postAId);
+    const bobTx = makeLikeTx(bob, bobBox, postBId);
     mempool.insertUtxoTx(aliceTx, null, 1000);
     mempool.insertUtxoTx(bobTx, null, 1000);
 
@@ -1054,6 +1071,7 @@ describe('block-apply embedded tx re-validation', () => {
     db.initDb(':memory:');
 
     const utxo = await importUtxo();
+    const posts = await importPosts();
     const mempool = await importMempoolFresh();
     const { computeTxId } = await import('@dagsocial/types');
 
@@ -1061,8 +1079,20 @@ describe('block-apply embedded tx re-validation', () => {
     const startBox = makeKarmaBox(100n, liker.userId, 0);
     utxo.insertBox(startBox);
 
-    const txA = makeLikeTx(liker, startBox, 'post_a');
-    const txB = makeLikeTx(liker, changeBoxOf(txA), 'post_b');
+    // N2b: likes need confirmed live targets — two real posts, confirmed by
+    // the same block that carries the chained likes.
+    const author = makeTestIdentity();
+    const postA = makePost(author.userId, 'defer-retry target a');
+    const postB = makePost(author.userId, 'defer-retry target b');
+    const postAId = computePostId(postA);
+    const postBId = computePostId(postB);
+    posts.insertPost(postA, encodePost(postA));
+    posts.insertPost(postB, encodePost(postB));
+    mempool.insertSubBlock(postAId, 1000);
+    mempool.insertSubBlock(postBId, 1000);
+
+    const txA = makeLikeTx(liker, startBox, postAId);
+    const txB = makeLikeTx(liker, changeBoxOf(txA), postBId);
 
     // B goes in first, so the block lists it first and its input does not
     // exist on the first pass — the "inputs not present yet" case, which must

@@ -281,6 +281,16 @@ describe('full-pipeline', () => {
     const posts = await importPosts();
     posts.insertPost(post, encodePost(post));
 
+    // ---- Step 0: Confirm the target first (N2b: a like on an unconfirmed
+    // post is invalid at apply, so the canonical flow likes an
+    // already-confirmed post; the confirm-and-like-in-one-block shape is
+    // test 2 below). Block 1 carries the sub-block alone.
+    const mempool = await importMempool();
+    mempool.insertSubBlock(postId, 1000);
+    const bc = await importBlockCreator();
+    bc.startBlockCreator(testConfig);
+    expect(bc.createOrderingBlock()).not.toBeNull();
+
     // Build and sign the burn-shape like tx (P2-D): one karma output at
     // −LIKE_KARMA_COST, likeTarget inside the signed bytes, no LikeBox.
     const changeVal = karmaBox.value - LIKE_KARMA_COST;
@@ -305,18 +315,16 @@ describe('full-pipeline', () => {
     // ---- Step 1: Cast like (validateTx + mempool) ----
     const likesSvc = await importLikesService();
     const deps = makeEngineDeps(db, utxo);
-    const result = likesSvc.castLike(deps, likeTx, 0);
+    const result = likesSvc.castLike(deps, likeTx, 1);
 
     expect(result.castLikeResult).toBe('pending');
     expect(result.txId).toBeTruthy();
 
     // ---- Step 2: Mine block (mempool entry removed during finalizeBlock) ----
-    const bc = await importBlockCreator();
-    bc.startBlockCreator(testConfig);
     const block = bc.createOrderingBlock() as Record<string, unknown> | null;
     expect(block).not.toBeNull();
     const blockHeight = (block!.header as Record<string, unknown>).height as number;
-    expect(blockHeight).toBe(1);
+    expect(blockHeight).toBe(2);
 
     // ---- Step 3: Verify confirmed state (UTXO txs applied by block creator) ----
     // No LikeBox is ever produced — the burn is the like.

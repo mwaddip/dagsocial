@@ -650,10 +650,12 @@ describe('revertBlock', () => {
     // Insert sub-block
     mempool.insertSubBlock(postId, 1000);
 
-    // Insert a standalone UTXO tx
+    // Insert a standalone UTXO tx. The like targets the post this block
+    // confirms — N2b rejects likes on unconfirmed targets, and topology
+    // (§8b) precedes the tx loop (§11). Self-like is legal by contract.
     const karmaBox = makeKarmaBox(100n, author.userId, 0);
     utxo.insertBox(karmaBox);
-    const likeTx = makeLikeTx(author, karmaBox, 'unrelated');
+    const likeTx = makeLikeTx(author, karmaBox, postId);
     mempool.insertUtxoTx(likeTx, null, 1000);
 
     bc.startBlockCreator(testConfig);

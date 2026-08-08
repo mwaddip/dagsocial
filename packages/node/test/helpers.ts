@@ -3,6 +3,7 @@ import {
   computeTxId,
   computeBoxId,
   canonicalBoxBytes,
+  encodeTx,
   u32BE,
   leafHash,
   buildMerkleRoot,
@@ -350,6 +351,13 @@ export async function makeApplicableBlock(
     /** Mine to this identity (coinbase owner + validatorId) instead of a fresh
      *  one — lets a test seed pre-existing boxes for the coinbase owner. */
     miner?: TestIdentity;
+    /** Embed these UTXO transactions directly — the validator-embeds-a-tx
+     *  shape, bypassing every gateway (mempool intake, castLike's
+     *  one-signature rule). Ids and CBOR are derived here, so the Merkle
+     *  commitment is honest; whether the txs are *valid* is exactly what the
+     *  suite's apply measures. Listed in the order given — dependency order
+     *  is the apply loop's job. */
+    utxoTxs?: UtxoTransaction[];
     /** Split the coinbase across these owners instead of paying the miner
      *  alone — the shape a node with `creditTreasuryPct > 0` produces. The
      *  shares must sum to the scheduled emission or apply rejects the block. */
@@ -377,9 +385,10 @@ export async function makeApplicableBlock(
     pruneEntries: opts.pruneEntries ?? [],
   };
   const lockedUntilBlock = opts.lockedUntilBlock ?? height + CREDIT_MINER_REWARD_DELAY;
+  const embeddedTxs = opts.utxoTxs ?? [];
   const utxoTxTree = {
-    utxoTxIds: [],
-    utxoTxs: [],
+    utxoTxIds: embeddedTxs.map((tx) => computeTxId(tx)),
+    utxoTxs: embeddedTxs.map((tx) => encodeTx(tx)),
     likeBoxIds: [],
     coinbaseOutputs: (
       opts.coinbaseSplit ?? [

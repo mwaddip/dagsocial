@@ -104,6 +104,19 @@ export function likerRefundContext(targetPostId: PostId, likerId: Uint8Array): M
   return { reason: 'liker-refund', subject: concat(utf8.encode(targetPostId), likerId) };
 }
 
+/**
+ * `like-payout` — 32 bytes: the credited author's raw pubkey (P2-D per-block
+ * like settlement). Fixed length, so the injectivity rule holds by
+ * construction. One mint per author per block, which is what makes
+ * `(height, 'like-payout', author)` unique: the settlement consolidates every
+ * like the author received in the block into a single mint.
+ *
+ * Copied rather than aliased, same as `decayContext`.
+ */
+export function likePayoutContext(author: Uint8Array): MintContext {
+  return { reason: 'like-payout', subject: Uint8Array.from(author) };
+}
+
 /** `postlock-unlock` — 64 bytes. Distinguished from `author-reward` only by the tag. */
 export function postlockUnlockContext(targetPostId: PostId): MintContext {
   return { reason: 'postlock-unlock', subject: utf8.encode(targetPostId) };
